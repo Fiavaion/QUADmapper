@@ -232,3 +232,103 @@ See `.claude/agent-state/spawn-rules.json` for full configuration.
 - [QUAD_MAPPER_MVP_SPECIFICATION.md](QUAD_MAPPER_MVP_SPECIFICATION.md) - Complete technical specification
 - [docs/PRD.md](docs/PRD.md) - Product Requirements Document
 - [docs/EDD.md](docs/EDD.md) - Engineering Design Document
+
+---
+
+## Success Metric (Definition of Done)
+
+QUADmapper succeeds when a live-event technician can, in under two minutes:
+
+1. Launch the app, add a quad, and assign media (image/video/procedural) to it.
+2. **Select a vertex and warp it precisely with the keyboard** — `Tab`/`Shift+Tab`
+   cycles vertices, arrow keys nudge the selected vertex, **`Shift` = 10× nudge**,
+   `Alt` = 0.1× fine nudge (the TouchDesigner-Kantan-style UX).
+3. Send that quad fullscreen to a chosen projector output and see it warped correctly.
+
+This is the gate. Feature count, test count, and coverage % are **not** the metric — this
+workflow, verified working by running the app, is. Implemented in
+[Application.cpp:674-808](src/app/Application.cpp#L674-L808); never regress it.
+
+## Model Selection Policy
+
+The authoritative per-task rubric is the **`modelswitcher`** skill — consult it before any
+multi-step plan or multi-agent fan-out. The tiers below are the fallback if it is absent.
+
+- **Opus-class** — planning, architecture, multi-file/cross-cutting changes, agent-team
+  lead, non-obvious debugging (render/timing/threading), high-risk refactors, audit
+  synthesis, the `/release` gate.
+- **Sonnet-class** — day-to-day feature work, routine refactors, test writing, rubric-driven
+  scans (security/slop/dead-code), browser/manual-UX sweeps.
+- **Haiku-class** — file listing, log triage, bulk mechanical edits.
+- **Fable-class** — *opportunistic upgrade for long-horizon agentic coding* (investigate →
+  patch → test → recover across many files). **Confirm availability via `/status` before
+  routing to it** — it is a bonus over Opus, never a dependency. Best used for the
+  remediation/fix phase, not the audit/planning phase.
+- **Advisor (on-demand)** — the Executor may spawn a single-question Opus subagent for
+  architectural forks, hard-to-reverse decisions, or repeated stalls. Keep the prompt under
+  200 words; receive one recommendation and return. See `.claude/agents/advisor.md`.
+
+> Note: the "Fable 10% / Opus 80% / Fable 10% by calendar" rule is **not** used — allocate
+> by task shape (above), not by project timeline.
+
+## Change Boundaries
+
+These areas are **no-edit-without-approval**; changing them is hard to reverse:
+
+- **Build/dependency config** — `CMakeLists.txt`, `cmake/`, `CMakePresets.json`,
+  `vcpkg.json` (esp. the `builtin-baseline`). New dependency = ADR + approval first.
+- **Project file format** — `src/project/ProjectSerializer.*` and the `.qmap` schema.
+  Breaking changes need versioned migration + backward-compat (existing `.qmap` files
+  must still load).
+- **Public module interfaces** in the dependency graph (`core` → `scene`/`renderer` → …) —
+  changing a header that downstream modules include is cross-cutting; plan it.
+- **`external/`** vendored libs (ImGui/GLAD/stb) — do not hand-edit; update via the
+  documented process.
+
+Everything else: keep diffs **surgical** — touch only what the task needs, match the
+surrounding style, and clean up only the mess your change introduces.
+
+## Slash Commands
+
+Project: `/start` `/end` (session continuity), `/build` `/run` `/test` (CMake/ctest wrappers).
+
+Release-gate set (global, run before shipping): `/release` orchestrates
+`test → security-harden → slop-clean → humanize → prod-ready → re-test` with a pass/fail
+gate. Also available individually: `/prod-ready`, `/security-harden`, `/slop-clean`,
+`/humanize`. **Run `/release` before any release build.**
+
+Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/todos`
+(scan code TODO/FIXME into `notes/TODOs.md`).
+
+## Token & Context Rules
+
+- `@`-mention specific files/paths; scope prompts on this large repo rather than reading broadly.
+- `/context` to inspect, `/compact` (with a focused instruction) after milestones, `/cost`
+  before expensive phases (e.g. the full audit).
+- Don't paste big build logs — save to a file and `@`-mention; summarize first, then zoom in.
+- Standard loop: **plan (Opus, plan mode) → execute (Sonnet, small diffs) → compact/checkpoint.**
+
+## Dev & Bug-Fix Discipline
+
+- **Build → test → commit, one change at a time.** One feature/fix per commit; no `wip`
+  commits on `main`. Incremental, reversible steps.
+- **Reviewer mode before "done".** After writing code, re-read your own diff as a senior
+  reviewer intending to reject it (bugs, over-engineering, scope creep, missing tests,
+  AI-slop); fix what you find, then declare done.
+- **Done means verified working** — a feature is complete only when its behavior is seen
+  working (run the app) or user-confirmed. Green tests ≠ done (624 tests pass while the
+  real interaction could still be broken).
+- **Bug-fixing:** reproduce first; add logging/visual feedback *before* reading lots of
+  code. If not diagnosed in ~5 min, change strategy. Remove scaffolding logging after.
+- **"Complete failure" = assume multiple root causes** — audit the whole chain
+  (geometry → mesh → render → output), count expected vs actual at each step, fix all.
+- **Zero technical debt** — delete old code (git is the backup), never comment it out; no
+  dead/parallel paths. Any accepted deferral goes in `TECHNICAL_DEBT.md` with a cost.
+- **Isolate parallel/background agent work in a git worktree** to keep `main` clean.
+
+## Session Continuity Layer
+
+Source of truth stays the existing `TASKS.md` / `SESSION_STATE.json` / `PROJECT_HISTORY.md`
+(read by `/start` and `/end`). The bootstrap added only non-overlapping pieces:
+[TECHNICAL_DEBT.md](TECHNICAL_DEBT.md), [notes/lessons.md](notes/lessons.md) (the
+`LESSON-{ARCH|BUG|PERF|API|UI|TEST|BUILD}-NNN` ledger), and [notes/TODOs.md](notes/TODOs.md).
