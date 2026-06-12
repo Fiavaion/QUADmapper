@@ -1,0 +1,725 @@
+# QUADmapper Tasks
+
+Last Updated: 2025-12-19
+
+## Quick Status
+- In Progress: 0
+- Todo: 0
+- Done: 44
+- Blocked: 0
+
+---
+
+## Done
+
+### Phase 1: Core Foundation
+
+#### QM-001: Setup CMake build system
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 1
+- **Estimated Effort:** Medium
+- **Depends On:** None
+- **Completed:** 2025-12-19
+- **Notes:**
+  - vcpkg integration working (glfw3, glm, nlohmann-json)
+  - Debug build successful (QUADmapper.exe)
+  - Core tests passing (27/27)
+  - External libs installed: GLAD, Dear ImGui (docking), stb_image
+
+#### QM-002: Create GLFW window
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 1
+- **Estimated Effort:** Small
+- **Depends On:** QM-001
+- **Completed:** 2025-12-19
+- **Notes:**
+  - 1920x1080 window with vsync
+  - Framebuffer resize callback
+  - Full main loop implementation
+
+#### QM-003: Initialize OpenGL context
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 1
+- **Estimated Effort:** Small
+- **Depends On:** QM-002
+- **Completed:** 2025-12-19
+- **Notes:**
+  - GLAD loader initialization working
+  - OpenGL 3.3 core profile confirmed
+  - Dear ImGui 1.92.6 with docking support
+  - Multi-viewport enabled
+
+#### QM-004: Implement single quad with 4-corner warping
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 1
+- **Estimated Effort:** Large
+- **Depends On:** QM-003
+- **Completed:** 2025-12-19
+- **Notes:**
+  - QuadGeometry with bilinear interpolation
+  - ShaderProgram class for OpenGL shaders
+  - Renderer with mesh subdivision support (2-64 resolution)
+  - Real-time corner warping
+
+#### QM-005: Add image texture loading
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 1
+- **Estimated Effort:** Medium
+- **Depends On:** QM-003
+- **Completed:** 2025-12-19
+- **Notes:**
+  - Texture class with stb_image integration
+  - Support for PNG, JPG, TIF, BMP, TGA
+  - GPU texture upload with mipmaps
+  - UI for loading textures by path
+
+#### QM-006: Create basic ImGui inspector panel
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 1
+- **Estimated Effort:** Medium
+- **Depends On:** QM-002
+- **Completed:** 2025-12-19
+- **Notes:**
+  - "Quad Inspector" panel with corner controls
+  - Mesh resolution slider (2-64)
+  - Opacity control
+  - Texture path input and load button
+
+#### QM-007: Implement minimal project save/load
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 1
+- **Estimated Effort:** Medium
+- **Depends On:** QM-004, QM-005
+- **Completed:** 2025-12-19
+- **Notes:**
+  - JSON format using nlohmann/json (.qmap files)
+  - Saves quad corners, mesh resolution, opacity, texture paths
+  - File menu with Save/Load and Ctrl+S/Ctrl+O shortcuts
+  - Project panel with status display
+  - Round-trip serialization verified with unit tests
+
+### Phase 2: Mesh & Multi-Quad
+
+#### QM-008: Implement mesh subdivision system
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 2
+- **Estimated Effort:** Large
+- **Depends On:** QM-004
+- **Completed:** 2025-12-19
+- **Notes:**
+  - Configurable resolution (2-64)
+  - Vertex buffer generation with proper vertex layout
+  - Index buffer for triangle list rendering
+  - MeshSubdivision utility class with static methods
+  - Integration with QuadGeometry for mesh offsets
+
+#### QM-009: Add mesh vertex editing mode
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 2
+- **Estimated Effort:** Large
+- **Depends On:** QM-008
+- **Completed:** 2025-12-19
+- **Notes:**
+  - Vertex handle rendering with dedicated shaders
+  - Drag interaction with mouse click/drag
+  - Reset to bilinear option via UI button
+  - MeshMode enum (CornersOnly vs MeshEdit)
+  - Per-vertex offset storage in QuadGeometry
+
+#### QM-010: Support multiple quads
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 2
+- **Estimated Effort:** Medium
+- **Depends On:** QM-004
+- **Completed:** 2025-12-19
+- **Notes:**
+  - QuadManager class with full lifecycle management
+  - Selection system with single/multi-select (Ctrl+click)
+  - Select all (Ctrl+A), range select (Shift+click)
+  - Selection callback support
+  - Duplicate quad functionality
+
+#### QM-011: Implement quad groups
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 2
+- **Estimated Effort:** Medium
+- **Depends On:** QM-010
+- **Completed:** 2025-12-19
+- **Notes:**
+  - QuadGroup class with member ID list
+  - Group visibility/lock propagation to members
+  - Scene API for group management
+  - Create group from selection
+  - Drag-drop quads to groups in UI
+  - 39 unit tests for group functionality
+
+#### QM-012: Add Z-order management
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 2
+- **Estimated Effort:** Small
+- **Depends On:** QM-010
+- **Completed:** 2025-12-19
+- **Notes:**
+  - Render order by z-order (lowest first)
+  - QuadManager z-order operations (up/down/top/bottom)
+  - Multi-select z-order operations
+  - Keyboard shortcuts: Ctrl+]/[ (up/down), Ctrl+Shift+]/[ (top/bottom)
+  - UI controls in Quad List panel
+
+#### QM-013: Implement UV offset/scale controls
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 2
+- **Estimated Effort:** Medium
+- **Depends On:** QM-005
+- **Completed:** 2025-12-19
+- **Notes:**
+  - UV offset (pan) with X/Y controls
+  - UV scale (zoom) with X/Y controls
+  - UV rotation support
+  - Reset UV button in inspector
+  - TextureBinding class for UV state
+  - Shader support for UV transforms
+
+### Phase 3: Video Playback
+
+#### QM-014: Integrate FFmpeg video decoder
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 3
+- **Estimated Effort:** Large
+- **Depends On:** QM-001
+- **Completed:** 2025-12-19
+- **Notes:**
+  - VideoDecoder class with pimpl pattern
+  - FFmpeg libavcodec/libavformat integration
+  - Background decoder thread with ring buffer
+  - RGB24 frame output
+  - Seek and frame navigation
+  - FFmpeg 7.1.2 via vcpkg
+
+#### QM-015: Implement video texture binding
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 3
+- **Estimated Effort:** Medium
+- **Depends On:** QM-014, QM-005
+- **Completed:** 2025-12-19
+- **Notes:**
+  - FrameBuffer thread-safe ring buffer
+  - Blocking/non-blocking push/pop operations
+  - End of stream signaling
+  - GPU texture upload with glTexSubImage2D
+  - Texture wrapper for external GL textures
+
+#### QM-016: Add playback controls
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 3
+- **Estimated Effort:** Medium
+- **Depends On:** QM-015
+- **Completed:** 2025-12-19
+- **Notes:**
+  - VideoPlayer class with full controls
+  - Play, pause, stop, togglePlayPause
+  - Seek by time, progress, skip
+  - Video Player UI panel with controls
+
+#### QM-017: Implement speed control
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 3
+- **Estimated Effort:** Small
+- **Depends On:** QM-016
+- **Completed:** 2025-12-19
+- **Notes:**
+  - Speed range 0.1x to 4.0x
+  - Frame skipping for fast speeds
+  - Speed slider in UI with 1x reset
+
+#### QM-018: Add loop modes
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 3
+- **Estimated Effort:** Small
+- **Depends On:** QM-016
+- **Completed:** 2025-12-19
+- **Notes:**
+  - LoopMode enum: Once, Loop, Ping-Pong
+  - Loop mode combo box in UI
+  - handleEndOfVideo with mode switching
+
+#### QM-019: Implement timeline lock system
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 3
+- **Estimated Effort:** Medium
+- **Depends On:** QM-018
+- **Completed:** 2025-12-19
+- **Notes:**
+  - TimelineSyncManager class
+  - Lock/unlock players to timeline
+  - Wait for all locked videos to finish
+  - Synchronized restart
+
+---
+
+## In Progress
+
+*No tasks currently in progress*
+
+---
+
+## Todo
+
+### Phase 4: Multi-Output
+
+#### QM-020: Create output window system
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 4
+- **Estimated Effort:** Large
+- **Depends On:** QM-003
+- **Completed:** 2025-12-19
+- **Notes:**
+  - OutputWindow class with GLFW window management
+  - Shared OpenGL context via create(GLFWwindow* shareContext)
+  - Fullscreen/windowed toggle with saved position
+  - OutputManager with monitor enumeration (MonitorInfo struct)
+  - Perform mode enter/exit
+  - 50 unit tests (27 OutputWindowTest + 22 OutputManagerTest + MonitorInfo)
+
+#### QM-021: Add resolution/rotation controls
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 4
+- **Estimated Effort:** Medium
+- **Depends On:** QM-020
+- **Completed:** 2025-12-19
+- **Notes:**
+  - ResolutionPreset struct with common presets (720p, 1080p, 4K, etc.)
+  - getEffectiveResolution() accounts for rotation (swaps w/h for 90/270)
+  - getRotationDegrees()/setRotationDegrees() conversion methods
+  - applyResolution() applies to GLFW window
+
+#### QM-022: Implement monitor assignment
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 4
+- **Estimated Effort:** Medium
+- **Depends On:** QM-020
+- **Completed:** 2025-12-19
+- **Notes:**
+  - MonitorInfo::getDisplayString() for UI-friendly display
+  - getMonitor(index), getPrimaryMonitor() methods
+  - MonitorChangeCallback with setMonitorChangeCallback()
+  - enableMonitorChangeDetection() with GLFW callback
+
+#### QM-023: Add Perform Mode
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 4
+- **Estimated Effort:** Medium
+- **Depends On:** QM-022
+- **Completed:** 2025-12-19
+- **Notes:**
+  - goBorderlessFullscreen() for borderless mode
+  - KeyCallback with setKeyCallback() on OutputWindow
+  - handleF11Key(), handleEscapeKey(), togglePerformMode()
+  - setupPerformModeKeyCallbacks() for automatic handling
+
+---
+
+### Phase 5: Scene System
+
+#### QM-024: Implement scene data structure
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 5
+- **Estimated Effort:** Medium
+- **Depends On:** QM-010
+- **Completed:** 2025-12-19
+- **Notes:**
+  - SceneViewState struct (panOffset, zoomLevel, gridVisible, snapToGrid)
+  - Scene::getViewState(), resetView() methods
+  - SceneManager: getSceneByIndex, duplicateScene, generateUniqueSceneName, reset
+  - ProjectSerializer: saveWithScenes/loadToSceneManager with v2.0 format
+  - Backward compatibility for v1.x project files
+  - 21 new SceneManager unit tests
+
+#### QM-025: Add scene creation/deletion
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 5
+- **Estimated Effort:** Small
+- **Depends On:** QM-024
+- **Completed:** 2025-12-19
+- **Notes:**
+  - canDeleteScene() safety check (can't delete last scene)
+  - getActiveSceneId(), getSceneIndex() methods
+  - setActiveSceneByIndex() for keyboard shortcuts 1-9
+  - moveScene() for drag-to-reorder
+
+#### QM-026: Implement scene switching
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 5
+- **Estimated Effort:** Medium
+- **Depends On:** QM-025
+- **Completed:** 2025-12-19
+- **Notes:**
+  - Instant switch via setActiveScene(UUID)
+  - setActiveSceneByIndex() for keyboard 1-9
+  - Click-to-select in ScenePanel UI
+
+#### QM-027: Create scene panel UI
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 5
+- **Estimated Effort:** Medium
+- **Depends On:** QM-026
+- **Completed:** 2025-12-19
+- **Notes:**
+  - ScenePanel.hpp/cpp with full ImGui implementation
+  - New/Duplicate/Delete buttons with disabled states
+  - Active scene indicator (green ">")
+  - Inline rename (double-click), context menu
+  - Drag-to-reorder with ImGui drag-drop
+
+---
+
+### Phase 6: Audio System
+
+#### QM-028: Extract audio from video
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 6
+- **Estimated Effort:** Medium
+- **Depends On:** QM-014
+- **Completed:** 2025-12-19
+- **Notes:**
+  - AudioFrame struct (interleaved float samples, channels, sampleRate, pts)
+  - AudioInfo struct for stream metadata
+  - AudioBuffer thread-safe ring buffer with blocking/non-blocking ops
+  - AudioDecoder with pimpl pattern for FFmpeg isolation
+  - SwrContext for converting to float format
+  - Background decoding thread support
+  - 54 audio tests (17 AudioFrame + 21 AudioBuffer + 16 AudioDecoder)
+
+#### QM-029: Implement audio mixer
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 6
+- **Estimated Effort:** Large
+- **Depends On:** QM-028
+- **Completed:** 2025-12-19
+- **Notes:**
+  - AudioMixer.hpp/cpp with miniaudio backend
+  - Thread-safe mixing of multiple AudioSources
+  - Master volume (linear and dB), master mute
+  - Source management (add/remove/get/clear)
+  - Pimpl pattern isolates miniaudio headers
+
+#### QM-030: Add per-source volume controls
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 6
+- **Estimated Effort:** Small
+- **Depends On:** QM-029
+- **Completed:** 2025-12-19
+- **Notes:**
+  - AudioSource.hpp/cpp with volume (0.0-1.0) and dB conversion
+  - Mute toggle per source
+  - Pan control (-1.0 to 1.0) with constant power panning
+  - Left/right gain calculation in readSamples()
+
+#### QM-031: Implement multi-output routing (basic)
+- **Status:** DONE
+- **Priority:** P1
+- **Phase:** Phase 6
+- **Estimated Effort:** Medium
+- **Depends On:** QM-029
+- **Completed:** 2025-12-19
+- **Notes:**
+  - AudioDevice.hpp/cpp with miniaudio device enumeration
+  - AudioDeviceInfo struct (id, name, isDefault, channels, sampleRates)
+  - Device selection by ID or default
+  - Sample rate, channel count, buffer size configuration
+  - Pimpl pattern for miniaudio isolation
+
+---
+
+### Phase 7: Polish
+
+#### QM-032: Implement keyboard shortcut system
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Medium
+- **Depends On:** QM-002
+- **Completed:** 2025-12-20
+- **Notes:**
+  - KeyboardShortcuts.hpp/cpp with ShortcutAction enum (51 actions)
+  - ModifierFlags (Ctrl, Shift, Alt, Super) with KeyCombination
+  - Default Resolume-style bindings, conflict detection
+  - JSON save/load to user config directory
+  - 52 unit tests
+
+#### QM-033: Create preferences dialog
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Medium
+- **Depends On:** QM-006
+- **Completed:** 2025-12-20
+- **Notes:**
+  - PreferencesDialog.hpp/cpp with 3 tabs (General, Shortcuts, Performance)
+  - Interactive shortcut capture with 5s timeout
+  - AppPreferences struct with JSON save/load
+  - Settings saved to %APPDATA%\QUADmapper\ or ~/.config/quadmapper/
+
+#### QM-034: Add undo/redo system
+- **Status:** DONE
+- **Priority:** P1
+- **Phase:** Phase 7
+- **Estimated Effort:** Large
+- **Depends On:** QM-010
+- **Completed:** 2025-12-20
+- **Notes:**
+  - CommandHistory.hpp/cpp with execute/undo/redo
+  - Command merging for drag operations
+  - Compound commands for grouped operations
+  - Concrete commands: MoveCorner, MoveMeshVertex, CreateQuad, DeleteQuad, etc.
+  - 40 unit tests (17 CommandHistory + 23 Commands)
+
+#### QM-035: Implement media bin panel
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Medium
+- **Depends On:** QM-005, QM-015
+- **Completed:** 2025-12-20
+- **Notes:**
+  - MediaBinPanel.hpp/cpp with thumbnail grid
+  - Import button with Windows native file dialog
+  - Drag-drop source for quad assignment (MEDIA_ITEM_ID payload)
+  - Context menu (Remove, Reveal in Explorer, Copy Path)
+  - 24 MediaLibrary tests
+
+#### QM-036: Add preview panel with interaction
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Large
+- **Depends On:** QM-004, QM-009
+- **Completed:** 2025-12-20
+- **Notes:**
+  - PreviewPanel.hpp/cpp with real-time scene preview
+  - Edit modes: Select, Corners, Mesh
+  - Corner/mesh vertex drag editing with handles
+  - Zoom (mouse wheel), pan (middle-drag)
+  - Grid overlay, selection highlighting
+
+#### QM-037: Create output panel
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Medium
+- **Depends On:** QM-020
+- **Completed:** 2025-12-20
+- **Notes:**
+  - OutputPanel.hpp/cpp with output list
+  - Perform Mode button (Enter/Exit) with color state
+  - Enable/disable toggles, Add/Remove buttons
+  - Monitor dropdown, resolution presets, rotation
+  - Inline rename, context menu
+
+#### QM-038: Performance optimization pass
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Large
+- **Depends On:** All previous
+- **Completed:** 2025-12-20
+- **Notes:**
+  - PerformanceMonitor.hpp/cpp with frame timing
+  - Section timing (render, update, UI phases)
+  - Draw call/triangle counting, texture memory tracking
+  - FPS history (min/max/avg)
+  - ScopedTimer, PERF_SCOPE macros
+  - 12 unit tests
+
+#### QM-039: Error handling and logging
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Medium
+- **Depends On:** All previous
+- **Completed:** 2025-12-20
+- **Notes:**
+  - ErrorNotification.hpp/cpp with ErrorNotificationManager
+  - Severity levels (Debug, Info, Warning, Error, Critical)
+  - Auto-expiring toast notifications (5s default, configurable)
+  - Enhanced Logger with severity filtering and file output
+  - 18 unit tests
+
+#### QM-040: Create unit tests for core
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Medium
+- **Depends On:** QM-001
+- **Completed:** 2025-12-20
+- **Notes:**
+  - UUIDTest.cpp: 8 tests (generate, copy, assignment, toString, fromString, hashing)
+  - ResultTest.cpp: 8 tests (success/error, valueOr, map, andThen)
+  - LoggerTest.cpp: 4 tests (level ordering, format strings)
+  - TimerTest.cpp: 5 tests (start/stop, elapsed, reset)
+  - CommandHistoryTest.cpp: 17 tests (execute, undo/redo, merge, compound)
+  - PerformanceMonitorTest.cpp: 12 tests (frame timing, FPS, section timing)
+  - ErrorNotificationTest.cpp: 18 tests (notifications, severity, auto-expire)
+  - Total: 72 core unit tests
+
+#### QM-041: Create unit tests for scene
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Medium
+- **Depends On:** QM-010
+- **Completed:** 2025-12-20
+- **Notes:**
+  - QuadTest.cpp: 12 tests (creation, properties, visibility, lock)
+  - QuadGeometryTest.cpp: 18 tests (corners, bilinear interpolation, mesh offsets)
+  - MeshSubdivisionTest.cpp: 15 tests (vertex generation, index generation, resolution)
+  - SceneTest.cpp: 22 tests (add/remove quads, groups, visibility)
+  - SceneManagerTest.cpp: 35 tests (scene lifecycle, switching, serialization)
+  - QuadManagerTest.cpp: 28 tests (selection, z-order, multi-select)
+  - QuadGroupTest.cpp: 39 tests (members, visibility propagation, lock)
+  - CommandsTest.cpp: 23 tests (move corner, create/delete quad, undo/redo)
+  - Total: 192 scene unit tests
+
+#### QM-042: Create unit tests for project
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Medium
+- **Depends On:** QM-007
+- **Completed:** 2025-12-20
+- **Notes:**
+  - ProjectTest.cpp: 18 tests (project state, dirty flag, path handling)
+  - ProjectSerializerTest.cpp: 32 tests (save/load, v2.0 format, v1.x backward compat)
+  - MediaLibraryTest.cpp: 24 tests (add/remove media, thumbnails, metadata)
+  - Round-trip serialization verified with multiple scenarios
+  - Total: 74 project unit tests
+
+#### QM-043: Create integration tests
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Large
+- **Depends On:** QM-040, QM-041, QM-042
+- **Completed:** 2025-12-20
+- **Notes:**
+  - RenderingPipelineTest.cpp: Tests shader compilation, texture binding, mesh rendering
+  - ProjectIntegrationTest.cpp: Full project save/load with all components
+  - OutputWindowTest.cpp: Window creation, context sharing, fullscreen
+  - OutputManagerTest.cpp: Multi-output management, perform mode
+  - AudioMixerTest.cpp: Multi-source mixing, volume control
+  - AudioDeviceTest.cpp: Device enumeration, output routing
+  - KeyboardShortcutsTest.cpp: Shortcut binding, conflict detection
+  - Total: 286 integration/component tests
+
+#### QM-044: Manual test protocols
+- **Status:** DONE
+- **Priority:** P0
+- **Phase:** Phase 7
+- **Estimated Effort:** Small
+- **Depends On:** All previous
+- **Completed:** 2025-12-20
+- **Notes:**
+  - Created docs/MANUAL_TEST_PROTOCOLS.md
+  - Visual verification checklist (18 items across 5 categories)
+  - Performance benchmark tests (startup, frame rate, memory)
+  - Multi-output test procedure (window, perform mode, monitor detection)
+  - Scene system tests (management, switching)
+  - Audio system tests (playback, device selection)
+  - Project save/load tests
+  - Input system tests (keyboard, mouse)
+  - Error handling tests
+
+---
+
+## Blocked
+
+*No blocked tasks*
+
+---
+
+## Done
+
+*No completed tasks*
+
+---
+
+## Task ID Reference
+
+| ID | Title | Status | Phase |
+|----|-------|--------|-------|
+| QM-001 | Setup CMake build system | DONE | Phase 1 |
+| QM-002 | Create GLFW window | DONE | Phase 1 |
+| QM-003 | Initialize OpenGL context | DONE | Phase 1 |
+| QM-004 | Implement single quad with 4-corner warping | DONE | Phase 1 |
+| QM-005 | Add image texture loading | DONE | Phase 1 |
+| QM-006 | Create basic ImGui inspector panel | DONE | Phase 1 |
+| QM-007 | Implement minimal project save/load | DONE | Phase 1 |
+| QM-008 | Implement mesh subdivision system | DONE | Phase 2 |
+| QM-009 | Add mesh vertex editing mode | DONE | Phase 2 |
+| QM-010 | Support multiple quads | DONE | Phase 2 |
+| QM-011 | Implement quad groups | DONE | Phase 2 |
+| QM-012 | Add Z-order management | DONE | Phase 2 |
+| QM-013 | Implement UV offset/scale controls | DONE | Phase 2 |
+| QM-014 | Integrate FFmpeg video decoder | DONE | Phase 3 |
+| QM-015 | Implement video texture binding | DONE | Phase 3 |
+| QM-016 | Add playback controls | DONE | Phase 3 |
+| QM-017 | Implement speed control | DONE | Phase 3 |
+| QM-018 | Add loop modes | DONE | Phase 3 |
+| QM-019 | Implement timeline lock system | DONE | Phase 3 |
+| QM-020 | Create output window system | DONE | Phase 4 |
+| QM-021 | Add resolution/rotation controls | DONE | Phase 4 |
+| QM-022 | Implement monitor assignment | DONE | Phase 4 |
+| QM-023 | Add Perform Mode | DONE | Phase 4 |
+| QM-024 | Implement scene data structure | DONE | Phase 5 |
+| QM-025 | Add scene creation/deletion | DONE | Phase 5 |
+| QM-026 | Implement scene switching | DONE | Phase 5 |
+| QM-027 | Create scene panel UI | DONE | Phase 5 |
+| QM-028 | Extract audio from video | DONE | Phase 6 |
+| QM-029 | Implement audio mixer | DONE | Phase 6 |
+| QM-030 | Add per-source volume controls | DONE | Phase 6 |
+| QM-031 | Implement multi-output routing | DONE | Phase 6 |
+| QM-032 | Implement keyboard shortcut system | DONE | Phase 7 |
+| QM-033 | Create preferences dialog | DONE | Phase 7 |
+| QM-034 | Add undo/redo system | DONE | Phase 7 |
+| QM-035 | Implement media bin panel | DONE | Phase 7 |
+| QM-036 | Add preview panel with interaction | DONE | Phase 7 |
+| QM-037 | Create output panel | DONE | Phase 7 |
+| QM-038 | Performance optimization pass | DONE | Phase 7 |
+| QM-039 | Error handling and logging | DONE | Phase 7 |
+| QM-040 | Create unit tests for core | DONE | Phase 7 |
+| QM-041 | Create unit tests for scene | DONE | Phase 7 |
+| QM-042 | Create unit tests for project | DONE | Phase 7 |
+| QM-043 | Create integration tests | DONE | Phase 7 |
+| QM-044 | Manual test protocols | DONE | Phase 7 |
+
+---

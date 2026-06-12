@@ -1,0 +1,58 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# Braces
+BreakBeforeBraces: Attach
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: false
+  AfterEnum: false
+  AfterFunction: false
+  AfterNamespace: false
+  AfterStruct: false
+  BeforeCatch: false
+  BeforeElse: false
+
+# Alignment
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: true
+AlignTrailingComments: true
+
+# Includes
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Corresponding header
+  - Regex: '^".*\.hpp"$'
+    Priority: 1
+  # Project headers
+  - Regex: '^"(core|project|scene|renderer|media|video|audio|output|ui|input)/.*"$'
+    Priority: 2
+  # Third-party
+  - Regex: '^<(glad|GLFW|glm|imgui|nlohmann|stb|miniaudio|libav).*>'
+    Priority: 3
+  # Standard library
+  - Regex: '^<.*>'
+    Priority: 4
+
+# Other
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+PointerAlignment: Left
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+SpacesInAngles: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+AccessModifierOffset: -4
+NamespaceIndentation: None
+FixNamespaceComments: true
+...

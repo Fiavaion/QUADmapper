@@ -1,0 +1,49 @@
+#pragma once
+
+#include "Result.hpp"
+#include <filesystem>
+#include <string>
+#include <vector>
+
+namespace quadmapper {
+
+class FileSystem {
+public:
+    // Read entire file to string
+    static Result<std::string, Error> readFile(const std::filesystem::path& path);
+
+    // Write string to file
+    static Result<void, Error> writeFile(const std::filesystem::path& path, const std::string& content);
+
+    // Read binary file
+    static Result<std::vector<uint8_t>, Error> readBinaryFile(const std::filesystem::path& path);
+
+    // Write binary file
+    static Result<void, Error> writeBinaryFile(const std::filesystem::path& path,
+                                               const std::vector<uint8_t>& data);
+
+    // Check if file exists
+    static bool exists(const std::filesystem::path& path);
+
+    // Check if path is directory
+    static bool isDirectory(const std::filesystem::path& path);
+
+    // Create directory (and parents)
+    static Result<void, Error> createDirectory(const std::filesystem::path& path);
+
+    // Get file extension (lowercase)
+    static std::string getExtension(const std::filesystem::path& path);
+
+    // Get filename without extension
+    static std::string getStem(const std::filesystem::path& path);
+
+    // Make path relative to base
+    static std::filesystem::path makeRelative(const std::filesystem::path& path,
+                                              const std::filesystem::path& base);
+
+    // Resolve relative path from base
+    static std::filesystem::path resolveRelative(const std::filesystem::path& relativePath,
+                                                 const std::filesystem::path& base);
+};
+
+} // namespace quadmapper

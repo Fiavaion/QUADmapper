@@ -1,0 +1,446 @@
+#include "VideoDecoder.hpp"
+#include "core/Logger.hpp"
+
+#ifdef QUADMAPPER_HAS_FFMPEG
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+}
+
+namespace quadmapper {
+
+class VideoDecoder::Impl {
+public:
+    Impl() = default;
+    ~Impl() { close(); }
+
+    bool open(const std::filesystem::path& path) {
+        close();
+
+        std::string pathStr = path.string();
+
+        // Open input file
+        if (avformat_open_input(&formatCtx_, pathStr.c_str(), nullptr, nullptr) < 0) {
+            LOG_ERROR("Failed to open video file: {}", pathStr);
+            return false;
+        }
+
+        // Find stream info
+        if (avformat_find_stream_info(formatCtx_, nullptr) < 0) {
+            LOG_ERROR("Failed to find stream info");
+            close();
+            return false;
+        }
+
+        // Find video stream
+        videoStreamIndex_ = -1;
+        audioStreamIndex_ = -1;
+        for (unsigned int i = 0; i < formatCtx_->nb_streams; i++) {
+            if (formatCtx_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && videoStreamIndex_ < 0) {
+                videoStreamIndex_ = static_cast<int>(i);
+            }
+            if (formatCtx_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audioStreamIndex_ < 0) {
+                audioStreamIndex_ = static_cast<int>(i);
+            }
+        }
+
+        if (videoStreamIndex_ < 0) {
+            LOG_ERROR("No video stream found");
+            close();
+            return false;
+        }
+
+        // Get codec parameters
+        AVCodecParameters* codecPar = formatCtx_->streams[videoStreamIndex_]->codecpar;
+
+        // Find decoder
+        const AVCodec* codec = avcodec_find_decoder(codecPar->codec_id);
+        if (!codec) {
+            LOG_ERROR("Unsupported codec");
+            close();
+            return false;
+        }
+
+        // Allocate codec context
+        codecCtx_ = avcodec_alloc_context3(codec);
+        if (!codecCtx_) {
+            LOG_ERROR("Failed to allocate codec context");
+            close();
+            return false;
+        }
+
+        // Copy codec parameters
+        if (avcodec_parameters_to_context(codecCtx_, codecPar) < 0) {
+            LOG_ERROR("Failed to copy codec parameters");
+            close();
+            return false;
+        }
+
+        // Open codec
+        if (avcodec_open2(codecCtx_, codec, nullptr) < 0) {
+            LOG_ERROR("Failed to open codec");
+            close();
+            return false;
+        }
+
+        // Allocate frame
+        frame_ = av_frame_alloc();
+        rgbFrame_ = av_frame_alloc();
+        if (!frame_ || !rgbFrame_) {
+            LOG_ERROR("Failed to allocate frames");
+            close();
+            return false;
+        }
+
+        // Setup RGB frame buffer
+        int numBytes = av_image_get_buffer_size(AV_PIX_FMT_RGB24, codecCtx_->width, codecCtx_->height, 1);
+        rgbBuffer_.resize(numBytes);
+        av_image_fill_arrays(rgbFrame_->data, rgbFrame_->linesize, rgbBuffer_.data(),
+                           AV_PIX_FMT_RGB24, codecCtx_->width, codecCtx_->height, 1);
+
+        // Setup scaler
+        swsCtx_ = sws_getContext(
+            codecCtx_->width, codecCtx_->height, codecCtx_->pix_fmt,
+            codecCtx_->width, codecCtx_->height, AV_PIX_FMT_RGB24,
+            SWS_BILINEAR, nullptr, nullptr, nullptr
+        );
+
+        if (!swsCtx_) {
+            LOG_ERROR("Failed to create scaler context");
+            close();
+            return false;
+        }
+
+        // Fill video info
+        AVStream* videoStream = formatCtx_->streams[videoStreamIndex_];
+        info_.width = codecCtx_->width;
+        info_.height = codecCtx_->height;
+        info_.codecName = codec->name;
+
+        // Calculate duration
+        if (formatCtx_->duration != AV_NOPTS_VALUE) {
+            info_.duration = static_cast<double>(formatCtx_->duration) / AV_TIME_BASE;
+        }
+
+        // Calculate frame rate
+        AVRational frameRate = av_guess_frame_rate(formatCtx_, videoStream, nullptr);
+        if (frameRate.num > 0 && frameRate.den > 0) {
+            info_.frameRate = static_cast<double>(frameRate.num) / frameRate.den;
+        }
+
+        // Calculate total frames
+        if (videoStream->nb_frames > 0) {
+            info_.totalFrames = videoStream->nb_frames;
+        } else if (info_.duration > 0 && info_.frameRate > 0) {
+            info_.totalFrames = static_cast<int64_t>(info_.duration * info_.frameRate);
+        }
+
+        // Audio info
+        if (audioStreamIndex_ >= 0) {
+            AVCodecParameters* audioPar = formatCtx_->streams[audioStreamIndex_]->codecpar;
+            info_.hasAudio = true;
+            info_.audioChannels = audioPar->ch_layout.nb_channels;
+            info_.audioSampleRate = audioPar->sample_rate;
+        }
+
+        timeBase_ = av_q2d(videoStream->time_base);
+        isOpen_ = true;
+        currentFrame_ = 0;
+        currentTime_ = 0.0;
+        atEnd_ = false;
+
+        LOG_INFO("Opened video: {}x{}, {} fps, {:.2f}s", info_.width, info_.height, info_.frameRate, info_.duration);
+        return true;
+    }
+
+    void close() {
+        stopBackgroundDecoding();
+
+        if (swsCtx_) {
+            sws_freeContext(swsCtx_);
+            swsCtx_ = nullptr;
+        }
+        if (frame_) {
+            av_frame_free(&frame_);
+            frame_ = nullptr;
+        }
+        if (rgbFrame_) {
+            av_frame_free(&rgbFrame_);
+            rgbFrame_ = nullptr;
+        }
+        if (codecCtx_) {
+            avcodec_free_context(&codecCtx_);
+            codecCtx_ = nullptr;
+        }
+        if (formatCtx_) {
+            avformat_close_input(&formatCtx_);
+            formatCtx_ = nullptr;
+        }
+
+        rgbBuffer_.clear();
+        info_ = VideoInfo{};
+        videoStreamIndex_ = -1;
+        audioStreamIndex_ = -1;
+        isOpen_ = false;
+        currentFrame_ = 0;
+        currentTime_ = 0.0;
+        atEnd_ = false;
+    }
+
+    bool isOpen() const { return isOpen_; }
+    const VideoInfo& getInfo() const { return info_; }
+    double getCurrentTime() const { return currentTime_; }
+    int64_t getCurrentFrame() const { return currentFrame_; }
+    bool isAtEnd() const { return atEnd_; }
+
+    bool seek(double timeSeconds) {
+        if (!isOpen_) return false;
+
+        int64_t timestamp = static_cast<int64_t>(timeSeconds / timeBase_);
+
+        if (av_seek_frame(formatCtx_, videoStreamIndex_, timestamp, AVSEEK_FLAG_BACKWARD) < 0) {
+            LOG_WARNING("Seek failed");
+            return false;
+        }
+
+        avcodec_flush_buffers(codecCtx_);
+        atEnd_ = false;
+        currentTime_ = timeSeconds;
+        currentFrame_ = static_cast<int64_t>(timeSeconds * info_.frameRate);
+
+        // Clear background buffer on seek
+        {
+            std::lock_guard<std::mutex> lock(bufferMutex_);
+            std::queue<VideoFrame> empty;
+            std::swap(frameBuffer_, empty);
+        }
+        bufferCondition_.notify_all();
+
+        return true;
+    }
+
+    bool seekFrame(int64_t frameNumber) {
+        if (!isOpen_ || info_.frameRate <= 0) return false;
+        double timeSeconds = static_cast<double>(frameNumber) / info_.frameRate;
+        return seek(timeSeconds);
+    }
+
+    VideoFrame decodeNextFrame() {
+        if (!isOpen_) return VideoFrame{};
+
+        AVPacket* packet = av_packet_alloc();
+        if (!packet) return VideoFrame{};
+
+        VideoFrame result;
+        bool gotFrame = false;
+
+        while (!gotFrame) {
+            int readResult = av_read_frame(formatCtx_, packet);
+            if (readResult < 0) {
+                if (readResult == AVERROR_EOF) {
+                    atEnd_ = true;
+                }
+                av_packet_free(&packet);
+                return VideoFrame{};
+            }
+
+            if (packet->stream_index == videoStreamIndex_) {
+                int sendResult = avcodec_send_packet(codecCtx_, packet);
+                if (sendResult >= 0) {
+                    int receiveResult = avcodec_receive_frame(codecCtx_, frame_);
+                    if (receiveResult >= 0) {
+                        // Convert to RGB
+                        sws_scale(swsCtx_, frame_->data, frame_->linesize, 0,
+                                 codecCtx_->height, rgbFrame_->data, rgbFrame_->linesize);
+
+                        // Create output frame
+                        result.width = info_.width;
+                        result.height = info_.height;
+                        result.frameNumber = currentFrame_++;
+
+                        // Calculate PTS
+                        if (frame_->pts != AV_NOPTS_VALUE) {
+                            result.pts = static_cast<double>(frame_->pts) * timeBase_;
+                            currentTime_ = result.pts;
+                        } else {
+                            result.pts = currentTime_;
+                            currentTime_ += 1.0 / info_.frameRate;
+                        }
+
+                        // Copy pixel data
+                        int rowBytes = info_.width * 3;
+                        result.data.resize(rowBytes * info_.height);
+                        for (int y = 0; y < info_.height; y++) {
+                            memcpy(result.data.data() + y * rowBytes,
+                                   rgbFrame_->data[0] + y * rgbFrame_->linesize[0],
+                                   rowBytes);
+                        }
+
+                        gotFrame = true;
+                    }
+                }
+            }
+
+            av_packet_unref(packet);
+        }
+
+        av_packet_free(&packet);
+        return result;
+    }
+
+    // Background decoding
+    void startBackgroundDecoding(size_t bufferSize) {
+        if (backgroundThread_.joinable()) return;
+
+        maxBufferSize_ = bufferSize;
+        stopDecoding_ = false;
+        backgroundThread_ = std::thread(&Impl::backgroundDecodingLoop, this);
+    }
+
+    void stopBackgroundDecoding() {
+        if (!backgroundThread_.joinable()) return;
+
+        stopDecoding_ = true;
+        bufferCondition_.notify_all();
+        backgroundThread_.join();
+
+        // Clear buffer
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        std::queue<VideoFrame> empty;
+        std::swap(frameBuffer_, empty);
+    }
+
+    VideoFrame getBufferedFrame() {
+        std::unique_lock<std::mutex> lock(bufferMutex_);
+        if (frameBuffer_.empty()) {
+            return VideoFrame{};
+        }
+
+        VideoFrame frame = std::move(frameBuffer_.front());
+        frameBuffer_.pop();
+        bufferCondition_.notify_one();
+        return frame;
+    }
+
+    bool hasBufferedFrames() const {
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        return !frameBuffer_.empty();
+    }
+
+    size_t getBufferedFrameCount() const {
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        return frameBuffer_.size();
+    }
+
+private:
+    void backgroundDecodingLoop() {
+        while (!stopDecoding_) {
+            {
+                std::unique_lock<std::mutex> lock(bufferMutex_);
+                bufferCondition_.wait(lock, [this]() {
+                    return stopDecoding_ || frameBuffer_.size() < maxBufferSize_;
+                });
+            }
+
+            if (stopDecoding_) break;
+
+            VideoFrame frame = decodeNextFrame();
+            if (!frame.isValid()) {
+                if (atEnd_) {
+                    // Signal end of stream
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                continue;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(bufferMutex_);
+                frameBuffer_.push(std::move(frame));
+            }
+        }
+    }
+
+    // FFmpeg objects
+    AVFormatContext* formatCtx_ = nullptr;
+    AVCodecContext* codecCtx_ = nullptr;
+    SwsContext* swsCtx_ = nullptr;
+    AVFrame* frame_ = nullptr;
+    AVFrame* rgbFrame_ = nullptr;
+    std::vector<uint8_t> rgbBuffer_;
+
+    // Stream indices
+    int videoStreamIndex_ = -1;
+    int audioStreamIndex_ = -1;
+
+    // State
+    VideoInfo info_;
+    double timeBase_ = 0.0;
+    bool isOpen_ = false;
+    int64_t currentFrame_ = 0;
+    double currentTime_ = 0.0;
+    bool atEnd_ = false;
+
+    // Background decoding
+    std::thread backgroundThread_;
+    mutable std::mutex bufferMutex_;
+    std::condition_variable bufferCondition_;
+    std::queue<VideoFrame> frameBuffer_;
+    std::atomic<bool> stopDecoding_{false};
+    size_t maxBufferSize_ = 8;
+};
+
+#else // !QUADMAPPER_HAS_FFMPEG
+
+// Stub implementation when FFmpeg is not available
+namespace quadmapper {
+
+class VideoDecoder::Impl {
+public:
+    bool open(const std::filesystem::path&) { return false; }
+    void close() {}
+    bool isOpen() const { return false; }
+    const VideoInfo& getInfo() const { return info_; }
+    bool seek(double) { return false; }
+    bool seekFrame(int64_t) { return false; }
+    VideoFrame decodeNextFrame() { return VideoFrame{}; }
+    double getCurrentTime() const { return 0.0; }
+    int64_t getCurrentFrame() const { return 0; }
+    bool isAtEnd() const { return true; }
+    void startBackgroundDecoding(size_t) {}
+    void stopBackgroundDecoding() {}
+    VideoFrame getBufferedFrame() { return VideoFrame{}; }
+    bool hasBufferedFrames() const { return false; }
+    size_t getBufferedFrameCount() const { return 0; }
+private:
+    VideoInfo info_;
+};
+
+#endif // QUADMAPPER_HAS_FFMPEG
+
+// Public interface implementation
+VideoDecoder::VideoDecoder() : impl_(std::make_unique<Impl>()) {}
+VideoDecoder::~VideoDecoder() = default;
+VideoDecoder::VideoDecoder(VideoDecoder&&) noexcept = default;
+VideoDecoder& VideoDecoder::operator=(VideoDecoder&&) noexcept = default;
+
+bool VideoDecoder::open(const std::filesystem::path& path) { return impl_->open(path); }
+void VideoDecoder::close() { impl_->close(); }
+bool VideoDecoder::isOpen() const { return impl_->isOpen(); }
+const VideoInfo& VideoDecoder::getInfo() const { return impl_->getInfo(); }
+bool VideoDecoder::seek(double timeSeconds) { return impl_->seek(timeSeconds); }
+bool VideoDecoder::seekFrame(int64_t frameNumber) { return impl_->seekFrame(frameNumber); }
+VideoFrame VideoDecoder::decodeNextFrame() { return impl_->decodeNextFrame(); }
+double VideoDecoder::getCurrentTime() const { return impl_->getCurrentTime(); }
+int64_t VideoDecoder::getCurrentFrame() const { return impl_->getCurrentFrame(); }
+bool VideoDecoder::isAtEnd() const { return impl_->isAtEnd(); }
+void VideoDecoder::startBackgroundDecoding(size_t bufferSize) { impl_->startBackgroundDecoding(bufferSize); }
+void VideoDecoder::stopBackgroundDecoding() { impl_->stopBackgroundDecoding(); }
+VideoFrame VideoDecoder::getBufferedFrame() { return impl_->getBufferedFrame(); }
+bool VideoDecoder::hasBufferedFrames() const { return impl_->hasBufferedFrames(); }
+size_t VideoDecoder::getBufferedFrameCount() const { return impl_->getBufferedFrameCount(); }
+
+} // namespace quadmapper
