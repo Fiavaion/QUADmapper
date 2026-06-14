@@ -7,18 +7,20 @@
 
 ## Active debt
 
-| ID | Item | Deferred | Est. cost to fix | Impact | Critical path? |
-|----|------|----------|------------------|--------|----------------|
-| — | none accepted yet — keep it that way | — | — | — | — |
+Classified by the 2026-06-14 five-specialist audit ([ADR-031](docs/adr/0031-keep-vs-rebuild.md)).
+All are **refactor-in-place** items; severity-ordered, fixed per the ADR sequencing.
 
-## To triage in the upcoming audit (not yet classified as debt)
+| ID | Item | Est. cost to fix | Impact | Critical path? |
+|----|------|------------------|--------|----------------|
+| TD-01 | **Projector output not wired** — `OutputManager::renderToOutputs()` is a gray-clear stub AND is never called; `m_outputManager->update()` is commented out ([Application.cpp:391](src/app/Application.cpp#L391)). The fullscreen-to-projector HALF of the success metric does not work. | 1 d (after TD-02) | **Breaks definition-of-done** | **Yes** |
+| TD-02 | **`Application::render()` god-function** — ~2034 lines, ~40 function-static "globals" hold all scene/input/UI/save-load/GL state; `UIManager`/`SceneManager`/panels instantiated but bypassed (dual-track state). Gates TD-01 and all else. | ~3–4 sessions | Blocks all feature work | **Yes (foundation)** |
+| TD-03 | **Audio RT-safety** — mutex + `std::vector` copy + heap alloc inside the audio callback ([AudioMixer.cpp:197-244](src/audio/AudioMixer.cpp#L197-L244), [AudioSource.cpp:113](src/audio/AudioSource.cpp#L113)). Glitches under load. | 1–2 wk | Audio unusable under load | No |
+| TD-04 | **Video data races** — unsynchronized cross-thread `atEnd_`/`currentTime_`/`currentFrame_` ([VideoDecoder.cpp:245,383](src/video/VideoDecoder.cpp#L245)). UB. | 1–2 d | Correctness (UB) | No |
+| TD-05 | **No `.qmap` migration** — one-way version reject ([ProjectSerializer.cpp:396-398](src/project/ProjectSerializer.cpp#L396-L398)); save/load copy-pasted 3×. | 0.5 d | First format change breaks all saved projects | No |
+| TD-06 | **Dead code** — `FrameBuffer`/`DoubleBuffer` (video, orphaned), `AudioEngine` stub, `UIManager` stub, empty `Framebuffer.hpp`/`TextureCache.hpp`. | 0.5 d | Maintenance hazard / divergence | No |
+| TD-07 | **Build exit-code flaky** — `gtest_discover_tests` 5s `TEST_DISCOVERY_TIMEOUT` race makes `cmake --build` return non-zero while tests are actually green (624/624 via `ctest --test-dir`). Touches CMake (Change Boundary → needs approval to fix). | 0.25 d | CI/`/test` reliability | No |
 
-Three `TODO` comments exist in source. The audit should confirm whether each is a real gap
-or a stale comment, then either fix or delete:
-
-- [PreferencesDialog.cpp:174](src/ui/dialogs/PreferencesDialog.cpp#L174) — "Open folder browser dialog" (minor UX).
-- [OutputManager.cpp:372](src/output/OutputManager.cpp#L372) — "Actual rendering will be done by the Renderer" — **verify this is wired**, not a dead path.
-- [Renderer.cpp:324](src/renderer/Renderer.cpp#L324) — "Iterate through all quads in scene and render them" — **verify multi-quad render is actually reached** (could be a real gap given the comment).
+Remaining minor TODO: [PreferencesDialog.cpp:174](src/ui/dialogs/PreferencesDialog.cpp#L174) — "Open folder browser dialog" (minor UX, not critical path).
 
 ## Deferral decision (fill in BEFORE accepting any deferral)
 

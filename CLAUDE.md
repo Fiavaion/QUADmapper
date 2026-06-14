@@ -314,10 +314,18 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
   commits on `main`. Incremental, reversible steps.
 - **Reviewer mode before "done".** After writing code, re-read your own diff as a senior
   reviewer intending to reject it (bugs, over-engineering, scope creep, missing tests,
-  AI-slop); fix what you find, then declare done.
+  AI-slop); fix what you find, then declare done. For risky or fan-out changes, escalate to a
+  **fresh-context verifier sub-agent** that grades the diff against the acceptance criteria —
+  a separate context beats self-review.
 - **Done means verified working** — a feature is complete only when its behavior is seen
   working (run the app) or user-confirmed. Green tests ≠ done (624 tests pass while the
   real interaction could still be broken).
+- **Acceptance criteria up front** — before building anything non-trivial, write the *checkable*
+  criteria that define done (e.g. "vertex warps precisely with Tab-cycle + arrow nudge, sent
+  fullscreen to the chosen output") and fix them before, not after — so the loop has a real gate
+  and the verifier has something to grade.
+- **Grounded progress** — before reporting progress, audit each claim against a run/test result
+  from this session; if it isn't verified, say so — never report work you can't point to.
 - **Bug-fixing:** reproduce first; add logging/visual feedback *before* reading lots of
   code. If not diagnosed in ~5 min, change strategy. Remove scaffolding logging after.
 - **"Complete failure" = assume multiple root causes** — audit the whole chain
@@ -332,3 +340,9 @@ Source of truth stays the existing `TASKS.md` / `SESSION_STATE.json` / `PROJECT_
 (read by `/start` and `/end`). The bootstrap added only non-overlapping pieces:
 [TECHNICAL_DEBT.md](TECHNICAL_DEBT.md), [notes/lessons.md](notes/lessons.md) (the
 `LESSON-{ARCH|BUG|PERF|API|UI|TEST|BUILD}-NNN` ledger), and [notes/TODOs.md](notes/TODOs.md).
+
+The one-page restart package is [notes/CURRENT_STATUS.md](notes/CURRENT_STATUS.md)
+(rewritten at `/end`; the next session reads it, not the chat history). `/end` also writes a
+dated log under [docs/sessions/](docs/sessions/) (the latest is the detailed source of truth on
+conflict). Hard-to-reverse decisions get an ADR in [docs/adr/](docs/adr/) — written *before*
+implementation (ADR-031+; ADR-001–030 are recorded informally in `SESSION_STATE.json`).
