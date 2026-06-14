@@ -17,6 +17,7 @@ class Project;
 class FolderWatcher;
 class ThumbnailCache;
 class SourceManager;
+struct EditorState;
 
 class Application {
 public:
@@ -77,6 +78,9 @@ private:
     std::unique_ptr<FolderWatcher> m_folderWatcher;
     std::unique_ptr<ThumbnailCache> m_thumbnailCache;
     std::unique_ptr<SourceManager> m_sourceManager;
+
+    // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
+    std::unique_ptr<EditorState> m_editorState;
 
     // State
     bool m_running = false;

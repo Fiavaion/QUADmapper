@@ -1,4 +1,5 @@
 #include "Application.hpp"
+#include "EditorState.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
 #include "../project/Project.hpp"
@@ -254,6 +255,9 @@ bool Application::initializeComponents() {
     // Create project first (other components may depend on it)
     m_project = std::make_unique<Project>();
 
+    // Per-session editor/scene state (replaces render()'s function-statics; see ADR-031 TD-02)
+    m_editorState = std::make_unique<EditorState>();
+
     // Create scene manager
     m_sceneManager = std::make_unique<SceneManager>();
 
@@ -399,62 +403,55 @@ void Application::render() {
     // Clear the framebuffer
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Static state for quad management
-    static Scene scene;
-    static QuadManager& quadManager = scene.getQuadManager();
-    static std::unordered_map<UUID, std::unique_ptr<Texture>> quadTextures;
-    static std::unordered_map<UUID, std::string> quadTexturePaths;
-    static char currentTexturePath[512] = "";
-    static char projectPath[512] = "project.qmap";
-    static char statusMessage[256] = "";
-    static float statusTimer = 0.0f;
-    static bool initialized = false;
-    static UUID dragDropQuadId;  // For drag-drop between groups
+    // Per-session editor state now lives in m_editorState (owned member; see ADR-031 TD-02).
+    // Each field is aliased to a same-named local reference so the body below is unchanged.
+    EditorState& es = *m_editorState;
+    using SelectionType = EditorState::SelectionType;
+    auto& scene = es.scene;
+    auto& quadManager = es.quadManager;
+    auto& quadTextures = es.quadTextures;
+    auto& quadTexturePaths = es.quadTexturePaths;
+    auto& currentTexturePath = es.currentTexturePath;
+    auto& projectPath = es.projectPath;
+    auto& statusMessage = es.statusMessage;
+    auto& statusTimer = es.statusTimer;
+    auto& initialized = es.initialized;
+    auto& dragDropQuadId = es.dragDropQuadId;
 
-    // Corner editing state (for CORNERS_ONLY mode - the default)
-    static int cornerHoveredVertex = -1;
-    static int cornerDraggedVertex = -1;
-    static int cornerSelectedVertex = -1;  // Persistent selection for keyboard control
-    static Vec2 cornerDragStartMousePos(0.0f);
-    static Vec2 cornerDragStartPos(0.0f);
+    auto& cornerHoveredVertex = es.cornerHoveredVertex;
+    auto& cornerDraggedVertex = es.cornerDraggedVertex;
+    auto& cornerSelectedVertex = es.cornerSelectedVertex;
+    auto& cornerDragStartMousePos = es.cornerDragStartMousePos;
+    auto& cornerDragStartPos = es.cornerDragStartPos;
 
-    // Mesh editing state (for MESH_EDIT mode)
-    static int meshHoveredVertex = -1;
-    static int meshDraggedVertex = -1;
-    static int meshSelectedVertex = -1;  // Persistent selection for keyboard control
-    static Vec2 meshDragStartMousePos(0.0f);
+    auto& meshHoveredVertex = es.meshHoveredVertex;
+    auto& meshDraggedVertex = es.meshDraggedVertex;
+    auto& meshSelectedVertex = es.meshSelectedVertex;
+    auto& meshDragStartMousePos = es.meshDragStartMousePos;
 
-    // Snap indicator state (for visual feedback when snapping)
-    static bool snapActive = false;
-    static Vec2 snapTargetPos(0.0f);
-    static Vec2 meshDragStartOffset(0.0f);
+    auto& snapActive = es.snapActive;
+    auto& snapTargetPos = es.snapTargetPos;
+    auto& meshDragStartOffset = es.meshDragStartOffset;
 
-    // Video player state
-    static VideoPlayer videoPlayer;
-    static char videoPath[512] = "";
-    static GLuint videoTextureId = 0;
-    static int videoTextureWidth = 0;
-    static int videoTextureHeight = 0;
-    static UUID videoAssignedQuadId;  // Which quad has video assigned
+    auto& videoPlayer = es.videoPlayer;
+    auto& videoPath = es.videoPath;
+    auto& videoTextureId = es.videoTextureId;
+    auto& videoTextureWidth = es.videoTextureWidth;
+    auto& videoTextureHeight = es.videoTextureHeight;
+    auto& videoAssignedQuadId = es.videoAssignedQuadId;
 
-    // Media Bin Panel
-    static MediaBinPanel mediaBinPanel;
-    static bool mediaBinInitialized = false;
+    auto& mediaBinPanel = es.mediaBinPanel;
+    auto& mediaBinInitialized = es.mediaBinInitialized;
 
-    // Output Panel
-    static OutputPanel outputPanel;
-    static bool outputPanelInitialized = false;
+    auto& outputPanel = es.outputPanel;
+    auto& outputPanelInitialized = es.outputPanelInitialized;
 
-    // Panel visibility toggles
-    static bool showQuadList = true;
-    static bool showProperties = true;
-    static bool showResources = true;
-    static bool showVideoPlayer = true;
+    auto& showQuadList = es.showQuadList;
+    auto& showProperties = es.showProperties;
+    auto& showResources = es.showResources;
+    auto& showVideoPlayer = es.showVideoPlayer;
 
-    // Context-sensitive selection tracking
-    enum class SelectionType { None, Quad, Output, Media };
-    static SelectionType currentSelectionType = SelectionType::Quad;
-    static UUID currentSelectionId;
+    auto& currentSelectionType = es.currentSelectionType;
 
     // Initialize with one default quad
     if (!initialized) {
@@ -532,7 +529,7 @@ void Application::render() {
         }
 
         // Handle video texture rendering for assigned quad
-        static Texture videoTexWrapper;  // Static wrapper for video texture
+        auto& videoTexWrapper = es.videoTexWrapper;  // Owned by EditorState (see ADR-031 TD-02)
         if (!videoAssignedQuadId.isNull() && videoTextureId != 0) {
             // Use raw OpenGL texture binding for video
             videoTexWrapper.setGLTextureId(videoTextureId, videoTextureWidth, videoTextureHeight);
