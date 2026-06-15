@@ -42,6 +42,9 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Make the process DPI-aware BEFORE querying screen metrics, so Screen bounds and
+# CopyFromScreen use physical pixels (the secondary monitor runs at 150% scaling).
+
 # Win32 helpers for focusing the GLFW window.
 if (-not ([System.Management.Automation.PSTypeName]'Win32Native').Type) {
     Add-Type @"
@@ -55,9 +58,13 @@ public static class Win32Native {
     [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
     [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint uCode, uint uMapType);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 }
 "@
 }
+
+# Opt into physical-pixel coordinates (must run before any Screen query).
+[Win32Native]::SetProcessDPIAware() | Out-Null
 
 function Resolve-Required([string]$path, [string]$label) {
     if (-not (Test-Path $path)) { throw "$label not found: $path. Build first: cmake --build build/debug --target QUADmapper" }
@@ -97,7 +104,7 @@ function Click([int]$x, [int]$y) {
 }
 
 # Virtual-key codes
-$VK = @{ TAB = 0x09; SHIFT = 0x10; ALT = 0x12; LEFT = 0x25; UP = 0x26; RIGHT = 0x27; DOWN = 0x28 }
+$VK = @{ TAB = 0x09; SHIFT = 0x10; ALT = 0x12; LEFT = 0x25; UP = 0x26; RIGHT = 0x27; DOWN = 0x28; F11 = 0x7A }
 $KEYEVENTF_EXTENDEDKEY = 0x0001
 $KEYEVENTF_KEYUP       = 0x0002
 $KEYEVENTF_SCANCODE    = 0x0008
@@ -166,6 +173,17 @@ try {
     Tap $VK.UP 20                                     # plain Up x20 => -0.020 normalized (BR.y 0.700 -> 0.680)
     Focus-App $proc
     Capture "04_corner2_plain_nudge.png" $screen
+
+    # ---- TD-01: send the warped scene to the projector (F11 auto-creates an output) ----
+    Tap $VK.F11                                       # F11 == send fullscreen to secondary monitor
+    Start-Sleep -Seconds 2                            # let the output window appear + render
+    # Capture the full virtual desktop (all monitors) — DPI-robust. A single-monitor
+    # capture crops under per-monitor scaling; the virtual-desktop shot reliably shows
+    # the complete projector content (left) next to the editor (right).
+    Capture "05_projector_output.png" ([System.Windows.Forms.SystemInformation]::VirtualScreen)
+    if (-not ([System.Windows.Forms.Screen]::AllScreens | Where-Object { -not $_.Primary })) {
+        Write-Host "[smoke] NOTE: no secondary monitor; projector shows on primary"
+    }
 
     Write-Host "[smoke] sequence complete."
 }

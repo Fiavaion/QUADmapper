@@ -365,6 +365,10 @@ int Application::run() {
 
         // Swap buffers
         glfwSwapBuffers(m_window);
+
+        // Push the warped scene to all projector outputs (after the main frame
+        // is committed so we never run inside an ImGui frame).
+        renderToProjectorOutputs();
     }
 
     Logger::info("Main loop ended");
@@ -2426,6 +2430,27 @@ void Application::render() {
         ImGui::RenderPlatformWindowsDefault();
         glfwMakeContextCurrent(backupContext);
     }
+}
+
+void Application::renderToProjectorOutputs() {
+    if (!m_outputManager || !m_editorState) {
+        return;
+    }
+
+    EditorState& es = *m_editorState;
+
+    // Mirror the texture-map construction from render(): static image textures
+    // plus the video wrapper for the video-assigned quad.
+    std::unordered_map<UUID, Texture*> textures;
+    textures.reserve(es.quadTextures.size() + 1);
+    for (const auto& [id, texPtr] : es.quadTextures) {
+        textures[id] = texPtr.get();
+    }
+    if (!es.videoAssignedQuadId.isNull() && es.videoTextureId != 0) {
+        textures[es.videoAssignedQuadId] = &es.videoTexWrapper;
+    }
+
+    m_outputManager->renderToOutputs(es.quadManager, textures);
 }
 
 void Application::shutdown() {

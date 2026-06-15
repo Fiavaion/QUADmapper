@@ -21,6 +21,10 @@ Prereq: build the app first — `cmake --build build/debug --target QUADmapper`.
 3. Drives the CORNERS_ONLY vertex workflow with real keyboard input:
    `{TAB}` cycles corners, Shift+Arrow = 10× nudge (0.01/press), plain Arrow = 1× (0.001/press).
 4. Screenshots the primary monitor into `out/` after each step; logs app stdout/stderr there too.
+5. Presses **F11** to send the warped scene fullscreen to the projector (F11 auto-creates an
+   output on the secondary monitor + enters perform mode), then captures the **whole virtual
+   desktop** (`05_projector_output.png`) so the projector content is visible regardless of
+   per-monitor DPI scaling (a single-monitor capture crops under scaling).
 
 ## Verify
 
@@ -32,6 +36,7 @@ check them against the expected math. Known-good baseline (default quad 0.3–0.
 | 02 | corner0: Shift+Right×20, Shift+Down×10 | Top Left 0.500, 0.400 |
 | 03 | corner1: Shift+Left×15 | Top Right 0.550, 0.300 |
 | 04 | corner2: plain Up×20 | Bottom Right 0.700, 0.680 |
+| 05 | F11 → projector | Left half (monitor 2) shows the warped quad, clean on black — no UI/handles |
 
 ## Gotcha (do not regress — see LESSON-TEST-004)
 
@@ -41,6 +46,6 @@ sends real scancodes via `MapVirtualKey` + `KEYEVENTF_SCANCODE` (+`EXTENDEDKEY` 
 
 ## TODO
 
-- Extend to assert **projector output** once TD-01 wires `OutputManager::renderToOutputs()`.
-  Needs an output-creation path the harness can drive headlessly (CLI flag or a "send selected
-  to output N" key), then capture the second monitor and verify the warped quad appears.
+- Add programmatic PASS/FAIL assertions (currently a human/agent reads the PNGs). Options:
+  OCR the Properties values, or a `--smoke` app mode that dumps corner values + an output
+  framebuffer hash to stdout for the harness to assert.

@@ -2,10 +2,15 @@
 
 #include "OutputWindow.hpp"
 #include "core/Result.hpp"
+#include "core/UUID.hpp"
+#include "scene/QuadManager.hpp"
+#include "renderer/Renderer.hpp"
+#include "renderer/Texture.hpp"
 #include <vector>
 #include <memory>
 #include <string>
 #include <functional>
+#include <unordered_map>
 
 // Forward declare GLFW types
 struct GLFWwindow;
@@ -225,11 +230,15 @@ public:
 
     // Rendering
     /**
-     * Render to all enabled output windows.
-     * This is a placeholder that clears and swaps each output.
-     * The actual rendering will be handled by the Renderer.
+     * Render the warped scene to all enabled, created output windows.
+     * Each output uses its own Renderer instance (created in that output's GL context)
+     * so VAOs are always context-local. Shared textures bind fine across contexts.
+     * Selection highlighting and editor handles are suppressed — output is clean.
+     * @param quadManager  The live scene's quad manager (read-only)
+     * @param textures     Map of quad UUID → Texture* (pointers owned by EditorState)
      */
-    void renderToOutputs();
+    void renderToOutputs(const QuadManager& quadManager,
+                         const std::unordered_map<UUID, Texture*>& textures);
 
     /**
      * Get the main window used for context sharing.
@@ -251,6 +260,11 @@ private:
 
     // Output windows
     std::vector<std::unique_ptr<OutputWindow>> outputs_;
+
+    // Per-output Renderer instances keyed by OutputWindow UUID.
+    // Each Renderer is created/destroyed in that output's GL context so its
+    // VAOs (which are NOT shared) live in the right context.
+    std::unordered_map<UUID, std::unique_ptr<Renderer>> outputRenderers_;
 
     // Available monitors
     std::vector<MonitorInfo> monitors_;

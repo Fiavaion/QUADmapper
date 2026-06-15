@@ -61,6 +61,11 @@ private:
     void update(float deltaTime);
     void render();
 
+    // Build the per-frame texture map from m_editorState and push the warped
+    // scene to all enabled output windows.  Called from run() after each main
+    // frame's render()+ImGui+swap so it never runs mid-ImGui-frame.
+    void renderToProjectorOutputs();
+
     // Window
     GLFWwindow* m_window = nullptr;
     int m_windowWidth = 1920;

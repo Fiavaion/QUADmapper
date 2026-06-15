@@ -10,15 +10,20 @@
 - [x] **Vertex-warp UX VERIFIED WORKING** via `tests/smoke/drive_smoke.ps1`: Tab/Shift+Tab cycle + arrow nudge + Shift 10× all move corners by the exact expected normalized amounts (TL→0.500,0.400; TR→0.550,0.300; BR→0.700,0.680). The app source was untouched — it was correct.
 - [x] **UI smoke harness built** (`tests/smoke/drive_smoke.ps1`) — drives the real app via Win32 scancode input, screenshots each monitor; the autonomous verification gate for the refactor.
 
-## What's broken / unverified
-- ❌ **Projector output does NOT work** — `OutputManager::renderToOutputs()` is a gray-clear stub and is never called; `m_outputManager->update()` is commented out. The fullscreen-to-projector half of the success metric is unimplemented. (TD-01)
-- ⚠️ **`render()` god-function** (~2034 lines, ~40 statics) — the foundation blocker (TD-02).
-- ⚠️ Build exit-code flaky from gtest discovery timeout (TD-07) — tests are green, the build *return code* lies.
+## ✅ SUCCESS METRIC FULLY VERIFIED (2026-06-15)
+The complete definition-of-done now works end-to-end, harness-verified:
+add quad → Tab-cycle vertex → arrow-nudge (Shift 10×) → **F11 sends it fullscreen to the
+projector (monitor 2), rendered warped + clean**. See `tests/smoke/out/05_projector_output.png`.
 
-## Next 3 tasks (in order — ADR-031 sequencing)
-1. **TD-02 (in progress)** — ✅ Step 1 done: ~40 render() statics extracted into owned `EditorState` member ([src/app/EditorState.hpp](../src/app/EditorState.hpp)); behavior-preserved (harness verified, 624/624 tests). Remaining: wire `UIManager`+panels to dispatch, retire the dual-track `m_sceneManager`/static-`Scene` split so there's one scene of truth.
-2. **TD-01** Wire the real render path: `Renderer::renderScene()` → FBO → `OutputManager::renderToOutputs()`; **re-verify the projector gate** (extend the harness to drive output + capture monitor 2).
-3. **TD-03/TD-04** Correctness: audio RT-safety + video data races.
+## What's broken / unverified
+- ⚠️ **`render()` god-function** (~2034 lines) — TD-02 step 1 done (statics → EditorState); UI-into-panels decomposition remains (maintainability, not blocking).
+- ⚠️ Build exit-code flaky from gtest discovery timeout (TD-07) — tests are green, the build *return code* lies.
+- Not yet hardened: audio RT-safety (TD-03), video data races (TD-04).
+
+## Next 3 tasks (in order)
+1. **TD-03/TD-04** Correctness: audio RT-safety (mutex/alloc in callback) + video cross-thread data races.
+2. **TD-02 step 2** wire `UIManager`+panels to dispatch; retire the dual-track `m_sceneManager`/static-`Scene` split (one scene of truth).
+3. **TD-05/TD-06** `.qmap` migration + de-dupe save/load; delete dead code (`FrameBuffer`, `DoubleBuffer`, `AudioEngine`/`UIManager` stubs).
 
 ## Acceptance criteria for the refactor (the gate)
 - The full 2-minute success-metric workflow runs end-to-end on a real run: add quad → Tab/Shift+Tab cycle vertex → arrow nudge (Shift 10× / Alt 0.1×) → **send fullscreen to a chosen projector output and SEE it warped correctly.**

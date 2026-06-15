@@ -12,8 +12,7 @@ All are **refactor-in-place** items; severity-ordered, fixed per the ADR sequenc
 
 | ID | Item | Est. cost to fix | Impact | Critical path? |
 |----|------|------------------|--------|----------------|
-| TD-01 | **Projector output not wired** — `OutputManager::renderToOutputs()` is a gray-clear stub AND is never called; `m_outputManager->update()` is commented out ([Application.cpp:391](src/app/Application.cpp#L391)). The fullscreen-to-projector HALF of the success metric does not work. | 1 d (after TD-02) | **Breaks definition-of-done** | **Yes** |
-| TD-02 | **`Application::render()` god-function** — ~2034 lines, ~40 function-static "globals" hold all scene/input/UI/save-load/GL state; `UIManager`/`SceneManager`/panels instantiated but bypassed (dual-track state). Gates TD-01 and all else. | ~3–4 sessions | Blocks all feature work | **Yes (foundation)** |
+| TD-02 | **`Application::render()` god-function** — ~2034 lines of UI/logic. ✅ Step 1 done (statics → owned `EditorState`). Remaining: wire `UIManager`/panels to dispatch; retire the dual-track `m_sceneManager`/static-`Scene` split (one scene of truth). | ~2–3 sessions | Maintainability | No (no longer blocking) |
 | TD-03 | **Audio RT-safety** — mutex + `std::vector` copy + heap alloc inside the audio callback ([AudioMixer.cpp:197-244](src/audio/AudioMixer.cpp#L197-L244), [AudioSource.cpp:113](src/audio/AudioSource.cpp#L113)). Glitches under load. | 1–2 wk | Audio unusable under load | No |
 | TD-04 | **Video data races** — unsynchronized cross-thread `atEnd_`/`currentTime_`/`currentFrame_` ([VideoDecoder.cpp:245,383](src/video/VideoDecoder.cpp#L245)). UB. | 1–2 d | Correctness (UB) | No |
 | TD-05 | **No `.qmap` migration** — one-way version reject ([ProjectSerializer.cpp:396-398](src/project/ProjectSerializer.cpp#L396-L398)); save/load copy-pasted 3×. | 0.5 d | First format change breaks all saved projects | No |
@@ -34,4 +33,4 @@ Remaining minor TODO: [PreferencesDialog.cpp:174](src/ui/dialogs/PreferencesDial
 
 | ID | Resolved | Evidence (fix + verified-working check + no TODO left) |
 |----|----------|--------------------------------------------------------|
-| | | |
+| TD-01 | 2026-06-15 | Projector output now renders the live warped scene. Per-output `Renderer` (own GL context) reuses `renderQuads`; `OutputManager::renderToOutputs(quadManager, textures)` called each frame from `Application::run()`; F11 auto-creates an output on the secondary monitor and enters perform mode. Placeholder gray-clear deleted. **Verified working:** `tests/smoke/drive_smoke.ps1` step 05 — F11 sends the warped quad fullscreen to monitor 2, captured clean on black (no UI/handles), matching the editor geometry. 624/624 tests pass. |
