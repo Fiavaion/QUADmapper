@@ -8,6 +8,7 @@
 // local reference, so the function body is unchanged by the extraction.
 
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <string>
 
@@ -40,6 +41,13 @@ struct EditorState {
     std::unordered_map<UUID, std::string> quadTexturePaths;
     char currentTexturePath[512] = "";
     char projectPath[512] = "project.qmap";
+
+    // UV test-grid toggle (#2): when on, newly-created quads get a colored UV
+    // reference grid texture. seenQuadIds tracks which quads have already been
+    // reconciled so the grid is applied once, at creation, across every code
+    // path that adds a quad (default, new-project, the Quad List "+").
+    bool uvGridOnNewQuads = false;
+    std::unordered_set<UUID> seenQuadIds;
     char statusMessage[256] = "";
     float statusTimer = 0.0f;
     bool initialized = false;

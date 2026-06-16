@@ -13,6 +13,8 @@ add_library(quadmapper_renderer STATIC
     ComputeShader.cpp
     Texture.hpp
     Texture.cpp
+    UvTestGrid.hpp
+    UvTestGrid.cpp
     Mesh.hpp
     Mesh.cpp
     VertexArray.hpp

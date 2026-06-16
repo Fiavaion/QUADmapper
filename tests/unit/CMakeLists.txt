@@ -67,6 +67,12 @@ add_quadmapper_test(test_source
 )
 target_link_libraries(test_source PRIVATE quadmapper_source quadmapper_core)
 
+# Renderer module tests (pure helpers only — no GL context needed)
+add_quadmapper_test(test_renderer
+    renderer/UvTestGridTest.cpp
+)
+target_link_libraries(test_renderer PRIVATE quadmapper_renderer quadmapper_core)
+
 # AI sidecar tests (QM-056). Live round-trip launches the real Python sidecar;
 # script path passed in so the test can find it. Skip-if-absent keeps it CI-safe.
 add_quadmapper_test(test_ai

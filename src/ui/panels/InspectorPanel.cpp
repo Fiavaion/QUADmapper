@@ -6,6 +6,7 @@
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGeometry.hpp"
 #include "renderer/Texture.hpp"
+#include "renderer/UvTestGrid.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
 #include "source/SourceManager.hpp"
@@ -134,6 +135,21 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 ctx.project->setModified(true);
             }
         }
+
+        // UV test grid (#2): apply a colored UV reference grid to this quad, and
+        // toggle whether new quads get it automatically.
+        if (ImGui::Button("Apply UV Test Grid")) {
+            assignUvTestGrid(quadTextures, quadTexturePaths,
+                             selectedQuad->getId(), 1024, 8);
+            currentTexturePath[0] = '\0';
+            snprintf(statusMessage, sizeof(statusMessage), "Applied UV test grid");
+            statusTimer = 3.0f;
+            ctx.project->setModified(true);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Colored UV reference grid — check orientation/stretch");
+        }
+        ImGui::Checkbox("UV grid on new quads", &ctx.es.uvGridOnNewQuads);
         ImGui::EndGroup();
 
         // Drag-drop target for media from Media Bin

@@ -18,6 +18,7 @@
 #include "../source/CameraSource.hpp"
 #include "../source/CameraDevices.hpp"
 #include "../ai/SidecarClient.hpp"
+#include "../renderer/UvTestGrid.hpp"
 #include "../renderer/Renderer.hpp"
 #include "../renderer/Texture.hpp"
 #include "../output/OutputManager.hpp"
@@ -579,6 +580,17 @@ void Application::render() {
             quadManager.selectQuad(quadManager.getQuads()[0]->getId());
         }
         initialized = true;
+    }
+
+    // UV test-grid (#2): apply the colored UV reference grid once to any quad we
+    // haven't reconciled yet, when the toggle is on. Runs every frame so it
+    // covers all creation paths (default, new-project, Quad List "+"). Existing
+    // quads get marked seen, so toggling on later only affects future quads.
+    for (const auto& qptr : quadManager.getQuads()) {
+        const UUID& id = qptr->getId();
+        if (es.seenQuadIds.insert(id).second && es.uvGridOnNewQuads) {
+            assignUvTestGrid(es.quadTextures, es.quadTexturePaths, id, 1024, 8);
+        }
     }
 
     // Initialize Media Bin Panel
