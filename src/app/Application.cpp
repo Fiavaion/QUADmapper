@@ -83,6 +83,8 @@ static void syncProjectToScene(EditorState& es, const Project& project) {
         newQuad->setZOrder(quads[i].getZOrder());
         newQuad->getGeometry() = quads[i].getGeometry();  // corners + resolution + mode + mesh offsets
         newQuad->getTexture() = quads[i].getTexture();    // UV transform + flip flags
+        newQuad->setColorCorrection(quads[i].getColorCorrection());  // ADR-036
+        newQuad->setSoftEdge(quads[i].getSoftEdge());                // ADR-037
 
         if (i < texPaths.size() && !texPaths[i].empty()) {
             es.quadTexturePaths[newQuad->getId()] = texPaths[i];
