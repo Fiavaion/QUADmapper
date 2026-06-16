@@ -4,8 +4,8 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 4 debt (TD-07/08/09/10) + 2 AI (🚩 QM-061 hardware gate + QM-062 anamorphic; Phase 1 shipped, Phase 2 software-complete)
-- Done: 61
+- Todo: 4 debt (TD-07/08/09/10) + 1 AI (🚩 QM-061 hardware gate — the only remaining wedge work, hardware-only)
+- Done: 62 — **all software-doable AI tasks complete; QM-055..060 + QM-062 done**
 - Blocked: 0
 
 ---
@@ -74,8 +74,12 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **AC:** on a real projector + real surface + real phone photo, One-Flash produces a visibly correct warp, watched working; failure modes documented. Fallback if it fails: port MIT gray-code structured-light behind the same sidecar contract.
 
 #### QM-062: Audience-perspective ("trap-art") anamorphic warp (Phase 3)
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-057
-- **AC:** from one captured viewpoint, warp content to look correct from the phone's position; `.qmap`-safe; smoke green.
+- **Status:** DONE (software-complete) — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`. "Looks correct from the viewpoint" is perspective-validated on real hardware (with QM-061).
+- **Effort:** M · **Depends On:** QM-057 (realized via the One-Flash homography, QM-060)
+- **Delivered:** AI → One-Flash → **Anamorphic Warp**. Reuses the One-Flash homography: maps a centered **audience** rectangle back through `H⁻¹` → projector corners that make content read frontal from the captured viewpoint. `requestOneFlash()` gained an optional target; `oneFlashSolveAndApply` (surface target) + `oneFlashAnamorphic` (audience target) share `runOneFlash()`. No `.qmap` change.
+- **AC met (software):** AC1 frontal-from-viewpoint warp applied ✓ (the perspective claim is hardware-validated) · AC2 geometry-only, `.qmap`-safe, smoke green ✓.
+- **Verified:** anamorphic round-trip test (audience target → corners → forward `H` lands back on target, <2px); in-app Anamorphic Warp via `QM_AI_SELFTEST=anamorphic` (conf 0.99, watched). 15/15 sidecar pytest; 596/596 ctest.
+- **Note:** a projector-off (QM-057-only) anamorphic is geometrically underdetermined (the spike's finding); this is the One-Flash-based (projector-pose-observed) realization.
 
 ---
 
@@ -850,6 +854,6 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-059 | Projector test-pattern emit + single-photo capture | DONE | Phase 9 |
 | QM-060 | One-Flash homography solve → push warp | DONE | Phase 9 |
 | QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |
-| QM-062 | Audience-perspective anamorphic warp | TODO | Phase 9 |
+| QM-062 | Audience-perspective anamorphic warp | DONE | Phase 9 |
 
 ---
