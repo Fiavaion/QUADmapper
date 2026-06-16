@@ -4,8 +4,8 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 3 debt (TD-07/08/09) + 6 AI (QM-056..QM-062 — Phase 9)
-- Done: 56
+- Todo: 4 debt (TD-07/08/09/10) + 3 AI (QM-059..QM-062 — Phase 9; **Phase 1 ships**)
+- Done: 59
 - Blocked: 0
 
 ---
@@ -29,16 +29,31 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Deferred (per user, → TD-09):** AC1's "camera displayed *on a quad*/projector" needs the renderer wired to `SourceManager` (the unconverged dual-model). Capture+PNG — the AI-roadmap-critical part — is complete; on-quad display rides on the deliberate TD-09 convergence.
 
 #### QM-056: AI sidecar skeleton + IPC contract (ADR-035)
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-055
-- **AC:** launch/attach/health-check/teardown `tools/ai-sidecar/`; versioned `POST /surface` stub round-trips; sidecar-absent disables AI UI cleanly with all existing workflows unaffected; contract test + Python unit test run GPU-free.
+- **Status:** DONE — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`.
+- **Effort:** M · **Depends On:** QM-055
+- **Delivered (the boundary, nothing intelligent behind it yet):**
+  - **Python sidecar** `tools/ai-sidecar/` — stdlib-only loopback HTTP server; versioned v1 `GET /health` + `POST /surface` (centered stub rect, `confidence 0.0`, `stub:true`). Never linked into `QUADmapper.exe`. 6 GPU-free pytest cases.
+  - **C++ `src/ai/SidecarClient`** — attach-or-launch lifecycle; WinHTTP client (Windows system lib, **no vcpkg dep**) behind a pimpl; spawned sidecar in a **Job Object (KILL_ON_JOB_CLOSE)** ⇒ no orphan. Every path degrades gracefully (never throws).
+  - **App wiring** — constructed at init, launched **on demand** from a new **AI menu** (Enable / Detect Surface / status), torn down at shutdown. Menu reads "Sidecar not running" when absent; existing workflows untouched. `EditorContext` unchanged.
+- **AC met:** AC1 launch/attach/health/teardown no-orphan ✓ · AC2 `/surface` round-trips stub + sidecar-absent disables UI cleanly ✓ · AC3 C++ contract test (4, skip-if-Python-absent) + Python unit test, GPU-free ✓.
+- **Gate:** full build clean; **596/596 ctest** (+4); success-metric smoke green (warp + F11 projector, sidecar-absent path). Live launch→health→`/surface`→teardown watched in the contract test (pid spawned + killed).
+- **Follow-up:** TD-10 (async `start()` to avoid the ~1–2.5s UI freeze on enable). In-GUI menu click-path not yet watched working (API verified by the contract test).
 
 #### QM-057: Sidecar surface service (Metric3D → plane → 4 corners)
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-056
-- **AC:** `POST /surface` returns dominant-surface corners + plane + confidence (Metric3D + Open3D segment_plane); unambiguous scene → encloses target, cluttered → low confidence (not confidently wrong); <3s GPU.
+- **Status:** DONE — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`.
+- **Effort:** M · **Depends On:** QM-056
+- **Delivered (pure Python, no app/build impact):** `tools/ai-sidecar/surface.py` — `image → Metric3D (metric depth + normals) → metric point cloud → Open3D segment_plane → largest planar component → 4 corners → confidence`. Metric depth fixes the spike's affine bow. Confidence = planar-quality × **verticality gate** (floor/ceiling → ~0) × **ambiguity gate** (cluttered scene). `/surface` runs it lazily when `image_path` is readable + the model is present, else falls back to the stub (graceful).
+- **AC met:** AC1 corners + plane + confidence via Metric3D + Open3D ✓ · AC2 (3 spike scenes, RTX 3080): screen **0.58** encloses the screen, facade **0.59**, gallery floor-trap **0.00** (low, not confidently wrong) ✓ · AC3 **~350ms** steady-state GPU (first call ~7–8s model load); CPU path documented ✓.
+- **Verified:** 5 skip-if-model-absent pytest (`test_surface.py`); live HTTP `/surface` round-trip (stub=false, real corners); C++ contract test still green (stub path). Model from local ComfyUI controlnet_aux (env-overridable `QM_M3D_*`).
+- **Note:** corner extraction is a propose-then-confirm proposal (e.g. screen BL drags into the stage) — QM-058 adds the human nudge. Deps added to Python 3.11: open3d, addict, yapf (+existing torch/cv2/numpy/einops/matplotlib).
 
 #### QM-058: "Propose corners" UI — human-in-the-loop confirm
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-057
-- **AC:** capture → sidecar → draw proposed quad → user accepts (writes corner offsets) or nudges via Tab-cycle+arrows; low confidence prompts "tap the surface"; F11-projectable; smoke green; no `.qmap` change.
+- **Status:** DONE — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`.
+- **Effort:** M · **Depends On:** QM-057
+- **Delivered:** AI menu "Detect Surface" → `Application::aiDetectSurface()`: capture a frame (live camera via the QM-055 rail, or `QM_AI_TEST_IMAGE` for a phone-photo-from-disk) → sidecar `/surface` → proposed corners + confidence. Confident (≥0.35) → `setCorners()` on the selected quad (geometry only, no `.qmap` change) → ordinary warp refined with the existing Tab-cycle + arrow-nudge UX. Status via the existing `statusMessage` overlay.
+- **AC met:** AC1 capture→sidecar→apply proposed quad (or nudge) ✓ · AC2 low confidence → "tap the surface", no auto-apply ✓ · AC3 applied warp is F11-projectable, smoke green, no `.qmap` change ✓.
+- **Verified end-to-end** (`drive_ai_smoke.ps1` via the `QM_AI_SELFTEST` headless hook): screen → "surface applied (0.63)", quad snaps to a perspective trapezoid + F11 projects it (screenshots); gallery floor-trap → "low confidence (0.00) — tap the surface", quad unchanged + project not modified. Success-metric smoke green; 596/596 ctest.
+- **Notes:** `QM_AI_SELFTEST`/`QM_AI_TEST_IMAGE` are guarded verification seams (off in normal runs). Detect blocks the UI ~1–3s (pre-show; async → TD-10). Phase 1 of the AI wedge now ships.
 
 #### QM-059: Projector test-pattern emit + single-photo capture flow
 - **Status:** TODO · **Effort:** S · **Depends On:** QM-055
@@ -823,9 +838,9 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-053 | TD-02 step 2 retire dual-track scene state (one scene of truth) | DONE | Phase 8 |
 | QM-054 | TD-02 decompose render() into panels (ADR-034, 6 batches) | DONE | Phase 8 |
 | QM-055 | AI pre-show: live camera input + PNG capture (on-quad display → TD-09) | DONE | Phase 9 |
-| QM-056 | AI sidecar skeleton + IPC contract (ADR-035) | TODO | Phase 9 |
-| QM-057 | Sidecar surface service (Metric3D → plane → corners) | TODO | Phase 9 |
-| QM-058 | "Propose corners" UI (human-in-the-loop confirm) | TODO | Phase 9 |
+| QM-056 | AI sidecar skeleton + IPC contract (ADR-035) | DONE | Phase 9 |
+| QM-057 | Sidecar surface service (Metric3D → plane → corners) | DONE | Phase 9 |
+| QM-058 | "Propose corners" UI (human-in-the-loop confirm) | DONE | Phase 9 |
 | QM-059 | Projector test-pattern emit + single-photo capture | TODO | Phase 9 |
 | QM-060 | One-Flash homography solve → push warp | TODO | Phase 9 |
 | QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |

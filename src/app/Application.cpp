@@ -15,6 +15,9 @@
 #include "../media/ThumbnailCache.hpp"
 #include "../source/SourceManager.hpp"
 #include "../source/procedural/ProceduralSource.hpp"
+#include "../source/CameraSource.hpp"
+#include "../source/CameraDevices.hpp"
+#include "../ai/SidecarClient.hpp"
 #include "../renderer/Renderer.hpp"
 #include "../renderer/Texture.hpp"
 #include "../output/OutputManager.hpp"
@@ -31,6 +34,10 @@
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <filesystem>
+#include <array>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
 #include <imgui_internal.h>  // For DockBuilder API
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -143,6 +150,8 @@ bool Application::initialize(int argc, char* argv[]) {
     (void)argv;
 
     Logger::info("Initializing QUADmapper...");
+
+    m_aiSelfTestPending = (std::getenv("QM_AI_SELFTEST") != nullptr);
 
     if (!initializeGLFW()) {
         Logger::error("Failed to initialize GLFW");
@@ -322,6 +331,28 @@ bool Application::initializeComponents() {
     // Create source manager for texture sources (procedural, video, image)
     m_sourceManager = std::make_unique<SourceManager>();
 
+    // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed here but not
+    // started — the user enables it on demand from the AI menu. We resolve the
+    // sidecar script next to the working dir or the repo root; if it is missing,
+    // scriptPath stays empty and start() fails cleanly (AI menu shows disabled).
+    {
+        ai::SidecarConfig sidecarCfg;
+        const std::filesystem::path rel("tools/ai-sidecar/sidecar.py");
+        for (const std::filesystem::path& base :
+             {std::filesystem::current_path(),
+              std::filesystem::current_path() / ".." / "..",
+              std::filesystem::current_path() / ".." / ".." / ".."}) {
+            std::error_code ec;
+            std::filesystem::path candidate = base / rel;
+            if (std::filesystem::exists(candidate, ec)) {
+                sidecarCfg.scriptPath =
+                    std::filesystem::weakly_canonical(candidate, ec).string();
+                break;
+            }
+        }
+        m_sidecarClient = std::make_unique<ai::SidecarClient>(sidecarCfg);
+    }
+
     // Auto-load media from default folder if configured
     {
         PreferencesDialog prefsDialog;
@@ -418,10 +449,30 @@ int Application::run() {
         // Push the warped scene to all projector outputs (after the main frame
         // is committed so we never run inside an ImGui frame).
         renderToProjectorOutputs();
+
+        // QM-058 verification hook (off unless QM_AI_SELFTEST is set): once the
+        // first frames have built the default scene, enable the sidecar, select a
+        // quad, and run one "Detect Surface" headlessly so the full chain can be
+        // asserted from the log without driving ImGui menus. No-op in production.
+        if (m_aiSelfTestPending && ++m_frameCount >= 3) {
+            m_aiSelfTestPending = false;
+            runAiSelfTest();
+        }
     }
 
     Logger::info("Main loop ended");
     return 0;
+}
+
+void Application::runAiSelfTest() {
+    EditorState& es = *m_editorState;
+    if (!es.quadManager.getPrimarySelectedQuad() && !es.quadManager.getQuads().empty()) {
+        es.quadManager.selectQuad(es.quadManager.getQuads().front()->getId());
+    }
+    if (m_sidecarClient) {
+        m_sidecarClient->start();
+    }
+    aiDetectSurface();
 }
 
 void Application::processInput() {
@@ -510,6 +561,24 @@ void Application::render() {
         es.mainMenuBar.setOnNewProject( [this]() { newProject();  });
         es.mainMenuBar.setOnSaveProject([this]() { saveProject(); });
         es.mainMenuBar.setOnLoadProject([this]() { loadProject(); });
+
+        // AI pre-show assist (QM-056 skeleton). Active state reads cached client
+        // state (no per-frame I/O). Enable launches the sidecar on demand; Detect
+        // runs the stub /surface round-trip. Both no-op gracefully if absent.
+        es.mainMenuBar.setAiActiveQuery([this]() {
+            return m_sidecarClient &&
+                   (m_sidecarClient->state() == ai::SidecarState::Attached ||
+                    m_sidecarClient->state() == ai::SidecarState::Launched);
+        });
+        es.mainMenuBar.setOnEnableAi([this]() {
+            if (!m_sidecarClient) return;
+            if (m_sidecarClient->start()) {
+                Logger::info("AI assist enabled (sidecar connected)");
+            } else {
+                Logger::warning("AI assist unavailable — sidecar could not start");
+            }
+        });
+        es.mainMenuBar.setOnDetectSurface([this]() { aiDetectSurface(); });
         es.mainMenuBarInitialized = true;
     }
 
@@ -907,6 +976,101 @@ void Application::loadProject() {
     es.statusTimer = 3.0f;
 }
 
+void Application::aiDetectSurface() {
+    EditorState& es = *m_editorState;
+    auto setStatus = [&](const std::string& msg, float secs = 5.0f) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
+        es.statusTimer = secs;
+        Logger::info(msg);
+    };
+
+    // Preconditions: a running sidecar and a target quad to warp.
+    if (!m_sidecarClient ||
+        (m_sidecarClient->state() != ai::SidecarState::Attached &&
+         m_sidecarClient->state() != ai::SidecarState::Launched)) {
+        setStatus("AI: enable the sidecar first (AI > Enable AI Assist)");
+        return;
+    }
+    Quad* quad = es.quadManager.getPrimarySelectedQuad();
+    if (!quad) {
+        setStatus("AI: select a quad to warp first");
+        return;
+    }
+
+    // Resolve the input image. QM_AI_TEST_IMAGE feeds a fixed photo (verification,
+    // and the "detect from a phone photo on disk" path); otherwise capture a live
+    // frame off the first camera (the QM-055 rail). NOTE: this blocks the UI for
+    // ~1-3s (camera open + capture + inference) — acceptable pre-show; async is
+    // tracked as TD-10.
+    std::filesystem::path imgPath;
+    if (const char* testImg = std::getenv("QM_AI_TEST_IMAGE")) {
+        imgPath = testImg;
+        if (!std::filesystem::exists(imgPath)) {
+            setStatus("AI: QM_AI_TEST_IMAGE not found");
+            return;
+        }
+    } else {
+        const auto cameras = enumerateCameraDevices();
+        if (cameras.empty()) {
+            setStatus("AI: no camera found (connect one or set QM_AI_TEST_IMAGE)");
+            return;
+        }
+        CameraSource camera(cameras.front().name);
+        if (!camera.initialize()) {
+            setStatus("AI: failed to open camera");
+            return;
+        }
+        // Pump updates until the first frame lands (or give up after ~1s).
+        for (int i = 0; i < 60 && !camera.hasNewFrame(); ++i) {
+            camera.update(0.016);
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+        imgPath = std::filesystem::temp_directory_path() / "quadmapper_ai_capture.png";
+        const bool captured = camera.captureCurrentFrameToPng(imgPath);
+        camera.shutdown();
+        if (!captured) {
+            setStatus("AI: camera capture failed (no frame)");
+            return;
+        }
+    }
+
+    auto surface = m_sidecarClient->requestSurface(imgPath.string());
+    if (!surface) {
+        setStatus("AI: detection failed (sidecar error)");
+        return;
+    }
+
+    // Low confidence: do NOT auto-warp onto a possibly-wrong surface — ask the
+    // user to disambiguate instead (the spike's load-bearing human-confirm step).
+    constexpr float kConfidenceThreshold = 0.35f;
+    if (surface->confidence < kConfidenceThreshold) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "AI: low confidence (%.2f) - tap the surface to retry",
+                 surface->confidence);
+        setStatus(msg);
+        return;
+    }
+
+    // Apply the proposed corners (TL,TR,BR,BL, normalized [0,1] — same order and
+    // space as QuadGeometry). The result is an ordinary warp: drawn on canvas,
+    // F11-projectable, and refinable with Tab-cycle + arrow-nudge.
+    std::array<Vec2, 4> corners{
+        Vec2{surface->corners[0][0], surface->corners[0][1]},
+        Vec2{surface->corners[1][0], surface->corners[1][1]},
+        Vec2{surface->corners[2][0], surface->corners[2][1]},
+        Vec2{surface->corners[3][0], surface->corners[3][1]},
+    };
+    quad->getGeometry().setCorners(corners);
+    m_project->setModified(true);
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "AI: surface applied (confidence %.2f) - nudge with Tab + arrows",
+             surface->confidence);
+    setStatus(msg);
+}
+
 void Application::renderToProjectorOutputs() {
     if (!m_outputManager || !m_editorState) {
         return;
@@ -936,6 +1100,7 @@ void Application::shutdown() {
     Logger::info("Shutting down QUADmapper...");
 
     // Cleanup components in reverse order of creation
+    m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
     m_inputManager.reset();
     m_outputManager.reset();
     m_thumbnailCache.reset();  // Clear GL textures before context destroyed

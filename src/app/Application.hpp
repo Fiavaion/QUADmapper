@@ -16,6 +16,7 @@ class FolderWatcher;
 class ThumbnailCache;
 class SourceManager;
 struct EditorState;
+namespace ai { class SidecarClient; }
 
 class Application {
 public:
@@ -65,6 +66,17 @@ private:
     void saveProject();
     void loadProject();
 
+    // AI pre-show "Detect Surface" (QM-058): capture a frame (live camera, or the
+    // QM_AI_TEST_IMAGE override) -> sidecar /surface -> apply the proposed quad to
+    // the selected quad when confident, else prompt "tap the surface". Geometry
+    // only (no .qmap change); the applied corners are an ordinary warp the user
+    // refines with the existing Tab-cycle + arrow-nudge UX.
+    void aiDetectSurface();
+
+    // One-shot headless driver for aiDetectSurface(), gated by m_aiSelfTestPending
+    // (set from the QM_AI_SELFTEST env var). Verification only; no production path.
+    void runAiSelfTest();
+
     // Build the per-frame texture map from m_editorState and push the warped
     // scene to all enabled output windows.  Called from run() after each main
     // frame's render()+ImGui+swap so it never runs mid-ImGui-frame.
@@ -86,12 +98,21 @@ private:
     std::unique_ptr<ThumbnailCache> m_thumbnailCache;
     std::unique_ptr<SourceManager> m_sourceManager;
 
+    // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed but NOT
+    // started: launched on demand from the AI menu, torn down at shutdown. The
+    // app is fully usable when it is absent.
+    std::unique_ptr<ai::SidecarClient> m_sidecarClient;
+
     // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
     std::unique_ptr<EditorState> m_editorState;
 
     // State
     bool m_running = false;
     float m_lastFrameTime = 0.0f;
+
+    // QM-058 self-test hook (QM_AI_SELFTEST). Off in normal runs.
+    bool m_aiSelfTestPending = false;
+    int m_frameCount = 0;
 
     // Singleton
     static Application* s_instance;

@@ -1,0 +1,26 @@
+# QUADmapper AI pre-show sidecar — runtime dependencies.
+#
+# Tiered so the skeleton/contract layer stays light and GPU-free:
+#
+# SKELETON (QM-056) — stdlib only. /health and the stub /surface need nothing
+# here, so the contract tests (Python + C++) run without installing anything.
+#
+# SURFACE SERVICE (QM-057) — the real Metric3D + plane-fit path. Imported lazily
+# inside /surface, so it loads only when a real detection is requested:
+numpy>=1.26,<2
+opencv-python>=4.8
+open3d>=0.19
+addict          # vendored mmcv (Metric3D config loader) needs these two
+yapf
+einops>=0.8
+matplotlib>=3.7
+# torch with CUDA — install the build matching your CUDA toolkit, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu118
+# (verified here: torch 2.7.1+cu118). CPU-only torch also works (slower).
+#
+# Metric3D weights + source are NOT pip-installed: they come from a local
+# install (default: the ComfyUI controlnet_aux tree). Override the locations with
+# the QM_M3D_SRC / QM_M3D_CKPT / QM_M3D_BACKBONE env vars (see surface.py). When
+# they are absent, /surface returns the stub and the app degrades cleanly.
+#
+# Dev/test only: pytest>=8
