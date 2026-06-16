@@ -472,7 +472,16 @@ void Application::runAiSelfTest() {
     if (m_sidecarClient) {
         m_sidecarClient->start();
     }
-    aiDetectSurface();
+
+    const char* mode = std::getenv("QM_AI_SELFTEST");
+    if (mode && std::string(mode) == "oneflash") {
+        // QM-059: arm the pattern, flash it on the projector, capture a photo.
+        oneFlashEmitPattern();
+        m_outputManager->handleF11Key();   // enter perform mode -> pattern shows
+        oneFlashCapturePhoto();
+    } else {
+        aiDetectSurface();
+    }
 }
 
 void Application::processInput() {
@@ -579,6 +588,9 @@ void Application::render() {
             }
         });
         es.mainMenuBar.setOnDetectSurface([this]() { aiDetectSurface(); });
+        es.mainMenuBar.setOnEmitPattern([this]()  { oneFlashEmitPattern();  });
+        es.mainMenuBar.setOnCapturePhoto([this]() { oneFlashCapturePhoto(); });
+        es.mainMenuBar.setOnClearPattern([this]() { oneFlashClearPattern(); });
         es.mainMenuBarInitialized = true;
     }
 
@@ -1010,26 +1022,10 @@ void Application::aiDetectSurface() {
             return;
         }
     } else {
-        const auto cameras = enumerateCameraDevices();
-        if (cameras.empty()) {
-            setStatus("AI: no camera found (connect one or set QM_AI_TEST_IMAGE)");
-            return;
-        }
-        CameraSource camera(cameras.front().name);
-        if (!camera.initialize()) {
-            setStatus("AI: failed to open camera");
-            return;
-        }
-        // Pump updates until the first frame lands (or give up after ~1s).
-        for (int i = 0; i < 60 && !camera.hasNewFrame(); ++i) {
-            camera.update(0.016);
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
-        }
         imgPath = std::filesystem::temp_directory_path() / "quadmapper_ai_capture.png";
-        const bool captured = camera.captureCurrentFrameToPng(imgPath);
-        camera.shutdown();
-        if (!captured) {
-            setStatus("AI: camera capture failed (no frame)");
+        std::string err;
+        if (!captureCameraFrameToPng(imgPath.string(), err)) {
+            setStatus("AI: " + err);
             return;
         }
     }
@@ -1071,12 +1067,112 @@ void Application::aiDetectSurface() {
     setStatus(msg);
 }
 
+bool Application::captureCameraFrameToPng(const std::string& pngPath,
+                                          std::string& error) {
+    const auto cameras = enumerateCameraDevices();
+    if (cameras.empty()) {
+        error = "no camera found (connect one or set QM_AI_TEST_IMAGE)";
+        return false;
+    }
+    CameraSource camera(cameras.front().name);
+    if (!camera.initialize()) {
+        error = "failed to open camera";
+        return false;
+    }
+    // Pump updates until the first frame lands (or give up after ~1s).
+    for (int i = 0; i < 60 && !camera.hasNewFrame(); ++i) {
+        camera.update(0.016);
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    const bool captured = camera.captureCurrentFrameToPng(pngPath);
+    camera.shutdown();
+    if (!captured) {
+        error = "camera capture failed (no frame)";
+        return false;
+    }
+    return true;
+}
+
+void Application::oneFlashEmitPattern() {
+    EditorState& es = *m_editorState;
+    auto setStatus = [&](const std::string& msg) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
+        es.statusTimer = 5.0f;
+        Logger::info(msg);
+    };
+
+    // Lazily load the calibration pattern + build the fullscreen identity quad.
+    if (!m_calibTexture) {
+        std::filesystem::path patternPath;
+        const std::filesystem::path rel("resources/patterns/charuco.png");
+        for (const std::filesystem::path& base :
+             {std::filesystem::current_path(),
+              std::filesystem::current_path() / "..",
+              std::filesystem::current_path() / ".." / ".."}) {
+            std::error_code ec;
+            if (std::filesystem::exists(base / rel, ec)) {
+                patternPath = base / rel;
+                break;
+            }
+        }
+        auto tex = std::make_unique<Texture>();
+        if (patternPath.empty() || !tex->loadFromFile(patternPath)) {
+            setStatus("One-Flash: pattern asset not found (resources/patterns/charuco.png)");
+            return;
+        }
+        m_calibTexture = std::move(tex);
+        m_calibQuad = std::make_unique<Quad>();
+        m_calibQuad->getGeometry().setCorners(
+            {Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)});
+    }
+
+    m_emitPattern = true;
+    if (!m_outputManager->isInPerformMode()) {
+        setStatus("One-Flash: pattern armed - press F11 to flash it on the projector");
+    } else {
+        setStatus("One-Flash: pattern on projector - capture a photo, then Clear Pattern");
+    }
+}
+
+void Application::oneFlashCapturePhoto() {
+    EditorState& es = *m_editorState;
+    auto setStatus = [&](const std::string& msg) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
+        es.statusTimer = 6.0f;
+        Logger::info(msg);
+    };
+
+    const std::filesystem::path out =
+        std::filesystem::temp_directory_path() / "quadmapper_oneflash_capture.png";
+    std::string err;
+    if (!captureCameraFrameToPng(out.string(), err)) {
+        setStatus("One-Flash: " + err);
+        return;
+    }
+    setStatus("One-Flash: captured " + out.string());
+}
+
+void Application::oneFlashClearPattern() {
+    EditorState& es = *m_editorState;
+    m_emitPattern = false;
+    snprintf(es.statusMessage, sizeof(es.statusMessage), "One-Flash: pattern cleared");
+    es.statusTimer = 4.0f;
+    Logger::info("One-Flash: pattern cleared");
+}
+
 void Application::renderToProjectorOutputs() {
     if (!m_outputManager || !m_editorState) {
         return;
     }
 
     EditorState& es = *m_editorState;
+
+    // One-Flash: when a calibration pattern is armed, flash it fullscreen on the
+    // outputs instead of the scene (QM-059).
+    if (m_emitPattern && m_calibQuad) {
+        m_outputManager->renderPatternToOutputs(*m_calibQuad, m_calibTexture.get());
+        return;
+    }
 
     // Mirror the texture-map construction from render(): static image textures
     // plus the video wrapper for the video-assigned quad.

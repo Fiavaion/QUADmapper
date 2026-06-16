@@ -241,6 +241,14 @@ public:
                          const std::unordered_map<UUID, Texture*>& textures);
 
     /**
+     * Render a single fullscreen calibration quad (One-Flash pattern, QM-059) to
+     * all enabled outputs, replacing the scene. Flashes a known ChArUco pattern on
+     * the chosen projector so one photo can solve the projector->surface
+     * homography (QM-060). Same clean output path as renderToOutputs.
+     */
+    void renderPatternToOutputs(const Quad& patternQuad, const Texture* texture);
+
+    /**
      * Get the main window used for context sharing.
      */
     GLFWwindow* getMainWindow() const { return mainWindow_; }

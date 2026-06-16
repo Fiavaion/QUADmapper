@@ -29,6 +29,12 @@ public:
     void setOnEnableAi(ProjectCallback cb)     { onEnableAi_      = std::move(cb); }
     void setOnDetectSurface(ProjectCallback cb){ onDetectSurface_ = std::move(cb); }
 
+    // One-Flash calibration flow (QM-059): emit a projector pattern, capture a
+    // photo, clear the pattern.
+    void setOnEmitPattern(ProjectCallback cb)  { onEmitPattern_  = std::move(cb); }
+    void setOnCapturePhoto(ProjectCallback cb) { onCapturePhoto_ = std::move(cb); }
+    void setOnClearPattern(ProjectCallback cb) { onClearPattern_ = std::move(cb); }
+
     // Call once per frame inside the ImGui frame, after the dockspace.
     void render(EditorContext& ctx);
 
@@ -40,6 +46,9 @@ private:
     BoolQuery       aiActiveQuery_;
     ProjectCallback onEnableAi_;
     ProjectCallback onDetectSurface_;
+    ProjectCallback onEmitPattern_;
+    ProjectCallback onCapturePhoto_;
+    ProjectCallback onClearPattern_;
 };
 
 }  // namespace quadmapper

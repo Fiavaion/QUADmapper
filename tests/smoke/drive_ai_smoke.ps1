@@ -19,7 +19,8 @@ param(
     [string]$SidecarScript = "$PSScriptRoot/../../tools/ai-sidecar/sidecar.py",
     [string]$PythonExe     = "python",
     [int]$Port             = 8765,
-    [string]$Tag           = "screen"
+    [string]$Tag           = "screen",
+    [string]$SelfTestMode  = "1"     # "1" = Detect Surface; "oneflash" = QM-059 flow
 )
 
 Set-StrictMode -Version Latest
@@ -77,7 +78,7 @@ try {
 } catch { Write-Host "[ai-smoke] warm failed (continuing): $_" }
 
 # ---- Launch the app with the self-test hook armed ----
-$env:QM_AI_SELFTEST  = "1"
+$env:QM_AI_SELFTEST  = $SelfTestMode
 $env:QM_AI_TEST_IMAGE = $TestImage
 $logFile = Join-Path $OutDir "app_$Tag.log"
 $proc = Start-Process -FilePath $ExePath -PassThru -RedirectStandardOutput $logFile `
@@ -94,10 +95,13 @@ try {
     $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
     Capture "ai_${Tag}_applied.png" $screen
 
-    # F11 -> projector (the AI-applied warp is an ordinary, projectable quad)
-    $sc = [W]::MapVirtualKey(0x7A, 0)
-    [W]::keybd_event(0x7A, [byte]$sc, 0x0008, 0); Start-Sleep -Milliseconds 15
-    [W]::keybd_event(0x7A, [byte]$sc, 0x0008 -bor 0x0002, 0)
+    # In oneflash mode the self-test already entered perform mode (flashed the
+    # pattern); otherwise tap F11 to project the AI-applied warp.
+    if ($SelfTestMode -ne "oneflash") {
+        $sc = [W]::MapVirtualKey(0x7A, 0)
+        [W]::keybd_event(0x7A, [byte]$sc, 0x0008, 0); Start-Sleep -Milliseconds 15
+        [W]::keybd_event(0x7A, [byte]$sc, 0x0008 -bor 0x0002, 0)
+    }
     Start-Sleep -Seconds 2
     Capture "ai_${Tag}_projector.png" ([System.Windows.Forms.SystemInformation]::VirtualScreen)
 }
@@ -111,6 +115,6 @@ finally {
     Remove-Item Env:\QM_AI_TEST_IMAGE -ErrorAction SilentlyContinue
 }
 
-Write-Host "`n[ai-smoke] ===== app log: AI status ====="
-Select-String -Path $logFile -Pattern "AI:" | ForEach-Object { $_.Line }
+Write-Host "`n[ai-smoke] ===== app log: AI / One-Flash status ====="
+Select-String -Path $logFile -Pattern "AI:","One-Flash:" | ForEach-Object { $_.Line }
 Write-Host "[ai-smoke] DONE ($Tag). Screenshots in $OutDir"

@@ -439,6 +439,48 @@ void OutputManager::renderToOutputs(const QuadManager& quadManager,
     }
 }
 
+void OutputManager::renderPatternToOutputs(const Quad& patternQuad,
+                                           const Texture* texture) {
+    if (!mainWindow_) {
+        return;
+    }
+
+    GLFWwindow* previousContext = glfwGetCurrentContext();
+
+    for (auto& output : outputs_) {
+        if (!output->isEnabled() || !output->isCreated()) {
+            continue;
+        }
+
+        auto rendererIt = outputRenderers_.find(output->getId());
+        if (rendererIt == outputRenderers_.end()) {
+            continue;
+        }
+        Renderer* renderer = rendererIt->second.get();
+
+        output->makeContextCurrent();
+
+        int width, height;
+        glfwGetFramebufferSize(output->getGLFWwindow(), &width, &height);
+        glViewport(0, 0, width, height);
+
+        glDisable(GL_DEPTH_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // One fullscreen identity quad carrying the calibration texture.
+        renderer->renderQuad(patternQuad, texture, /*selected=*/false);
+
+        glEnable(GL_DEPTH_TEST);
+
+        output->swapBuffers();
+    }
+
+    if (previousContext != nullptr) {
+        glfwMakeContextCurrent(previousContext);
+    }
+}
+
 const MonitorInfo* OutputManager::getMonitor(int index) const {
     if (index < 0 || static_cast<size_t>(index) >= monitors_.size()) {
         return nullptr;

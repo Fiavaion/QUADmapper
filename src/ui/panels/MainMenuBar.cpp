@@ -73,6 +73,19 @@ void MainMenuBar::render(EditorContext& ctx) {
                 if (onDetectSurface_) onDetectSurface_();
             }
             ImGui::Separator();
+            if (ImGui::BeginMenu("One-Flash")) {
+                if (ImGui::MenuItem("Emit Pattern")) {
+                    if (onEmitPattern_) onEmitPattern_();
+                }
+                if (ImGui::MenuItem("Capture Photo")) {
+                    if (onCapturePhoto_) onCapturePhoto_();
+                }
+                if (ImGui::MenuItem("Clear Pattern")) {
+                    if (onClearPattern_) onClearPattern_();
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::Separator();
             ImGui::TextDisabled("Sidecar connected");
         } else {
             if (ImGui::MenuItem("Enable AI Assist")) {
