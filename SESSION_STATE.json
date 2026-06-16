@@ -2,19 +2,18 @@
   "version": "1.0.0",
   "lastUpdated": "2026-06-16T00:00:00Z",
   "sessionInfo": {
-    "sessionNumber": 9,
-    "startTime": "2026-06-14T00:00:00Z",
-    "endTime": "2026-06-16T00:00:00Z",
-    "status": "completed"
+    "sessionNumber": 10,
+    "startTime": "2026-06-16T00:00:00Z",
+    "endTime": null,
+    "status": "active"
   },
   "currentWork": {
     "activeTaskId": null,
     "activeTaskTitle": null,
     "currentFile": null,
     "currentFunction": null,
-    "workInProgress": "ADR-031 refactor: success metric working end-to-end; all CRITICAL/HIGH audit items resolved. Branch refactor/app-decomposition pushed, PR #1 open.",
+    "workInProgress": "TD-05 done (ADR-032): unified .qmap version policy across all 4 read paths + 1.x->scene / 2.x->flat migration + de-dup save/load (one loadQuadInto, also fixed silent mesh-offset drop). 631/631 tests. On branch refactor/app-decomposition (PR #1).",
     "nextSteps": [
-      "TD-05: .qmap version migration + de-dup the 3x save/load blocks",
       "TD-02 step 2: real UIManager/panel dispatch; retire dual-track m_sceneManager/static-Scene",
       "TD-07: build exit-code flake (gtest discovery timeout) - touches CMake, needs approval",
       "TD-08: defer audio snapshot reclamation to the control thread (LOW)"
@@ -52,13 +51,13 @@
     ],
     "buildStatus": "success",
     "lastSuccessfulBuild": "2026-06-16T00:00:00Z",
-    "note": "Full success metric verified end-to-end (vertex warp + F11 projector output). 624/624 tests on full build. CRITICAL audit items TD-01/03/04 + TD-02 step 1 + TD-06 done."
+    "note": "Full success metric verified end-to-end (vertex warp + F11 projector output). 631/631 tests on full build. CRITICAL audit items TD-01/03/04 + TD-02 step 1 + TD-05 + TD-06 done."
   },
   "statistics": {
-    "totalSessions": 9,
-    "tasksCompleted": 51,
+    "totalSessions": 10,
+    "tasksCompleted": 52,
     "tasksInProgress": 0,
-    "tasksTodo": 4
+    "tasksTodo": 3
   },
   "session9Accomplishments": {
     "shipped": "branch refactor/app-decomposition pushed; PR #1 (https://github.com/Fiavaion/QUADmapper/pull/1)",

@@ -21,9 +21,11 @@ projector (monitor 2), rendered warped + clean**. See `tests/smoke/out/05_projec
 - ✅ Correctness CRITICALs fixed: audio RT-safety (TD-03), video data races (TD-04). Residual audio reclamation nit tracked as TD-08 (LOW).
 
 ## Next 3 tasks (in order)
-1. **TD-05** `.qmap` version migration + de-dupe the 3× save/load blocks.
-2. **TD-02 step 2** introduce a real `UIManager` + panel dispatch (the stub was deleted in TD-06); retire the dual-track `m_sceneManager`/static-`Scene` split (one scene of truth).
-3. **TD-07/TD-08** build exit-code flake (CMake, needs approval); defer audio snapshot reclamation to the control thread.
+1. **TD-02 step 2** introduce a real `UIManager` + panel dispatch (the stub was deleted in TD-06); retire the dual-track `m_sceneManager`/static-`Scene` split (one scene of truth). ~2–3 sessions.
+2. **TD-07** build exit-code flake from `gtest_discover_tests` timeout (CMake, **needs approval** — Change Boundary).
+3. **TD-08** defer audio snapshot reclamation to the control thread (LOW).
+
+_Done S10: **TD-05** — `.qmap` version policy unified across all 4 read paths + 1.x→scene / 2.x→flat migration + save/load de-dup (one `loadQuadInto`, also fixed a silent mesh-offset drop on scene load). [ADR-032](../docs/adr/0032-qmap-migration.md). 631/631 tests._
 
 ## Acceptance criteria for the refactor (the gate)
 - The full 2-minute success-metric workflow runs end-to-end on a real run: add quad → Tab/Shift+Tab cycle vertex → arrow nudge (Shift 10× / Alt 0.1×) → **send fullscreen to a chosen projector output and SEE it warped correctly.**

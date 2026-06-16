@@ -2,6 +2,8 @@
 #include "project/ProjectSerializer.hpp"
 #include "project/Project.hpp"
 #include "scene/Quad.hpp"
+#include "scene/Scene.hpp"
+#include "scene/SceneManager.hpp"
 
 namespace quadmapper {
 namespace test {
@@ -188,6 +190,131 @@ TEST(ProjectSerializerExtraTest, BackwardCompatibilityNoTextureBinding) {
     EXPECT_FLOAT_EQ(loadedBinding.uvScale.x, 1.0f);
     EXPECT_FLOAT_EQ(loadedBinding.uvScale.y, 1.0f);
     EXPECT_FLOAT_EQ(loadedBinding.uvRotation, 0.0f);
+}
+
+// ============ ADR-032: version policy & migration ============
+
+// A file from a newer major than this build supports must be rejected loudly (on every read
+// path), not silently half-parsed. Previously the scene paths ignored version entirely.
+TEST(ProjectSerializerVersionTest, FutureMajorVersionRejectedFlat) {
+    ProjectSerializer serializer;
+    Project project;
+
+    std::string json = R"({"version": "3.0.0", "name": "FromTheFuture", "quads": []})";
+    Result<void, std::string> result = serializer.deserialize(json, project);
+
+    EXPECT_TRUE(result.isError());
+}
+
+TEST(ProjectSerializerVersionTest, FutureMajorVersionRejectedScenes) {
+    ProjectSerializer serializer;
+    std::string projectName;
+    SceneManager sceneManager;
+
+    std::string json = R"({"version": "3.0.0", "name": "FromTheFuture", "scenes": []})";
+    Result<void, std::string> result = serializer.deserializeScenes(json, projectName, sceneManager);
+
+    EXPECT_TRUE(result.isError());
+}
+
+TEST(ProjectSerializerVersionTest, MalformedVersionRejected) {
+    ProjectSerializer serializer;
+    Project project;
+
+    std::string json = R"({"version": "not-a-version", "name": "Test"})";
+    Result<void, std::string> result = serializer.deserialize(json, project);
+
+    EXPECT_TRUE(result.isError());
+}
+
+TEST(ProjectSerializerVersionTest, ScenePathRejectsMissingVersion) {
+    ProjectSerializer serializer;
+    std::string projectName;
+    SceneManager sceneManager;
+
+    // Previously loadToSceneManager/deserializeScenes accepted a missing version silently.
+    std::string json = R"({"name": "NoVersion", "scenes": []})";
+    Result<void, std::string> result = serializer.deserializeScenes(json, projectName, sceneManager);
+
+    EXPECT_TRUE(result.isError());
+}
+
+// A v1.x flat "quads" document loaded through the scene path migrates into a single scene.
+TEST(ProjectSerializerVersionTest, V1FlatMigratesToSingleScene) {
+    ProjectSerializer serializer;
+    std::string projectName;
+    SceneManager sceneManager;
+
+    std::string json = R"({
+        "version": "1.0.0",
+        "name": "Legacy",
+        "quads": [
+            {"name": "A", "geometry": {"corners": [[0,0],[1,0],[1,1],[0,1]], "meshResolution": 8, "meshMode": 0}},
+            {"name": "B", "geometry": {"corners": [[0,0],[1,0],[1,1],[0,1]], "meshResolution": 8, "meshMode": 0}}
+        ]
+    })";
+
+    Result<void, std::string> result = serializer.deserializeScenes(json, projectName, sceneManager);
+
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_EQ(projectName, "Legacy");
+    EXPECT_EQ(sceneManager.getSceneCount(), 1);
+    Scene* scene = sceneManager.getSceneByIndex(0);
+    ASSERT_NE(scene, nullptr);
+    EXPECT_EQ(scene->getQuads().size(), 2u);
+}
+
+// A v2.x scene document loaded into the flat Project model flattens scene quads, instead of
+// loading silently empty (which is what the old one-way version reject produced).
+TEST(ProjectSerializerVersionTest, V2ScenesFlattenIntoFlatProject) {
+    ProjectSerializer serializer;
+
+    // Build a 2-scene project and serialize it in scene format.
+    SceneManager sceneManager;
+    sceneManager.getSceneByIndex(0)->createQuad()->setName("S1Q1");
+    Scene* scene2 = sceneManager.createScene("Scene 2");
+    scene2->createQuad()->setName("S2Q1");
+    scene2->createQuad()->setName("S2Q2");
+
+    std::string json = serializer.serializeScenes("MultiScene", sceneManager);
+
+    Project flat;
+    Result<void, std::string> result = serializer.deserialize(json, flat);
+
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_EQ(flat.getName(), "MultiScene");
+    EXPECT_EQ(flat.getQuads().size(), 3u);  // 1 + 2 flattened
+}
+
+// Mesh-edit warps (vertex offsets) must survive a scene round-trip. The pre-refactor scene
+// loader copied only corners/resolution/mode and silently dropped mesh offsets.
+TEST(ProjectSerializerVersionTest, MeshOffsetsSurviveSceneRoundTrip) {
+    ProjectSerializer serializer;
+
+    SceneManager sceneManager;
+    Quad* quad = sceneManager.getSceneByIndex(0)->createQuad();
+    quad->setName("Warped");
+    QuadGeometry& geom = quad->getGeometry();
+    geom.setMeshMode(MeshMode::MESH_EDIT);
+    ASSERT_GT(geom.getVertexCount(), 0);
+    geom.setMeshVertexByIndex(0, Vec2(0.07f, -0.04f));
+    ASSERT_TRUE(geom.hasMeshModifications());
+
+    std::string json = serializer.serializeScenes("MeshProj", sceneManager);
+
+    SceneManager loaded;
+    std::string loadedName;
+    Result<void, std::string> result = serializer.deserializeScenes(json, loadedName, loaded);
+
+    ASSERT_TRUE(result.isSuccess());
+    Scene* scene = loaded.getSceneByIndex(0);
+    ASSERT_NE(scene, nullptr);
+    ASSERT_EQ(scene->getQuads().size(), 1u);
+    const QuadGeometry& loadedGeom = scene->getQuads()[0]->getGeometry();
+    EXPECT_TRUE(loadedGeom.hasMeshModifications());
+    Vec2 offset = loadedGeom.getMeshVertexByIndex(0);
+    EXPECT_NEAR(offset.x, 0.07f, 0.0001f);
+    EXPECT_NEAR(offset.y, -0.04f, 0.0001f);
 }
 
 } // namespace test

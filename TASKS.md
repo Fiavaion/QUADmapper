@@ -4,13 +4,19 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 4 (TD-05, TD-02 step 2, TD-07, TD-08 — see TECHNICAL_DEBT.md)
-- Done: 51
+- Todo: 3 (TD-02 step 2, TD-07, TD-08 — see TECHNICAL_DEBT.md)
+- Done: 52
 - Blocked: 0
 
 ---
 
 ## Done
+
+### Phase 8: ADR-031 Refactor (Session 10 — 2026-06-16)
+
+#### QM-052: TD-05 — `.qmap` versioning, migration & save/load de-dup
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** ADR-032. One `validateVersion()` policy across all 4 read paths (accept major ≤ 2, reject newer majors loudly — scene paths previously ignored version). v1.x→single-scene migration; v2.x→flat-model flatten. Collapsed the 4× quad-copy into `loadQuadInto()` (whole-geometry copy), which also fixed a silent mesh-offset drop on scene load. No on-disk change. 631/631 tests (+7 new).
 
 ### Phase 8: ADR-031 Refactor (Session 9 — 2026-06-16)
 
@@ -751,5 +757,6 @@ Last Updated: 2026-06-16
 | QM-042 | Create unit tests for project | DONE | Phase 7 |
 | QM-043 | Create integration tests | DONE | Phase 7 |
 | QM-044 | Manual test protocols | DONE | Phase 7 |
+| QM-052 | TD-05 .qmap versioning, migration & save/load de-dup | DONE | Phase 8 |
 
 ---

@@ -7,6 +7,40 @@
 
 namespace quadmapper {
 
+// .qmap format versioning (see ADR-032).
+//   1.x = legacy single-quad-list format (no "scenes" array)
+//   2.x = current scene-based format ("scenes" array)
+// The writer always emits the current version; readers accept any major <= kMaxSupportedMajor
+// and migrate older majors up in memory.
+static constexpr const char* kCurrentSchema = "quadmapper/project/2.0";
+static constexpr const char* kCurrentVersion = "2.0.0";
+static constexpr int kMaxSupportedMajor = 2;
+
+// Single version policy for every read path (ADR-032). Returns the validated MAJOR version,
+// or an error message: missing/malformed version rejects, and a major newer than this build
+// supports rejects with an actionable message instead of silently half-parsing the file.
+static Result<int, std::string> validateVersion(const nlohmann::json& json) {
+    if (!json.contains("version")) {
+        return Result<int, std::string>::error("Missing version field in project file");
+    }
+    std::string version = json["version"].get<std::string>();
+    int major = 0;
+    try {
+        size_t dot = version.find('.');
+        major = std::stoi(dot == std::string::npos ? version : version.substr(0, dot));
+    } catch (const std::exception&) {
+        return Result<int, std::string>::error("Malformed project version: " + version);
+    }
+    if (major < 1) {
+        return Result<int, std::string>::error("Malformed project version: " + version);
+    }
+    if (major > kMaxSupportedMajor) {
+        return Result<int, std::string>::error(
+            "Project version " + version + " was created by a newer QUADmapper; please update.");
+    }
+    return Result<int, std::string>::success(major);
+}
+
 // Helper to serialize a Vec2
 static nlohmann::json serializeVec2(const Vec2& v) {
     return nlohmann::json::array({v.x, v.y});
@@ -281,52 +315,47 @@ static nlohmann::json serializeScene(const Scene& scene, const std::vector<std::
     return j;
 }
 
-// Helper to deserialize a single scene into a SceneManager
-static void deserializeScene(const nlohmann::json& j, SceneManager& sceneManager) {
-    std::string name = "New Scene";
-    if (j.contains("name")) {
-        name = j["name"].get<std::string>();
+// Load a single quad from JSON into an existing scene. Copies the whole geometry (corners,
+// resolution, mode AND mesh vertex offsets) so mesh-edit warps survive a round-trip.
+static void loadQuadInto(Scene& scene, const nlohmann::json& quadJson) {
+    std::string texturePath;
+    Quad src = deserializeQuad(quadJson, texturePath);
+
+    Quad* newQuad = scene.createQuad();
+    newQuad->setName(src.getName());
+    newQuad->setZOrder(src.getZOrder());
+    newQuad->setVisible(src.isVisible());
+    newQuad->setLocked(src.isLocked());
+    newQuad->setOpacity(src.getOpacity());
+    newQuad->getGeometry() = src.getGeometry();
+    newQuad->getTexture() = src.getTexture();
+}
+
+// Load a scene's contents (name, view state, quads, groups, active flag) into an existing
+// Scene. The single de-dup point for every scene-load path (ADR-032).
+static void loadSceneContents(const nlohmann::json& j, Scene* scene, SceneManager& sceneManager) {
+    if (!scene) {
+        return;
     }
 
-    Scene* scene = sceneManager.createScene(name);
+    if (j.contains("name")) {
+        scene->setName(j["name"].get<std::string>());
+    }
 
-    // Deserialize view state
     if (j.contains("viewState")) {
         scene->getViewState() = deserializeSceneViewState(j["viewState"]);
     }
 
-    // Deserialize quads
     if (j.contains("quads") && j["quads"].is_array()) {
         for (const auto& quadJson : j["quads"]) {
-            std::string texturePath;
-            Quad deserializedQuad = deserializeQuad(quadJson, texturePath);
-
-            // Create quad in scene and copy properties
-            Quad* newQuad = scene->createQuad();
-            newQuad->setName(deserializedQuad.getName());
-            newQuad->setZOrder(deserializedQuad.getZOrder());
-            newQuad->setVisible(deserializedQuad.isVisible());
-            newQuad->setLocked(deserializedQuad.isLocked());
-            newQuad->setOpacity(deserializedQuad.getOpacity());
-
-            // Copy geometry
-            auto& newGeometry = newQuad->getGeometry();
-            const auto& srcGeometry = deserializedQuad.getGeometry();
-            newGeometry.setCorners(srcGeometry.getCorners());
-            newGeometry.setMeshResolution(srcGeometry.getMeshResolution());
-            newGeometry.setMeshMode(srcGeometry.getMeshMode());
-
-            // Copy texture binding
-            newQuad->getTexture() = deserializedQuad.getTexture();
+            loadQuadInto(*scene, quadJson);
         }
     }
 
-    // Deserialize groups
     if (j.contains("groups") && j["groups"].is_array()) {
         for (const auto& groupJson : j["groups"]) {
             QuadGroup deserializedGroup = deserializeGroup(groupJson);
 
-            // Create group in scene
             QuadGroup* newGroup = scene->createGroup(deserializedGroup.getName());
             newGroup->setVisible(deserializedGroup.isVisible());
             newGroup->setLocked(deserializedGroup.isLocked());
@@ -339,9 +368,84 @@ static void deserializeScene(const nlohmann::json& j, SceneManager& sceneManager
         }
     }
 
-    // Handle isActive flag
     if (j.contains("isActive") && j["isActive"].get<bool>()) {
         sceneManager.setActiveScene(scene->getId());
+    }
+}
+
+// Load a scene from JSON, creating a new scene in the manager.
+static void deserializeScene(const nlohmann::json& j, SceneManager& sceneManager) {
+    std::string name = "New Scene";
+    if (j.contains("name")) {
+        name = j["name"].get<std::string>();
+    }
+    Scene* scene = sceneManager.createScene(name);
+    loadSceneContents(j, scene, sceneManager);
+}
+
+// Load all scenes from a v2.x "scenes" array into the manager, reusing the default scene
+// (index 0) created by SceneManager::reset() for the first entry. Shared by file and string
+// load paths (ADR-032).
+static void loadScenesArray(const nlohmann::json& scenesArray, SceneManager& sceneManager) {
+    bool firstScene = true;
+    for (const auto& sceneJson : scenesArray) {
+        if (firstScene) {
+            loadSceneContents(sceneJson, sceneManager.getSceneByIndex(0), sceneManager);
+            firstScene = false;
+        } else {
+            deserializeScene(sceneJson, sceneManager);
+        }
+    }
+}
+
+// Migrate a v1.x flat "quads" array into the manager's default scene (index 0). ADR-032.
+static void loadV1QuadsAsScene(const nlohmann::json& json, SceneManager& sceneManager) {
+    Scene* scene = sceneManager.getSceneByIndex(0);
+    if (!scene) {
+        return;
+    }
+    scene->setName("Scene 1");
+    if (json.contains("quads") && json["quads"].is_array()) {
+        for (const auto& quadJson : json["quads"]) {
+            loadQuadInto(*scene, quadJson);
+        }
+    }
+}
+
+// Append one quad (and its texture path) to the flat Project model.
+static void loadQuadIntoProject(Project& project, const nlohmann::json& quadJson) {
+    std::string texturePath;
+    Quad quad = deserializeQuad(quadJson, texturePath);
+    project.getQuads().push_back(std::move(quad));
+    project.getTexturePaths().push_back(texturePath);
+}
+
+// Load a JSON document into the flat Project model. Handles both v1.x (top-level "quads")
+// and v2.x (flattens every scene's quads, since the flat model has no scene concept) so a
+// v2.x file never loads as silently empty. Shared by load() and deserialize() (ADR-032).
+static void loadFlatProject(const nlohmann::json& json, Project& project) {
+    if (json.contains("name")) {
+        project.setName(json["name"].get<std::string>());
+    }
+
+    if (json.contains("scenes") && json["scenes"].is_array()) {
+        for (const auto& sceneJson : json["scenes"]) {
+            if (sceneJson.contains("quads") && sceneJson["quads"].is_array()) {
+                for (const auto& quadJson : sceneJson["quads"]) {
+                    loadQuadIntoProject(project, quadJson);
+                }
+            }
+        }
+    } else if (json.contains("quads") && json["quads"].is_array()) {
+        for (const auto& quadJson : json["quads"]) {
+            loadQuadIntoProject(project, quadJson);
+        }
+    }
+
+    if (json.contains("groups") && json["groups"].is_array()) {
+        for (const auto& groupJson : json["groups"]) {
+            project.getGroups().push_back(deserializeGroup(groupJson));
+        }
     }
 }
 
@@ -388,37 +492,12 @@ Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path
     try {
         auto json = nlohmann::json::parse(result.value());
 
-        // Check version
-        if (!json.contains("version")) {
-            return Err<Project>("Missing version field in project file");
-        }
-        std::string version = json["version"];
-        if (version.substr(0, 2) != "1.") {
-            return Err<Project>("Incompatible project version: " + version);
+        auto versionResult = validateVersion(json);
+        if (versionResult.isError()) {
+            return Err<Project>(versionResult.error());
         }
 
-        // Load project name
-        if (json.contains("name")) {
-            project.setName(json["name"]);
-        }
-
-        // Load quads
-        if (json.contains("quads") && json["quads"].is_array()) {
-            for (const auto& quadJson : json["quads"]) {
-                std::string texturePath;
-                Quad quad = deserializeQuad(quadJson, texturePath);
-                project.getQuads().push_back(std::move(quad));
-                project.getTexturePaths().push_back(texturePath);
-            }
-        }
-
-        // Load groups
-        if (json.contains("groups") && json["groups"].is_array()) {
-            for (const auto& groupJson : json["groups"]) {
-                QuadGroup group = deserializeGroup(groupJson);
-                project.getGroups().push_back(std::move(group));
-            }
-        }
+        loadFlatProject(json, project);
 
         project.setFilePath(path.string());
         project.setModified(false);
@@ -470,40 +549,17 @@ Result<void, std::string> ProjectSerializer::deserialize(const std::string& json
     try {
         auto json = nlohmann::json::parse(jsonStr);
 
-        if (!json.contains("version")) {
-            return Result<void, std::string>::error("Missing version field");
+        auto versionResult = validateVersion(json);
+        if (versionResult.isError()) {
+            return Result<void, std::string>::error(versionResult.error());
         }
 
-        std::string version = json["version"];
-        if (version.substr(0, 2) != "1.") {
-            return Result<void, std::string>::error("Incompatible version: " + version);
-        }
-
-        if (json.contains("name")) {
-            project.setName(json["name"]);
-        }
-
-        // Clear existing data and load new ones
+        // Clear existing data, then load.
         project.clearQuads();
         project.getTexturePaths().clear();
         project.clearGroups();
 
-        if (json.contains("quads") && json["quads"].is_array()) {
-            for (const auto& quadJson : json["quads"]) {
-                std::string texturePath;
-                Quad quad = deserializeQuad(quadJson, texturePath);
-                project.getQuads().push_back(std::move(quad));
-                project.getTexturePaths().push_back(texturePath);
-            }
-        }
-
-        // Load groups
-        if (json.contains("groups") && json["groups"].is_array()) {
-            for (const auto& groupJson : json["groups"]) {
-                QuadGroup group = deserializeGroup(groupJson);
-                project.getGroups().push_back(std::move(group));
-            }
-        }
+        loadFlatProject(json, project);
 
         project.setModified(false);
 
@@ -519,8 +575,8 @@ Result<void, Error> ProjectSerializer::saveWithScenes(const std::string& project
                                                        const SceneManager& sceneManager,
                                                        const std::filesystem::path& path) {
     nlohmann::json json;
-    json["$schema"] = "quadmapper/project/2.0";
-    json["version"] = "2.0.0";
+    json["$schema"] = kCurrentSchema;
+    json["version"] = kCurrentVersion;
     json["name"] = projectName;
 
     // Serialize all scenes
@@ -549,11 +605,10 @@ Result<void, Error> ProjectSerializer::loadToSceneManager(const std::filesystem:
     try {
         auto json = nlohmann::json::parse(result.value());
 
-        // Check version
-        if (!json.contains("version")) {
-            return Err<void>("Missing version field in project file");
+        auto versionResult = validateVersion(json);
+        if (versionResult.isError()) {
+            return Err<void>(versionResult.error());
         }
-        std::string version = json["version"];
 
         // Load project name
         if (json.contains("name")) {
@@ -562,93 +617,18 @@ Result<void, Error> ProjectSerializer::loadToSceneManager(const std::filesystem:
             projectName = "Untitled Project";
         }
 
-        // Reset scene manager to clean state
+        // Reset scene manager to clean state (creates a single default scene at index 0).
         sceneManager.reset();
 
-        // Check for v2.x format with scenes array
         if (json.contains("scenes") && json["scenes"].is_array()) {
-            // Version 2.x format - load scenes directly
-            // First, remove the default scene created by reset()
-            if (sceneManager.getSceneCount() > 0) {
-                // We need to handle this differently - reset creates a default scene
-                // Delete all scenes except we can't delete the last one
-                // So we'll load the first scene into it and create additional scenes
-            }
-
-            const auto& scenesArray = json["scenes"];
-            bool firstScene = true;
-            for (const auto& sceneJson : scenesArray) {
-                if (firstScene) {
-                    // Update the existing default scene
-                    Scene* scene = sceneManager.getSceneByIndex(0);
-                    if (scene) {
-                        if (sceneJson.contains("name")) {
-                            scene->setName(sceneJson["name"].get<std::string>());
-                        }
-                        if (sceneJson.contains("viewState")) {
-                            scene->getViewState() = deserializeSceneViewState(sceneJson["viewState"]);
-                        }
-                        // Load quads into existing scene
-                        if (sceneJson.contains("quads") && sceneJson["quads"].is_array()) {
-                            for (const auto& quadJson : sceneJson["quads"]) {
-                                std::string texturePath;
-                                Quad deserializedQuad = deserializeQuad(quadJson, texturePath);
-                                Quad* newQuad = scene->createQuad();
-                                newQuad->setName(deserializedQuad.getName());
-                                newQuad->setZOrder(deserializedQuad.getZOrder());
-                                newQuad->setVisible(deserializedQuad.isVisible());
-                                newQuad->setLocked(deserializedQuad.isLocked());
-                                newQuad->setOpacity(deserializedQuad.getOpacity());
-                                auto& newGeometry = newQuad->getGeometry();
-                                const auto& srcGeometry = deserializedQuad.getGeometry();
-                                newGeometry.setCorners(srcGeometry.getCorners());
-                                newGeometry.setMeshResolution(srcGeometry.getMeshResolution());
-                                newGeometry.setMeshMode(srcGeometry.getMeshMode());
-                                newQuad->getTexture() = deserializedQuad.getTexture();
-                            }
-                        }
-                        // Handle isActive
-                        if (sceneJson.contains("isActive") && sceneJson["isActive"].get<bool>()) {
-                            sceneManager.setActiveScene(scene->getId());
-                        }
-                    }
-                    firstScene = false;
-                } else {
-                    // Create additional scenes
-                    deserializeScene(sceneJson, sceneManager);
-                }
-            }
-
+            // v2.x scene-based format.
+            loadScenesArray(json["scenes"], sceneManager);
             Logger::info("Loaded project '{}' with {} scenes (v2.x format)",
                          projectName, sceneManager.getSceneCount());
-        }
-        else if (json.contains("quads")) {
-            // Version 1.x format - migrate quads to single scene
-            // The default scene already exists from reset()
+        } else if (json.contains("quads")) {
+            // v1.x flat format - migrate quads into the default scene (ADR-032).
+            loadV1QuadsAsScene(json, sceneManager);
             Scene* scene = sceneManager.getSceneByIndex(0);
-            if (scene) {
-                scene->setName("Scene 1");
-
-                if (json["quads"].is_array()) {
-                    for (const auto& quadJson : json["quads"]) {
-                        std::string texturePath;
-                        Quad deserializedQuad = deserializeQuad(quadJson, texturePath);
-                        Quad* newQuad = scene->createQuad();
-                        newQuad->setName(deserializedQuad.getName());
-                        newQuad->setZOrder(deserializedQuad.getZOrder());
-                        newQuad->setVisible(deserializedQuad.isVisible());
-                        newQuad->setLocked(deserializedQuad.isLocked());
-                        newQuad->setOpacity(deserializedQuad.getOpacity());
-                        auto& newGeometry = newQuad->getGeometry();
-                        const auto& srcGeometry = deserializedQuad.getGeometry();
-                        newGeometry.setCorners(srcGeometry.getCorners());
-                        newGeometry.setMeshResolution(srcGeometry.getMeshResolution());
-                        newGeometry.setMeshMode(srcGeometry.getMeshMode());
-                        newQuad->getTexture() = deserializedQuad.getTexture();
-                    }
-                }
-            }
-
             Logger::info("Loaded project '{}' with {} quads (migrated from v1.x format)",
                          projectName, scene ? scene->getQuads().size() : 0);
         }
@@ -662,8 +642,8 @@ Result<void, Error> ProjectSerializer::loadToSceneManager(const std::filesystem:
 
 std::string ProjectSerializer::serializeScenes(const std::string& projectName, const SceneManager& sceneManager) {
     nlohmann::json json;
-    json["$schema"] = "quadmapper/project/2.0";
-    json["version"] = "2.0.0";
+    json["$schema"] = kCurrentSchema;
+    json["version"] = kCurrentVersion;
     json["name"] = projectName;
 
     nlohmann::json scenesJson = nlohmann::json::array();
@@ -686,8 +666,9 @@ Result<void, std::string> ProjectSerializer::deserializeScenes(const std::string
     try {
         auto json = nlohmann::json::parse(jsonStr);
 
-        if (!json.contains("version")) {
-            return Result<void, std::string>::error("Missing version field");
+        auto versionResult = validateVersion(json);
+        if (versionResult.isError()) {
+            return Result<void, std::string>::error(versionResult.error());
         }
 
         if (json.contains("name")) {
@@ -696,70 +677,14 @@ Result<void, std::string> ProjectSerializer::deserializeScenes(const std::string
             projectName = "Untitled Project";
         }
 
-        // Reset scene manager
+        // Reset scene manager (creates a single default scene at index 0).
         sceneManager.reset();
 
         if (json.contains("scenes") && json["scenes"].is_array()) {
-            const auto& scenesArray = json["scenes"];
-            bool firstScene = true;
-            for (const auto& sceneJson : scenesArray) {
-                if (firstScene) {
-                    Scene* scene = sceneManager.getSceneByIndex(0);
-                    if (scene) {
-                        if (sceneJson.contains("name")) {
-                            scene->setName(sceneJson["name"].get<std::string>());
-                        }
-                        if (sceneJson.contains("viewState")) {
-                            scene->getViewState() = deserializeSceneViewState(sceneJson["viewState"]);
-                        }
-                        if (sceneJson.contains("quads") && sceneJson["quads"].is_array()) {
-                            for (const auto& quadJson : sceneJson["quads"]) {
-                                std::string texturePath;
-                                Quad deserializedQuad = deserializeQuad(quadJson, texturePath);
-                                Quad* newQuad = scene->createQuad();
-                                newQuad->setName(deserializedQuad.getName());
-                                newQuad->setZOrder(deserializedQuad.getZOrder());
-                                newQuad->setVisible(deserializedQuad.isVisible());
-                                newQuad->setLocked(deserializedQuad.isLocked());
-                                newQuad->setOpacity(deserializedQuad.getOpacity());
-                                auto& newGeometry = newQuad->getGeometry();
-                                const auto& srcGeometry = deserializedQuad.getGeometry();
-                                newGeometry.setCorners(srcGeometry.getCorners());
-                                newGeometry.setMeshResolution(srcGeometry.getMeshResolution());
-                                newGeometry.setMeshMode(srcGeometry.getMeshMode());
-                                newQuad->getTexture() = deserializedQuad.getTexture();
-                            }
-                        }
-                        if (sceneJson.contains("isActive") && sceneJson["isActive"].get<bool>()) {
-                            sceneManager.setActiveScene(scene->getId());
-                        }
-                    }
-                    firstScene = false;
-                } else {
-                    deserializeScene(sceneJson, sceneManager);
-                }
-            }
+            loadScenesArray(json["scenes"], sceneManager);
         } else if (json.contains("quads")) {
-            // V1.x backward compatibility
-            Scene* scene = sceneManager.getSceneByIndex(0);
-            if (scene && json["quads"].is_array()) {
-                for (const auto& quadJson : json["quads"]) {
-                    std::string texturePath;
-                    Quad deserializedQuad = deserializeQuad(quadJson, texturePath);
-                    Quad* newQuad = scene->createQuad();
-                    newQuad->setName(deserializedQuad.getName());
-                    newQuad->setZOrder(deserializedQuad.getZOrder());
-                    newQuad->setVisible(deserializedQuad.isVisible());
-                    newQuad->setLocked(deserializedQuad.isLocked());
-                    newQuad->setOpacity(deserializedQuad.getOpacity());
-                    auto& newGeometry = newQuad->getGeometry();
-                    const auto& srcGeometry = deserializedQuad.getGeometry();
-                    newGeometry.setCorners(srcGeometry.getCorners());
-                    newGeometry.setMeshResolution(srcGeometry.getMeshResolution());
-                    newGeometry.setMeshMode(srcGeometry.getMeshMode());
-                    newQuad->getTexture() = deserializedQuad.getTexture();
-                }
-            }
+            // v1.x backward compatibility - migrate quads into the default scene (ADR-032).
+            loadV1QuadsAsScene(json, sceneManager);
         }
 
         return Result<void, std::string>::success();
