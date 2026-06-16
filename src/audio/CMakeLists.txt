@@ -6,8 +6,6 @@ add_library(quadmapper_audio STATIC
     AudioBuffer.cpp
     AudioDecoder.hpp
     AudioDecoder.cpp
-    AudioEngine.hpp
-    AudioEngine.cpp
     AudioMixer.hpp
     AudioMixer.cpp
     AudioSource.hpp

@@ -13,10 +13,6 @@ add_library(quadmapper_renderer STATIC
     ComputeShader.cpp
     Texture.hpp
     Texture.cpp
-    TextureCache.hpp
-    TextureCache.cpp
-    Framebuffer.hpp
-    Framebuffer.cpp
     Mesh.hpp
     Mesh.cpp
     VertexArray.hpp

@@ -12,7 +12,6 @@ class SceneManager;
 class MediaLibrary;
 class OutputManager;
 class InputManager;
-class UIManager;
 class Project;
 class FolderWatcher;
 class ThumbnailCache;
@@ -44,7 +43,6 @@ public:
     MediaLibrary* getMediaLibrary() const { return m_mediaLibrary.get(); }
     OutputManager* getOutputManager() const { return m_outputManager.get(); }
     InputManager* getInputManager() const { return m_inputManager.get(); }
-    UIManager* getUIManager() const { return m_uiManager.get(); }
     Project* getProject() const { return m_project.get(); }
     SourceManager* getSourceManager() const { return m_sourceManager.get(); }
 
@@ -78,7 +76,6 @@ private:
     std::unique_ptr<MediaLibrary> m_mediaLibrary;
     std::unique_ptr<OutputManager> m_outputManager;
     std::unique_ptr<InputManager> m_inputManager;
-    std::unique_ptr<UIManager> m_uiManager;
     std::unique_ptr<Project> m_project;
     std::unique_ptr<FolderWatcher> m_folderWatcher;
     std::unique_ptr<ThumbnailCache> m_thumbnailCache;

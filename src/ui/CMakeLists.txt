@@ -1,8 +1,6 @@
 # UI library - Dear ImGui interface
 
 add_library(quadmapper_ui STATIC
-    UIManager.hpp
-    UIManager.cpp
     Theme.hpp
     Theme.cpp
     panels/Panel.hpp

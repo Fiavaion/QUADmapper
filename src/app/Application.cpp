@@ -20,7 +20,6 @@
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
 #include "../input/InputManager.hpp"
-#include "../ui/UIManager.hpp"
 #include "../ui/Theme.hpp"
 #include "../ui/panels/OutputPanel.hpp"
 #include "../ui/panels/MediaBinPanel.hpp"
@@ -332,9 +331,6 @@ bool Application::initializeComponents() {
 
     // Create input manager
     m_inputManager = std::make_unique<InputManager>();
-
-    // Create UI manager
-    m_uiManager = std::make_unique<UIManager>();
 
     Logger::debug("All components initialized");
     return true;
@@ -2461,7 +2457,6 @@ void Application::shutdown() {
     Logger::info("Shutting down QUADmapper...");
 
     // Cleanup components in reverse order of creation
-    m_uiManager.reset();
     m_inputManager.reset();
     m_outputManager.reset();
     m_thumbnailCache.reset();  // Clear GL textures before context destroyed

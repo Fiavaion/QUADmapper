@@ -21,8 +21,8 @@ projector (monitor 2), rendered warped + clean**. See `tests/smoke/out/05_projec
 - ✅ Correctness CRITICALs fixed: audio RT-safety (TD-03), video data races (TD-04). Residual audio reclamation nit tracked as TD-08 (LOW).
 
 ## Next 3 tasks (in order)
-1. **TD-02 step 2** wire `UIManager`+panels to dispatch; retire the dual-track `m_sceneManager`/static-`Scene` split (one scene of truth).
-2. **TD-05/TD-06** `.qmap` migration + de-dupe save/load; delete dead code (`FrameBuffer`, `DoubleBuffer`, `AudioEngine`/`UIManager` stubs).
+1. **TD-05** `.qmap` version migration + de-dupe the 3× save/load blocks.
+2. **TD-02 step 2** introduce a real `UIManager` + panel dispatch (the stub was deleted in TD-06); retire the dual-track `m_sceneManager`/static-`Scene` split (one scene of truth).
 3. **TD-07/TD-08** build exit-code flake (CMake, needs approval); defer audio snapshot reclamation to the control thread.
 
 ## Acceptance criteria for the refactor (the gate)

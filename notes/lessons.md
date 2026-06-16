@@ -15,4 +15,6 @@ skill) so the mistake can't recur — fix the process, not just the instance.
 
 | LESSON-ARCH-006 | ARCH | Safe way to de-static a giant god-function: move the function-statics into an owned struct (`EditorState`), then at the top of the function alias each field back to a same-named local reference (`auto& scene = es.scene;`). The 2000-line body stays textually unchanged, the compiler flags any missed reference, and a behavioral harness confirms parity. Surfaced one dead field (`currentSelectionId`) for free. | `src/app/EditorState.hpp` + `Application::render()` (TD-02 step 1). |
 
+| LESSON-BUILD-007 | BUILD | `ctest` after a PARTIAL build (`cmake --build --target QUADmapper`) runs STALE test binaries: it reported 624/624 green across TD-01/TD-03 while `test_output` had a signature-mismatch compile error and `test_audio` had a real regression (AudioBuffer rounded capacity up to a power of two, breaking the exact-capacity contract). Both only surfaced on the next FULL `cmake --build`. **Always full-build before ctest** so test exes recompile against changed headers. | Adopted full-build-before-ctest in this workflow; both regressions fixed. |
+
 <!-- New entries appended by /lessons from LESSON-* tags in source. -->

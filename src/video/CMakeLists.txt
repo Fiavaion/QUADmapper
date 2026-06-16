@@ -7,8 +7,6 @@ add_library(quadmapper_video STATIC
     VideoPlayer.cpp
     VideoPlaybackState.hpp
     VideoPlaybackState.cpp
-    FrameBuffer.hpp
-    FrameBuffer.cpp
     TimelineSyncManager.hpp
     TimelineSyncManager.cpp
 )
