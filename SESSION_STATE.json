@@ -1,49 +1,55 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-16T17:30:00Z",
+  "lastUpdated": "2026-06-16T19:55:00Z",
   "sessionInfo": {
     "sessionNumber": 14,
     "startTime": "2026-06-16T17:30:00Z",
-    "endTime": null,
-    "status": "active"
+    "endTime": "2026-06-16T19:55:00Z",
+    "status": "completed"
   },
   "currentWork": {
     "activeTaskId": null,
-    "activeTaskTitle": "QM-055 DONE (camera capture rail + PNG); on-quad display deferred to TD-09",
-    "currentFile": "feature/qm-055-camera-input (UNCOMMITTED — verified, clean)",
+    "activeTaskTitle": "AI Pre-Show initiative SOFTWARE-COMPLETE (QM-055..060 + 062); only hardware-gated QM-061 remains",
+    "currentFile": "branch dev (all session-14 work; pushed to origin/dev). master = clean baseline fb4c85b.",
     "currentFunction": null,
-    "workInProgress": "Session 13 opened Phase 9 (AI Pre-Show Assist). Planning thread produced 3 cited research docs (AI prior-art, competitor audit, GO feasibility spike) in docs/research/, ADR-035 (Accepted: AI via optional out-of-process Python sidecar), and a phased roadmap QM-055..062. Implemented and hardware-verified QM-055 (capture rail + PNG): VideoDecoder::openCamera (dshow/libavdevice, no new dep; open() refactored into shared setupDecoderFromFormat), CameraSource + CameraDevices DirectShow enumeration + SourceManager::createCameraSource, and a dependency-free writeRgbPng (default vcpkg ffmpeg has no PNG encoder) verified readable by OpenCV. Gate green: 592/592 ctest, media smoke (video->quad->projector success metric intact). On-quad camera DISPLAY deferred to TD-09 (renderer not wired to SourceManager) per user. ALL WORK UNCOMMITTED on branch feature/qm-055-camera-input.",
+    "workInProgress": "Nothing in progress. Session 14 took Phase 9 from 'QM-055 done, uncommitted' to the entire AI pre-show wedge built end-to-end: Surface-Snap Assist (QM-055..058) + One-Flash auto-warp (QM-059/060) + anamorphic (QM-062), 7 tasks, each watched working in the real app. QM-056 sidecar (Python stdlib HTTP + C++ WinHTTP/SidecarClient, Job Object lifecycle, graceful absence). QM-057 Metric3D metric-depth + Open3D segment_plane -> 4 corners + confidence (verticality gate drops gallery floor-trap to ~0). QM-058 Detect Surface UI (apply proposed quad, Tab+arrow refine, low-conf 'tap the surface') = Phase 1 ships. QM-059 ChArUco pattern emit (renderPatternToOutputs) + camera capture to disk. QM-060 POST /oneflash homography solve (detect ChArUco ref+photo, match by id -> H, surface target -> H^-1 -> projector corners), validated WITHOUT hardware by a synthetic known-homography test (<0.02, conf 0.99, 0.13px RMS). QM-062 anamorphic (audience rect through H^-1 -> frontal-from-viewpoint). Verified via guarded headless self-test hooks (QM_AI_SELFTEST in {1,oneflash,solve,anamorphic}, QM_AI_TEST_IMAGE) because ImGui menu-driving is unreliable here. Gate held all session: 596/596 ctest, 15/15 sidecar pytest, success-metric smoke green.",
     "nextSteps": [
-      "FIRST: commit the QM-055 work (suggest splitting planning docs + ADR-035 from the QM-055 code) on feature/qm-055-camera-input; then merge to master or stack QM-056 on top.",
-      "QM-056: AI sidecar skeleton + IPC contract (ADR-035) — stand up tools/ai-sidecar/ (Python); app launch/health-check/teardown; versioned POST /surface stub; sidecar-absent disables AI UI cleanly (existing workflows unaffected); contract test + Python unit test GPU-free. Consumes the PNG CameraSource::captureCurrentFrameToPng() produces. Models already on disk (Depth-Anything-V2 / Metric3D under ComfyUI controlnet_aux).",
-      "Then QM-057 (Metric3D surface service) -> QM-058 (propose-corners UI, human-confirm) = Phase 1 ships; QM-059/060 -> 🚩 QM-061 real-device gate = Phase 2 wedge.",
-      "TD-09 now also gates QM-055's on-quad camera display — converging the dual media model lets camera + all sources render on quads in one stroke (do deliberately, success-metric risk).",
-      "Open debt: TD-07 (build exit-code flake, CMake), TD-08 (audio snapshot reclamation, LOW)."
+      "🚩 QM-061 (HARDWARE-ONLY, the make-or-break gate): connect a projector as a 2nd display -> AI > Enable AI Assist -> One-Flash > Emit Pattern -> F11 (flashes ChArUco on the projector) -> photograph surface+pattern with a phone -> point QM_AI_TEST_IMAGE at that photo -> One-Flash > Solve & Apply (or Anamorphic Warp) -> verify content lands aligned. Document failure modes (lighting, throw angle, surface texture). Fallback if it fails: port MIT gray-code structured-light behind the same /oneflash contract.",
+      "Open a dev->master PR (https://github.com/Fiavaion/QUADmapper/pull/new/dev) once QM-061 passes / after review, to bring the AI wedge into master.",
+      "Optional debt: TD-10 (sidecar start() blocks UI ~1-3s -> async worker thread), TD-09 (converge dual media model + on-quad camera display), TD-07 (build exit-code flake, CMake), TD-08 (audio snapshot reclamation, LOW).",
+      "Parallel/alternative track (independent of AI): v1.1 polish — color correction per quad (US-104, low risk) or soft-edge blending (US-101)."
     ]
   },
   "context": {
     "recentFiles": [
-      "src/video/VideoDecoder.cpp",
-      "src/source/CameraSource.cpp",
-      "src/source/CameraDevices.cpp",
-      "src/video/PngWriter.cpp",
-      "tests/unit/source/CameraSourceTest.cpp",
-      "docs/adr/0035-ai-preshow-sidecar.md",
-      "docs/research/ai-preshow-roadmap-2026-06-16.md"
+      "tools/ai-sidecar/sidecar.py",
+      "tools/ai-sidecar/surface.py",
+      "tools/ai-sidecar/oneflash.py",
+      "src/ai/SidecarClient.cpp",
+      "src/app/Application.cpp",
+      "src/output/OutputManager.cpp",
+      "src/ui/panels/MainMenuBar.cpp",
+      "tests/smoke/drive_ai_smoke.ps1",
+      "resources/patterns/charuco.png"
     ],
     "keyDecisions": [
-      "ADR-035: AI pre-show assist via an optional out-of-process Python sidecar (localhost HTTP+JSON); render path / C++ build / .qmap untouched. Accepted.",
-      "Snap-to-Surface reframed (spike findings): One-Flash Auto-Warp + human-confirm — projector-off passive warp is geometrically impossible (projector pose unobserved); fully-automatic surface picking is unreliable.",
-      "Enable libavdevice for webcam capture — already in the vcpkg ffmpeg, no new dependency (CMake one-liner approved).",
-      "On-quad camera display deferred to TD-09 (renderer not wired to SourceManager; success-metric-adjacent).",
-      "writeRgbPng is dependency-free (default vcpkg ffmpeg ships no PNG encoder) — verified readable by OpenCV.",
+      "C++<->sidecar transport: WinHTTP client + CreateProcess in a Job Object (KILL_ON_JOB_CLOSE) so no orphan; Windows system libs only, no vcpkg dep (ADR-035's HTTP choice).",
+      "Authorized running the local ComfyUI Metric3D model (execute code + torch.load weights) and installing open3d/addict/yapf into Python 3.11 — the sidecar's own out-of-build deps.",
+      "QM-057 confidence = planar-quality x verticality gate (floor/ceiling -> ~0) x ambiguity gate, so the gallery floor-trap returns LOW confidence instead of confidently wrong.",
+      "Metric3D: call the package's internal predict_depth_normal() for RAW metric depth; its public __call__ returns a colormapped depth (loses scale).",
+      "ChArUco asset written 3-channel (a grayscale PNG loads as GL_RED -> red-on-black).",
+      "Faithful anamorphic (QM-062) uses the One-Flash homography (projector pose observed via the pattern); a projector-off / QM-057-only version is geometrically underdetermined (the spike's finding).",
+      "Verification via guarded headless self-test hooks (QM_AI_SELFTEST / QM_AI_TEST_IMAGE) — off in normal runs; the programmatic smoke mode the smoke README asked for.",
+      "Git workflow: all session-14 work on dev (pushed to origin/dev); master kept at the clean Session-12 baseline until a dev->master PR.",
       "Git author for this repo: Jones <fiavaion101@gmail.com> (local config)."
     ],
     "openQuestions": [],
-    "blockers": []
+    "blockers": [
+      "QM-061 (real-device validation) cannot be done without a physical projector + surface + phone — the wedge's novelty stays a hypothesis until then."
+    ]
   },
   "projectState": {
-    "currentPhase": "Phase 9: AI Pre-Show Assist (QM-055 done; QM-056 next)",
+    "currentPhase": "Phase 9: AI Pre-Show Assist — SOFTWARE-COMPLETE (QM-055..060 + 062 done; only hardware-gated QM-061 remains)",
     "completedPhases": [
       "Phase 0: Infrastructure Setup",
       "Phase 1: Core Foundation",
@@ -53,32 +59,38 @@
       "Phase 5: Scene System",
       "Phase 6: Audio System",
       "Phase 7: Polish",
-      "Phase 8: ADR-031 Refactor (complete, merged to master)"
+      "Phase 8: ADR-031 Refactor (complete, merged to master)",
+      "Phase 9: AI Pre-Show Assist — software-complete (Surface-Snap + One-Flash + anamorphic); QM-061 hardware gate outstanding"
     ],
     "buildStatus": "success",
-    "lastSuccessfulBuild": "2026-06-16T17:10:00Z",
-    "note": "Phase 9 (AI Pre-Show Assist) opened. QM-055 DONE (camera capture rail + PNG), verified on the real 'HD User Facing' webcam (1280x720/30fps): VideoDecoder::openCamera (dshow/libavdevice), CameraSource + CameraDevices enumeration + SourceManager factory, dependency-free writeRgbPng (OpenCV-verified). 592/592 ctest; media smoke green (success metric intact). On-quad display deferred to TD-09. ADR-035 (Python sidecar) Accepted; roadmap QM-055..062. ALL SESSION-13 WORK UNCOMMITTED on feature/qm-055-camera-input. Next: commit, then QM-056 (sidecar skeleton)."
+    "lastSuccessfulBuild": "2026-06-16T19:45:00Z",
+    "note": "Entire AI pre-show wedge built end-to-end and verified in the real app this session (QM-055..060 + 062). Optional Python sidecar (tools/ai-sidecar/): Metric3D surface detection + Open3D plane fit + ChArUco One-Flash homography solve + anamorphic. C++ src/ai/SidecarClient (WinHTTP + Job Object), AI menu (Enable / Detect Surface / One-Flash {Emit, Capture, Solve & Apply, Anamorphic, Clear}). Geometry-only results; .qmap + C++ build + vcpkg manifest untouched. 596/596 ctest; 15/15 sidecar pytest; success-metric smoke green. ALL work on branch dev (origin/dev); master clean at fb4c85b. Only remaining AI work: 🚩 QM-061 real-device test (hardware-only)."
   },
   "statistics": {
-    "totalSessions": 13,
-    "tasksCompleted": 56,
+    "totalSessions": 14,
+    "tasksCompleted": 62,
     "tasksInProgress": 0,
-    "tasksTodo": 9
+    "tasksTodo": 5
   },
-  "session13Accomplishments": {
-    "shipped": "branch feature/qm-055-camera-input (UNCOMMITTED — verified, clean)",
+  "session14Accomplishments": {
+    "shipped": "branch dev (pushed to origin/dev); master clean at fb4c85b — dev->master PR pending review/hardware test",
     "items": [
-      "Phase 9 opened: AI Pre-Show Assist research (3 cited docs) + ADR-035 + roadmap QM-055..062",
-      "Feasibility spike (GO): Depth-Anything-V2 local inference; reframed feature to One-Flash + human-confirm",
-      "QM-055: VideoDecoder::openCamera (dshow/libavdevice, no new dep) + open() refactor",
-      "QM-055: CameraSource + CameraDevices enumeration + SourceManager::createCameraSource + test_source",
-      "QM-055 AC2: dependency-free writeRgbPng, verified readable by OpenCV",
-      "Gate: 592/592 ctest + media smoke green (success metric intact)"
+      "QM-055 committed (2-commit split) + merged to master",
+      "QM-056: AI sidecar skeleton + IPC (Python stdlib HTTP; C++ WinHTTP SidecarClient + Job Object lifecycle; graceful absence; contract test + 6 GPU-free pytest)",
+      "QM-057: Metric3D metric-depth + Open3D segment_plane -> 4 corners + confidence; verticality gate (gallery floor-trap 0.00 vs screen 0.58)",
+      "QM-058: Detect Surface UI (apply proposed quad + Tab/arrow refine; low-conf 'tap the surface') — Phase 1 ships",
+      "QM-059: One-Flash ChArUco pattern emit (renderPatternToOutputs) + single-photo capture to disk",
+      "QM-060: POST /oneflash homography solve -> projector corners; synthetic known-homography test (<0.02, conf 0.99, 0.13px RMS)",
+      "QM-062: anamorphic / audience-perspective warp (One-Flash H, audience rect through H^-1)",
+      "Gate held: 596/596 ctest, 15/15 sidecar pytest, success-metric smoke green; new debt TD-10",
+      "Tidied git: work isolated on dev (origin/dev), master reset to clean baseline, stale branches deleted"
     ],
     "lessons": [
-      "Default vcpkg ffmpeg ships no PNG encoder — a self-contained stored-DEFLATE PNG writer avoids a vcpkg.json change.",
-      "FFmpeg dshow webcam capture reuses the existing VideoDecoder pimpl with just an input-format + options change; libavdevice was already installed.",
-      "Spike-before-roadmap paid off: running real inference reframed the feature (One-Flash, human-confirm) instead of confirming the opening guess."
+      "Metric depth (Metric3D) fixes the spike's affine bow on oblique surfaces; call predict_depth_normal() for raw metric depth (public __call__ returns colormapped).",
+      "A verticality prior (1 - |normal_y|) as a multiplicative gate makes the 'largest plane != intended surface' floor-trap return low confidence instead of confidently wrong.",
+      "One-Flash = detect the SAME ChArUco in the projector reference + the photo, match by marker id, findHomography — avoids board-unit bookkeeping; synthetic warped-pattern test validates the solve with zero hardware.",
+      "A grayscale PNG loads as a single GL_RED channel (renders red-on-black) — write calibration patterns 3-channel.",
+      "ImGui menu-driving for verification is unreliable (foreground-steal, moving window, DPI fonts); a guarded headless self-test hook (env-gated) is the robust, honest way to watch a feature work end-to-end."
     ]
   }
 }

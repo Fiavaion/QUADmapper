@@ -6,6 +6,57 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 14 - 2026-06-16 - AI Pre-Show wedge built end-to-end (QM-055→060 + 062)
+
+**Focus:** Took Phase 9 from "QM-055 done, uncommitted" to **the entire AI pre-show initiative
+software-complete** — Surface-Snap Assist + One-Flash auto-warp + anamorphic — in 7 tasks, each
+watched working in the real app. Only the hardware-gated QM-061 remains.
+
+**Completed this session:**
+- **QM-055** committed (2-commit split: docs/ADR + code) and merged to master.
+- **QM-056** — AI sidecar skeleton + IPC contract: Python stdlib HTTP server (`tools/ai-sidecar/`,
+  versioned `/health` + stub `/surface`); C++ `src/ai/SidecarClient` — WinHTTP client (no vcpkg
+  dep) + spawn in a **Job Object (KILL_ON_JOB_CLOSE)** so no orphan; "AI" menu launches on demand,
+  disables cleanly when absent. Contract test (C++) + 6 GPU-free pytest.
+- **QM-057** — Metric3D surface service: metric depth (fixes the spike's affine bow) + Open3D
+  `segment_plane` → 4 corners + confidence; **verticality gate** drops the gallery floor-trap to
+  ~0. On the 3 spike scenes: screen 0.58 (encloses), facade 0.59, gallery 0.00. ~350ms steady GPU.
+- **QM-058** — Detect Surface UI: capture → sidecar → apply proposed quad to the selected quad,
+  refine with Tab+arrow; low-confidence → "tap the surface". **Phase 1 ships.**
+- **QM-059** — One-Flash pattern emit + capture: ChArUco asset (`resources/patterns/`),
+  `OutputManager::renderPatternToOutputs()` flashes a fullscreen identity quad on the projector;
+  capture → camera PNG to disk via shared `captureCameraFrameToPng()`.
+- **QM-060** — One-Flash homography solve: `POST /oneflash` detects ChArUco in reference + photo,
+  matches by id → H (projector-norm ↔ photo px); surface target → H⁻¹ → projector corners.
+  **Validated without hardware** by a synthetic known-homography test (corners <0.02, conf 0.99,
+  0.13px RMS) + in-app Solve & Apply.
+- **QM-062** — anamorphic / audience-perspective warp: reuse the One-Flash H, map a centered
+  audience rect back so content reads frontal from the captured viewpoint.
+
+**Verification:** every step watched working in the real app via guarded headless self-test hooks
+(`QM_AI_SELFTEST` ∈ {1, oneflash, solve, anamorphic}, `QM_AI_TEST_IMAGE`), since ImGui menu-driving
+was unreliable (a foreground app steals focus; the window moves; DPI-scaled fonts). Gate held all
+session: **596/596 ctest**, **15/15 sidecar pytest**, success-metric smoke green, no regression.
+
+**Decisions:** WinHTTP + Job Object for the C++↔sidecar transport (ADR-035's HTTP choice);
+authorized running the local ComfyUI Metric3D model + installing open3d/addict/yapf into Python
+3.11; ChArUco written 3-channel (a grayscale PNG loads as GL_RED → red-on-black); the faithful
+anamorphic uses the One-Flash homography (a projector-off version is geometrically
+underdetermined — the spike's finding). New debt **TD-10** (sidecar `start()` blocks the UI
+~1–3s; async deferred).
+
+**Git/merges (tidied):** all 7 tasks merged; **all session work now lives on `dev`** (pushed to
+`origin/dev`, PR-able) and **`master` reset to the clean Session-12 baseline** (`fb4c85b`) — main
+stays clean until a dev→master PR. Stale merged branches deleted; tmp scaffolding removed.
+
+**🚩 Handoff — the only remaining AI work is QM-061 (hardware-only):** connect a projector as a 2nd
+display → AI▸Enable → One-Flash▸Emit Pattern → F11 → photograph surface+pattern with a phone →
+point `QM_AI_TEST_IMAGE` at it → Solve & Apply / Anamorphic Warp → check alignment; document
+failure modes. Fallback if it fails: port MIT gray-code structured-light behind the same
+`/oneflash` contract. Detailed log: `docs/sessions/2026-06-16-session14-ai-wedge.md`.
+
+---
+
 ### Session 13 - 2026-06-16 - AI pre-show planning + QM-055 (camera capture rail)
 
 **Focus:** A planning thread on integrating AI into the **pre-show setup** stage, carried to a

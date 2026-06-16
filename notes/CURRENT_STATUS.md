@@ -1,83 +1,79 @@
 # Current Status
 
-**Last updated:** 2026-06-16 (end of Session 12)
-**Phase / focus:** **ADR-031 refactor COMPLETE and MERGED to `master`.** Ready to start **v1.1 features**.
-**Branch:** `master` (PR #1 merged, commit `5ef8809`) — clean baseline for new work.
-**Build:** ✅ app builds & launches   **Tests:** ✅ 590/590 (`ctest --test-dir build/debug`)   **Smoke:** ✅ green incl. F11 projector + media (image & video)
+**Last updated:** 2026-06-16 (end of Session 14)
+**Phase / focus:** **Phase 9 (AI Pre-Show Assist) is SOFTWARE-COMPLETE.** The whole wedge —
+Surface-Snap Assist + One-Flash auto-warp + anamorphic — is built and watched working. The only
+remaining AI work is the hardware-gated **🚩 QM-061** (real projector + surface + phone photo).
+**Branch:** `dev` (all Session-14 work, pushed to `origin/dev`). **`master` = clean baseline
+`fb4c85b`** (Session 12) — main stays clean until a `dev`→`master` PR.
+**Build:** ✅ app builds & launches   **Tests:** ✅ 596/596 ctest + 15/15 sidecar pytest
+**Smoke:** ✅ green (success metric intact: warp + F11 projector)
 
 ## What works right now (grounded, verified this session)
-The **core projection-mapping workflow is fully functional and watched working** this session:
-add a quad → warp it to map a surface (mouse drag *or* precise keyboard: Tab-cycle + arrow-nudge,
-Shift ×10 / Alt ×0.1) → apply an **image or video** → perform it fullscreen to a projector (F11).
+The **core projection-mapping success metric is intact** (add quad → warp via Tab-cycle +
+arrow-nudge → F11 to projector) AND the **entire AI pre-show wedge runs end-to-end in the app:**
 
-- **Video:** `greenCrystals_15Sec_4x3.mp4` (768×576, FFmpeg) load → Assign to Selected Quad →
-  Play → warp → F11: renders on the warped quad in the editor **and** fullscreen on monitor 2.
-- **Image:** `knowledge-graph.png` (1800×1200) via Inspector Texture Path → Load → warp → F11:
-  same, on the projector.
-- The projector path (`renderToProjectorOutputs()`) feeds outputs the **same** texture map
-  (`quadTextures` + video wrapper) the editor viewport uses.
+- **Detect Surface (QM-058):** capture a frame → Metric3D surface detection → the proposed quad is
+  applied to the selected quad; low confidence prompts "tap the surface" (gallery floor-trap → 0.00,
+  screen → 0.58). Refine with the normal Tab+arrow UX, send F11.
+- **One-Flash (QM-059/060):** AI ▸ One-Flash ▸ Emit Pattern flashes a ChArUco fullscreen on the
+  projector; Solve & Apply detects the pattern in a photo, solves the projector↔surface homography,
+  and warps the quad so content lands on the surface. Synthetic test recovers corners to <0.02
+  (conf 0.99).
+- **Anamorphic (QM-062):** AI ▸ One-Flash ▸ Anamorphic Warp maps a centered audience rectangle back
+  through the homography so content reads frontal from the captured viewpoint.
 
-**ADR-031 refactor (TD-01..TD-06 + all of TD-02) is done and merged.** TD-02 decomposed the
-~1900-line `render()` into panel classes over the live `EditorState` model via a per-frame
-`EditorContext`: `MainMenuBar`, `QuadListPanel`, `InspectorPanel` (context-sensitive Properties),
-`VideoPlayerPanel`, and `ViewportEditor` (the non-`Panel`, pre-`NewFrame()` on-canvas warp
-surface). `Application.cpp` 2411 → ~960 lines; `render()` body ~1910 → ~400.
+All AI results are **geometry-only** (ordinary quad corners) — `.qmap`, the C++ build, and the
+vcpkg manifest are **untouched** (the Python sidecar is an optional out-of-build component).
 
-## NEXT TASK — resume here: **QM-055 (AI Pre-Show Assist, Phase 9)**
-**ADR-035 Accepted (2026-06-16):** integrate AI pre-show auto-warp via an **optional
-out-of-process Python sidecar** — render path / C++ build / `.qmap` all untouched. Full plan:
-@docs/research/ai-preshow-roadmap-2026-06-16.md (QM-055..062). Grounded by 3 cited docs in
-`docs/research/` (AI prior-art, competitor audit, GO feasibility spike + `snap-spike-evidence/`).
+## NEXT TASK — resume here: **🚩 QM-061 (hardware-only — the make-or-break gate)**
+This is the one thing this environment couldn't close. Phase 2 is not "done" until it passes.
+1. Connect a **projector** as a second display, aimed at a real surface.
+2. App: select a quad → **AI ▸ Enable AI Assist** → **One-Flash ▸ Emit Pattern** → **F11**.
+3. **Photograph** the surface + projected pattern with a phone; copy the photo to the PC.
+4. Set `QM_AI_TEST_IMAGE` to that photo → **One-Flash ▸ Solve & Apply** (or **Anamorphic Warp**) →
+   verify the projected content lands aligned. Document failure modes (lighting, throw, texture).
+5. **Fallback if it fails:** port MIT gray-code structured-light behind the same `/oneflash` contract.
 
-**QM-055 DONE (capture rail + PNG)** on branch `feature/qm-055-camera-input` (not yet merged):
-`VideoDecoder::openCamera` (dshow, libavdevice), `CameraSource`+`CameraDevices` enumeration,
-`SourceManager::createCameraSource`, and `writeRgbPng` (dependency-free; OpenCV-verified). All
-verified on the real webcam; 592/592 ctest; media smoke green (success metric intact). **On-quad
-display deferred to TD-09** (renderer isn't wired to `SourceManager`) — capture+PNG is what the AI
-roadmap needs and it's complete.
+When QM-061 passes / after review, open the **`dev`→`master` PR**
+(https://github.com/Fiavaion/QUADmapper/pull/new/dev) to bring the wedge into `master`.
 
-**Start NEXT with QM-056 — AI sidecar skeleton + IPC contract (ADR-035):**
-- Stand up `tools/ai-sidecar/` (Python); app launches/health-checks/tears it down; versioned
-  `POST /surface` stub round-trips; sidecar-absent disables AI UI cleanly (existing workflows
-  unaffected). Models already on disk (Depth-Anything-V2 / Metric3D under ComfyUI controlnet_aux).
-- The sidecar consumes the PNG `CameraSource::captureCurrentFrameToPng()` now produces.
-- **Process:** AC first (TASKS.md QM-056) → small batches → reviewer-mode. Merge QM-055 first or
-  continue on a stacked branch.
+Parallel/alternative track (independent of AI): v1.1 polish — color correction per quad (US-104,
+low risk) or soft-edge blending (US-101).
 
-**The make-or-break later:** 🚩 QM-061 (real-device test on an actual projector+phone) — the
-wedge's novelty is a hypothesis until watched working on real hardware.
-
-Parallel/alternative track if desired: v1.1 polish — **color correction per quad** (US-104, low
-risk) or **soft-edge blending** (US-101). MIDI/OSC (US-102/103) needs its own dependency ADR.
+## The AI sidecar (how to run it / where things are)
+- `tools/ai-sidecar/` — optional Python service (loopback HTTP+JSON). `sidecar.py` routes
+  `/health`, `/surface` (Metric3D), `/oneflash` (ChArUco homography). `surface.py`, `oneflash.py`,
+  `gen_pattern.py` (regenerates `resources/patterns/charuco.png`). Deps in `requirements.txt`
+  (numpy/opencv/open3d/+ torch with CUDA; Metric3D from the local ComfyUI tree via `QM_M3D_*` env).
+- C++ side: `src/ai/SidecarClient` (WinHTTP client + Job-Object process lifecycle). AI menu in
+  `MainMenuBar`; flow in `Application::{aiDetectSurface, oneFlashEmitPattern, oneFlashCapturePhoto,
+  runOneFlash, oneFlashSolveAndApply, oneFlashAnamorphic}`.
+- **Verification seams (off in normal runs):** `QM_AI_SELFTEST` ∈ {1, oneflash, solve, anamorphic}
+  drives a headless self-test; `QM_AI_TEST_IMAGE` feeds a fixed photo. Driven by
+  `tests/smoke/drive_ai_smoke.ps1 -SelfTestMode <mode>`.
 
 ## Open debt (none blocking — see TECHNICAL_DEBT.md)
-- **TD-09** — converge the two media models (MediaBin `SourceManager` vs quad-assignment
-  `quadTextures`/`videoPlayer`) onto the source architecture. ⚠️ Touches the assignment path +
-  on-canvas editing → success-metric risk; do as a **deliberate feature with its own ADR**.
-- **TD-07** — build exit-code flake (gtest discovery timeout); touches CMake → needs approval.
+- **TD-10** — sidecar `start()` blocks the UI ~1–3s on enable (pre-show, button-triggered);
+  async worker thread when convenient.
+- **TD-09** — converge the two media models + on-quad camera display (success-metric risk; own ADR).
+- **TD-07** — build exit-code flake (gtest discovery timeout; CMake → needs approval).
 - **TD-08** — defer audio snapshot reclamation to the control thread (LOW).
 
-## The EditorContext contract (every panel uses it)
-`EditorContext{ EditorState& es; Project*; MediaLibrary*; SourceManager*; OutputManager*; Renderer*; GLFWwindow* }`
-— built once per frame in `render()`; panels take `render(EditorContext&)` and never store it;
-panels are value members of `EditorState`; **ImGui window names preserved exactly** (imgui.ini
-docking layout keys). `ViewportEditor` follows the contract but is **not** a `Panel` — it runs
-pre-`NewFrame()` and draws via the OpenGL `Renderer`.
-
 ## Verification gate (non-negotiable)
-`cmake --build build/debug` → `ctest --test-dir build/debug` (590/590; trust the "100% tests
-passed" line — TD-07 build-exit-code flake) → `tests/smoke/drive_smoke.ps1` (warp + projector).
-When media is touched, also `drive_media_smoke.ps1` (video) / `drive_image_smoke.ps1` (image) —
-both maximize the window, clipboard-paste the media path, and capture editor + projector frames.
+`cmake --build build/debug` → `ctest --test-dir build/debug` (596/596) →
+`tests/smoke/drive_smoke.ps1` (warp + projector). AI: `tools/ai-sidecar` → `python -m pytest`
+(15/15, surface tests skip without the model). When media is touched, also the media/image smoke.
+Run smoke harnesses by **absolute path** (nested `$PSScriptRoot` mangles).
 
 ## Blockers
-None. `master` is fully green, merged, and pushed.
+QM-061 needs physical hardware (projector + surface + phone). Everything else is done & green.
 
 ## Reference links
-- Decisions: @docs/adr/0034-render-decomposition.md · @docs/adr/0031-keep-vs-rebuild.md · @docs/adr/0032-qmap-migration.md · @docs/adr/0033-retire-multi-scene.md
-- Roadmap: @QUAD_MAPPER_MVP_SPECIFICATION.md (§14.2 Post-MVP) · @docs/PRD.md (§3.2 / §4.2)
-- Debt: @TECHNICAL_DEBT.md (TD-02 resolved; TD-07/08/09 open) · Success metric: @CLAUDE.md#success-metric
-- Tasks: @TASKS.md · Machine state: @SESSION_STATE.json · Latest log: @docs/sessions/2026-06-16-td02-batch4-merge-media-verify.md
+- Decisions: @docs/adr/0035-ai-preshow-sidecar.md · @docs/adr/0034-render-decomposition.md · @docs/adr/0031-keep-vs-rebuild.md
+- Roadmap: @docs/research/ai-preshow-roadmap-2026-06-16.md (QM-055..062) · spike @docs/research/snap-to-surface-spike-2026-06-16.md
+- Debt: @TECHNICAL_DEBT.md · Success metric: @CLAUDE.md#success-metric
+- Tasks: @TASKS.md · Machine state: @SESSION_STATE.json · Latest log: @docs/sessions/2026-06-16-session14-ai-wedge.md
 
 <!-- Rewrite this whole file at /end. It is the restart package: the next session reads
 THIS (plus the latest docs/sessions/ log), not the chat history. Keep it to one page. -->
