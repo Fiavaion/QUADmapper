@@ -50,7 +50,7 @@ Write-Host "[ai-smoke] tag=$Tag image=$TestImage"
 
 # For solve mode (QM-060): synthesize a "photo" of the projected ChArUco warped by
 # a known homography, so the One-Flash solve has a real pattern to detect.
-if ($SelfTestMode -eq "solve") {
+if (@("solve", "anamorphic") -contains $SelfTestMode) {
     $synth = Join-Path $OutDir "oneflash_synth.png"
     $py = @"
 import cv2, numpy as np, os
@@ -64,7 +64,7 @@ cv2.imwrite(r'$synth', photo); print('wrote', r'$synth')
 "@
     & $PythonExe -c $py | Out-Host
     $TestImage = (Resolve-Path $synth).Path
-    Write-Host "[ai-smoke] solve mode: synthetic pattern photo $TestImage"
+    Write-Host "[ai-smoke] $SelfTestMode mode: synthetic pattern photo $TestImage"
 }
 
 function Focus($h) {

@@ -35,6 +35,7 @@ public:
     void setOnCapturePhoto(ProjectCallback cb) { onCapturePhoto_ = std::move(cb); }
     void setOnClearPattern(ProjectCallback cb) { onClearPattern_ = std::move(cb); }
     void setOnSolveApply(ProjectCallback cb)   { onSolveApply_   = std::move(cb); }
+    void setOnAnamorphic(ProjectCallback cb)   { onAnamorphic_   = std::move(cb); }
 
     // Call once per frame inside the ImGui frame, after the dockspace.
     void render(EditorContext& ctx);
@@ -51,6 +52,7 @@ private:
     ProjectCallback onCapturePhoto_;
     ProjectCallback onClearPattern_;
     ProjectCallback onSolveApply_;
+    ProjectCallback onAnamorphic_;
 };
 
 }  // namespace quadmapper

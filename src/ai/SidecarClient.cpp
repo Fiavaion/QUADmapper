@@ -316,13 +316,20 @@ std::optional<SurfaceResult> SidecarClient::requestSurface(
 }
 
 std::optional<SurfaceResult> SidecarClient::requestOneFlash(
-    const std::string& patternImagePath) {
+    const std::string& patternImagePath,
+    const std::array<std::array<float, 2>, 4>* targetCorners) {
     auto& im = *impl_;
     if (im.state != SidecarState::Attached && im.state != SidecarState::Launched) {
         return std::nullopt;
     }
 
     json req = {{"pattern_image", patternImagePath}};
+    if (targetCorners != nullptr) {
+        req["target_corners"] = json::array();
+        for (const auto& c : *targetCorners) {
+            req["target_corners"].push_back({c[0], c[1]});
+        }
+    }
     HttpResponse r = httpRequest(im.config.host, im.config.port, "POST",
                                  "/oneflash", req.dump(), im.config.requestTimeoutMs);
     if (!r.ok || r.status != 200) return std::nullopt;

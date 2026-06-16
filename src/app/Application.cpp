@@ -483,6 +483,9 @@ void Application::runAiSelfTest() {
     } else if (mode == "solve") {
         // QM-060: solve the projector->surface homography and apply the warp.
         oneFlashSolveAndApply();
+    } else if (mode == "anamorphic") {
+        // QM-062: audience-perspective (frontal-from-viewpoint) warp.
+        oneFlashAnamorphic();
     } else {
         aiDetectSurface();
     }
@@ -596,6 +599,7 @@ void Application::render() {
         es.mainMenuBar.setOnCapturePhoto([this]() { oneFlashCapturePhoto(); });
         es.mainMenuBar.setOnClearPattern([this]() { oneFlashClearPattern(); });
         es.mainMenuBar.setOnSolveApply([this]()   { oneFlashSolveAndApply(); });
+        es.mainMenuBar.setOnAnamorphic([this]()   { oneFlashAnamorphic(); });
         es.mainMenuBarInitialized = true;
     }
 
@@ -1166,6 +1170,19 @@ void Application::oneFlashClearPattern() {
 }
 
 void Application::oneFlashSolveAndApply() {
+    runOneFlash(nullptr, "warp applied");
+}
+
+void Application::oneFlashAnamorphic() {
+    // A centered rectangle in the audience (photo) view: content mapped here
+    // looks like a frontal rectangle from the captured viewpoint.
+    static const std::array<std::array<float, 2>, 4> kAudienceTarget{{
+        {0.15f, 0.15f}, {0.85f, 0.15f}, {0.85f, 0.85f}, {0.15f, 0.85f}}};
+    runOneFlash(&kAudienceTarget, "anamorphic warp applied");
+}
+
+void Application::runOneFlash(const std::array<std::array<float, 2>, 4>* audienceTarget,
+                              const char* label) {
     EditorState& es = *m_editorState;
     auto setStatus = [&](const std::string& msg) {
         snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
@@ -1204,7 +1221,7 @@ void Application::oneFlashSolveAndApply() {
         }
     }
 
-    auto result = m_sidecarClient->requestOneFlash(patternPath.string());
+    auto result = m_sidecarClient->requestOneFlash(patternPath.string(), audienceTarget);
     if (!result || result->stub) {
         setStatus("One-Flash: pattern not detected (need the ChArUco visible)");
         return;
@@ -1230,8 +1247,8 @@ void Application::oneFlashSolveAndApply() {
 
     char msg[256];
     snprintf(msg, sizeof(msg),
-             "One-Flash: warp applied (confidence %.2f) - send to projector (F11)",
-             result->confidence);
+             "One-Flash: %s (confidence %.2f) - send to projector (F11)",
+             label, result->confidence);
     setStatus(msg);
 }
 

@@ -71,10 +71,17 @@ public:
     // version error — never throws — so callers treat AI as best-effort.
     std::optional<SurfaceResult> requestSurface(const std::string& imagePath);
 
-    // POST /oneflash {pattern_image} — One-Flash homography solve (QM-060). The
-    // returned corners are projector-normalized [0,1] quad corners that land
-    // content on the surface. Same best-effort contract as requestSurface.
-    std::optional<SurfaceResult> requestOneFlash(const std::string& patternImagePath);
+    // POST /oneflash {pattern_image, target_corners?} — One-Flash homography
+    // solve. Returns projector-normalized [0,1] quad corners. Same best-effort
+    // contract as requestSurface.
+    //   targetCorners == nullptr (QM-060): the sidecar maps the *detected surface*
+    //     back through the homography -> content lands on the surface.
+    //   targetCorners != nullptr (QM-062): the given audience-frame rectangle
+    //     (photo-normalized TL,TR,BR,BL) is mapped back -> content looks frontal
+    //     from the captured viewpoint (anamorphosis).
+    std::optional<SurfaceResult> requestOneFlash(
+        const std::string& patternImagePath,
+        const std::array<std::array<float, 2>, 4>* targetCorners = nullptr);
 
 private:
     struct Impl;

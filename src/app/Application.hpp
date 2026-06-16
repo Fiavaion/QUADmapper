@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 
@@ -85,10 +86,16 @@ private:
     void oneFlashEmitPattern();
     void oneFlashCapturePhoto();
     void oneFlashClearPattern();
-    // Capture a photo of the projected pattern, solve the projector->surface
-    // homography (POST /oneflash), and apply the resulting corners to the
-    // selected quad (QM-060). Geometry only; no .qmap change.
+    // Capture a photo of the projected pattern, solve via POST /oneflash, and
+    // apply the resulting corners to the selected quad. Geometry only.
+    //   oneFlashSolveAndApply (QM-060): target = the detected surface.
+    //   oneFlashAnamorphic   (QM-062): target = a centered audience rectangle ->
+    //     content looks frontal from the captured viewpoint (anamorphosis).
     void oneFlashSolveAndApply();
+    void oneFlashAnamorphic();
+    // Shared core: solve One-Flash with an optional audience target and apply.
+    void runOneFlash(const std::array<std::array<float, 2>, 4>* audienceTarget,
+                     const char* label);
 
     // Open the first camera, grab one frame, and write it to pngPath. Returns
     // false with a human-readable reason in `error`. Shared by aiDetectSurface()

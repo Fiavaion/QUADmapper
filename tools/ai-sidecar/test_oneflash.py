@@ -71,6 +71,24 @@ def test_blank_image_returns_none():
     assert result is None
 
 
+def test_anamorphic_target_round_trips():
+    """QM-062: a centered audience rectangle must map to projector corners that,
+    pushed forward through the recovered H, land back on that rectangle (i.e.
+    content drawn there looks frontal from the captured viewpoint)."""
+    photo, _ = _make_synthetic_photo()
+    audience = np.array([[0.15, 0.15], [0.85, 0.15],
+                         [0.85, 0.85], [0.15, 0.85]], np.float64)
+    result = oneflash.solve_oneflash(photo, audience, pattern_dir=os.path.normpath(PATTERN_DIR))
+    assert result is not None
+    H = np.asarray(result["homography"], np.float64)
+    proj = np.asarray(result["corners"], np.float64)
+    # Forward-map projector corners -> photo px, compare to the audience target px.
+    fwd = cv2.perspectiveTransform(proj.reshape(1, -1, 2), H).reshape(-1, 2)
+    target_px = audience * [PHOTO_W, PHOTO_H]
+    err = np.linalg.norm(fwd - target_px, axis=1)
+    assert err.max() < 2.0, f"anamorphic round-trip error {err} px"
+
+
 def test_corners_in_reasonable_range():
     photo, _ = _make_synthetic_photo()
     # Full-frame target -> projector corners that fill the camera view.
