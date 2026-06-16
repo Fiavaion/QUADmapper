@@ -4,15 +4,63 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 3 (TD-07, TD-08, TD-09 — see TECHNICAL_DEBT.md)
-- Done: 55
+- Todo: 3 debt (TD-07/08/09) + 6 AI (QM-056..QM-062 — Phase 9)
+- Done: 56
 - Blocked: 0
+
+---
+
+## Phase 9: AI Pre-Show Assist ("Snap-to-Surface")
+
+ADR-035 **Accepted** (optional out-of-process Python sidecar; render path / build / `.qmap`
+untouched). Plan: [docs/research/ai-preshow-roadmap-2026-06-16.md](docs/research/ai-preshow-roadmap-2026-06-16.md).
+Grounded by the prior-art research, competitor audit, and a GO feasibility spike (all in
+`docs/research/`). Each task: checkable AC first → small build→test→smoke batches. The wedge's
+novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
+
+#### QM-055: Live camera input as a media source (Phase 0 — enabling)
+- **Status:** DONE (capture rail + PNG) — **Completed:** 2026-06-16. On-quad *display* deferred to TD-09 (user decision).
+- **Phase:** Phase 9 · **Effort:** M · **Depends On:** none (capture rail for all AI features)
+- **Delivered & verified on the real "HD User Facing" webcam (1280×720/30fps mjpeg):**
+  - `VideoDecoder::openCamera()` — FFmpeg dshow capture; `libavdevice` linked (already in vcpkg, no new dep; CMake one-liner approved). `open()` refactored into shared `setupDecoderFromFormat()` (behavior-preserving; media smoke confirms video→quad→projector intact).
+  - `CameraSource : TextureSource` (live, non-playable; drains to newest frame) + `CameraDevices` DirectShow enumeration + `SourceManager::createCameraSource`. Test group `test_source` (2 tests, real-hardware, skip-if-absent).
+  - **AC2 (sidecar input):** `writeRgbPng()` — dependency-free PNG encoder (default vcpkg ffmpeg has no PNG encoder); **verified readable by OpenCV** (720×1280×3).
+  - **AC3:** 592/592 ctest (+2); media smoke green.
+- **Deferred (per user, → TD-09):** AC1's "camera displayed *on a quad*/projector" needs the renderer wired to `SourceManager` (the unconverged dual-model). Capture+PNG — the AI-roadmap-critical part — is complete; on-quad display rides on the deliberate TD-09 convergence.
+
+#### QM-056: AI sidecar skeleton + IPC contract (ADR-035)
+- **Status:** TODO · **Effort:** M · **Depends On:** QM-055
+- **AC:** launch/attach/health-check/teardown `tools/ai-sidecar/`; versioned `POST /surface` stub round-trips; sidecar-absent disables AI UI cleanly with all existing workflows unaffected; contract test + Python unit test run GPU-free.
+
+#### QM-057: Sidecar surface service (Metric3D → plane → 4 corners)
+- **Status:** TODO · **Effort:** M · **Depends On:** QM-056
+- **AC:** `POST /surface` returns dominant-surface corners + plane + confidence (Metric3D + Open3D segment_plane); unambiguous scene → encloses target, cluttered → low confidence (not confidently wrong); <3s GPU.
+
+#### QM-058: "Propose corners" UI — human-in-the-loop confirm
+- **Status:** TODO · **Effort:** M · **Depends On:** QM-057
+- **AC:** capture → sidecar → draw proposed quad → user accepts (writes corner offsets) or nudges via Tab-cycle+arrows; low confidence prompts "tap the surface"; F11-projectable; smoke green; no `.qmap` change.
+
+#### QM-059: Projector test-pattern emit + single-photo capture flow
+- **Status:** TODO · **Effort:** S · **Depends On:** QM-055
+- **AC:** flash a known rectangle/ChArUco fullscreen on the chosen output; single capture sees surface+pattern; round-trips to disk; smoke green.
+
+#### QM-060: One-Flash homography solve → push warp
+- **Status:** TODO · **Effort:** M · **Depends On:** QM-059, QM-057
+- **AC:** `POST /oneflash` detects pattern+surface, returns homography as 4 corner offsets; applying it lands projected content aligned (no projector pose needed, one photo); `.qmap`-safe; smoke green.
+
+#### QM-061: 🚩 Real-device validation gate (Phase 2 not "done" until this passes)
+- **Status:** TODO · **Effort:** S · **Depends On:** QM-060
+- **AC:** on a real projector + real surface + real phone photo, One-Flash produces a visibly correct warp, watched working; failure modes documented. Fallback if it fails: port MIT gray-code structured-light behind the same sidecar contract.
+
+#### QM-062: Audience-perspective ("trap-art") anamorphic warp (Phase 3)
+- **Status:** TODO · **Effort:** M · **Depends On:** QM-057
+- **AC:** from one captured viewpoint, warp content to look correct from the phone's position; `.qmap`-safe; smoke green.
 
 ---
 
 ## In Progress
 
-*No tasks currently in progress*
+*No tasks currently in progress. Next: QM-056 (AI sidecar skeleton).*
 
 ## Done
 
@@ -774,5 +822,13 @@ Last Updated: 2026-06-16
 | QM-052 | TD-05 .qmap versioning, migration & save/load de-dup | DONE | Phase 8 |
 | QM-053 | TD-02 step 2 retire dual-track scene state (one scene of truth) | DONE | Phase 8 |
 | QM-054 | TD-02 decompose render() into panels (ADR-034, 6 batches) | DONE | Phase 8 |
+| QM-055 | AI pre-show: live camera input + PNG capture (on-quad display → TD-09) | DONE | Phase 9 |
+| QM-056 | AI sidecar skeleton + IPC contract (ADR-035) | TODO | Phase 9 |
+| QM-057 | Sidecar surface service (Metric3D → plane → corners) | TODO | Phase 9 |
+| QM-058 | "Propose corners" UI (human-in-the-loop confirm) | TODO | Phase 9 |
+| QM-059 | Projector test-pattern emit + single-photo capture | TODO | Phase 9 |
+| QM-060 | One-Flash homography solve → push warp | TODO | Phase 9 |
+| QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |
+| QM-062 | Audience-perspective anamorphic warp | TODO | Phase 9 |
 
 ---
