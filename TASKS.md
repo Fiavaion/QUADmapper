@@ -1,12 +1,19 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-06-16
+Last Updated: 2026-06-16 (Session 15)
 
 ## Quick Status
 - In Progress: 0
-- Todo: 4 debt (TD-07/08/09/10) + 1 AI (🚩 QM-061 hardware gate — the only remaining wedge work, hardware-only)
-- Done: 62 — **all software-doable AI tasks complete; QM-055..060 + QM-062 done**
+- Todo: 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate — the only remaining wedge work, hardware-only)
+- Done: 64 — **all software-doable AI tasks complete; + v1.1 polish US-104, US-101; TD-10 resolved**
 - Blocked: 0
+
+## Session 15 (2026-06-16) — v1.1 polish + QM-061 prep
+- **TD-10 RESOLVED** — async sidecar start (`startAsync()` worker thread); AI-enable no longer freezes the UI. See [TECHNICAL_DEBT.md](TECHNICAL_DEBT.md).
+- **US-104 DONE** — per-quad color correction (brightness/contrast/gamma/RGB), [ADR-036](docs/adr/0036-per-quad-color-correction.md). Shader + Inspector + additive `.qmap` field. Identity = render no-op.
+- **US-101 DONE** — per-quad soft-edge blending (per-edge feather + gamma), [ADR-037](docs/adr/0037-per-quad-soft-edge-blending.md). Verified visually (feathered projector screenshot). Additive `.qmap` field.
+- **QM-061 prepped** — turnkey hardware runbook [docs/QM-061-hardware-test-runbook.md](docs/QM-061-hardware-test-runbook.md) + ready `dev`→`master` PR body [docs/QM-061-pr-prep.md](docs/QM-061-pr-prep.md).
+- Gate held all session: build clean, 601/601 ctest, success-metric smoke green. `.qmap` writer bumped 1.0.0 → 1.1.0 (additive MINOR, ADR-032 §5).
 
 ---
 
@@ -72,6 +79,11 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 #### QM-061: 🚩 Real-device validation gate (Phase 2 not "done" until this passes)
 - **Status:** TODO · **Effort:** S · **Depends On:** QM-060
 - **AC:** on a real projector + real surface + real phone photo, One-Flash produces a visibly correct warp, watched working; failure modes documented. Fallback if it fails: port MIT gray-code structured-light behind the same sidecar contract.
+- **Runbook (Session 15):** turnkey step-by-step procedure + result template at
+  [docs/QM-061-hardware-test-runbook.md](docs/QM-061-hardware-test-runbook.md). Note: One-Flash
+  itself is GPU-free (`cv2.aruco` only) — QM-061 does **not** need the Metric3D model.
+- **On pass:** open the `dev`→`master` PR using the prepared body
+  [docs/QM-061-pr-prep.md](docs/QM-061-pr-prep.md).
 
 #### QM-062: Audience-perspective ("trap-art") anamorphic warp (Phase 3)
 - **Status:** DONE (software-complete) — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`. "Looks correct from the viewpoint" is perspective-validated on real hardware (with QM-061).
