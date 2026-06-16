@@ -25,6 +25,7 @@
 #include "../ui/panels/OutputPanel.hpp"
 #include "../ui/panels/QuadListPanel.hpp"
 #include "../ui/panels/VideoPlayerPanel.hpp"
+#include "../ui/panels/ViewportEditor.hpp"
 
 namespace quadmapper {
 
@@ -81,6 +82,7 @@ struct EditorState {
     bool outputPanelInitialized = false;
     QuadListPanel quadListPanel;
     VideoPlayerPanel videoPlayerPanel;
+    ViewportEditor viewportEditor;  // Non-Panel: pre-NewFrame on-canvas warp surface (ADR-0034)
 
     // Panel visibility toggles
     bool showQuadList = true;
