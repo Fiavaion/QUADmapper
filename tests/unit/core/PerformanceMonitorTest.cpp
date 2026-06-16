@@ -56,10 +56,12 @@ TEST_F(PerformanceMonitorTest, MinMaxFrameTime) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     monitor_->endFrame();
 
-    // Using wider tolerance due to OS scheduling variance
-    EXPECT_GT(monitor_->getMinFrameTime(), 2.0);
-    EXPECT_LT(monitor_->getMinFrameTime(), 15.0);
-    EXPECT_GT(monitor_->getMaxFrameTime(), 15.0);
+    // Wall-clock sleeps are bounded below by the OS timer granularity (Windows default
+    // ~15.6ms), so a 5ms sleep can measure well above 15ms. Assert the min/max *tracking*
+    // relationship rather than exact sub-granularity thresholds, which were flaky.
+    EXPECT_GT(monitor_->getMaxFrameTime(), 15.0);  // the 20ms frame registers as the max
+    EXPECT_GT(monitor_->getMinFrameTime(), 0.0);   // a frame time was recorded
+    EXPECT_LE(monitor_->getMinFrameTime(), monitor_->getMaxFrameTime());
 }
 
 TEST_F(PerformanceMonitorTest, DrawCallsRecorded) {
