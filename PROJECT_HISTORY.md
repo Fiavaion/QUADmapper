@@ -6,6 +6,49 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 10 - 2026-06-16 - Debt cleanup: .qmap versioning + retire multi-scene track
+
+**Focus:** Two ADR-031 debt items — `.qmap` versioning/migration (TD-05) and "one scene of
+truth" (TD-02 step 2). User delegated task selection ("what do you recommend as a master
+computer engineer"); both picked on data-integrity / dead-code grounds.
+
+**Completed:**
+- QM-052: TD-05 — unified `.qmap` version policy across all 4 read paths (accept major ≤ 2,
+  reject newer with an actionable message; the scene paths previously ignored version
+  entirely). v1.x→single-scene and v2.x→flat migration; de-duped the copy-pasted save/load
+  into shared helpers; fixed a silent mesh-offset drop on scene load. [ADR-032](docs/adr/0032-qmap-migration.md).
+- QM-053: TD-02 step 2 — retired the unwired multi-scene track. Deleted `SceneManager`
+  (+35 tests), `ScenePanel`, the scene-based `ProjectSerializer` methods, the orphan
+  `SceneManager` hooks in Inspector/Preview/Renderer, and `Application::m_sceneManager`.
+  `EditorState::scene` is now the single source of truth. Reconciled render()'s 5 hand-rolled
+  `Scene`↔`Project` save/load sites into two shared whole-geometry/texture helpers
+  (`syncSceneToProject`/`syncProjectToScene`) — fixing a latent mesh-offset + flipH/V drop on
+  save/load. Net −1648 lines. [ADR-033](docs/adr/0033-retire-multi-scene.md).
+- Fixed the pre-existing flaky `PerformanceMonitorTest.MinMaxFrameTime` (asserted a sub-
+  granularity threshold; broke under Windows' default ~15.6ms timer). Now asserts min/max
+  tracking instead.
+
+**Key decisions:**
+- [ADR-032](docs/adr/0032-qmap-migration.md): additive, backward-compatible `.qmap` versioning;
+  no on-disk format change (writer stays at the format the app already emits).
+- [ADR-033](docs/adr/0033-retire-multi-scene.md): delete the non-functional multi-scene
+  subsystem rather than wire it up; git + the preserved v2 read path allow restoring it later
+  as a deliberate feature.
+
+**Verified working:** full build clean; **590/590 tests** (4 audio integration skipped — need a
+real video file); success metric harness-verified end-to-end (vertex warped to 0.500/0.400;
+F11 → warped quad fullscreen-clean on the projector, `tests/smoke/out/05_projector_output.png`).
+
+**Shipped:** 3 commits (`cc6febd`, `669a05c`, `172acec`) pushed to `refactor/app-decomposition`
+(PR #1).
+
+**Handoff / next steps:** TD-02 remaining — decompose the ~2000-line `render()` into real panels
+(`InspectorPanel`/`PreviewPanel` are now unwired shells). Then TD-07 (build exit-code flake —
+CMake, needs approval) and TD-08 (audio snapshot reclamation, LOW). See
+[notes/CURRENT_STATUS.md](notes/CURRENT_STATUS.md) and [TECHNICAL_DEBT.md](TECHNICAL_DEBT.md).
+
+---
+
 ### Session 9 - 2026-06-16 - ADR-031 Refactor: success metric working + critical fixes
 
 **Focus:** Audit-driven keep-and-refactor (ADR-031). Got the full success metric working

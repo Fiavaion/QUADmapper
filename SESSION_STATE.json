@@ -4,34 +4,34 @@
   "sessionInfo": {
     "sessionNumber": 10,
     "startTime": "2026-06-16T00:00:00Z",
-    "endTime": null,
-    "status": "active"
+    "endTime": "2026-06-16T00:00:00Z",
+    "status": "completed"
   },
   "currentWork": {
     "activeTaskId": null,
     "activeTaskTitle": null,
     "currentFile": null,
     "currentFunction": null,
-    "workInProgress": "TD-05 done (ADR-032) + TD-02 step 2 done (ADR-033: retired the unwired multi-scene track -> one Scene of truth; deleted SceneManager/ScenePanel/scene-serializer methods; reconciled render()'s 5 save/load sync sites into 2 shared whole-geometry helpers, fixing a mesh-offset/flip drop). Build clean, 589/590 (1 pre-existing flaky timer test), success metric harness-verified. NOT yet committed. On branch refactor/app-decomposition (PR #1).",
+    "workInProgress": "TD-05 (ADR-032) + TD-02 step 2 (ADR-033) done and PUSHED to refactor/app-decomposition (PR #1): commits cc6febd, 669a05c, 172acec. One Scene of truth; multi-scene track deleted (-1648 lines); render() save/load sync de-duped into 2 whole-geometry helpers (fixed mesh-offset/flip drop). 590/590 tests, success metric harness-verified.",
     "nextSteps": [
-      "Commit TD-02 step 2 (ADR-033) + fix the pre-existing flaky PerformanceMonitorTest.MinMaxFrameTime (timer-granularity) as a separate commit",
-      "TD-02 remaining: decompose render() UI into real panels (InspectorPanel/PreviewPanel are unwired shells)",
+      "TD-02 remaining: decompose the ~2000-line render() UI into real panels (InspectorPanel/PreviewPanel are now unwired shells)",
       "TD-07: build exit-code flake (gtest discovery timeout) - touches CMake, needs approval",
       "TD-08: defer audio snapshot reclamation to the control thread (LOW)"
     ]
   },
   "context": {
     "recentFiles": [
-      "src/app/EditorState.hpp",
       "src/app/Application.cpp",
-      "src/output/OutputManager.cpp",
-      "src/audio/AudioBuffer.cpp",
+      "src/app/EditorState.hpp",
+      "src/project/ProjectSerializer.cpp",
+      "docs/adr/0033-retire-multi-scene.md",
       "tests/smoke/drive_smoke.ps1"
     ],
     "keyDecisions": [
-      "ADR-031: refactor-in-place, not full rebuild (rot localized to Application::render(); foundations sound). Accepted.",
+      "ADR-032: additive .qmap versioning + migration; one validateVersion() policy; no on-disk format change.",
+      "ADR-033: delete the unwired multi-scene track (SceneManager/ScenePanel/scene-serializer) rather than wire it up; EditorState::scene is the one source of truth; legacy v2 files still read via the flat-flatten path.",
+      "ADR-031: refactor-in-place, not full rebuild. Accepted.",
       "Verification gate = tests/smoke/drive_smoke.ps1 (drives the real app, screenshots monitors).",
-      "TD-01 done: per-output Renderer; F11 auto-creates an output on the secondary monitor.",
       "Git author for this repo: Jones <fiavaion101@gmail.com> (local config)."
     ],
     "openQuestions": [],
@@ -52,7 +52,7 @@
     ],
     "buildStatus": "success",
     "lastSuccessfulBuild": "2026-06-16T00:00:00Z",
-    "note": "Full success metric verified end-to-end (vertex warp + F11 projector output). 631/631 tests on full build. CRITICAL audit items TD-01/03/04 + TD-02 step 1 + TD-05 + TD-06 done."
+    "note": "Full success metric verified end-to-end (vertex warp + F11 projector output). 590/590 tests on full build (4 audio integration skipped). Done: TD-01/03/04/05/06 + TD-02 step 1 & step 2. Multi-scene track deleted (ADR-033). Remaining: TD-02 render()->panels decomposition, TD-07, TD-08."
   },
   "statistics": {
     "totalSessions": 10,
