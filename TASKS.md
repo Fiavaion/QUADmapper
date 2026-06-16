@@ -4,8 +4,8 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 4 debt (TD-07/08/09/10) + 4 AI (QM-058..QM-062 — Phase 9)
-- Done: 58
+- Todo: 4 debt (TD-07/08/09/10) + 3 AI (QM-059..QM-062 — Phase 9; **Phase 1 ships**)
+- Done: 59
 - Blocked: 0
 
 ---
@@ -48,8 +48,12 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Note:** corner extraction is a propose-then-confirm proposal (e.g. screen BL drags into the stage) — QM-058 adds the human nudge. Deps added to Python 3.11: open3d, addict, yapf (+existing torch/cv2/numpy/einops/matplotlib).
 
 #### QM-058: "Propose corners" UI — human-in-the-loop confirm
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-057
-- **AC:** capture → sidecar → draw proposed quad → user accepts (writes corner offsets) or nudges via Tab-cycle+arrows; low confidence prompts "tap the surface"; F11-projectable; smoke green; no `.qmap` change.
+- **Status:** DONE — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`.
+- **Effort:** M · **Depends On:** QM-057
+- **Delivered:** AI menu "Detect Surface" → `Application::aiDetectSurface()`: capture a frame (live camera via the QM-055 rail, or `QM_AI_TEST_IMAGE` for a phone-photo-from-disk) → sidecar `/surface` → proposed corners + confidence. Confident (≥0.35) → `setCorners()` on the selected quad (geometry only, no `.qmap` change) → ordinary warp refined with the existing Tab-cycle + arrow-nudge UX. Status via the existing `statusMessage` overlay.
+- **AC met:** AC1 capture→sidecar→apply proposed quad (or nudge) ✓ · AC2 low confidence → "tap the surface", no auto-apply ✓ · AC3 applied warp is F11-projectable, smoke green, no `.qmap` change ✓.
+- **Verified end-to-end** (`drive_ai_smoke.ps1` via the `QM_AI_SELFTEST` headless hook): screen → "surface applied (0.63)", quad snaps to a perspective trapezoid + F11 projects it (screenshots); gallery floor-trap → "low confidence (0.00) — tap the surface", quad unchanged + project not modified. Success-metric smoke green; 596/596 ctest.
+- **Notes:** `QM_AI_SELFTEST`/`QM_AI_TEST_IMAGE` are guarded verification seams (off in normal runs). Detect blocks the UI ~1–3s (pre-show; async → TD-10). Phase 1 of the AI wedge now ships.
 
 #### QM-059: Projector test-pattern emit + single-photo capture flow
 - **Status:** TODO · **Effort:** S · **Depends On:** QM-055
@@ -836,7 +840,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-055 | AI pre-show: live camera input + PNG capture (on-quad display → TD-09) | DONE | Phase 9 |
 | QM-056 | AI sidecar skeleton + IPC contract (ADR-035) | DONE | Phase 9 |
 | QM-057 | Sidecar surface service (Metric3D → plane → corners) | DONE | Phase 9 |
-| QM-058 | "Propose corners" UI (human-in-the-loop confirm) | TODO | Phase 9 |
+| QM-058 | "Propose corners" UI (human-in-the-loop confirm) | DONE | Phase 9 |
 | QM-059 | Projector test-pattern emit + single-photo capture | TODO | Phase 9 |
 | QM-060 | One-Flash homography solve → push warp | TODO | Phase 9 |
 | QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |
