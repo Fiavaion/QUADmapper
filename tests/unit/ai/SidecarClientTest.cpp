@@ -11,7 +11,9 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 #ifndef QM_SIDECAR_SCRIPT
 #define QM_SIDECAR_SCRIPT ""
@@ -66,6 +68,25 @@ TEST(SidecarClientTest, BogusPythonExeFailsButDoesNotThrow) {
 
     EXPECT_FALSE(client.start());
     EXPECT_NE(client.state(), SidecarState::Launched);
+    EXPECT_FALSE(client.requestSurface("x.png").has_value());
+}
+
+// TD-10: startAsync() runs the connect off the caller's thread and resolves the
+// state without blocking. With no script and nothing listening it must settle on
+// Failed (and never leak/hang the worker — the destructor joins it).
+TEST(SidecarClientTest, StartAsyncResolvesToFailedWithoutBlocking) {
+    SidecarConfig cfg;
+    cfg.scriptPath.clear();   // nothing to launch
+    cfg.port = 8795;          // nothing listening
+    cfg.startupTimeoutMs = 1000;
+    SidecarClient client(cfg);
+
+    client.startAsync();      // returns immediately; worker does the connect
+    for (int i = 0; i < 200 && client.state() == SidecarState::Starting; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    EXPECT_EQ(client.state(), SidecarState::Failed);
     EXPECT_FALSE(client.requestSurface("x.png").has_value());
 }
 

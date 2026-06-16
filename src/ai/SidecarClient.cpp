@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <thread>
 
@@ -156,7 +157,13 @@ std::optional<SurfaceResult> parseCornersResponse(const std::string& body,
 
 struct SidecarClient::Impl {
     SidecarConfig config;
-    SidecarState state = SidecarState::Stopped;
+    // Atomic: written by start() (possibly on the startAsync worker) and read
+    // per-frame by the UI thread via state() (TD-10).
+    std::atomic<SidecarState> state{SidecarState::Stopped};
+
+    // Background worker for startAsync(); joined before teardown so the process
+    // handles below are only touched after it has finished.
+    std::thread worker;
 
     // Set only when we launched the process ourselves.
     HANDLE job = nullptr;          // job with KILL_ON_JOB_CLOSE
@@ -165,7 +172,10 @@ struct SidecarClient::Impl {
 
     explicit Impl(SidecarConfig c) : config(std::move(c)) {}
 
-    ~Impl() { killLaunched(); }
+    ~Impl() {
+        if (worker.joinable()) worker.join();
+        killLaunched();
+    }
 
     bool healthOnce(int timeoutMs) const {
         HttpResponse r = httpRequest(config.host, config.port, "GET", "/health",
@@ -285,9 +295,23 @@ bool SidecarClient::start() {
     return false;
 }
 
+void SidecarClient::startAsync() {
+    auto& im = *impl_;
+    const SidecarState s = im.state.load();
+    if (s == SidecarState::Attached || s == SidecarState::Launched ||
+        s == SidecarState::Starting) {
+        return;  // already connected, or a connect attempt is already in flight
+    }
+    // Reap a previous finished attempt before launching another.
+    if (im.worker.joinable()) im.worker.join();
+    im.state = SidecarState::Starting;
+    im.worker = std::thread([this] { start(); });
+}
+
 void SidecarClient::stop() {
     auto& im = *impl_;
-    if (im.state == SidecarState::Launched) {
+    if (im.worker.joinable()) im.worker.join();  // finish any in-flight startAsync
+    if (im.state.load() == SidecarState::Launched) {
         im.killLaunched();
     }
     im.state = SidecarState::Stopped;
@@ -298,13 +322,14 @@ bool SidecarClient::isHealthy() const {
 }
 
 SidecarState SidecarClient::state() const {
-    return impl_->state;
+    return impl_->state.load();
 }
 
 std::optional<SurfaceResult> SidecarClient::requestSurface(
     const std::string& imagePath) {
     auto& im = *impl_;
-    if (im.state != SidecarState::Attached && im.state != SidecarState::Launched) {
+    const SidecarState s = im.state.load();
+    if (s != SidecarState::Attached && s != SidecarState::Launched) {
         return std::nullopt;
     }
 
@@ -319,7 +344,8 @@ std::optional<SurfaceResult> SidecarClient::requestOneFlash(
     const std::string& patternImagePath,
     const std::array<std::array<float, 2>, 4>* targetCorners) {
     auto& im = *impl_;
-    if (im.state != SidecarState::Attached && im.state != SidecarState::Launched) {
+    const SidecarState s = im.state.load();
+    if (s != SidecarState::Attached && s != SidecarState::Launched) {
         return std::nullopt;
     }
 

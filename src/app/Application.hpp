@@ -19,7 +19,7 @@ class SourceManager;
 class Quad;
 class Texture;
 struct EditorState;
-namespace ai { class SidecarClient; }
+namespace ai { class SidecarClient; enum class SidecarState; }
 
 class Application {
 public:
@@ -127,6 +127,11 @@ private:
     // started: launched on demand from the AI menu, torn down at shutdown. The
     // app is fully usable when it is absent.
     std::unique_ptr<ai::SidecarClient> m_sidecarClient;
+
+    // TD-10: last observed sidecar state, so the run loop can post a one-shot
+    // status message when an async startAsync() connect resolves off-thread.
+    // Initialized to Stopped in the constructor (enum defn lives in the .cpp).
+    ai::SidecarState m_lastSidecarState;
 
     // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
     std::unique_ptr<EditorState> m_editorState;

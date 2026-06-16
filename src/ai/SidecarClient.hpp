@@ -38,6 +38,7 @@ struct SidecarConfig {
 
 enum class SidecarState {
     Stopped,   // not started, or stopped
+    Starting,  // startAsync() is connecting on a worker thread (not yet usable)
     Attached,  // a sidecar we did not spawn is answering (we do not own its process)
     Launched,  // we spawned it (and will kill it on stop()/destruction)
     Failed     // start() ran but no healthy sidecar is reachable
@@ -55,8 +56,16 @@ public:
 
     // Attach to an already-running sidecar on host:port, or launch one from
     // scriptPath. Returns true iff a healthy sidecar (matching api_version) is
-    // reachable afterwards. Safe to call again after a failure.
+    // reachable afterwards. Safe to call again after a failure. Blocks the
+    // caller for up to startupTimeoutMs while launching/polling — prefer
+    // startAsync() from the UI thread.
     bool start();
+
+    // Non-blocking start (TD-10): runs the attach/launch/health-poll on a worker
+    // thread so the UI never freezes on enable. state() reads Starting until it
+    // resolves to Attached/Launched/Failed. No-op if already connecting or
+    // connected; safe to call again after a failure.
+    void startAsync();
 
     // Terminate a sidecar we launched (no-op when Attached/Stopped). Idempotent;
     // also invoked by the destructor so no child outlives the app.

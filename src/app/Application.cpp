@@ -134,6 +134,7 @@ static void dropCallback(GLFWwindow* /*window*/, int count, const char** paths) 
 
 Application::Application() {
     s_instance = this;
+    m_lastSidecarState = ai::SidecarState::Stopped;  // TD-10 watcher seed
 }
 
 Application::~Application() {
@@ -450,6 +451,27 @@ int Application::run() {
         // is committed so we never run inside an ImGui frame).
         renderToProjectorOutputs();
 
+        // TD-10: report the outcome of an async sidecar connect (startAsync runs
+        // off the UI thread). When the cached state leaves Starting, post a
+        // one-shot status so the user sees connected/failed without a freeze.
+        if (m_sidecarClient) {
+            const ai::SidecarState s = m_sidecarClient->state();
+            if (s != m_lastSidecarState) {
+                if (m_lastSidecarState == ai::SidecarState::Starting) {
+                    EditorState& es = *m_editorState;
+                    const bool ok = (s == ai::SidecarState::Attached ||
+                                     s == ai::SidecarState::Launched);
+                    snprintf(es.statusMessage, sizeof(es.statusMessage), "%s",
+                             ok ? "AI assist enabled (sidecar connected)"
+                                : "AI assist unavailable - sidecar could not start");
+                    es.statusTimer = 5.0f;
+                    if (ok) Logger::info(es.statusMessage);
+                    else    Logger::warning(es.statusMessage);
+                }
+                m_lastSidecarState = s;
+            }
+        }
+
         // QM-058 verification hook (off unless QM_AI_SELFTEST is set): once the
         // first frames have built the default scene, enable the sidecar, select a
         // quad, and run one "Detect Surface" headlessly so the full chain can be
@@ -588,11 +610,13 @@ void Application::render() {
         });
         es.mainMenuBar.setOnEnableAi([this]() {
             if (!m_sidecarClient) return;
-            if (m_sidecarClient->start()) {
-                Logger::info("AI assist enabled (sidecar connected)");
-            } else {
-                Logger::warning("AI assist unavailable — sidecar could not start");
-            }
+            // TD-10: connect off the UI thread so the menu never freezes 1-3s.
+            // The run loop watches state() and reports the outcome.
+            m_sidecarClient->startAsync();
+            EditorState& est = *m_editorState;
+            snprintf(est.statusMessage, sizeof(est.statusMessage), "%s",
+                     "AI: connecting to sidecar...");
+            est.statusTimer = 5.0f;
         });
         es.mainMenuBar.setOnDetectSurface([this]() { aiDetectSurface(); });
         es.mainMenuBar.setOnEmitPattern([this]()  { oneFlashEmitPattern();  });
