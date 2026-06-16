@@ -27,10 +27,11 @@ size_t AudioBuffer::nextPowerOfTwo(size_t v) {
 // ---------------------------------------------------------------------------
 
 AudioBuffer::AudioBuffer(size_t capacity)
-    : capacity_(nextPowerOfTwo(capacity))
-    , mask_(capacity_ - 1)
+    : capacity_(capacity)
+    , bufferSize_(nextPowerOfTwo(capacity))
+    , mask_(bufferSize_ - 1)
 {
-    buffer_.resize(capacity_);
+    buffer_.resize(bufferSize_);
 }
 
 AudioBuffer::~AudioBuffer() {
@@ -63,7 +64,7 @@ bool AudioBuffer::push(const float* samples, size_t count, double pts) {
 
     // Copy data in at most two parts (wrap-around case).
     const size_t writePos  = head & mask_;
-    const size_t firstPart = std::min(count, capacity_ - writePos);
+    const size_t firstPart = std::min(count, bufferSize_ - writePos);
     std::memcpy(buffer_.data() + writePos, samples, firstPart * sizeof(float));
 
     if (count > firstPart) {
@@ -129,7 +130,7 @@ size_t AudioBuffer::read(float* output, size_t sampleCount, int /*channels*/) {
 
     // Copy data in at most two parts.
     const size_t readPos   = tail & mask_;
-    const size_t firstPart = std::min(toRead, capacity_ - readPos);
+    const size_t firstPart = std::min(toRead, bufferSize_ - readPos);
     std::memcpy(output, buffer_.data() + readPos, firstPart * sizeof(float));
 
     if (toRead > firstPart) {

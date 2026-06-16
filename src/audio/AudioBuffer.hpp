@@ -26,13 +26,15 @@ namespace quadmapper {
  * to wait on condition variables; the actual index updates still go through
  * the atomic head_/tail_ path.
  *
- * capacity_ must be a power of two so wrap-around is a cheap bitmask.
+ * The logical capacity is exactly as requested; the backing array is rounded up
+ * to the next power of two so wrap-around is a cheap bitmask.
  */
 class AudioBuffer {
 public:
     /**
      * @brief Construct an audio buffer
-     * @param capacity Maximum number of samples (rounded up to next power of two)
+     * @param capacity Maximum number of samples the buffer holds (exact). The backing
+     *                 array is rounded up to the next power of two internally.
      */
     explicit AudioBuffer(size_t capacity = 48000 * 2 * 2);  // 2 sec stereo default
     ~AudioBuffer();
@@ -107,8 +109,9 @@ public:
 private:
     // Ring buffer storage — allocated once at construction.
     std::vector<float> buffer_;
-    const size_t capacity_;   // Always a power of two.
-    const size_t mask_;       // capacity_ - 1; used for fast modulo.
+    const size_t capacity_;     // Logical max samples (exact, as requested).
+    const size_t bufferSize_;   // Backing array size = next power of two >= capacity_.
+    const size_t mask_;         // bufferSize_ - 1; used for fast modulo on the array.
 
     // head_ is the write position (producer-owned).
     // tail_ is the read  position (consumer-owned).
