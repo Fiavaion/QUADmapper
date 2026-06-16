@@ -3,18 +3,22 @@
 Last Updated: 2026-06-16
 
 ## Quick Status
-- In Progress: 1 (QM-054 TD-02 render()→panels decomposition — batch 4 of 6 remaining)
-- Todo: 4 (TD-02 batch 4, TD-07, TD-08, TD-09 — see TECHNICAL_DEBT.md)
-- Done: 54
+- In Progress: 0
+- Todo: 3 (TD-07, TD-08, TD-09 — see TECHNICAL_DEBT.md)
+- Done: 55
 - Blocked: 0
 
 ---
 
 ## In Progress
 
+*No tasks currently in progress*
+
+## Done
+
 #### QM-054: TD-02 — decompose render() into panels (ADR-034)
-- **Status:** IN PROGRESS (5 of 6 batches done) — **Started:** 2026-06-16
-- **Notes:** ADR-034: decompose the ~1900-line `render()` into panel classes over the live `EditorState` model (behavior-preserving), via a per-frame `EditorContext` bundle. Done + pushed on `refactor/app-decomposition`, each build-clean + 590/590 ctest + smoke-green (incl. F11 projector output): batch 0 — `EditorContext.hpp` + `Application::{newProject,saveProject,loadProject}` (de-dup 3× save/load); batch 1 `MainMenuBar` (708d267); batch 2 `QuadListPanel` (fb23972); batch 3 `InspectorPanel` = context-sensitive Properties (6d522af); batch 3b `VideoPlayerPanel` (3a13950). `Application.cpp` 2411→1271 lines; `render()` ~1910→~710. **Remaining — batch 4 (success-metric critical):** extract the pre-`ImGui::NewFrame()` viewport editing (quad render + corner/mesh warp + keyboard-capture guard, render() ~564–867) into a non-`Panel` `ViewportEditor`; delete the dead `PreviewPanel` shell. See CURRENT_STATUS.md for the resume brief.
+- **Status:** DONE (6 of 6 batches) — **Completed:** 2026-06-16
+- **Notes:** ADR-034: decomposed the ~1900-line `render()` into panel classes over the live `EditorState` model (behavior-preserving), via a per-frame `EditorContext` bundle. All on `refactor/app-decomposition`, each build-clean + 590/590 ctest + smoke-green (incl. F11 projector output): batch 0 — `EditorContext.hpp` + `Application::{newProject,saveProject,loadProject}` (de-dup 3× save/load); batch 1 `MainMenuBar` (708d267); batch 2 `QuadListPanel` (fb23972); batch 3 `InspectorPanel` = context-sensitive Properties (6d522af); batch 3b `VideoPlayerPanel` (3a13950); **batch 4 (last, success-metric-critical) `ViewportEditor`** — the pre-`ImGui::NewFrame()` on-canvas warp surface (quad render + corner/mesh warp + keyboard-capture guard) extracted **byte-for-byte** into a non-`Panel` class; dead `PreviewPanel` shell deleted (f2dd41f). `Application.cpp` 2411→~960 lines; `render()` ~1910→~400. Verified: build clean, 590/590, smoke harness 05 (Tab-cycle + arrow-nudge warp sent fullscreen to the projector), fresh-context Opus verifier APPROVE. Source-arch convergence tracked separately as TD-09.
 
 ## Done
 
@@ -769,5 +773,6 @@ Last Updated: 2026-06-16
 | QM-044 | Manual test protocols | DONE | Phase 7 |
 | QM-052 | TD-05 .qmap versioning, migration & save/load de-dup | DONE | Phase 8 |
 | QM-053 | TD-02 step 2 retire dual-track scene state (one scene of truth) | DONE | Phase 8 |
+| QM-054 | TD-02 decompose render() into panels (ADR-034, 6 batches) | DONE | Phase 8 |
 
 ---

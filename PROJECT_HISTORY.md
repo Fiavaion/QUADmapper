@@ -6,6 +6,41 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 12 - 2026-06-16 - TD-02 batch 4 (last): ViewportEditor — render() decomposition COMPLETE
+
+**Focus:** The final, success-metric-critical batch of TD-02 (QM-054). Plan-first, then
+execute directly in the main Opus session per the resume brief.
+
+**Completed (QM-054 → DONE):**
+- **Batch 4** (`f2dd41f`): extracted the pre-`ImGui::NewFrame()` viewport-editing block
+  (quad render to the main framebuffer + corner-pin/mesh-edit interaction + the
+  keyboard-capture guard, render() ~567–873) into a new **non-`Panel`** class
+  `quadmapper::ViewportEditor` (`src/ui/panels/ViewportEditor.{hpp,cpp}`), called via
+  `es.viewportEditor.render(ctx)` from the same pre-NewFrame spot. The moved body is
+  **byte-for-byte identical**, wrapped in same-named aliases (`m_renderer`/`m_window`/
+  `m_project`/`quadManager`/corner-mesh-snap-video fields) — LESSON-ARCH-006.
+- Removed the now-unused corner/mesh/snap + `videoAssignedQuadId` aliases from `render()`
+  (kept the video-pump aliases still in use).
+- Deleted the dead `PreviewPanel.{hpp,cpp}` source-arch shell + its CMake entry; added
+  `ViewportEditor` to `quadmapper_ui`.
+
+**Deviation from ADR-0034's table** (which named `PreviewPanel` as the home): per the
+session-11 resume brief, a non-`Panel` `ViewportEditor` + delete-the-shell — consistent with
+the batch 3b `VideoPlayerPanel` deviation. Noted in the commit.
+
+**Verification (the gate, all green):** build clean (only pre-existing `strncpy` C4996
+warnings, none in the new file) → `ctest` 590/590 (4 audio integration skipped) →
+`drive_smoke.ps1` 5 screenshots incl. `05_projector_output.png` (visibly warped quad
+fullscreen on monitor 2; `02_*.png` shows the keyboard-nudged corner with the green selected
+handle) → **fresh-context Opus verifier: APPROVE**, all 7 success-metric criteria, byte-for-byte
+block comparison (306 lines, zero diff).
+
+**Net:** `Application.cpp` 2411 → ~960 lines; `render()` body ~1910 → ~400. **TD-02 closed**
+(moved to Resolved in TECHNICAL_DEBT.md). PR #1 (`refactor/app-decomposition`) green and
+ready to merge. Remaining open debt (none blocking): TD-07, TD-08, TD-09.
+
+---
+
 ### Session 11 - 2026-06-16 - TD-02: decompose render() into panels (5 of 6 batches)
 
 **Focus:** The last open ADR-031 item — TD-02, decomposing the ~1900-line `render()`
