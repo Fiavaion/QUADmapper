@@ -3,6 +3,8 @@
 add_library(quadmapper_video STATIC
     VideoDecoder.hpp
     VideoDecoder.cpp
+    PngWriter.hpp
+    PngWriter.cpp
     VideoPlayer.hpp
     VideoPlayer.cpp
     VideoPlaybackState.hpp
@@ -21,6 +23,7 @@ target_include_directories(quadmapper_video
 find_path(AVCODEC_INCLUDE_DIR libavcodec/avcodec.h)
 find_library(AVCODEC_LIBRARY avcodec)
 find_library(AVFORMAT_LIBRARY avformat)
+find_library(AVDEVICE_LIBRARY avdevice)  # webcam capture (dshow) — QM-055
 find_library(AVUTIL_LIBRARY avutil)
 find_library(SWSCALE_LIBRARY swscale)
 find_library(SWRESAMPLE_LIBRARY swresample)
@@ -42,6 +45,14 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY AND SWSCALE_LIBRARY)
             ${SWSCALE_LIBRARY}
             ${SWRESAMPLE_LIBRARY}
     )
+    # libavdevice is optional: enables webcam capture (dshow). Linked when present.
+    if(AVDEVICE_LIBRARY)
+        target_link_libraries(quadmapper_video PRIVATE ${AVDEVICE_LIBRARY})
+        target_compile_definitions(quadmapper_video PRIVATE QUADMAPPER_HAS_AVDEVICE=1)
+        message(STATUS "FFmpeg avdevice found - webcam capture enabled")
+    else()
+        message(STATUS "FFmpeg avdevice NOT found - webcam capture disabled")
+    endif()
     target_compile_definitions(quadmapper_video PRIVATE QUADMAPPER_HAS_FFMPEG=1)
     message(STATUS "FFmpeg found and linked")
 else()

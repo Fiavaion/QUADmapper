@@ -1,6 +1,7 @@
 #include "SourceManager.hpp"
 #include "StaticImageSource.hpp"
 #include "VideoFileSource.hpp"
+#include "CameraSource.hpp"
 #include "procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
 #include "core/Logger.hpp"
@@ -36,6 +37,21 @@ UUID SourceManager::createVideoSource(const std::filesystem::path& path) {
     }
 
     Logger::error("SourceManager: Failed to create video source for '{}'", path.string());
+    return UUID();
+}
+
+UUID SourceManager::createCameraSource(const std::string& deviceName) {
+    auto source = std::make_unique<CameraSource>(deviceName);
+    UUID id = source->getId();
+
+    if (!registerSource(std::move(source)).isNull()) {
+        Logger::debug("SourceManager: Created camera source '{}'",
+                      deviceName.empty() ? "(default)" : deviceName);
+        return id;
+    }
+
+    Logger::error("SourceManager: Failed to create camera source '{}'",
+                  deviceName.empty() ? "(default)" : deviceName);
     return UUID();
 }
 

@@ -66,6 +66,13 @@ public:
     UUID createVideoSource(const std::filesystem::path& path);
 
     /**
+     * @brief Create a live camera / capture-device source
+     * @param deviceName dshow device name; empty = first available device
+     * @return UUID of created source, or null UUID on failure
+     */
+    UUID createCameraSource(const std::string& deviceName = "");
+
+    /**
      * @brief Create a procedural texture source
      * @param type Type of procedural texture
      * @param width Texture width (default 1920)
