@@ -85,6 +85,10 @@ private:
     void oneFlashEmitPattern();
     void oneFlashCapturePhoto();
     void oneFlashClearPattern();
+    // Capture a photo of the projected pattern, solve the projector->surface
+    // homography (POST /oneflash), and apply the resulting corners to the
+    // selected quad (QM-060). Geometry only; no .qmap change.
+    void oneFlashSolveAndApply();
 
     // Open the first camera, grab one frame, and write it to pngPath. Returns
     // false with a human-readable reason in `error`. Shared by aiDetectSurface()

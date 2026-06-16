@@ -99,6 +99,71 @@ def _surface_response(request: dict) -> dict:
     return real if real is not None else _stub_surface(request)
 
 
+def _stub_oneflash() -> dict:
+    """Placeholder One-Flash response (pattern not detected / deps absent)."""
+    return {
+        "api_version": SIDECAR_API_VERSION,
+        "corners": [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]],
+        "homography": None,
+        "confidence": 0.0,
+        "stub": True,
+    }
+
+
+def _real_oneflash(request: dict) -> Optional[dict]:
+    """Solve One-Flash (QM-060), or None to fall back to the stub.
+
+    request: {pattern_image, target_corners?(photo-norm 4x2), surface_image?}.
+    Without target_corners, the surface is detected (QM-057) on surface_image (or
+    pattern_image); if the model is absent, the full frame is the target. Imports
+    are deferred so /health and the contract tests stay light.
+    """
+    import os
+
+    pattern_path = request.get("pattern_image") or request.get("image_path")
+    if not pattern_path or not os.path.isfile(pattern_path):
+        return None
+
+    try:
+        import cv2
+        import oneflash
+    except Exception:  # noqa: BLE001
+        return None
+
+    pattern_bgr = cv2.imread(pattern_path)
+    if pattern_bgr is None:
+        return None
+
+    target = request.get("target_corners")
+    if target is None:
+        surface_path = request.get("surface_image", pattern_path)
+        target = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]  # default: full frame
+        try:
+            import surface
+            if surface.model_available() and os.path.isfile(surface_path):
+                sbgr = cv2.imread(surface_path)
+                if sbgr is not None:
+                    target = surface.estimate_surface(sbgr)["corners"]
+        except Exception:  # noqa: BLE001 - surface is best-effort; frame fallback
+            pass
+
+    result = oneflash.solve_oneflash(pattern_bgr, target)
+    if result is None:
+        return None
+    result["api_version"] = SIDECAR_API_VERSION
+    return result
+
+
+def _oneflash_response(request: dict) -> dict:
+    """Real solve when possible, else the stub. Never raises."""
+    try:
+        real = _real_oneflash(request)
+    except Exception as exc:  # noqa: BLE001 - must never 500 the app
+        sys.stderr.write(f"[sidecar] oneflash solve failed: {exc!r}\n")
+        real = None
+    return real if real is not None else _stub_oneflash()
+
+
 class SidecarHandler(BaseHTTPRequestHandler):
     # Quiet by default; the app captures stdout/stderr for diagnostics.
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - stdlib signature
@@ -123,7 +188,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found", "path": self.path})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib signature
-        if self.path != "/surface":
+        if self.path not in ("/surface", "/oneflash"):
             self._send_json(404, {"error": "not found", "path": self.path})
             return
 
@@ -145,7 +210,10 @@ class SidecarHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "invalid JSON", "detail": str(exc)})
             return
 
-        self._send_json(200, _surface_response(request))
+        if self.path == "/surface":
+            self._send_json(200, _surface_response(request))
+        else:
+            self._send_json(200, _oneflash_response(request))
 
 
 def make_server(host: str, port: int) -> ThreadingHTTPServer:

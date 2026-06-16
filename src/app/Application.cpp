@@ -473,12 +473,16 @@ void Application::runAiSelfTest() {
         m_sidecarClient->start();
     }
 
-    const char* mode = std::getenv("QM_AI_SELFTEST");
-    if (mode && std::string(mode) == "oneflash") {
+    const char* modeEnv = std::getenv("QM_AI_SELFTEST");
+    const std::string mode = modeEnv ? modeEnv : "";
+    if (mode == "oneflash") {
         // QM-059: arm the pattern, flash it on the projector, capture a photo.
         oneFlashEmitPattern();
         m_outputManager->handleF11Key();   // enter perform mode -> pattern shows
         oneFlashCapturePhoto();
+    } else if (mode == "solve") {
+        // QM-060: solve the projector->surface homography and apply the warp.
+        oneFlashSolveAndApply();
     } else {
         aiDetectSurface();
     }
@@ -591,6 +595,7 @@ void Application::render() {
         es.mainMenuBar.setOnEmitPattern([this]()  { oneFlashEmitPattern();  });
         es.mainMenuBar.setOnCapturePhoto([this]() { oneFlashCapturePhoto(); });
         es.mainMenuBar.setOnClearPattern([this]() { oneFlashClearPattern(); });
+        es.mainMenuBar.setOnSolveApply([this]()   { oneFlashSolveAndApply(); });
         es.mainMenuBarInitialized = true;
     }
 
@@ -1158,6 +1163,76 @@ void Application::oneFlashClearPattern() {
     snprintf(es.statusMessage, sizeof(es.statusMessage), "One-Flash: pattern cleared");
     es.statusTimer = 4.0f;
     Logger::info("One-Flash: pattern cleared");
+}
+
+void Application::oneFlashSolveAndApply() {
+    EditorState& es = *m_editorState;
+    auto setStatus = [&](const std::string& msg) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
+        es.statusTimer = 6.0f;
+        Logger::info(msg);
+    };
+
+    if (!m_sidecarClient ||
+        (m_sidecarClient->state() != ai::SidecarState::Attached &&
+         m_sidecarClient->state() != ai::SidecarState::Launched)) {
+        setStatus("One-Flash: enable the sidecar first (AI > Enable AI Assist)");
+        return;
+    }
+    Quad* quad = es.quadManager.getPrimarySelectedQuad();
+    if (!quad) {
+        setStatus("One-Flash: select a quad to warp first");
+        return;
+    }
+
+    // The pattern photo: QM_AI_TEST_IMAGE override (a synthetic capture for
+    // verification) else a live camera shot of the projected pattern.
+    std::filesystem::path patternPath;
+    if (const char* testImg = std::getenv("QM_AI_TEST_IMAGE")) {
+        patternPath = testImg;
+        if (!std::filesystem::exists(patternPath)) {
+            setStatus("One-Flash: QM_AI_TEST_IMAGE not found");
+            return;
+        }
+    } else {
+        patternPath = std::filesystem::temp_directory_path() /
+                      "quadmapper_oneflash_capture.png";
+        std::string err;
+        if (!captureCameraFrameToPng(patternPath.string(), err)) {
+            setStatus("One-Flash: " + err);
+            return;
+        }
+    }
+
+    auto result = m_sidecarClient->requestOneFlash(patternPath.string());
+    if (!result || result->stub) {
+        setStatus("One-Flash: pattern not detected (need the ChArUco visible)");
+        return;
+    }
+    constexpr float kConfidenceThreshold = 0.35f;
+    if (result->confidence < kConfidenceThreshold) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "One-Flash: low confidence (%.2f) - reframe the pattern",
+                 result->confidence);
+        setStatus(msg);
+        return;
+    }
+
+    std::array<Vec2, 4> corners{
+        Vec2{result->corners[0][0], result->corners[0][1]},
+        Vec2{result->corners[1][0], result->corners[1][1]},
+        Vec2{result->corners[2][0], result->corners[2][1]},
+        Vec2{result->corners[3][0], result->corners[3][1]},
+    };
+    quad->getGeometry().setCorners(corners);
+    m_project->setModified(true);
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "One-Flash: warp applied (confidence %.2f) - send to projector (F11)",
+             result->confidence);
+    setStatus(msg);
 }
 
 void Application::renderToProjectorOutputs() {

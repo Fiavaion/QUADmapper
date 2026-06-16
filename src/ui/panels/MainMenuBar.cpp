@@ -80,6 +80,9 @@ void MainMenuBar::render(EditorContext& ctx) {
                 if (ImGui::MenuItem("Capture Photo")) {
                     if (onCapturePhoto_) onCapturePhoto_();
                 }
+                if (ImGui::MenuItem("Solve & Apply")) {
+                    if (onSolveApply_) onSolveApply_();
+                }
                 if (ImGui::MenuItem("Clear Pattern")) {
                     if (onClearPattern_) onClearPattern_();
                 }

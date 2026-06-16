@@ -71,6 +71,11 @@ public:
     // version error — never throws — so callers treat AI as best-effort.
     std::optional<SurfaceResult> requestSurface(const std::string& imagePath);
 
+    // POST /oneflash {pattern_image} — One-Flash homography solve (QM-060). The
+    // returned corners are projector-normalized [0,1] quad corners that land
+    // content on the surface. Same best-effort contract as requestSurface.
+    std::optional<SurfaceResult> requestOneFlash(const std::string& patternImagePath);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

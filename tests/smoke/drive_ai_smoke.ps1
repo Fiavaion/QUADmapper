@@ -48,6 +48,25 @@ $OutDir = (Resolve-Path $OutDir).Path
 $TestImage = (Resolve-Path $TestImage).Path
 Write-Host "[ai-smoke] tag=$Tag image=$TestImage"
 
+# For solve mode (QM-060): synthesize a "photo" of the projected ChArUco warped by
+# a known homography, so the One-Flash solve has a real pattern to detect.
+if ($SelfTestMode -eq "solve") {
+    $synth = Join-Path $OutDir "oneflash_synth.png"
+    $py = @"
+import cv2, numpy as np, os
+ref = cv2.imread(r'$($PSScriptRoot)/../../resources/patterns/charuco.png'); rh,rw = ref.shape[:2]
+unit = np.array([[0,0],[1,0],[1,1],[0,1]], np.float32)
+dst = np.array([[260,200],[1360,300],[1300,1010],[360,940]], np.float32)
+Ht = cv2.getPerspectiveTransform(unit, dst)
+S = np.array([[1/rw,0,0],[0,1/rh,0],[0,0,1]])
+photo = cv2.warpPerspective(ref, Ht@S, (1600,1200), borderValue=(60,60,60))
+cv2.imwrite(r'$synth', photo); print('wrote', r'$synth')
+"@
+    & $PythonExe -c $py | Out-Host
+    $TestImage = (Resolve-Path $synth).Path
+    Write-Host "[ai-smoke] solve mode: synthetic pattern photo $TestImage"
+}
+
 function Focus($h) {
     [W]::keybd_event(0x12, [byte][W]::MapVirtualKey(0x12, 0), 0, 0)
     [W]::keybd_event(0x12, [byte][W]::MapVirtualKey(0x12, 0), 0x0002, 0)
