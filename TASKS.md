@@ -1,16 +1,46 @@
 # QUADmapper Tasks
 
-Last Updated: 2025-12-19
+Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 0
-- Done: 44
+- Todo: 4 (TD-05, TD-02 step 2, TD-07, TD-08 — see TECHNICAL_DEBT.md)
+- Done: 51
 - Blocked: 0
 
 ---
 
 ## Done
+
+### Phase 8: ADR-031 Refactor (Session 9 — 2026-06-16)
+
+#### QM-045: ADR-031 audit + decision + UI smoke harness
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** 5-specialist audit → refactor-in-place (not rebuild). Added `tests/smoke/drive_smoke.ps1` (drives the real app via Win32 scancode input, screenshots monitors) as the verification gate.
+
+#### QM-046: TD-02 step 1 — extract render() statics → owned EditorState
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** ~40 function-statics → `src/app/EditorState.hpp`; body unchanged via same-named aliases. Behavior-preserved (harness + 624 tests).
+
+#### QM-047: TD-01 — projector output renders the warped scene (SUCCESS METRIC)
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** Per-output `Renderer`; `renderToOutputs(quadManager, textures)` from `run()`; F11 auto-creates an output on the secondary monitor. Was a never-called gray-clear stub. Full success metric verified end-to-end.
+
+#### QM-048: TD-04 — atomic cross-thread video decoder state
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** `currentFrame_`/`currentTime_`/`atEnd_` → `std::atomic` (fixes UB).
+
+#### QM-049: TD-03 — lock-free + alloc-free audio RT callback
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** SPSC ring (`AudioBuffer`), atomic source/callback snapshots (`AudioMixer`), preallocated buffer (`AudioSource`). Residual reclamation nit → TD-08.
+
+#### QM-050: TD-06 — delete dead code
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** Removed `FrameBuffer`/`DoubleBuffer`/`AudioEngine`/`UIManager`/renderer `Framebuffer`+`TextureCache` (files + CMake + wiring).
+
+#### QM-051: Fix full-build regressions (AudioBuffer capacity, test signature)
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** Caught on full rebuild (LESSON-BUILD-007: full-build before ctest). AudioBuffer now honors exact capacity; OutputManagerTest updated to new signature.
 
 ### Phase 1: Core Foundation
 

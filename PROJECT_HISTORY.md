@@ -6,6 +6,41 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 9 - 2026-06-16 - ADR-031 Refactor: success metric working + critical fixes
+
+**Focus:** Audit-driven keep-and-refactor (ADR-031). Got the full success metric working
+end-to-end and resolved all CRITICAL/HIGH audit items.
+
+**Completed:**
+- QM-045: ADR-031 5-specialist audit → refactor-in-place; UI smoke harness (`tests/smoke/`)
+- QM-046: TD-02 step 1 — render() statics → owned `EditorState`
+- QM-047: TD-01 — projector output renders the warped scene (success metric complete)
+- QM-048: TD-04 — atomic cross-thread video decoder state (UB fix)
+- QM-049: TD-03 — lock-free + alloc-free audio RT callback
+- QM-050: TD-06 — deleted dead code
+- QM-051: fixed two full-build regressions (AudioBuffer capacity contract; stale test signature)
+
+**Key decisions:**
+- [ADR-031](docs/adr/0031-keep-vs-rebuild.md): refactor-in-place, not rebuild (rot localized to
+  `Application::render()`; foundations sound). Accepted.
+- Verification gate = `tests/smoke/drive_smoke.ps1` (drives the real app; reads screenshots).
+
+**Verified working:** add quad → Tab-cycle vertex → arrow-nudge (Shift 10×) → F11 → warped
+quad fullscreen on the projector. 624/624 tests on a full build.
+
+**Lessons:** LESSON-BUILD-007 (full-build before ctest — partial builds run stale test exes,
+hid two regressions); LESSON-TEST-004 (GLFW maps keys by scancode, not VK); LESSON-ARCH-006
+(de-static a god-function via owned struct + same-named aliases).
+
+**Shipped:** branch `refactor/app-decomposition` pushed; PR #1 opened against master.
+
+**Handoff / next steps:** TD-05 (.qmap migration + de-dup save/load), TD-02 step 2 (real
+UIManager/panel dispatch + retire dual-track `m_sceneManager`/static-`Scene`), TD-07 (build
+exit-code flake — CMake, needs approval), TD-08 (audio snapshot reclamation, LOW). See
+[notes/CURRENT_STATUS.md](notes/CURRENT_STATUS.md) and [TECHNICAL_DEBT.md](TECHNICAL_DEBT.md).
+
+---
+
 ### Session 5 - 2025-12-19 - Phase 3 Complete
 
 **Focus:** FFmpeg build verification and video player UI integration
