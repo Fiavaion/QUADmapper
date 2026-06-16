@@ -1,4 +1,5 @@
 #include "Application.hpp"
+#include "EditorContext.hpp"
 #include "EditorState.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
@@ -523,6 +524,14 @@ void Application::render() {
         outputPanelInitialized = true;
     }
 
+    // Initialize Main Menu Bar callbacks (set once; lambdas capture this)
+    if (!es.mainMenuBarInitialized) {
+        es.mainMenuBar.setOnNewProject( [this]() { newProject();  });
+        es.mainMenuBar.setOnSaveProject([this]() { saveProject(); });
+        es.mainMenuBar.setOnLoadProject([this]() { loadProject(); });
+        es.mainMenuBarInitialized = true;
+    }
+
     // Update video player
     float deltaTime = ImGui::GetIO().DeltaTime;
     if (videoPlayer.isLoaded()) {
@@ -938,60 +947,11 @@ void Application::render() {
     ImGuiIO& io = ImGui::GetIO();
 
     // Main menu bar
-    if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("New Project", "Ctrl+N")) {
-                newProject();
-            }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
-                saveProject();
-            }
-            if (ImGui::MenuItem("Load Project", "Ctrl+O")) {
-                loadProject();
-            }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Exit", "Alt+F4")) {
-                glfwSetWindowShouldClose(m_window, true);
-            }
-            ImGui::EndMenu();
-        }
-
-        if (ImGui::BeginMenu("Edit")) {
-            if (ImGui::MenuItem("Select All", "Ctrl+A")) {
-                quadManager.selectAll();
-            }
-            if (ImGui::MenuItem("Deselect All", "Escape")) {
-                quadManager.deselectAll();
-            }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Delete Selected", "Delete", false, quadManager.hasSelection())) {
-                // Remove textures for selected quads
-                for (const UUID& id : quadManager.getSelectedIds()) {
-                    quadTextures.erase(id);
-                    quadTexturePaths.erase(id);
-                }
-                quadManager.deleteSelectedQuads();
-            }
-            ImGui::EndMenu();
-        }
-
-        if (ImGui::BeginMenu("Window")) {
-            ImGui::MenuItem("Quad List", nullptr, &showQuadList);
-            ImGui::MenuItem("Properties", nullptr, &showProperties);
-            ImGui::MenuItem("Resources", nullptr, &showResources);
-            ImGui::MenuItem("Video Player", nullptr, &showVideoPlayer);
-            ImGui::Separator();
-            if (ImGui::MenuItem("Reset Layout")) {
-                showQuadList = true;
-                showProperties = true;
-                showResources = true;
-                showVideoPlayer = true;
-            }
-            ImGui::EndMenu();
-        }
-
-        ImGui::EndMainMenuBar();
+    {
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        es.mainMenuBar.render(ctx);
     }
 
     // Handle keyboard shortcuts
