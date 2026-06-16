@@ -260,6 +260,14 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
     quadShader_.setFloat("u_ColorContrast", cc.contrast);
     quadShader_.setFloat("u_ColorGamma", cc.gamma);
 
+    // Per-quad soft-edge blending (ADR-037). Identity widths (0) are a no-op.
+    const SoftEdge& se = quad.getSoftEdge();
+    quadShader_.setFloat("u_EdgeLeft", se.left);
+    quadShader_.setFloat("u_EdgeRight", se.right);
+    quadShader_.setFloat("u_EdgeTop", se.top);
+    quadShader_.setFloat("u_EdgeBottom", se.bottom);
+    quadShader_.setFloat("u_EdgeGamma", se.gamma);
+
     // Bind texture
     if (texture && texture->isValid()) {
         texture->bind(0);

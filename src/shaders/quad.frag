@@ -18,6 +18,14 @@ uniform float u_ColorBrightness;
 uniform float u_ColorContrast;
 uniform float u_ColorGamma;
 
+// Per-quad soft-edge blending (ADR-037). Feather widths per edge as a fraction
+// of the quad (0 = that edge off); u_EdgeGamma curves the ramp. Identity = all 0.
+uniform float u_EdgeLeft;
+uniform float u_EdgeRight;
+uniform float u_EdgeTop;
+uniform float u_EdgeBottom;
+uniform float u_EdgeGamma;
+
 void main() {
     // Start with base texture coordinates
     vec2 baseUV = v_TexCoord;
@@ -54,6 +62,15 @@ void main() {
     rgb = pow(max(rgb, 0.0), vec3(1.0 / u_ColorGamma));
     color.rgb = rgb;
 
-    color.a *= u_Opacity;
+    // Soft-edge feather in quad-local space (v_TexCoord, before UV transform).
+    // Each edge's width 0 -> ramp 1 (off), so identity is a no-op (ADR-037).
+    float edge = 1.0;
+    if (u_EdgeLeft   > 0.0) edge *= clamp(v_TexCoord.x / u_EdgeLeft, 0.0, 1.0);
+    if (u_EdgeRight  > 0.0) edge *= clamp((1.0 - v_TexCoord.x) / u_EdgeRight, 0.0, 1.0);
+    if (u_EdgeTop    > 0.0) edge *= clamp(v_TexCoord.y / u_EdgeTop, 0.0, 1.0);
+    if (u_EdgeBottom > 0.0) edge *= clamp((1.0 - v_TexCoord.y) / u_EdgeBottom, 0.0, 1.0);
+    edge = pow(edge, u_EdgeGamma);
+
+    color.a *= u_Opacity * edge;
     FragColor = color;
 }

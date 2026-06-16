@@ -44,6 +44,22 @@ struct ColorCorrection {
     void reset() { *this = ColorCorrection{}; }
 };
 
+// Per-quad soft-edge blending (ADR-037 / US-101). Feathers the quad's alpha near
+// each edge in quad-local UV space so overlapping projections sum to a seamless
+// image. Identity (all widths 0) renders byte-identically to no blending.
+struct SoftEdge {
+    float left   = 0.0f;  // feather width as a fraction of the quad [0, 0.5]
+    float right  = 0.0f;
+    float top    = 0.0f;
+    float bottom = 0.0f;
+    float gamma  = 1.0f;  // falloff curve [0.1, 4]; 1 = linear ramp
+
+    bool isIdentity() const {
+        return left == 0.0f && right == 0.0f && top == 0.0f && bottom == 0.0f;
+    }
+    void reset() { *this = SoftEdge{}; }
+};
+
 // Quad represents a single projection surface
 class Quad {
 public:
@@ -64,6 +80,8 @@ public:
     TextureBinding& getTexture() { return texture_; }
     const ColorCorrection& getColorCorrection() const { return colorCorrection_; }
     ColorCorrection& getColorCorrection() { return colorCorrection_; }
+    const SoftEdge& getSoftEdge() const { return softEdge_; }
+    SoftEdge& getSoftEdge() { return softEdge_; }
     const std::vector<UUID>& getOutputAssignments() const { return outputAssignments_; }
 
     // Setters
@@ -79,6 +97,14 @@ public:
         colorCorrection_.contrast   = std::clamp(cc.contrast,    0.0f, 2.0f);
         colorCorrection_.gamma      = std::clamp(cc.gamma,       0.1f, 4.0f);
         colorCorrection_.rgbGain    = glm::clamp(cc.rgbGain, Vec3(0.0f), Vec3(2.0f));
+    }
+    // Set soft-edge blending, clamping each parameter to its valid range (ADR-037).
+    void setSoftEdge(const SoftEdge& se) {
+        softEdge_.left   = std::clamp(se.left,   0.0f, 0.5f);
+        softEdge_.right  = std::clamp(se.right,  0.0f, 0.5f);
+        softEdge_.top    = std::clamp(se.top,    0.0f, 0.5f);
+        softEdge_.bottom = std::clamp(se.bottom, 0.0f, 0.5f);
+        softEdge_.gamma  = std::clamp(se.gamma,  0.1f, 4.0f);
     }
 
     // Output assignment
@@ -98,6 +124,7 @@ private:
     QuadGeometry geometry_;
     TextureBinding texture_;
     ColorCorrection colorCorrection_;
+    SoftEdge softEdge_;
     std::vector<UUID> outputAssignments_;
 };
 

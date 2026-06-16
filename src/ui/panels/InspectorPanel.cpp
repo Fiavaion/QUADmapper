@@ -429,6 +429,26 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 ctx.project->setModified(true);
             }
         }
+
+        // Soft Edge Blending section (ADR-037 / US-101). Per-edge feather widths
+        // (fraction of the quad) + falloff gamma; for multi-projector overlaps.
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Soft Edge Blending")) {
+            SoftEdge& se = selectedQuad->getSoftEdge();
+            bool changed = false;
+            changed |= ImGui::SliderFloat("Left", &se.left, 0.0f, 0.5f);
+            changed |= ImGui::SliderFloat("Right", &se.right, 0.0f, 0.5f);
+            changed |= ImGui::SliderFloat("Top", &se.top, 0.0f, 0.5f);
+            changed |= ImGui::SliderFloat("Bottom", &se.bottom, 0.0f, 0.5f);
+            changed |= ImGui::SliderFloat("Edge Gamma", &se.gamma, 0.1f, 4.0f);
+            if (changed) {
+                ctx.project->setModified(true);
+            }
+            if (ImGui::Button("Reset Edges")) {
+                se.reset();
+                ctx.project->setModified(true);
+            }
+        }
     } else {
         ImGui::TextDisabled("No quad selected");
         ImGui::TextDisabled("Select a quad from the Quad List");

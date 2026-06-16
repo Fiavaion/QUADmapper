@@ -170,6 +170,28 @@ static void deserializeColorCorrection(const nlohmann::json& j, ColorCorrection&
     }
 }
 
+// Helper to serialize per-quad soft-edge blending (ADR-037). Optional on disk;
+// only written when non-identity so untouched scenes are unchanged.
+static nlohmann::json serializeSoftEdge(const SoftEdge& se) {
+    nlohmann::json j;
+    j["left"] = se.left;
+    j["right"] = se.right;
+    j["top"] = se.top;
+    j["bottom"] = se.bottom;
+    j["gamma"] = se.gamma;
+    return j;
+}
+
+// Helper to deserialize per-quad soft-edge blending. Each field is optional so
+// older files (and partial objects) fall back to identity (no feather) defaults.
+static void deserializeSoftEdge(const nlohmann::json& j, SoftEdge& se) {
+    if (j.contains("left"))   se.left   = j["left"].get<float>();
+    if (j.contains("right"))  se.right  = j["right"].get<float>();
+    if (j.contains("top"))    se.top    = j["top"].get<float>();
+    if (j.contains("bottom")) se.bottom = j["bottom"].get<float>();
+    if (j.contains("gamma"))  se.gamma  = j["gamma"].get<float>();
+}
+
 // Helper to serialize a single quad
 static nlohmann::json serializeQuad(const Quad& quad, const std::string& texturePath) {
     nlohmann::json j;
@@ -184,6 +206,9 @@ static nlohmann::json serializeQuad(const Quad& quad, const std::string& texture
     j["textureBinding"] = serializeTextureBinding(quad.getTexture());
     if (!quad.getColorCorrection().isIdentity()) {
         j["colorCorrection"] = serializeColorCorrection(quad.getColorCorrection());
+    }
+    if (!quad.getSoftEdge().isIdentity()) {
+        j["softEdge"] = serializeSoftEdge(quad.getSoftEdge());
     }
 
     if (!texturePath.empty()) {
@@ -222,6 +247,11 @@ static Quad deserializeQuad(const nlohmann::json& j, std::string& texturePath) {
         ColorCorrection cc;
         deserializeColorCorrection(j["colorCorrection"], cc);
         quad.setColorCorrection(cc);  // clamps to valid ranges
+    }
+    if (j.contains("softEdge")) {
+        SoftEdge se;
+        deserializeSoftEdge(j["softEdge"], se);
+        quad.setSoftEdge(se);  // clamps to valid ranges
     }
     if (j.contains("texturePath")) {
         texturePath = j["texturePath"].get<std::string>();

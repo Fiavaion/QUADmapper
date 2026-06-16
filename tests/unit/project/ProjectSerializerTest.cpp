@@ -208,6 +208,60 @@ TEST(ProjectSerializerExtraTest, ColorCorrectionIdentityOmittedAndBackwardCompat
     EXPECT_TRUE(loadedProject.getQuads()[0].getColorCorrection().isIdentity());
 }
 
+// ADR-037: per-quad soft-edge blending survives a save/load round-trip.
+TEST(ProjectSerializerExtraTest, SoftEdgeRoundTrip) {
+    ProjectSerializer serializer;
+
+    Project originalProject;
+    originalProject.setName("Soft Edge Project");
+
+    Quad quad;
+    quad.setName("Feathered Quad");
+    SoftEdge se;
+    se.left = 0.2f;
+    se.right = 0.15f;
+    se.top = 0.05f;
+    se.bottom = 0.3f;
+    se.gamma = 1.8f;
+    quad.setSoftEdge(se);
+
+    originalProject.getQuads().push_back(std::move(quad));
+    originalProject.getTexturePaths().push_back("");
+
+    std::string json = serializer.serialize(originalProject);
+    Project loadedProject;
+    Result<void, std::string> result = serializer.deserialize(json, loadedProject);
+
+    EXPECT_TRUE(result.isSuccess());
+    ASSERT_EQ(loadedProject.getQuads().size(), 1u);
+    const SoftEdge& loaded = loadedProject.getQuads()[0].getSoftEdge();
+    EXPECT_NEAR(loaded.left, 0.2f, 0.0001f);
+    EXPECT_NEAR(loaded.right, 0.15f, 0.0001f);
+    EXPECT_NEAR(loaded.top, 0.05f, 0.0001f);
+    EXPECT_NEAR(loaded.bottom, 0.3f, 0.0001f);
+    EXPECT_NEAR(loaded.gamma, 1.8f, 0.0001f);
+}
+
+// ADR-037: an identity (no-feather) soft edge is omitted from disk and an older
+// file without the field loads as identity.
+TEST(ProjectSerializerExtraTest, SoftEdgeIdentityOmittedAndBackwardCompatible) {
+    ProjectSerializer serializer;
+
+    Project originalProject;
+    originalProject.setName("No Feather Project");
+    Quad quad;
+    quad.setName("Plain Quad");  // leave soft edge at identity defaults
+    originalProject.getQuads().push_back(std::move(quad));
+    originalProject.getTexturePaths().push_back("");
+
+    std::string json = serializer.serialize(originalProject);
+    EXPECT_EQ(json.find("softEdge"), std::string::npos);
+
+    Project loadedProject;
+    EXPECT_TRUE(serializer.deserialize(json, loadedProject).isSuccess());
+    EXPECT_TRUE(loadedProject.getQuads()[0].getSoftEdge().isIdentity());
+}
+
 TEST(ProjectSerializerExtraTest, BackwardCompatibilityNoTextureBinding) {
     ProjectSerializer serializer;
     Project project;
