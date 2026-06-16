@@ -406,6 +406,29 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 ImGui::SetTooltip("Ctrl+[");
             }
         }
+
+        // Color Correction section (ADR-036 / US-104). Slider ranges match the
+        // ColorCorrection valid ranges; edits flag the project dirty.
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Color Correction")) {
+            ColorCorrection& cc = selectedQuad->getColorCorrection();
+            if (ImGui::SliderFloat("Brightness", &cc.brightness, -1.0f, 1.0f)) {
+                ctx.project->setModified(true);
+            }
+            if (ImGui::SliderFloat("Contrast", &cc.contrast, 0.0f, 2.0f)) {
+                ctx.project->setModified(true);
+            }
+            if (ImGui::SliderFloat("Gamma", &cc.gamma, 0.1f, 4.0f)) {
+                ctx.project->setModified(true);
+            }
+            if (ImGui::SliderFloat3("RGB Gain", &cc.rgbGain.x, 0.0f, 2.0f)) {
+                ctx.project->setModified(true);
+            }
+            if (ImGui::Button("Reset Color")) {
+                cc.reset();
+                ctx.project->setModified(true);
+            }
+        }
     } else {
         ImGui::TextDisabled("No quad selected");
         ImGui::TextDisabled("Select a quad from the Quad List");

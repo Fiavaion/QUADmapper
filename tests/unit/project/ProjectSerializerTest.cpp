@@ -153,6 +153,61 @@ TEST(ProjectSerializerExtraTest, UVFlipFlagsSerialize) {
     EXPECT_TRUE(loadedBinding.flipV);
 }
 
+// ADR-036: per-quad color correction survives a save/load round-trip.
+TEST(ProjectSerializerExtraTest, ColorCorrectionRoundTrip) {
+    ProjectSerializer serializer;
+
+    Project originalProject;
+    originalProject.setName("Color Test Project");
+
+    Quad quad;
+    quad.setName("Color Quad");
+    ColorCorrection cc;
+    cc.brightness = 0.3f;
+    cc.contrast = 1.4f;
+    cc.gamma = 2.2f;
+    cc.rgbGain = Vec3(1.1f, 0.9f, 0.75f);
+    quad.setColorCorrection(cc);
+
+    originalProject.getQuads().push_back(std::move(quad));
+    originalProject.getTexturePaths().push_back("");
+
+    std::string json = serializer.serialize(originalProject);
+    Project loadedProject;
+    Result<void, std::string> result = serializer.deserialize(json, loadedProject);
+
+    EXPECT_TRUE(result.isSuccess());
+    ASSERT_EQ(loadedProject.getQuads().size(), 1u);
+    const ColorCorrection& loaded = loadedProject.getQuads()[0].getColorCorrection();
+    EXPECT_NEAR(loaded.brightness, 0.3f, 0.0001f);
+    EXPECT_NEAR(loaded.contrast, 1.4f, 0.0001f);
+    EXPECT_NEAR(loaded.gamma, 2.2f, 0.0001f);
+    EXPECT_NEAR(loaded.rgbGain.x, 1.1f, 0.0001f);
+    EXPECT_NEAR(loaded.rgbGain.y, 0.9f, 0.0001f);
+    EXPECT_NEAR(loaded.rgbGain.z, 0.75f, 0.0001f);
+}
+
+// ADR-036: an identity correction is omitted from disk and an older file
+// without the field loads as identity (backward compatible).
+TEST(ProjectSerializerExtraTest, ColorCorrectionIdentityOmittedAndBackwardCompatible) {
+    ProjectSerializer serializer;
+
+    Project originalProject;
+    originalProject.setName("Identity Color Project");
+    Quad quad;
+    quad.setName("Plain Quad");  // leave color correction at identity defaults
+    originalProject.getQuads().push_back(std::move(quad));
+    originalProject.getTexturePaths().push_back("");
+
+    std::string json = serializer.serialize(originalProject);
+    // Identity must not be written (keeps untouched scenes byte-clean).
+    EXPECT_EQ(json.find("colorCorrection"), std::string::npos);
+
+    Project loadedProject;
+    EXPECT_TRUE(serializer.deserialize(json, loadedProject).isSuccess());
+    EXPECT_TRUE(loadedProject.getQuads()[0].getColorCorrection().isIdentity());
+}
+
 TEST(ProjectSerializerExtraTest, BackwardCompatibilityNoTextureBinding) {
     ProjectSerializer serializer;
     Project project;

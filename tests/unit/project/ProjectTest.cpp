@@ -98,7 +98,8 @@ TEST(ProjectSerializerTest, SerializeEmptyProject) {
 
     EXPECT_FALSE(json.empty());
     EXPECT_NE(json.find("Test Project"), std::string::npos);
-    EXPECT_NE(json.find("1.0.0"), std::string::npos);
+    // Writer version bumped to 1.1.0 with the additive colorCorrection field (ADR-036).
+    EXPECT_NE(json.find("1.1.0"), std::string::npos);
 }
 
 TEST(ProjectSerializerTest, SerializeDeserializeRoundTrip) {

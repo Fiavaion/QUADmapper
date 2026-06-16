@@ -46,6 +46,16 @@ static Vec2 deserializeVec2(const nlohmann::json& j) {
     return Vec2(j[0].get<float>(), j[1].get<float>());
 }
 
+// Helper to serialize a Vec3
+static nlohmann::json serializeVec3(const Vec3& v) {
+    return nlohmann::json::array({v.x, v.y, v.z});
+}
+
+// Helper to deserialize a Vec3
+static Vec3 deserializeVec3(const nlohmann::json& j) {
+    return Vec3(j[0].get<float>(), j[1].get<float>(), j[2].get<float>());
+}
+
 // Helper to serialize quad geometry
 static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
     nlohmann::json j;
@@ -138,6 +148,28 @@ static void deserializeTextureBinding(const nlohmann::json& j, TextureBinding& b
     }
 }
 
+// Helper to serialize per-quad color correction (ADR-036). Optional on disk;
+// only written when it differs from identity so untouched scenes are unchanged.
+static nlohmann::json serializeColorCorrection(const ColorCorrection& cc) {
+    nlohmann::json j;
+    j["brightness"] = cc.brightness;
+    j["contrast"] = cc.contrast;
+    j["gamma"] = cc.gamma;
+    j["rgbGain"] = serializeVec3(cc.rgbGain);
+    return j;
+}
+
+// Helper to deserialize per-quad color correction. Each field is optional so
+// older files (and partial objects) fall back to identity defaults.
+static void deserializeColorCorrection(const nlohmann::json& j, ColorCorrection& cc) {
+    if (j.contains("brightness")) cc.brightness = j["brightness"].get<float>();
+    if (j.contains("contrast"))   cc.contrast   = j["contrast"].get<float>();
+    if (j.contains("gamma"))      cc.gamma      = j["gamma"].get<float>();
+    if (j.contains("rgbGain") && j["rgbGain"].is_array()) {
+        cc.rgbGain = deserializeVec3(j["rgbGain"]);
+    }
+}
+
 // Helper to serialize a single quad
 static nlohmann::json serializeQuad(const Quad& quad, const std::string& texturePath) {
     nlohmann::json j;
@@ -150,6 +182,9 @@ static nlohmann::json serializeQuad(const Quad& quad, const std::string& texture
     j["opacity"] = quad.getOpacity();
     j["geometry"] = serializeQuadGeometry(quad.getGeometry());
     j["textureBinding"] = serializeTextureBinding(quad.getTexture());
+    if (!quad.getColorCorrection().isIdentity()) {
+        j["colorCorrection"] = serializeColorCorrection(quad.getColorCorrection());
+    }
 
     if (!texturePath.empty()) {
         j["texturePath"] = texturePath;
@@ -182,6 +217,11 @@ static Quad deserializeQuad(const nlohmann::json& j, std::string& texturePath) {
     }
     if (j.contains("textureBinding")) {
         deserializeTextureBinding(j["textureBinding"], quad.getTexture());
+    }
+    if (j.contains("colorCorrection")) {
+        ColorCorrection cc;
+        deserializeColorCorrection(j["colorCorrection"], cc);
+        quad.setColorCorrection(cc);  // clamps to valid ranges
     }
     if (j.contains("texturePath")) {
         texturePath = j["texturePath"].get<std::string>();
@@ -291,7 +331,7 @@ static void loadFlatProject(const nlohmann::json& json, Project& project) {
 Result<void, Error> ProjectSerializer::save(const Project& project, const std::filesystem::path& path) {
     nlohmann::json json;
     json["$schema"] = "quadmapper/project/1.0";
-    json["version"] = "1.0.0";
+    json["version"] = "1.1.0";  // 1.1: additive per-quad colorCorrection (ADR-036)
     json["name"] = project.getName();
 
     // Serialize quads
@@ -354,7 +394,7 @@ Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path
 std::string ProjectSerializer::serialize(const Project& project) {
     nlohmann::json json;
     json["$schema"] = "quadmapper/project/1.0";
-    json["version"] = "1.0.0";
+    json["version"] = "1.1.0";  // 1.1: additive per-quad colorCorrection (ADR-036)
     json["name"] = project.getName();
 
     const auto& quads = project.getQuads();

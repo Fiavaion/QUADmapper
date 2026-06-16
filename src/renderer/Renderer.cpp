@@ -253,6 +253,13 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
     quadShader_.setInt("u_FlipV", texBinding.flipV ? 1 : 0);
     quadShader_.setInt("u_Texture", 0);
 
+    // Per-quad color correction (ADR-036). Identity values are a render no-op.
+    const ColorCorrection& cc = quad.getColorCorrection();
+    quadShader_.setVec3("u_ColorRGBGain", cc.rgbGain);
+    quadShader_.setFloat("u_ColorBrightness", cc.brightness);
+    quadShader_.setFloat("u_ColorContrast", cc.contrast);
+    quadShader_.setFloat("u_ColorGamma", cc.gamma);
+
     // Bind texture
     if (texture && texture->isValid()) {
         texture->bind(0);
