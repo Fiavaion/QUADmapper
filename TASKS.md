@@ -13,7 +13,10 @@ Last Updated: 2026-06-16 (Session 15)
 - **US-104 DONE** — per-quad color correction (brightness/contrast/gamma/RGB), [ADR-036](docs/adr/0036-per-quad-color-correction.md). Shader + Inspector + additive `.qmap` field. Identity = render no-op.
 - **US-101 DONE** — per-quad soft-edge blending (per-edge feather + gamma), [ADR-037](docs/adr/0037-per-quad-soft-edge-blending.md). Verified visually (feathered projector screenshot). Additive `.qmap` field.
 - **QM-061 prepped** — turnkey hardware runbook [docs/QM-061-hardware-test-runbook.md](docs/QM-061-hardware-test-runbook.md) + ready `dev`→`master` PR body [docs/QM-061-pr-prep.md](docs/QM-061-pr-prep.md).
-- Gate held all session: build clean, 601/601 ctest, success-metric smoke green. `.qmap` writer bumped 1.0.0 → 1.1.0 (additive MINOR, ADR-032 §5).
+- **UV test-grid (#2) DONE** — Blender-style colored UV grid texture + "UV grid on new quads" toggle + Inspector "Apply UV Test Grid". Verified visually warped on quad+projector. `src/renderer/UvTestGrid.*`, `test_renderer` (4 tests).
+- **Kantan grid (#3) — ADR-038 PROPOSED, awaiting sign-off.** Non-uniform U/V division grid → Bezier handles → local cell subdivision (beyond Kantan). Tiers 1+2+3, ADR-first. [docs/adr/0038-kantan-style-grid-warp.md](docs/adr/0038-kantan-style-grid-warp.md). NOT implemented.
+- **3D scan / model-UV (#4) — research only.** Major initiative; feasibility-spike-then-ADR roadmap at [docs/research/3d-scan-uv-projection-roadmap-2026-06-16.md](docs/research/3d-scan-uv-projection-roadmap-2026-06-16.md). NOT started.
+- Gate held all session: build clean, 605/605 ctest, success-metric smoke green. `.qmap` writer bumped 1.0.0 → 1.1.0 (additive MINOR, ADR-032 §5).
 
 ---
 
