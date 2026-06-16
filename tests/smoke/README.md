@@ -4,6 +4,21 @@
 refactor: it drives the **real** app to exercise the success-metric workflow that unit
 tests can't reach, then captures screenshots for visual + numeric verification.
 
+Two sibling harnesses close the gap that `drive_smoke.ps1` left (it warps a **white** quad
+and never assigns media):
+
+- **`drive_media_smoke.ps1`** — loads a **video** via the Video Player panel, assigns it to
+  the quad, plays it, warps a corner, and sends it to the projector (F11). Verifies the full
+  FFmpeg-decode → `quadTextures`/video-wrapper → viewport **and** projector path.
+  `-VideoPath <file>` (default a local test clip); output in `out_media/`.
+- **`drive_image_smoke.ps1`** — loads a still **image** via the Inspector "Texture: Path/Load"
+  field, warps a corner, sends it to the projector. `-ImagePath <file>`; output in `out_image/`.
+
+Both maximize the window (`SW_MAXIMIZE`) and paste the media path via the clipboard
+(`Ctrl+V` into the ImGui `InputText`); their deeper-panel click points (Assign/Play, Texture
+row) are tunable params — read the early `*_loaded`/`*_typed` capture to retune if the docked
+layout or screen size changes.
+
 ## Run
 
 ```powershell
