@@ -19,6 +19,7 @@
 #include "../scene/QuadManager.hpp"
 #include "../renderer/Texture.hpp"
 #include "../video/VideoPlayer.hpp"
+#include "../ui/panels/InspectorPanel.hpp"
 #include "../ui/panels/MainMenuBar.hpp"
 #include "../ui/panels/MediaBinPanel.hpp"
 #include "../ui/panels/OutputPanel.hpp"
@@ -70,6 +71,7 @@ struct EditorState {
     Texture videoTexWrapper;   // Wrapper for the raw video GL texture
 
     // Panels
+    InspectorPanel inspectorPanel;
     MainMenuBar mainMenuBar;
     bool mainMenuBarInitialized = false;
     MediaBinPanel mediaBinPanel;

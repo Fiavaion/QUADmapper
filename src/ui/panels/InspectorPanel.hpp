@@ -1,55 +1,35 @@
 #pragma once
 
-#include "Panel.hpp"
-#include "core/UUID.hpp"
-#include <functional>
-
 namespace quadmapper {
 
-class SourceManager;
-class MediaLibrary;
-class Quad;
-class TextureSource;
+struct EditorContext;
 
-/**
- * InspectorPanel displays properties of the currently selected object(s).
- * This includes quad properties, assigned source info, and source controls.
- */
-class InspectorPanel : public Panel {
+// Renders the context-sensitive "Properties" dockable window.
+// When ctx.es.showProperties is false, render() returns immediately.
+// Dispatches to one of three sub-renderers based on ctx.es.currentSelectionType:
+//   Quad    -> renderQuadProperties
+//   Output  -> renderOutputProperties
+//   Media   -> renderMediaProperties
+//
+// Does NOT inherit from Panel — the Panel::render() signature takes no arguments
+// and this panel requires a per-frame EditorContext (same approach as MainMenuBar
+// and QuadListPanel). The three static char buffers from the original inline block
+// are promoted to member variables to eliminate function-static state.
+class InspectorPanel {
 public:
-    InspectorPanel();
+    InspectorPanel() = default;
 
-    void setSourceManager(SourceManager* manager) { sourceManager_ = manager; }
-    void setMediaLibrary(MediaLibrary* library) { mediaLibrary_ = library; }
-
-    /**
-     * Set the currently selected quad.
-     */
-    void setSelectedQuad(const UUID& quadId) { selectedQuadId_ = quadId; }
-    void clearSelection() { selectedQuadId_ = UUID::null(); }
-
-    /**
-     * Callback when "Edit Procedural" is clicked.
-     */
-    using EditProceduralCallback = std::function<void(const UUID& mediaItemId)>;
-    void setEditProceduralCallback(EditProceduralCallback callback) {
-        editProceduralCallback_ = std::move(callback);
-    }
-
-    void render() override;
+    // Call once per frame inside the ImGui frame, after the dockspace.
+    void render(EditorContext& ctx);
 
 private:
-    void renderQuadProperties(Quad* quad);
-    void renderSourceInfo(Quad* quad);
-    void renderVideoControls(TextureSource* source);
-    void renderProceduralInfo(TextureSource* source, const UUID& mediaItemId);
-    void renderNoSelection();
+    void renderQuadProperties(EditorContext& ctx);
+    void renderOutputProperties(EditorContext& ctx);
+    void renderMediaProperties(EditorContext& ctx);
 
-    SourceManager* sourceManager_ = nullptr;
-    MediaLibrary* mediaLibrary_ = nullptr;
-    UUID selectedQuadId_;
-
-    EditProceduralCallback editProceduralCallback_;
+    char quadName_[128]   = "";
+    char outputName_[128] = "";
+    char mediaName_[128]  = "";
 };
 
-} // namespace quadmapper
+}  // namespace quadmapper
