@@ -13,6 +13,12 @@ and never assigns media):
   `-VideoPath <file>` (default a local test clip); output in `out_media/`.
 - **`drive_image_smoke.ps1`** — loads a still **image** via the Inspector "Texture: Path/Load"
   field, warps a corner, sends it to the projector. `-ImagePath <file>`; output in `out_image/`.
+- **`drive_ai_smoke.ps1`** — AI "Detect Surface" (QM-058). Pre-warms the sidecar, launches the
+  app with the `QM_AI_SELFTEST` hook so `aiDetectSurface()` runs headlessly on the default quad
+  (avoids fragile ImGui menu-driving), then asserts via the app log + screenshots. `-TestImage`
+  picks the scene: `test_screen.png` → "surface applied" + F11 (AC1/AC3); `test_wall.png` →
+  "low confidence … tap the surface", no apply (AC2). Output in `out_ai/`. The `QM_AI_SELFTEST` /
+  `QM_AI_TEST_IMAGE` env vars are off in normal runs (verification seams).
 
 Both maximize the window (`SW_MAXIMIZE`) and paste the media path via the clipboard
 (`Ctrl+V` into the ImGui `InputText`); their deeper-panel click points (Assign/Play, Texture
