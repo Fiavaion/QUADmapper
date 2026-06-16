@@ -4,8 +4,8 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 3 debt (TD-07/08/09) + 6 AI (QM-056..QM-062 — Phase 9)
-- Done: 56
+- Todo: 4 debt (TD-07/08/09/10) + 5 AI (QM-057..QM-062 — Phase 9)
+- Done: 57
 - Blocked: 0
 
 ---
@@ -29,8 +29,15 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Deferred (per user, → TD-09):** AC1's "camera displayed *on a quad*/projector" needs the renderer wired to `SourceManager` (the unconverged dual-model). Capture+PNG — the AI-roadmap-critical part — is complete; on-quad display rides on the deliberate TD-09 convergence.
 
 #### QM-056: AI sidecar skeleton + IPC contract (ADR-035)
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-055
-- **AC:** launch/attach/health-check/teardown `tools/ai-sidecar/`; versioned `POST /surface` stub round-trips; sidecar-absent disables AI UI cleanly with all existing workflows unaffected; contract test + Python unit test run GPU-free.
+- **Status:** DONE — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`.
+- **Effort:** M · **Depends On:** QM-055
+- **Delivered (the boundary, nothing intelligent behind it yet):**
+  - **Python sidecar** `tools/ai-sidecar/` — stdlib-only loopback HTTP server; versioned v1 `GET /health` + `POST /surface` (centered stub rect, `confidence 0.0`, `stub:true`). Never linked into `QUADmapper.exe`. 6 GPU-free pytest cases.
+  - **C++ `src/ai/SidecarClient`** — attach-or-launch lifecycle; WinHTTP client (Windows system lib, **no vcpkg dep**) behind a pimpl; spawned sidecar in a **Job Object (KILL_ON_JOB_CLOSE)** ⇒ no orphan. Every path degrades gracefully (never throws).
+  - **App wiring** — constructed at init, launched **on demand** from a new **AI menu** (Enable / Detect Surface / status), torn down at shutdown. Menu reads "Sidecar not running" when absent; existing workflows untouched. `EditorContext` unchanged.
+- **AC met:** AC1 launch/attach/health/teardown no-orphan ✓ · AC2 `/surface` round-trips stub + sidecar-absent disables UI cleanly ✓ · AC3 C++ contract test (4, skip-if-Python-absent) + Python unit test, GPU-free ✓.
+- **Gate:** full build clean; **596/596 ctest** (+4); success-metric smoke green (warp + F11 projector, sidecar-absent path). Live launch→health→`/surface`→teardown watched in the contract test (pid spawned + killed).
+- **Follow-up:** TD-10 (async `start()` to avoid the ~1–2.5s UI freeze on enable). In-GUI menu click-path not yet watched working (API verified by the contract test).
 
 #### QM-057: Sidecar surface service (Metric3D → plane → 4 corners)
 - **Status:** TODO · **Effort:** M · **Depends On:** QM-056
@@ -823,7 +830,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-053 | TD-02 step 2 retire dual-track scene state (one scene of truth) | DONE | Phase 8 |
 | QM-054 | TD-02 decompose render() into panels (ADR-034, 6 batches) | DONE | Phase 8 |
 | QM-055 | AI pre-show: live camera input + PNG capture (on-quad display → TD-09) | DONE | Phase 9 |
-| QM-056 | AI sidecar skeleton + IPC contract (ADR-035) | TODO | Phase 9 |
+| QM-056 | AI sidecar skeleton + IPC contract (ADR-035) | DONE | Phase 9 |
 | QM-057 | Sidecar surface service (Metric3D → plane → corners) | TODO | Phase 9 |
 | QM-058 | "Propose corners" UI (human-in-the-loop confirm) | TODO | Phase 9 |
 | QM-059 | Projector test-pattern emit + single-photo capture | TODO | Phase 9 |
