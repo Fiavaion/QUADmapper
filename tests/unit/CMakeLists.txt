@@ -66,3 +66,13 @@ add_quadmapper_test(test_source
     source/CameraSourceTest.cpp
 )
 target_link_libraries(test_source PRIVATE quadmapper_source quadmapper_core)
+
+# AI sidecar tests (QM-056). Live round-trip launches the real Python sidecar;
+# script path passed in so the test can find it. Skip-if-absent keeps it CI-safe.
+add_quadmapper_test(test_ai
+    ai/SidecarClientTest.cpp
+)
+target_link_libraries(test_ai PRIVATE quadmapper_ai quadmapper_core)
+target_compile_definitions(test_ai PRIVATE
+    QM_SIDECAR_SCRIPT="${CMAKE_SOURCE_DIR}/tools/ai-sidecar/sidecar.py"
+)
