@@ -116,6 +116,40 @@ HttpResponse httpRequest(const std::string& host, int port,
     return result;
 }
 
+// Parse a corners response (shared by /surface and /oneflash): validates the
+// api_version, reads corners[4], and the optional plane/confidence/stub. The
+// homography in a /oneflash reply is ignored on the C++ side — only the corners
+// drive the quad.
+std::optional<SurfaceResult> parseCornersResponse(const std::string& body,
+                                                  int expectedApiVersion) {
+    try {
+        json j = json::parse(body);
+        if (j.value("api_version", -1) != expectedApiVersion) {
+            return std::nullopt;
+        }
+        SurfaceResult out;
+        const auto& corners = j.at("corners");
+        if (!corners.is_array() || corners.size() != 4) return std::nullopt;
+        for (size_t i = 0; i < 4; ++i) {
+            out.corners[i][0] = corners[i].at(0).get<float>();
+            out.corners[i][1] = corners[i].at(1).get<float>();
+        }
+        if (j.contains("plane") && j["plane"].is_object()) {
+            const auto& plane = j.at("plane");
+            const auto& n = plane.value("normal", json::array({0, 0, 1}));
+            for (size_t i = 0; i < 3 && i < n.size(); ++i) {
+                out.planeNormal[i] = n[i].get<float>();
+            }
+            out.planeD = plane.value("d", 0.0f);
+        }
+        out.confidence = j.value("confidence", 0.0f);
+        out.stub = j.value("stub", false);
+        return out;
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
+}
+
 }  // namespace
 
 // ---- Impl ------------------------------------------------------------------
@@ -278,34 +312,28 @@ std::optional<SurfaceResult> SidecarClient::requestSurface(
     HttpResponse r = httpRequest(im.config.host, im.config.port, "POST",
                                  "/surface", req.dump(), im.config.requestTimeoutMs);
     if (!r.ok || r.status != 200) return std::nullopt;
+    return parseCornersResponse(r.body, im.config.expectedApiVersion);
+}
 
-    try {
-        json j = json::parse(r.body);
-        if (j.value("api_version", -1) != im.config.expectedApiVersion) {
-            return std::nullopt;
-        }
-
-        SurfaceResult out;
-        const auto& corners = j.at("corners");
-        if (!corners.is_array() || corners.size() != 4) return std::nullopt;
-        for (size_t i = 0; i < 4; ++i) {
-            out.corners[i][0] = corners[i].at(0).get<float>();
-            out.corners[i][1] = corners[i].at(1).get<float>();
-        }
-        if (j.contains("plane")) {
-            const auto& plane = j.at("plane");
-            const auto& n = plane.value("normal", json::array({0, 0, 1}));
-            for (size_t i = 0; i < 3 && i < n.size(); ++i) {
-                out.planeNormal[i] = n[i].get<float>();
-            }
-            out.planeD = plane.value("d", 0.0f);
-        }
-        out.confidence = j.value("confidence", 0.0f);
-        out.stub = j.value("stub", false);
-        return out;
-    } catch (const json::exception&) {
+std::optional<SurfaceResult> SidecarClient::requestOneFlash(
+    const std::string& patternImagePath,
+    const std::array<std::array<float, 2>, 4>* targetCorners) {
+    auto& im = *impl_;
+    if (im.state != SidecarState::Attached && im.state != SidecarState::Launched) {
         return std::nullopt;
     }
+
+    json req = {{"pattern_image", patternImagePath}};
+    if (targetCorners != nullptr) {
+        req["target_corners"] = json::array();
+        for (const auto& c : *targetCorners) {
+            req["target_corners"].push_back({c[0], c[1]});
+        }
+    }
+    HttpResponse r = httpRequest(im.config.host, im.config.port, "POST",
+                                 "/oneflash", req.dump(), im.config.requestTimeoutMs);
+    if (!r.ok || r.status != 200) return std::nullopt;
+    return parseCornersResponse(r.body, im.config.expectedApiVersion);
 }
 
 }  // namespace quadmapper::ai

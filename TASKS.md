@@ -4,8 +4,8 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 4 debt (TD-07/08/09/10) + 3 AI (QM-059..QM-062 — Phase 9; **Phase 1 ships**)
-- Done: 59
+- Todo: 4 debt (TD-07/08/09/10) + 1 AI (🚩 QM-061 hardware gate — the only remaining wedge work, hardware-only)
+- Done: 62 — **all software-doable AI tasks complete; QM-055..060 + QM-062 done**
 - Blocked: 0
 
 ---
@@ -56,20 +56,30 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Notes:** `QM_AI_SELFTEST`/`QM_AI_TEST_IMAGE` are guarded verification seams (off in normal runs). Detect blocks the UI ~1–3s (pre-show; async → TD-10). Phase 1 of the AI wedge now ships.
 
 #### QM-059: Projector test-pattern emit + single-photo capture flow
-- **Status:** TODO · **Effort:** S · **Depends On:** QM-055
-- **AC:** flash a known rectangle/ChArUco fullscreen on the chosen output; single capture sees surface+pattern; round-trips to disk; smoke green.
+- **Status:** DONE — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`.
+- **Effort:** S · **Depends On:** QM-055
+- **Delivered:** `resources/patterns/charuco.png` + `.json` (7×4 ChArUco, DICT_5X5_100, gen by `tools/ai-sidecar/gen_pattern.py`, 3-channel → white-on-black). `OutputManager::renderPatternToOutputs()` draws one fullscreen identity quad to all outputs (additive; scene path untouched). AI → One-Flash menu (Emit / Capture / Clear); emit flashes the pattern on the projector via `renderToProjectorOutputs` when armed; capture grabs a camera frame to disk via the shared `captureCameraFrameToPng()` helper (extracted from `aiDetectSurface`, de-duped).
+- **AC met:** AC1 ChArUco flashes fullscreen on the chosen output ✓ · AC2 single capture round-trips to disk (720×1280×3, OpenCV-readable) ✓ · smoke green ✓.
+- **Verified:** `drive_ai_smoke.ps1 -SelfTestMode oneflash` — pattern white-on-black fullscreen on the projector (screenshot) + `quadmapper_oneflash_capture.png` on disk. Success-metric smoke green; 596/596 ctest; QM-058 unaffected.
 
 #### QM-060: One-Flash homography solve → push warp
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-059, QM-057
-- **AC:** `POST /oneflash` detects pattern+surface, returns homography as 4 corner offsets; applying it lands projected content aligned (no projector pose needed, one photo); `.qmap`-safe; smoke green.
+- **Status:** DONE (software-complete) — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`. Real-projection alignment is the 🚩 QM-061 gate.
+- **Effort:** M · **Depends On:** QM-059, QM-057
+- **Delivered:** `oneflash.py` — detect ChArUco in reference + photo, match by id → homography `H` (projector-norm ↔ photo px); target surface corners (QM-057 or passed) → `H⁻¹` → projector-norm quad corners; confidence from inlier ratio + reprojection RMS (cv2.aruco only, GPU-free). `POST /oneflash` route (surface target via QM-057 or full-frame fallback; stub on failure). `SidecarClient::requestOneFlash()` (shared `parseCornersResponse`). App: AI → One-Flash → **Solve & Apply** → apply corners to selected quad (geometry only, no `.qmap` change).
+- **AC met (software):** AC1 `/oneflash` returns homography as 4 corner offsets ✓ · AC2 applying warps the quad ✓ (the *physical* "lands aligned on surface" claim is QM-061) · AC3 geometry-only, `.qmap`-safe, smoke green ✓.
+- **Verified without hardware:** synthetic known-homography test recovers corners to **<0.02** (conf 0.99, 0.13px RMS); HTTP round-trip; in-app Solve & Apply via `QM_AI_SELFTEST=solve` (conf 0.99, watched). 14/14 sidecar pytest; 596/596 ctest.
 
 #### QM-061: 🚩 Real-device validation gate (Phase 2 not "done" until this passes)
 - **Status:** TODO · **Effort:** S · **Depends On:** QM-060
 - **AC:** on a real projector + real surface + real phone photo, One-Flash produces a visibly correct warp, watched working; failure modes documented. Fallback if it fails: port MIT gray-code structured-light behind the same sidecar contract.
 
 #### QM-062: Audience-perspective ("trap-art") anamorphic warp (Phase 3)
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-057
-- **AC:** from one captured viewpoint, warp content to look correct from the phone's position; `.qmap`-safe; smoke green.
+- **Status:** DONE (software-complete) — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`. "Looks correct from the viewpoint" is perspective-validated on real hardware (with QM-061).
+- **Effort:** M · **Depends On:** QM-057 (realized via the One-Flash homography, QM-060)
+- **Delivered:** AI → One-Flash → **Anamorphic Warp**. Reuses the One-Flash homography: maps a centered **audience** rectangle back through `H⁻¹` → projector corners that make content read frontal from the captured viewpoint. `requestOneFlash()` gained an optional target; `oneFlashSolveAndApply` (surface target) + `oneFlashAnamorphic` (audience target) share `runOneFlash()`. No `.qmap` change.
+- **AC met (software):** AC1 frontal-from-viewpoint warp applied ✓ (the perspective claim is hardware-validated) · AC2 geometry-only, `.qmap`-safe, smoke green ✓.
+- **Verified:** anamorphic round-trip test (audience target → corners → forward `H` lands back on target, <2px); in-app Anamorphic Warp via `QM_AI_SELFTEST=anamorphic` (conf 0.99, watched). 15/15 sidecar pytest; 596/596 ctest.
+- **Note:** a projector-off (QM-057-only) anamorphic is geometrically underdetermined (the spike's finding); this is the One-Flash-based (projector-pose-observed) realization.
 
 ---
 
@@ -841,9 +851,9 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-056 | AI sidecar skeleton + IPC contract (ADR-035) | DONE | Phase 9 |
 | QM-057 | Sidecar surface service (Metric3D → plane → corners) | DONE | Phase 9 |
 | QM-058 | "Propose corners" UI (human-in-the-loop confirm) | DONE | Phase 9 |
-| QM-059 | Projector test-pattern emit + single-photo capture | TODO | Phase 9 |
-| QM-060 | One-Flash homography solve → push warp | TODO | Phase 9 |
+| QM-059 | Projector test-pattern emit + single-photo capture | DONE | Phase 9 |
+| QM-060 | One-Flash homography solve → push warp | DONE | Phase 9 |
 | QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |
-| QM-062 | Audience-perspective anamorphic warp | TODO | Phase 9 |
+| QM-062 | Audience-perspective anamorphic warp | DONE | Phase 9 |
 
 ---

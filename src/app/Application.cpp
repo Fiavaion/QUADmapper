@@ -472,7 +472,23 @@ void Application::runAiSelfTest() {
     if (m_sidecarClient) {
         m_sidecarClient->start();
     }
-    aiDetectSurface();
+
+    const char* modeEnv = std::getenv("QM_AI_SELFTEST");
+    const std::string mode = modeEnv ? modeEnv : "";
+    if (mode == "oneflash") {
+        // QM-059: arm the pattern, flash it on the projector, capture a photo.
+        oneFlashEmitPattern();
+        m_outputManager->handleF11Key();   // enter perform mode -> pattern shows
+        oneFlashCapturePhoto();
+    } else if (mode == "solve") {
+        // QM-060: solve the projector->surface homography and apply the warp.
+        oneFlashSolveAndApply();
+    } else if (mode == "anamorphic") {
+        // QM-062: audience-perspective (frontal-from-viewpoint) warp.
+        oneFlashAnamorphic();
+    } else {
+        aiDetectSurface();
+    }
 }
 
 void Application::processInput() {
@@ -579,6 +595,11 @@ void Application::render() {
             }
         });
         es.mainMenuBar.setOnDetectSurface([this]() { aiDetectSurface(); });
+        es.mainMenuBar.setOnEmitPattern([this]()  { oneFlashEmitPattern();  });
+        es.mainMenuBar.setOnCapturePhoto([this]() { oneFlashCapturePhoto(); });
+        es.mainMenuBar.setOnClearPattern([this]() { oneFlashClearPattern(); });
+        es.mainMenuBar.setOnSolveApply([this]()   { oneFlashSolveAndApply(); });
+        es.mainMenuBar.setOnAnamorphic([this]()   { oneFlashAnamorphic(); });
         es.mainMenuBarInitialized = true;
     }
 
@@ -1010,26 +1031,10 @@ void Application::aiDetectSurface() {
             return;
         }
     } else {
-        const auto cameras = enumerateCameraDevices();
-        if (cameras.empty()) {
-            setStatus("AI: no camera found (connect one or set QM_AI_TEST_IMAGE)");
-            return;
-        }
-        CameraSource camera(cameras.front().name);
-        if (!camera.initialize()) {
-            setStatus("AI: failed to open camera");
-            return;
-        }
-        // Pump updates until the first frame lands (or give up after ~1s).
-        for (int i = 0; i < 60 && !camera.hasNewFrame(); ++i) {
-            camera.update(0.016);
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
-        }
         imgPath = std::filesystem::temp_directory_path() / "quadmapper_ai_capture.png";
-        const bool captured = camera.captureCurrentFrameToPng(imgPath);
-        camera.shutdown();
-        if (!captured) {
-            setStatus("AI: camera capture failed (no frame)");
+        std::string err;
+        if (!captureCameraFrameToPng(imgPath.string(), err)) {
+            setStatus("AI: " + err);
             return;
         }
     }
@@ -1071,12 +1076,195 @@ void Application::aiDetectSurface() {
     setStatus(msg);
 }
 
+bool Application::captureCameraFrameToPng(const std::string& pngPath,
+                                          std::string& error) {
+    const auto cameras = enumerateCameraDevices();
+    if (cameras.empty()) {
+        error = "no camera found (connect one or set QM_AI_TEST_IMAGE)";
+        return false;
+    }
+    CameraSource camera(cameras.front().name);
+    if (!camera.initialize()) {
+        error = "failed to open camera";
+        return false;
+    }
+    // Pump updates until the first frame lands (or give up after ~1s).
+    for (int i = 0; i < 60 && !camera.hasNewFrame(); ++i) {
+        camera.update(0.016);
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    const bool captured = camera.captureCurrentFrameToPng(pngPath);
+    camera.shutdown();
+    if (!captured) {
+        error = "camera capture failed (no frame)";
+        return false;
+    }
+    return true;
+}
+
+void Application::oneFlashEmitPattern() {
+    EditorState& es = *m_editorState;
+    auto setStatus = [&](const std::string& msg) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
+        es.statusTimer = 5.0f;
+        Logger::info(msg);
+    };
+
+    // Lazily load the calibration pattern + build the fullscreen identity quad.
+    if (!m_calibTexture) {
+        std::filesystem::path patternPath;
+        const std::filesystem::path rel("resources/patterns/charuco.png");
+        for (const std::filesystem::path& base :
+             {std::filesystem::current_path(),
+              std::filesystem::current_path() / "..",
+              std::filesystem::current_path() / ".." / ".."}) {
+            std::error_code ec;
+            if (std::filesystem::exists(base / rel, ec)) {
+                patternPath = base / rel;
+                break;
+            }
+        }
+        auto tex = std::make_unique<Texture>();
+        if (patternPath.empty() || !tex->loadFromFile(patternPath)) {
+            setStatus("One-Flash: pattern asset not found (resources/patterns/charuco.png)");
+            return;
+        }
+        m_calibTexture = std::move(tex);
+        m_calibQuad = std::make_unique<Quad>();
+        m_calibQuad->getGeometry().setCorners(
+            {Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)});
+    }
+
+    m_emitPattern = true;
+    if (!m_outputManager->isInPerformMode()) {
+        setStatus("One-Flash: pattern armed - press F11 to flash it on the projector");
+    } else {
+        setStatus("One-Flash: pattern on projector - capture a photo, then Clear Pattern");
+    }
+}
+
+void Application::oneFlashCapturePhoto() {
+    EditorState& es = *m_editorState;
+    auto setStatus = [&](const std::string& msg) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
+        es.statusTimer = 6.0f;
+        Logger::info(msg);
+    };
+
+    const std::filesystem::path out =
+        std::filesystem::temp_directory_path() / "quadmapper_oneflash_capture.png";
+    std::string err;
+    if (!captureCameraFrameToPng(out.string(), err)) {
+        setStatus("One-Flash: " + err);
+        return;
+    }
+    setStatus("One-Flash: captured " + out.string());
+}
+
+void Application::oneFlashClearPattern() {
+    EditorState& es = *m_editorState;
+    m_emitPattern = false;
+    snprintf(es.statusMessage, sizeof(es.statusMessage), "One-Flash: pattern cleared");
+    es.statusTimer = 4.0f;
+    Logger::info("One-Flash: pattern cleared");
+}
+
+void Application::oneFlashSolveAndApply() {
+    runOneFlash(nullptr, "warp applied");
+}
+
+void Application::oneFlashAnamorphic() {
+    // A centered rectangle in the audience (photo) view: content mapped here
+    // looks like a frontal rectangle from the captured viewpoint.
+    static const std::array<std::array<float, 2>, 4> kAudienceTarget{{
+        {0.15f, 0.15f}, {0.85f, 0.15f}, {0.85f, 0.85f}, {0.15f, 0.85f}}};
+    runOneFlash(&kAudienceTarget, "anamorphic warp applied");
+}
+
+void Application::runOneFlash(const std::array<std::array<float, 2>, 4>* audienceTarget,
+                              const char* label) {
+    EditorState& es = *m_editorState;
+    auto setStatus = [&](const std::string& msg) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
+        es.statusTimer = 6.0f;
+        Logger::info(msg);
+    };
+
+    if (!m_sidecarClient ||
+        (m_sidecarClient->state() != ai::SidecarState::Attached &&
+         m_sidecarClient->state() != ai::SidecarState::Launched)) {
+        setStatus("One-Flash: enable the sidecar first (AI > Enable AI Assist)");
+        return;
+    }
+    Quad* quad = es.quadManager.getPrimarySelectedQuad();
+    if (!quad) {
+        setStatus("One-Flash: select a quad to warp first");
+        return;
+    }
+
+    // The pattern photo: QM_AI_TEST_IMAGE override (a synthetic capture for
+    // verification) else a live camera shot of the projected pattern.
+    std::filesystem::path patternPath;
+    if (const char* testImg = std::getenv("QM_AI_TEST_IMAGE")) {
+        patternPath = testImg;
+        if (!std::filesystem::exists(patternPath)) {
+            setStatus("One-Flash: QM_AI_TEST_IMAGE not found");
+            return;
+        }
+    } else {
+        patternPath = std::filesystem::temp_directory_path() /
+                      "quadmapper_oneflash_capture.png";
+        std::string err;
+        if (!captureCameraFrameToPng(patternPath.string(), err)) {
+            setStatus("One-Flash: " + err);
+            return;
+        }
+    }
+
+    auto result = m_sidecarClient->requestOneFlash(patternPath.string(), audienceTarget);
+    if (!result || result->stub) {
+        setStatus("One-Flash: pattern not detected (need the ChArUco visible)");
+        return;
+    }
+    constexpr float kConfidenceThreshold = 0.35f;
+    if (result->confidence < kConfidenceThreshold) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "One-Flash: low confidence (%.2f) - reframe the pattern",
+                 result->confidence);
+        setStatus(msg);
+        return;
+    }
+
+    std::array<Vec2, 4> corners{
+        Vec2{result->corners[0][0], result->corners[0][1]},
+        Vec2{result->corners[1][0], result->corners[1][1]},
+        Vec2{result->corners[2][0], result->corners[2][1]},
+        Vec2{result->corners[3][0], result->corners[3][1]},
+    };
+    quad->getGeometry().setCorners(corners);
+    m_project->setModified(true);
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "One-Flash: %s (confidence %.2f) - send to projector (F11)",
+             label, result->confidence);
+    setStatus(msg);
+}
+
 void Application::renderToProjectorOutputs() {
     if (!m_outputManager || !m_editorState) {
         return;
     }
 
     EditorState& es = *m_editorState;
+
+    // One-Flash: when a calibration pattern is armed, flash it fullscreen on the
+    // outputs instead of the scene (QM-059).
+    if (m_emitPattern && m_calibQuad) {
+        m_outputManager->renderPatternToOutputs(*m_calibQuad, m_calibTexture.get());
+        return;
+    }
 
     // Mirror the texture-map construction from render(): static image textures
     // plus the video wrapper for the video-assigned quad.

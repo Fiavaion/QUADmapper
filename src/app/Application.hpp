@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 
@@ -15,6 +16,8 @@ class Project;
 class FolderWatcher;
 class ThumbnailCache;
 class SourceManager;
+class Quad;
+class Texture;
 struct EditorState;
 namespace ai { class SidecarClient; }
 
@@ -77,6 +80,28 @@ private:
     // (set from the QM_AI_SELFTEST env var). Verification only; no production path.
     void runAiSelfTest();
 
+    // One-Flash capture flow (QM-059): flash a known ChArUco pattern fullscreen on
+    // the chosen projector output, then capture a single photo (surface + pattern)
+    // to disk for the sidecar's homography solve (QM-060).
+    void oneFlashEmitPattern();
+    void oneFlashCapturePhoto();
+    void oneFlashClearPattern();
+    // Capture a photo of the projected pattern, solve via POST /oneflash, and
+    // apply the resulting corners to the selected quad. Geometry only.
+    //   oneFlashSolveAndApply (QM-060): target = the detected surface.
+    //   oneFlashAnamorphic   (QM-062): target = a centered audience rectangle ->
+    //     content looks frontal from the captured viewpoint (anamorphosis).
+    void oneFlashSolveAndApply();
+    void oneFlashAnamorphic();
+    // Shared core: solve One-Flash with an optional audience target and apply.
+    void runOneFlash(const std::array<std::array<float, 2>, 4>* audienceTarget,
+                     const char* label);
+
+    // Open the first camera, grab one frame, and write it to pngPath. Returns
+    // false with a human-readable reason in `error`. Shared by aiDetectSurface()
+    // and the One-Flash capture.
+    bool captureCameraFrameToPng(const std::string& pngPath, std::string& error);
+
     // Build the per-frame texture map from m_editorState and push the warped
     // scene to all enabled output windows.  Called from run() after each main
     // frame's render()+ImGui+swap so it never runs mid-ImGui-frame.
@@ -113,6 +138,13 @@ private:
     // QM-058 self-test hook (QM_AI_SELFTEST). Off in normal runs.
     bool m_aiSelfTestPending = false;
     int m_frameCount = 0;
+
+    // One-Flash calibration pattern state (QM-059). When m_emitPattern is set,
+    // the projector outputs show m_calibQuad (identity, fullscreen) instead of the
+    // scene. Lazily built on first emit.
+    bool m_emitPattern = false;
+    std::unique_ptr<Quad> m_calibQuad;
+    std::unique_ptr<Texture> m_calibTexture;
 
     // Singleton
     static Application* s_instance;

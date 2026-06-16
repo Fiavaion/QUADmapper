@@ -1,0 +1,31 @@
+{
+  "type": "charuco",
+  "dictionary": "DICT_5X5_100",
+  "squares_x": 7,
+  "squares_y": 4,
+  "square_length": 0.04,
+  "marker_length": 0.03,
+  "image_size": [
+    1920,
+    1080
+  ],
+  "margin_px": 40,
+  "projector_corners_norm": [
+    [
+      0,
+      0
+    ],
+    [
+      1,
+      0
+    ],
+    [
+      1,
+      1
+    ],
+    [
+      0,
+      1
+    ]
+  ]
+}
