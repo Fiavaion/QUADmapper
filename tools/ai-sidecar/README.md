@@ -4,10 +4,10 @@ Optional, out-of-process service for AI pre-show assist (ADR-035). The C++ app
 talks to it over **loopback HTTP + JSON**; it is **never linked into
 `QUADmapper.exe`** and the app is fully usable without it.
 
-This directory currently holds the **QM-056 skeleton**: the integration boundary
-(launch / health-check / versioned request-response / teardown) with no CV/ML
-behind it yet. Real surface detection (Metric3D → plane → corners) lands in
-QM-057+.
+It holds the **QM-056 boundary** (launch / health-check / versioned
+request-response / teardown) and the **QM-057 surface service** (real Metric3D →
+plane → 4-corner detection). The heavy CV stack loads **lazily**, only when a real
+`/surface` request arrives — so `/health` and the contract tests stay light.
 
 ## Run
 
@@ -33,13 +33,39 @@ On start it prints one JSON line to stdout, e.g.
 `api_version` is bumped on any shape change; the C++ client refuses to attach to
 a sidecar whose version it does not understand.
 
+### `/surface` — real detection (QM-057)
+
+When the request's `image_path` is readable **and** the Metric3D model is present,
+`/surface` runs the real pipeline (`stub: false`):
+
+  image → Metric3D (metric depth + normals) → metric point cloud →
+  Open3D `segment_plane` → largest planar component → 4 corners → confidence
+
+`confidence` folds in a **verticality prior**: a cluttered scene whose biggest
+plane is the floor/ceiling returns ~0 rather than confidently warping onto the
+wrong surface. On the 3 spike scenes: theatre screen ≈0.58 (encloses the screen),
+oblique facade ≈0.59, gallery floor-trap ≈0.0.
+
+Latency: **~350ms** steady state on GPU (RTX 3080); the **first** request pays a
+one-time ~7–8s model load. CPU works but is slower. If `image_path` is missing or
+the model is absent, `/surface` falls back to the stub and the app is unaffected.
+
+**Model location** (not pip-installed) — defaults to the local ComfyUI
+controlnet_aux tree; override via env vars before launch:
+
+```
+QM_M3D_SRC=...\comfyui_controlnet_aux\src
+QM_M3D_CKPT=...\Metric3D\metric_depth_vit_small_800k.pth
+QM_M3D_BACKBONE=vit-small   # or vit-large / vit-giant2
+```
+
 ## Test (GPU-free)
 
 ```powershell
 python -m pytest -q
 ```
 
-The skeleton and its tests use the Python standard library only — no torch /
-Open3D / GPU. CV/ML dependencies (added with QM-057) are pinned in
-`requirements.txt` and kept out of the skeleton path so the contract stays
-testable without a GPU.
+`test_sidecar.py` (the boundary/contract) uses the standard library only — no
+torch / Open3D / GPU. `test_surface.py` (the QM-057 service) is **skipped** unless
+the Metric3D model is present, so the contract stays testable without a GPU; when
+the model is on the box it asserts the AC2 behaviour on the 3 spike scenes.

@@ -22,6 +22,7 @@ import argparse
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Optional
 
 # Bump when the request/response shapes change. The C++ client refuses to attach
 # to a sidecar whose api_version it does not understand (graceful version skew).
@@ -38,8 +39,8 @@ def _stub_surface(_request: dict) -> dict:
 
     A centered, axis-aligned rectangle in normalized [0,1] image coordinates with
     zero confidence and stub=True, so callers can prove the round-trip without
-    mistaking it for a real detection. QM-057 replaces this with Metric3D + a
-    plane fit.
+    mistaking it for a real detection. Returned whenever real detection cannot run
+    (no model on this box, or no readable image_path) — the app degrades cleanly.
     """
     return {
         "api_version": SIDECAR_API_VERSION,
@@ -53,6 +54,49 @@ def _stub_surface(_request: dict) -> dict:
         "confidence": 0.0,
         "stub": True,
     }
+
+
+def _real_surface(request: dict) -> Optional[dict]:
+    """Run the real Metric3D surface service (QM-057), or None to fall back.
+
+    None (=> stub) when: no readable image_path, the Metric3D model is absent on
+    this machine, or the heavy CV stack (torch/open3d/surface) is not importable.
+    Imports are deferred to here so the skeleton's /health and the GPU-free
+    contract tests never pull in torch.
+    """
+    import os
+
+    image_path = request.get("image_path")
+    if not image_path or not os.path.isfile(image_path):
+        return None
+
+    try:
+        import cv2
+        import surface  # local module; imports torch/open3d on first real use
+    except Exception:  # noqa: BLE001 - any import failure => graceful stub
+        return None
+    if not surface.model_available():
+        return None
+
+    bgr = cv2.imread(image_path)
+    if bgr is None:
+        return None
+
+    fx = float(request.get("fx", 1000.0))
+    fy = float(request.get("fy", 1000.0))
+    result = surface.estimate_surface(bgr, fx=fx, fy=fy)
+    result["api_version"] = SIDECAR_API_VERSION
+    return result
+
+
+def _surface_response(request: dict) -> dict:
+    """Real detection when possible, else the stub. Never raises."""
+    try:
+        real = _real_surface(request)
+    except Exception as exc:  # noqa: BLE001 - detection must never 500 the app
+        sys.stderr.write(f"[sidecar] surface detection failed: {exc!r}\n")
+        real = None
+    return real if real is not None else _stub_surface(request)
 
 
 class SidecarHandler(BaseHTTPRequestHandler):
@@ -101,7 +145,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "invalid JSON", "detail": str(exc)})
             return
 
-        self._send_json(200, _stub_surface(request))
+        self._send_json(200, _surface_response(request))
 
 
 def make_server(host: str, port: int) -> ThreadingHTTPServer:
