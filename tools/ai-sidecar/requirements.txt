@@ -1,0 +1,10 @@
+# QUADmapper AI pre-show sidecar — runtime dependencies.
+#
+# The QM-056 skeleton depends on the Python standard library ONLY (http.server,
+# json, argparse), so it installs and tests with nothing here. The CV/ML stack
+# arrives with the real surface service (QM-057+): Metric3D, Open3D, OpenCV,
+# torch. Those are pinned here when that work lands — keeping the heavy, GPU-
+# adjacent deps OUT of the skeleton so health-check/contract tests stay GPU-free.
+#
+# Dev/test only:
+#   pytest>=8
