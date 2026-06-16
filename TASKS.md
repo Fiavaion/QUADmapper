@@ -4,8 +4,8 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 4 debt (TD-07/08/09/10) + 5 AI (QM-057..QM-062 — Phase 9)
-- Done: 57
+- Todo: 4 debt (TD-07/08/09/10) + 4 AI (QM-058..QM-062 — Phase 9)
+- Done: 58
 - Blocked: 0
 
 ---
@@ -40,8 +40,12 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Follow-up:** TD-10 (async `start()` to avoid the ~1–2.5s UI freeze on enable). In-GUI menu click-path not yet watched working (API verified by the contract test).
 
 #### QM-057: Sidecar surface service (Metric3D → plane → 4 corners)
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-056
-- **AC:** `POST /surface` returns dominant-surface corners + plane + confidence (Metric3D + Open3D segment_plane); unambiguous scene → encloses target, cluttered → low confidence (not confidently wrong); <3s GPU.
+- **Status:** DONE — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`.
+- **Effort:** M · **Depends On:** QM-056
+- **Delivered (pure Python, no app/build impact):** `tools/ai-sidecar/surface.py` — `image → Metric3D (metric depth + normals) → metric point cloud → Open3D segment_plane → largest planar component → 4 corners → confidence`. Metric depth fixes the spike's affine bow. Confidence = planar-quality × **verticality gate** (floor/ceiling → ~0) × **ambiguity gate** (cluttered scene). `/surface` runs it lazily when `image_path` is readable + the model is present, else falls back to the stub (graceful).
+- **AC met:** AC1 corners + plane + confidence via Metric3D + Open3D ✓ · AC2 (3 spike scenes, RTX 3080): screen **0.58** encloses the screen, facade **0.59**, gallery floor-trap **0.00** (low, not confidently wrong) ✓ · AC3 **~350ms** steady-state GPU (first call ~7–8s model load); CPU path documented ✓.
+- **Verified:** 5 skip-if-model-absent pytest (`test_surface.py`); live HTTP `/surface` round-trip (stub=false, real corners); C++ contract test still green (stub path). Model from local ComfyUI controlnet_aux (env-overridable `QM_M3D_*`).
+- **Note:** corner extraction is a propose-then-confirm proposal (e.g. screen BL drags into the stage) — QM-058 adds the human nudge. Deps added to Python 3.11: open3d, addict, yapf (+existing torch/cv2/numpy/einops/matplotlib).
 
 #### QM-058: "Propose corners" UI — human-in-the-loop confirm
 - **Status:** TODO · **Effort:** M · **Depends On:** QM-057
@@ -831,7 +835,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-054 | TD-02 decompose render() into panels (ADR-034, 6 batches) | DONE | Phase 8 |
 | QM-055 | AI pre-show: live camera input + PNG capture (on-quad display → TD-09) | DONE | Phase 9 |
 | QM-056 | AI sidecar skeleton + IPC contract (ADR-035) | DONE | Phase 9 |
-| QM-057 | Sidecar surface service (Metric3D → plane → corners) | TODO | Phase 9 |
+| QM-057 | Sidecar surface service (Metric3D → plane → corners) | DONE | Phase 9 |
 | QM-058 | "Propose corners" UI (human-in-the-loop confirm) | TODO | Phase 9 |
 | QM-059 | Projector test-pattern emit + single-photo capture | TODO | Phase 9 |
 | QM-060 | One-Flash homography solve → push warp | TODO | Phase 9 |
