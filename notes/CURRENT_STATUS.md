@@ -18,12 +18,12 @@ projector (monitor 2), rendered warped + clean**. See `tests/smoke/out/05_projec
 ## What's broken / unverified
 - ⚠️ **`render()` god-function** (~2034 lines) — TD-02 step 1 done (statics → EditorState); UI-into-panels decomposition remains (maintainability, not blocking).
 - ⚠️ Build exit-code flaky from gtest discovery timeout (TD-07) — tests are green, the build *return code* lies.
-- Not yet hardened: audio RT-safety (TD-03), video data races (TD-04).
+- ✅ Correctness CRITICALs fixed: audio RT-safety (TD-03), video data races (TD-04). Residual audio reclamation nit tracked as TD-08 (LOW).
 
 ## Next 3 tasks (in order)
-1. **TD-03/TD-04** Correctness: audio RT-safety (mutex/alloc in callback) + video cross-thread data races.
-2. **TD-02 step 2** wire `UIManager`+panels to dispatch; retire the dual-track `m_sceneManager`/static-`Scene` split (one scene of truth).
-3. **TD-05/TD-06** `.qmap` migration + de-dupe save/load; delete dead code (`FrameBuffer`, `DoubleBuffer`, `AudioEngine`/`UIManager` stubs).
+1. **TD-02 step 2** wire `UIManager`+panels to dispatch; retire the dual-track `m_sceneManager`/static-`Scene` split (one scene of truth).
+2. **TD-05/TD-06** `.qmap` migration + de-dupe save/load; delete dead code (`FrameBuffer`, `DoubleBuffer`, `AudioEngine`/`UIManager` stubs).
+3. **TD-07/TD-08** build exit-code flake (CMake, needs approval); defer audio snapshot reclamation to the control thread.
 
 ## Acceptance criteria for the refactor (the gate)
 - The full 2-minute success-metric workflow runs end-to-end on a real run: add quad → Tab/Shift+Tab cycle vertex → arrow nudge (Shift 10× / Alt 0.1×) → **send fullscreen to a chosen projector output and SEE it warped correctly.**

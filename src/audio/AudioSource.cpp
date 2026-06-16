@@ -1,7 +1,6 @@
 #include "AudioSource.hpp"
 #include <algorithm>
 #include <cmath>
-#include <vector>
 
 namespace quadmapper {
 
@@ -108,12 +107,18 @@ size_t AudioSource::readSamples(float* output, size_t frameCount, int channels) 
         return 0;
     }
 
-    // Calculate samples needed for stereo output
+    // Calculate samples needed for stereo output.
     size_t samplesNeeded = frameCount * static_cast<size_t>(channels);
-    std::vector<float> inputBuffer(samplesNeeded);
 
-    // Read from the audio buffer
-    size_t samplesRead = buffer_->read(inputBuffer.data(), samplesNeeded, channels);
+    // Grow the pre-allocated scratch buffer if this block is larger than any
+    // seen before. In steady-state (fixed callback size) this branch never
+    // fires, so there is no allocation on the RT path.
+    if (readBuffer_.size() < samplesNeeded) {
+        readBuffer_.resize(samplesNeeded);
+    }
+
+    // Read from the audio buffer (lock-free after AudioBuffer fix).
+    size_t samplesRead = buffer_->read(readBuffer_.data(), samplesNeeded, channels);
     if (samplesRead == 0) {
         return 0;
     }
@@ -128,15 +133,15 @@ size_t AudioSource::readSamples(float* output, size_t frameCount, int channels) 
     if (channels == 1) {
         // Mono source: apply same sample to both channels
         for (size_t i = 0; i < framesRead; ++i) {
-            float sample = inputBuffer[i];
+            float sample = readBuffer_[i];
             output[i * 2] = sample * leftGain;
             output[i * 2 + 1] = sample * rightGain;
         }
     } else if (channels == 2) {
         // Stereo source: apply left gain to left, right gain to right
         for (size_t i = 0; i < framesRead; ++i) {
-            output[i * 2] = inputBuffer[i * 2] * leftGain;
-            output[i * 2 + 1] = inputBuffer[i * 2 + 1] * rightGain;
+            output[i * 2] = readBuffer_[i * 2] * leftGain;
+            output[i * 2 + 1] = readBuffer_[i * 2 + 1] * rightGain;
         }
     } else {
         // Multi-channel: mix down to stereo
@@ -146,7 +151,7 @@ size_t AudioSource::readSamples(float* output, size_t frameCount, int channels) 
 
             // Simple mixdown: odd channels to left, even to right
             for (int ch = 0; ch < channels; ++ch) {
-                float sample = inputBuffer[i * channels + ch];
+                float sample = readBuffer_[i * channels + ch];
                 if (ch % 2 == 0) {
                     left += sample;
                 } else {

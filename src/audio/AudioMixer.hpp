@@ -3,11 +3,10 @@
 #include "AudioSource.hpp"
 #include "AudioDevice.hpp"
 #include "core/UUID.hpp"
-#include <memory>
-#include <vector>
-#include <mutex>
 #include <atomic>
 #include <functional>
+#include <memory>
+#include <vector>
 
 namespace quadmapper {
 
