@@ -1,22 +1,23 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-16T00:00:00Z",
+  "lastUpdated": "2026-06-16T12:00:00Z",
   "sessionInfo": {
-    "sessionNumber": 10,
-    "startTime": "2026-06-16T00:00:00Z",
-    "endTime": "2026-06-16T00:00:00Z",
-    "status": "completed"
+    "sessionNumber": 11,
+    "startTime": "2026-06-16T10:00:00Z",
+    "endTime": null,
+    "status": "checkpoint"
   },
   "currentWork": {
-    "activeTaskId": null,
-    "activeTaskTitle": null,
-    "currentFile": null,
-    "currentFunction": null,
-    "workInProgress": "TD-05 (ADR-032) + TD-02 step 2 (ADR-033) done and PUSHED to refactor/app-decomposition (PR #1): commits cc6febd, 669a05c, 172acec. One Scene of truth; multi-scene track deleted (-1648 lines); render() save/load sync de-duped into 2 whole-geometry helpers (fixed mesh-offset/flip drop). 590/590 tests, success metric harness-verified.",
+    "activeTaskId": "QM-054",
+    "activeTaskTitle": "TD-02 render() decomposition into panels (ADR-034)",
+    "currentFile": "src/app/Application.cpp",
+    "currentFunction": "render()",
+    "workInProgress": "TD-02 render() decomposition (ADR-034), branch refactor/app-decomposition (PR #1). 5 of 6 batches DONE+PUSHED, each build-clean + 590/590 + smoke-green (incl F11 projector output): batch 0 EditorContext.hpp + Application::{newProject,saveProject,loadProject} (de-dup save/load); batch 1 MainMenuBar (708d267); batch 2 QuadListPanel (fb23972); batch 3 InspectorPanel/context-sensitive Properties (6d522af); batch 3b VideoPlayerPanel (3a13950). Application.cpp 2411->1271 lines; render() ~1910->~710. RESUME AT BATCH 4 (see nextSteps) - recommended in a NEW context.",
     "nextSteps": [
-      "TD-02 remaining: decompose the ~2000-line render() UI into real panels (InspectorPanel/PreviewPanel are now unwired shells)",
+      "BATCH 4 (LAST; SUCCESS-METRIC CRITICAL): extract pre-ImGui::NewFrame() viewport editing (render() ~564-867: quad render + CORNER PIN MODE ~679 + MESH EDIT MODE ~771 + keyboard-capture guard) into a non-Panel ViewportEditor called from the same pre-NewFrame spot; preserve frame ordering + the !io.WantTextInput&&!io.WantCaptureKeyboard guard + nudge amounts (0.001 base, x10 Shift, x0.1 Alt; Tab/Shift+Tab) VERBATIM. Delete src/ui/panels/PreviewPanel.{hpp,cpp} + CMake entry (dead shell). Opus+high in main session (not Sonnet) + fresh-context verifier subagent vs success metric. Contract: docs/adr/0034-render-decomposition.md.",
       "TD-07: build exit-code flake (gtest discovery timeout) - touches CMake, needs approval",
-      "TD-08: defer audio snapshot reclamation to the control thread (LOW)"
+      "TD-08: defer audio snapshot reclamation to the control thread (LOW)",
+      "TD-09: converge the two media models onto the source architecture (deferred from TD-02; success-metric risk)"
     ]
   },
   "context": {
@@ -51,14 +52,14 @@
       "Phase 8: ADR-031 Refactor (in progress)"
     ],
     "buildStatus": "success",
-    "lastSuccessfulBuild": "2026-06-16T00:00:00Z",
-    "note": "Full success metric verified end-to-end (vertex warp + F11 projector output). 590/590 tests on full build (4 audio integration skipped). Done: TD-01/03/04/05/06 + TD-02 step 1 & step 2. Multi-scene track deleted (ADR-033). Remaining: TD-02 render()->panels decomposition, TD-07, TD-08."
+    "lastSuccessfulBuild": "2026-06-16T12:00:00Z",
+    "note": "Full success metric verified end-to-end (vertex warp + F11 projector output). 590/590 tests (4 audio integration skipped). TD-02 render()->panels decomposition (ADR-034) 5 of 6 batches done: MainMenuBar, QuadListPanel, InspectorPanel, VideoPlayerPanel + EditorContext/project-action methods. Application.cpp 2411->1271 lines. Remaining: TD-02 batch 4 (ViewportEditor, success-metric critical), TD-07, TD-08, TD-09."
   },
   "statistics": {
-    "totalSessions": 10,
-    "tasksCompleted": 53,
-    "tasksInProgress": 0,
-    "tasksTodo": 3
+    "totalSessions": 11,
+    "tasksCompleted": 54,
+    "tasksInProgress": 1,
+    "tasksTodo": 4
   },
   "session9Accomplishments": {
     "shipped": "branch refactor/app-decomposition pushed; PR #1 (https://github.com/Fiavaion/QUADmapper/pull/1)",

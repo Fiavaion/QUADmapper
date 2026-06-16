@@ -3,12 +3,18 @@
 Last Updated: 2026-06-16
 
 ## Quick Status
-- In Progress: 0
-- Todo: 3 (TD-02 render()→panels decomposition, TD-07, TD-08 — see TECHNICAL_DEBT.md)
-- Done: 53
+- In Progress: 1 (QM-054 TD-02 render()→panels decomposition — batch 4 of 6 remaining)
+- Todo: 4 (TD-02 batch 4, TD-07, TD-08, TD-09 — see TECHNICAL_DEBT.md)
+- Done: 54
 - Blocked: 0
 
 ---
+
+## In Progress
+
+#### QM-054: TD-02 — decompose render() into panels (ADR-034)
+- **Status:** IN PROGRESS (5 of 6 batches done) — **Started:** 2026-06-16
+- **Notes:** ADR-034: decompose the ~1900-line `render()` into panel classes over the live `EditorState` model (behavior-preserving), via a per-frame `EditorContext` bundle. Done + pushed on `refactor/app-decomposition`, each build-clean + 590/590 ctest + smoke-green (incl. F11 projector output): batch 0 — `EditorContext.hpp` + `Application::{newProject,saveProject,loadProject}` (de-dup 3× save/load); batch 1 `MainMenuBar` (708d267); batch 2 `QuadListPanel` (fb23972); batch 3 `InspectorPanel` = context-sensitive Properties (6d522af); batch 3b `VideoPlayerPanel` (3a13950). `Application.cpp` 2411→1271 lines; `render()` ~1910→~710. **Remaining — batch 4 (success-metric critical):** extract the pre-`ImGui::NewFrame()` viewport editing (quad render + corner/mesh warp + keyboard-capture guard, render() ~564–867) into a non-`Panel` `ViewportEditor`; delete the dead `PreviewPanel` shell. See CURRENT_STATUS.md for the resume brief.
 
 ## Done
 

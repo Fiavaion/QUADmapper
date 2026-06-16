@@ -1,44 +1,40 @@
 # Current Status
 
-**Last updated:** 2026-06-14
-**Phase / focus:** Refactor-in-place per [ADR-031](../docs/adr/0031-keep-vs-rebuild.md) — branch `refactor/app-decomposition`
-**Build:** ✅ app builds (`QUADmapper.exe`) & launches clean (GL 3.3, RTX 3080, 2 monitors)   **Tests:** 624/624 pass (`ctest --test-dir build/debug`)
+**Last updated:** 2026-06-16
+**Phase / focus:** ADR-031 refactor — **TD-02 `render()` decomposition** ([ADR-034](../docs/adr/0034-render-decomposition.md)) on branch `refactor/app-decomposition` (PR #1)
+**Build:** ✅ app builds & launches   **Tests:** ✅ 590/590 (`ctest --test-dir build/debug`)   **Smoke:** ✅ green incl. F11 projector output
 
 ## What works right now (grounded, verified this session)
-- [x] App builds, launches, main loop runs, default quad created — no crash
-- [x] 624/624 unit/integration tests pass (4 audio integration skipped — need a real video file)
-- [x] **Vertex-warp UX VERIFIED WORKING** via `tests/smoke/drive_smoke.ps1`: Tab/Shift+Tab cycle + arrow nudge + Shift 10× all move corners by the exact expected normalized amounts (TL→0.500,0.400; TR→0.550,0.300; BR→0.700,0.680). The app source was untouched — it was correct.
-- [x] **UI smoke harness built** (`tests/smoke/drive_smoke.ps1`) — drives the real app via Win32 scancode input, screenshots each monitor; the autonomous verification gate for the refactor.
+**5 of 6 TD-02 decomposition batches done.** Each was build-clean + 590/590 ctest + smoke-harness-green (the full success metric incl. `05_projector_output.png`), each its own commit on `refactor/app-decomposition`:
+- **Batch 0** — `src/app/EditorContext.hpp` (the per-frame state/managers bundle panels receive) + extracted New/Save/Load into `Application::{newProject,saveProject,loadProject}` (de-duped the 3× inline save/load).
+- **Batch 1** — `MainMenuBar` (`708d267`)
+- **Batch 2** — `QuadListPanel` (`fb23972`)
+- **Batch 3** — `InspectorPanel` rebuilt on the live model = context-sensitive Properties (Quad/Output/Media) (`6d522af`) — got the Opus diff-review; faithful move.
+- **Batch 3b** — `VideoPlayerPanel`, kept as its own dockable window (`3a13950`). *Deviation from the plan's "fold into Inspector": chosen for behavior-preservation — folding would have orphaned the `showVideoPlayer` toggle / "Video Player" layout key.*
 
-## ✅ SUCCESS METRIC FULLY VERIFIED (2026-06-15)
-The complete definition-of-done now works end-to-end, harness-verified:
-add quad → Tab-cycle vertex → arrow-nudge (Shift 10×) → **F11 sends it fullscreen to the
-projector (monitor 2), rendered warped + clean**. See `tests/smoke/out/05_projector_output.png`.
+**`Application.cpp`: 2411 → 1271 lines** (−1140). `render()` body: ~1910 → ~710 lines.
 
-## What's broken / unverified
-- ⚠️ **`render()` god-function** (~2034 lines) — TD-02 step 1 done (statics → EditorState); UI-into-panels decomposition remains (maintainability, not blocking).
-- ⚠️ Build exit-code flaky from gtest discovery timeout (TD-07) — tests are green, the build *return code* lies.
-- ✅ Correctness CRITICALs fixed: audio RT-safety (TD-03), video data races (TD-04). Residual audio reclamation nit tracked as TD-08 (LOW).
+## NEXT TASK — resume here: BATCH 4 (the last one; SUCCESS-METRIC CRITICAL)
+Extract the **pre-`ImGui::NewFrame()` viewport editing** into a `ViewportEditor` class and delete the dead `PreviewPanel` shell.
+- **Target:** `render()` ~lines **564–867** — quad render to the main framebuffer + `CORNER PIN MODE` (~679) + `MESH EDIT MODE` (~771) + the keyboard-capture guard, all **before** `ImGui::NewFrame()` (~878). Handles render via `m_renderer` (OpenGL), **not** ImGui draw lists.
+- `ViewportEditor` is **NOT a `Panel`** (panels run post-NewFrame). Call it from the same pre-NewFrame spot. **Preserve verbatim:** frame ordering; the `!io.WantTextInput && !io.WantCaptureKeyboard` guard; nudge amounts (`0.001` base, ×10 Shift, ×0.1 Alt; Tab/Shift+Tab cycle). **This is the success metric — do not regress it.**
+- **Delete** `src/ui/panels/PreviewPanel.{hpp,cpp}` + its `src/ui/CMakeLists.txt` entry (dead source-arch shell, ADR-0034).
+- **Model:** Opus + high, done **directly in the main session (not delegated to Sonnet)**, plus a **fresh-context verifier subagent** grading the diff against the success-metric criteria.
+- **Full contract + block map + batch table:** [docs/adr/0034-render-decomposition.md](../docs/adr/0034-render-decomposition.md). Approved plan file (local, not in repo): `C:\Users\jones\.claude\plans\hidden-strolling-marshmallow.md`.
 
-## Next tasks (in order)
-1. **TD-02 (remaining): decompose render() UI into real panels.** `InspectorPanel`/`PreviewPanel` are now unwired shells (their `SceneManager` hooks were deleted in ADR-033); wire them (or rebuild as real panels) and pull UI out of the 2000-line `render()`.
-2. **TD-07** build exit-code flake from `gtest_discover_tests` timeout (CMake, **needs approval** — Change Boundary). Also fold in: make `PerformanceMonitorTest.MinMaxFrameTime` robust to Windows timer granularity (currently flaky-red).
-3. **TD-08** defer audio snapshot reclamation to the control thread (LOW).
+## The EditorContext contract (inherited by every batch)
+`EditorContext{ EditorState& es; Project*; MediaLibrary*; SourceManager*; OutputManager*; Renderer*; GLFWwindow* }` — built once per frame in `render()`; panels take `render(EditorContext&)` and never store it; new panels are value members of `EditorState`; **ImGui window names preserved exactly** (imgui.ini docking layout keys).
 
-_Done S10:_
-- _**TD-05** — `.qmap` version policy unified across all 4 read paths + migration + save/load de-dup. [ADR-032](../docs/adr/0032-qmap-migration.md)._
-- _**TD-02 step 2** — retired the unwired multi-scene track → one `Scene` of truth; deleted `SceneManager`/`ScenePanel`/scene-serializer methods; reconciled render()'s 5 save/load sync sites into 2 shared whole-geometry helpers (fixed a latent mesh-offset/flip drop). [ADR-033](../docs/adr/0033-retire-multi-scene.md). Success metric harness-verified; 589/590 tests (1 pre-existing flaky timer test)._
-
-## Acceptance criteria for the refactor (the gate)
-- The full 2-minute success-metric workflow runs end-to-end on a real run: add quad → Tab/Shift+Tab cycle vertex → arrow nudge (Shift 10× / Alt 0.1×) → **send fullscreen to a chosen projector output and SEE it warped correctly.**
-- 624/624 tests still green; no new `TODO`/`DEFERRED`/`TEMPORARY` in critical paths; no dual-track state left.
+## Verification gate (per batch, non-negotiable)
+`cmake --build build/debug` → `ctest --test-dir build/debug` (590/590; trust the "100% tests passed" line — TD-07 build-exit-code flake) → `powershell -ExecutionPolicy Bypass -File tests/smoke/drive_smoke.ps1 -ExePath C:\Users\jones\AIprojects\QUADmapper\build\debug\src\app\Debug\QUADmapper.exe` (5 screenshots incl. `out/05_projector_output.png`).
 
 ## Blockers
-- None. (The interactive-verification blocker is resolved: `tests/smoke/drive_smoke.ps1` is the gate. It covers the vertex workflow now; extend it to assert projector output once TD-01 wires it — that needs an output-creation path the harness can drive, e.g. a CLI/keyboard "send to output N".)
+None. Repo is fully green and committed.
 
 ## Reference links
-- Decision: @docs/adr/0031-keep-vs-rebuild.md   ·   Debt: @TECHNICAL_DEBT.md   ·   Success metric: @CLAUDE.md#success-metric
-- Tasks: @notes/TODOs.md   ·   Lessons: @notes/lessons.md   ·   Machine state: @SESSION_STATE.json
+- Decision: @docs/adr/0034-render-decomposition.md · @docs/adr/0031-keep-vs-rebuild.md · @docs/adr/0033-retire-multi-scene.md
+- Debt: @TECHNICAL_DEBT.md (TD-02 in progress; TD-07, TD-08, TD-09 open) · Success metric: @CLAUDE.md#success-metric
+- Tasks: @TASKS.md · Machine state: @SESSION_STATE.json
 
 <!-- Rewrite this whole file at /end. It is the restart package: the next session reads
 THIS (plus the latest docs/sessions/ log), not the chat history. Keep it to one page. -->
