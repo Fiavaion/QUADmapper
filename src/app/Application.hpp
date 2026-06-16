@@ -16,6 +16,7 @@ class FolderWatcher;
 class ThumbnailCache;
 class SourceManager;
 struct EditorState;
+namespace ai { class SidecarClient; }
 
 class Application {
 public:
@@ -85,6 +86,11 @@ private:
     std::unique_ptr<FolderWatcher> m_folderWatcher;
     std::unique_ptr<ThumbnailCache> m_thumbnailCache;
     std::unique_ptr<SourceManager> m_sourceManager;
+
+    // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed but NOT
+    // started: launched on demand from the AI menu, torn down at shutdown. The
+    // app is fully usable when it is absent.
+    std::unique_ptr<ai::SidecarClient> m_sidecarClient;
 
     // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
     std::unique_ptr<EditorState> m_editorState;

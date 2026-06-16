@@ -15,6 +15,7 @@
 #include "../media/ThumbnailCache.hpp"
 #include "../source/SourceManager.hpp"
 #include "../source/procedural/ProceduralSource.hpp"
+#include "../ai/SidecarClient.hpp"
 #include "../renderer/Renderer.hpp"
 #include "../renderer/Texture.hpp"
 #include "../output/OutputManager.hpp"
@@ -322,6 +323,28 @@ bool Application::initializeComponents() {
     // Create source manager for texture sources (procedural, video, image)
     m_sourceManager = std::make_unique<SourceManager>();
 
+    // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed here but not
+    // started — the user enables it on demand from the AI menu. We resolve the
+    // sidecar script next to the working dir or the repo root; if it is missing,
+    // scriptPath stays empty and start() fails cleanly (AI menu shows disabled).
+    {
+        ai::SidecarConfig sidecarCfg;
+        const std::filesystem::path rel("tools/ai-sidecar/sidecar.py");
+        for (const std::filesystem::path& base :
+             {std::filesystem::current_path(),
+              std::filesystem::current_path() / ".." / "..",
+              std::filesystem::current_path() / ".." / ".." / ".."}) {
+            std::error_code ec;
+            std::filesystem::path candidate = base / rel;
+            if (std::filesystem::exists(candidate, ec)) {
+                sidecarCfg.scriptPath =
+                    std::filesystem::weakly_canonical(candidate, ec).string();
+                break;
+            }
+        }
+        m_sidecarClient = std::make_unique<ai::SidecarClient>(sidecarCfg);
+    }
+
     // Auto-load media from default folder if configured
     {
         PreferencesDialog prefsDialog;
@@ -510,6 +533,33 @@ void Application::render() {
         es.mainMenuBar.setOnNewProject( [this]() { newProject();  });
         es.mainMenuBar.setOnSaveProject([this]() { saveProject(); });
         es.mainMenuBar.setOnLoadProject([this]() { loadProject(); });
+
+        // AI pre-show assist (QM-056 skeleton). Active state reads cached client
+        // state (no per-frame I/O). Enable launches the sidecar on demand; Detect
+        // runs the stub /surface round-trip. Both no-op gracefully if absent.
+        es.mainMenuBar.setAiActiveQuery([this]() {
+            return m_sidecarClient &&
+                   (m_sidecarClient->state() == ai::SidecarState::Attached ||
+                    m_sidecarClient->state() == ai::SidecarState::Launched);
+        });
+        es.mainMenuBar.setOnEnableAi([this]() {
+            if (!m_sidecarClient) return;
+            if (m_sidecarClient->start()) {
+                Logger::info("AI assist enabled (sidecar connected)");
+            } else {
+                Logger::warning("AI assist unavailable — sidecar could not start");
+            }
+        });
+        es.mainMenuBar.setOnDetectSurface([this]() {
+            if (!m_sidecarClient) return;
+            auto surface = m_sidecarClient->requestSurface("");
+            if (surface) {
+                Logger::info("AI /surface ok (stub={}, confidence={:.2f})",
+                             surface->stub, surface->confidence);
+            } else {
+                Logger::warning("AI /surface request failed");
+            }
+        });
         es.mainMenuBarInitialized = true;
     }
 
@@ -936,6 +986,7 @@ void Application::shutdown() {
     Logger::info("Shutting down QUADmapper...");
 
     // Cleanup components in reverse order of creation
+    m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
     m_inputManager.reset();
     m_outputManager.reset();
     m_thumbnailCache.reset();  // Clear GL textures before context destroyed

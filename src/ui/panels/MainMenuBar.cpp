@@ -66,6 +66,24 @@ void MainMenuBar::render(EditorContext& ctx) {
         ImGui::EndMenu();
     }
 
+    if (ImGui::BeginMenu("AI")) {
+        const bool active = aiActiveQuery_ && aiActiveQuery_();
+        if (active) {
+            if (ImGui::MenuItem("Detect Surface (stub)")) {
+                if (onDetectSurface_) onDetectSurface_();
+            }
+            ImGui::Separator();
+            ImGui::TextDisabled("Sidecar connected");
+        } else {
+            if (ImGui::MenuItem("Enable AI Assist")) {
+                if (onEnableAi_) onEnableAi_();
+            }
+            ImGui::Separator();
+            ImGui::TextDisabled("Sidecar not running");
+        }
+        ImGui::EndMenu();
+    }
+
     ImGui::EndMainMenuBar();
 }
 
