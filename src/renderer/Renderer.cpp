@@ -1,6 +1,5 @@
 #include "Renderer.hpp"
 #include "core/Logger.hpp"
-#include "scene/SceneManager.hpp"
 #include "ShaderSources.hpp"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -318,11 +317,6 @@ void Renderer::renderQuadOutline(const Quad& quad, const glm::vec4& color, float
 
     ShaderProgram::unbind();
     glLineWidth(1.0f);
-}
-
-void Renderer::renderScene(const SceneManager& /*sceneManager*/) {
-    // TODO: Iterate through all quads in scene and render them
-    // For now this is a placeholder
 }
 
 void Renderer::createHandleBuffers() {

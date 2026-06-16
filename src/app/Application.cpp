@@ -4,7 +4,6 @@
 #include "../core/FileSystem.hpp"
 #include "../project/Project.hpp"
 #include "../project/ProjectSerializer.hpp"
-#include "../scene/SceneManager.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/Quad.hpp"
 #include "../scene/QuadManager.hpp"
@@ -41,6 +40,61 @@ Application* Application::s_instance = nullptr;
 // GLFW error callback
 static void glfwErrorCallback(int error, const char* description) {
     Logger::error("GLFW Error {}: {}", error, description);
+}
+
+// ---- Editor scene <-> flat Project persistence sync (ADR-033) ----
+// The live scene of truth is es.quadManager; the flat Project is only the serialization DTO.
+// These two helpers are the single place that copies between them, replacing the save/load
+// blocks that were duplicated 3x/2x across render(). They copy the WHOLE geometry and texture
+// binding, fixing the latent bug where the hand-rolled copies dropped mesh-edit vertex offsets
+// and flipH/flipV on save/load.
+static void syncSceneToProject(EditorState& es, Project& project) {
+    project.clearQuads();
+    project.getTexturePaths().clear();
+    for (const auto& quadPtr : es.quadManager.getQuads()) {
+        project.addQuad(*quadPtr);
+        auto pathIt = es.quadTexturePaths.find(quadPtr->getId());
+        project.getTexturePaths().push_back(
+            pathIt != es.quadTexturePaths.end() ? pathIt->second : std::string());
+    }
+}
+
+static void syncProjectToScene(EditorState& es, const Project& project) {
+    es.quadManager.clear();
+    es.quadTextures.clear();
+    es.quadTexturePaths.clear();
+
+    const auto& quads = project.getQuads();
+    const auto& texPaths = project.getTexturePaths();
+    for (size_t i = 0; i < quads.size(); ++i) {
+        Quad* newQuad = es.quadManager.createQuad(quads[i].getName());
+        newQuad->setVisible(quads[i].isVisible());
+        newQuad->setLocked(quads[i].isLocked());
+        newQuad->setOpacity(quads[i].getOpacity());
+        newQuad->setZOrder(quads[i].getZOrder());
+        newQuad->getGeometry() = quads[i].getGeometry();  // corners + resolution + mode + mesh offsets
+        newQuad->getTexture() = quads[i].getTexture();    // UV transform + flip flags
+
+        if (i < texPaths.size() && !texPaths[i].empty()) {
+            es.quadTexturePaths[newQuad->getId()] = texPaths[i];
+            auto texture = std::make_unique<Texture>();
+            if (texture->loadFromFile(texPaths[i])) {
+                es.quadTextures[newQuad->getId()] = std::move(texture);
+            }
+        }
+    }
+
+    // Select the first quad and sync the texture-path edit buffer.
+    if (es.quadManager.getQuadCount() > 0) {
+        es.quadManager.selectQuad(es.quadManager.getQuads()[0]->getId());
+        auto pathIt = es.quadTexturePaths.find(es.quadManager.getQuads()[0]->getId());
+        if (pathIt != es.quadTexturePaths.end()) {
+            strncpy(es.currentTexturePath, pathIt->second.c_str(), sizeof(es.currentTexturePath) - 1);
+            es.currentTexturePath[sizeof(es.currentTexturePath) - 1] = '\0';
+        } else {
+            es.currentTexturePath[0] = '\0';
+        }
+    }
 }
 
 // GLFW framebuffer size callback
@@ -257,9 +311,6 @@ bool Application::initializeComponents() {
     // Per-session editor/scene state (replaces render()'s function-statics; see ADR-031 TD-02)
     m_editorState = std::make_unique<EditorState>();
 
-    // Create scene manager
-    m_sceneManager = std::make_unique<SceneManager>();
-
     // Create media library
     m_mediaLibrary = std::make_unique<MediaLibrary>();
 
@@ -385,11 +436,6 @@ void Application::processInput() {
 }
 
 void Application::update(float deltaTime) {
-    // Update scene manager
-    if (m_sceneManager) {
-        // m_sceneManager->update(deltaTime);
-    }
-
     // Update output manager
     if (m_outputManager) {
         // m_outputManager->update(deltaTime);
@@ -918,19 +964,7 @@ void Application::render() {
             ImGui::Separator();
             if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
                 if (strlen(projectPath) > 0) {
-                    // Sync QuadManager to Project for serialization
-                    m_project->clearQuads();
-                    m_project->getTexturePaths().clear();
-
-                    for (const auto& quadPtr : quadManager.getQuads()) {
-                        m_project->addQuad(*quadPtr);
-                        auto pathIt = quadTexturePaths.find(quadPtr->getId());
-                        if (pathIt != quadTexturePaths.end()) {
-                            m_project->getTexturePaths().push_back(pathIt->second);
-                        } else {
-                            m_project->getTexturePaths().push_back("");
-                        }
-                    }
+                    syncSceneToProject(es, *m_project);
 
                     auto result = ProjectSerializer::save(*m_project, projectPath);
                     if (result) {
@@ -949,51 +983,7 @@ void Application::render() {
                     if (result) {
                         *m_project = std::move(result.value());
 
-                        // Sync Project to QuadManager
-                        quadManager.clear();
-                        quadTextures.clear();
-                        quadTexturePaths.clear();
-
-                        const auto& quads = m_project->getQuads();
-                        const auto& texPaths = m_project->getTexturePaths();
-
-                        for (size_t i = 0; i < quads.size(); ++i) {
-                            Quad* newQuad = quadManager.createQuad(quads[i].getName());
-                            // Copy properties
-                            newQuad->setVisible(quads[i].isVisible());
-                            newQuad->setLocked(quads[i].isLocked());
-                            newQuad->setOpacity(quads[i].getOpacity());
-                            newQuad->setZOrder(quads[i].getZOrder());
-                            newQuad->getGeometry().setCorners(quads[i].getGeometry().getCorners());
-                            newQuad->getGeometry().setMeshResolution(quads[i].getGeometry().getMeshResolution());
-                            newQuad->getGeometry().setMeshMode(quads[i].getGeometry().getMeshMode());
-
-                            // Copy texture binding UV settings
-                            newQuad->getTexture().uvOffset = quads[i].getTexture().uvOffset;
-                            newQuad->getTexture().uvScale = quads[i].getTexture().uvScale;
-                            newQuad->getTexture().uvRotation = quads[i].getTexture().uvRotation;
-
-                            // Load texture if path exists
-                            if (i < texPaths.size() && !texPaths[i].empty()) {
-                                quadTexturePaths[newQuad->getId()] = texPaths[i];
-                                auto texture = std::make_unique<Texture>();
-                                if (texture->loadFromFile(texPaths[i])) {
-                                    quadTextures[newQuad->getId()] = std::move(texture);
-                                }
-                            }
-                        }
-
-                        // Select first quad
-                        if (quadManager.getQuadCount() > 0) {
-                            quadManager.selectQuad(quadManager.getQuads()[0]->getId());
-                            auto pathIt = quadTexturePaths.find(quadManager.getQuads()[0]->getId());
-                            if (pathIt != quadTexturePaths.end()) {
-                                strncpy(currentTexturePath, pathIt->second.c_str(), sizeof(currentTexturePath) - 1);
-                                currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
-                            } else {
-                                currentTexturePath[0] = '\0';
-                            }
-                        }
+                        syncProjectToScene(es, *m_project);
 
                         snprintf(statusMessage, sizeof(statusMessage), "Project loaded: %s", projectPath);
                     } else {
@@ -1050,18 +1040,7 @@ void Application::render() {
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         // Save shortcut - same as menu
         if (strlen(projectPath) > 0) {
-            m_project->clearQuads();
-            m_project->getTexturePaths().clear();
-
-            for (const auto& quadPtr : quadManager.getQuads()) {
-                m_project->addQuad(*quadPtr);
-                auto pathIt = quadTexturePaths.find(quadPtr->getId());
-                if (pathIt != quadTexturePaths.end()) {
-                    m_project->getTexturePaths().push_back(pathIt->second);
-                } else {
-                    m_project->getTexturePaths().push_back("");
-                }
-            }
+            syncSceneToProject(es, *m_project);
 
             auto result = ProjectSerializer::save(*m_project, projectPath);
             if (result) {
@@ -2153,18 +2132,7 @@ void Application::render() {
             ImGui::SameLine();
             if (ImGui::Button("Save")) {
                 if (strlen(projectPath) > 0) {
-                    m_project->clearQuads();
-                    m_project->getTexturePaths().clear();
-
-                    for (const auto& quadPtr : quadManager.getQuads()) {
-                        m_project->addQuad(*quadPtr);
-                        auto pathIt = quadTexturePaths.find(quadPtr->getId());
-                        if (pathIt != quadTexturePaths.end()) {
-                            m_project->getTexturePaths().push_back(pathIt->second);
-                        } else {
-                            m_project->getTexturePaths().push_back("");
-                        }
-                    }
+                    syncSceneToProject(es, *m_project);
 
                     auto result = ProjectSerializer::save(*m_project, projectPath);
                     if (result) {
@@ -2184,46 +2152,7 @@ void Application::render() {
                     if (result) {
                         *m_project = std::move(result.value());
 
-                        // Sync Project to QuadManager
-                        quadManager.clear();
-                        quadTextures.clear();
-                        quadTexturePaths.clear();
-
-                        const auto& quads = m_project->getQuads();
-                        const auto& texPaths = m_project->getTexturePaths();
-
-                        for (size_t i = 0; i < quads.size(); ++i) {
-                            Quad* newQuad = quadManager.createQuad(quads[i].getName());
-                            newQuad->setVisible(quads[i].isVisible());
-                            newQuad->setLocked(quads[i].isLocked());
-                            newQuad->setOpacity(quads[i].getOpacity());
-                            newQuad->setZOrder(quads[i].getZOrder());
-                            newQuad->getGeometry().setCorners(quads[i].getGeometry().getCorners());
-                            newQuad->getGeometry().setMeshResolution(quads[i].getGeometry().getMeshResolution());
-                            newQuad->getGeometry().setMeshMode(quads[i].getGeometry().getMeshMode());
-                            newQuad->getTexture().uvOffset = quads[i].getTexture().uvOffset;
-                            newQuad->getTexture().uvScale = quads[i].getTexture().uvScale;
-                            newQuad->getTexture().uvRotation = quads[i].getTexture().uvRotation;
-
-                            if (i < texPaths.size() && !texPaths[i].empty()) {
-                                quadTexturePaths[newQuad->getId()] = texPaths[i];
-                                auto texture = std::make_unique<Texture>();
-                                if (texture->loadFromFile(texPaths[i])) {
-                                    quadTextures[newQuad->getId()] = std::move(texture);
-                                }
-                            }
-                        }
-
-                        if (quadManager.getQuadCount() > 0) {
-                            quadManager.selectQuad(quadManager.getQuads()[0]->getId());
-                            auto pathIt = quadTexturePaths.find(quadManager.getQuads()[0]->getId());
-                            if (pathIt != quadTexturePaths.end()) {
-                                strncpy(currentTexturePath, pathIt->second.c_str(), sizeof(currentTexturePath) - 1);
-                                currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
-                            } else {
-                                currentTexturePath[0] = '\0';
-                            }
-                        }
+                        syncProjectToScene(es, *m_project);
 
                         snprintf(statusMessage, sizeof(statusMessage), "Project loaded: %s", projectPath);
                     } else {
@@ -2463,7 +2392,6 @@ void Application::shutdown() {
     m_renderer.reset();
     m_folderWatcher.reset();  // Stop watching before destroying media library
     m_mediaLibrary.reset();
-    m_sceneManager.reset();
     m_project.reset();
 
     // Shutdown ImGui

@@ -1,6 +1,4 @@
 #include "InspectorPanel.hpp"
-#include "scene/SceneManager.hpp"
-#include "scene/Scene.hpp"
 #include "scene/Quad.hpp"
 #include "source/SourceManager.hpp"
 #include "source/TextureSource.hpp"
@@ -32,21 +30,6 @@ void InspectorPanel::render() {
     if (ImGui::Begin(title_.c_str(), &visible_)) {
         if (selectedQuadId_.isNull()) {
             renderNoSelection();
-        } else {
-            // Find the quad
-            if (sceneManager_) {
-                Scene* scene = sceneManager_->getActiveScene();
-                if (scene) {
-                    Quad* quad = scene->getQuad(selectedQuadId_);
-                    if (quad) {
-                        renderQuadProperties(quad);
-                        ImGui::Separator();
-                        renderSourceInfo(quad);
-                    } else {
-                        ImGui::TextDisabled("Selected quad not found");
-                    }
-                }
-            }
         }
     }
     ImGui::End();

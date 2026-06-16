@@ -20,12 +20,14 @@ projector (monitor 2), rendered warped + clean**. See `tests/smoke/out/05_projec
 - ⚠️ Build exit-code flaky from gtest discovery timeout (TD-07) — tests are green, the build *return code* lies.
 - ✅ Correctness CRITICALs fixed: audio RT-safety (TD-03), video data races (TD-04). Residual audio reclamation nit tracked as TD-08 (LOW).
 
-## Next 3 tasks (in order)
-1. **TD-02 step 2** introduce a real `UIManager` + panel dispatch (the stub was deleted in TD-06); retire the dual-track `m_sceneManager`/static-`Scene` split (one scene of truth). ~2–3 sessions.
-2. **TD-07** build exit-code flake from `gtest_discover_tests` timeout (CMake, **needs approval** — Change Boundary).
+## Next tasks (in order)
+1. **TD-02 (remaining): decompose render() UI into real panels.** `InspectorPanel`/`PreviewPanel` are now unwired shells (their `SceneManager` hooks were deleted in ADR-033); wire them (or rebuild as real panels) and pull UI out of the 2000-line `render()`.
+2. **TD-07** build exit-code flake from `gtest_discover_tests` timeout (CMake, **needs approval** — Change Boundary). Also fold in: make `PerformanceMonitorTest.MinMaxFrameTime` robust to Windows timer granularity (currently flaky-red).
 3. **TD-08** defer audio snapshot reclamation to the control thread (LOW).
 
-_Done S10: **TD-05** — `.qmap` version policy unified across all 4 read paths + 1.x→scene / 2.x→flat migration + save/load de-dup (one `loadQuadInto`, also fixed a silent mesh-offset drop on scene load). [ADR-032](../docs/adr/0032-qmap-migration.md). 631/631 tests._
+_Done S10:_
+- _**TD-05** — `.qmap` version policy unified across all 4 read paths + migration + save/load de-dup. [ADR-032](../docs/adr/0032-qmap-migration.md)._
+- _**TD-02 step 2** — retired the unwired multi-scene track → one `Scene` of truth; deleted `SceneManager`/`ScenePanel`/scene-serializer methods; reconciled render()'s 5 save/load sync sites into 2 shared whole-geometry helpers (fixed a latent mesh-offset/flip drop). [ADR-033](../docs/adr/0033-retire-multi-scene.md). Success metric harness-verified; 589/590 tests (1 pre-existing flaky timer test)._
 
 ## Acceptance criteria for the refactor (the gate)
 - The full 2-minute success-metric workflow runs end-to-end on a real run: add quad → Tab/Shift+Tab cycle vertex → arrow nudge (Shift 10× / Alt 0.1×) → **send fullscreen to a chosen projector output and SEE it warped correctly.**

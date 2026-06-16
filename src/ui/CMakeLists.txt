@@ -8,8 +8,6 @@ add_library(quadmapper_ui STATIC
     panels/InspectorPanel.cpp
     panels/PreviewPanel.hpp
     panels/PreviewPanel.cpp
-    panels/ScenePanel.hpp
-    panels/ScenePanel.cpp
     panels/OutputPanel.hpp
     panels/OutputPanel.cpp
     panels/MediaBinPanel.hpp

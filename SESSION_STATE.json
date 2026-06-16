@@ -12,9 +12,10 @@
     "activeTaskTitle": null,
     "currentFile": null,
     "currentFunction": null,
-    "workInProgress": "TD-05 done (ADR-032): unified .qmap version policy across all 4 read paths + 1.x->scene / 2.x->flat migration + de-dup save/load (one loadQuadInto, also fixed silent mesh-offset drop). 631/631 tests. On branch refactor/app-decomposition (PR #1).",
+    "workInProgress": "TD-05 done (ADR-032) + TD-02 step 2 done (ADR-033: retired the unwired multi-scene track -> one Scene of truth; deleted SceneManager/ScenePanel/scene-serializer methods; reconciled render()'s 5 save/load sync sites into 2 shared whole-geometry helpers, fixing a mesh-offset/flip drop). Build clean, 589/590 (1 pre-existing flaky timer test), success metric harness-verified. NOT yet committed. On branch refactor/app-decomposition (PR #1).",
     "nextSteps": [
-      "TD-02 step 2: real UIManager/panel dispatch; retire dual-track m_sceneManager/static-Scene",
+      "Commit TD-02 step 2 (ADR-033) + fix the pre-existing flaky PerformanceMonitorTest.MinMaxFrameTime (timer-granularity) as a separate commit",
+      "TD-02 remaining: decompose render() UI into real panels (InspectorPanel/PreviewPanel are unwired shells)",
       "TD-07: build exit-code flake (gtest discovery timeout) - touches CMake, needs approval",
       "TD-08: defer audio snapshot reclamation to the control thread (LOW)"
     ]
@@ -55,7 +56,7 @@
   },
   "statistics": {
     "totalSessions": 10,
-    "tasksCompleted": 52,
+    "tasksCompleted": 53,
     "tasksInProgress": 0,
     "tasksTodo": 3
   },

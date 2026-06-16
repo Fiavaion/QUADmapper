@@ -6,7 +6,6 @@
 
 namespace quadmapper {
 
-class SceneManager;
 class SourceManager;
 class MediaLibrary;
 class Quad;
@@ -20,7 +19,6 @@ class InspectorPanel : public Panel {
 public:
     InspectorPanel();
 
-    void setSceneManager(SceneManager* manager) { sceneManager_ = manager; }
     void setSourceManager(SourceManager* manager) { sourceManager_ = manager; }
     void setMediaLibrary(MediaLibrary* library) { mediaLibrary_ = library; }
 
@@ -47,7 +45,6 @@ private:
     void renderProceduralInfo(TextureSource* source, const UUID& mediaItemId);
     void renderNoSelection();
 
-    SceneManager* sceneManager_ = nullptr;
     SourceManager* sourceManager_ = nullptr;
     MediaLibrary* mediaLibrary_ = nullptr;
     UUID selectedQuadId_;

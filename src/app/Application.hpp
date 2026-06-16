@@ -8,7 +8,6 @@ struct GLFWwindow;
 namespace quadmapper {
 
 class Renderer;
-class SceneManager;
 class MediaLibrary;
 class OutputManager;
 class InputManager;
@@ -39,7 +38,6 @@ public:
     // Accessors
     GLFWwindow* getWindow() const { return m_window; }
     Renderer* getRenderer() const { return m_renderer.get(); }
-    SceneManager* getSceneManager() const { return m_sceneManager.get(); }
     MediaLibrary* getMediaLibrary() const { return m_mediaLibrary.get(); }
     OutputManager* getOutputManager() const { return m_outputManager.get(); }
     InputManager* getInputManager() const { return m_inputManager.get(); }
@@ -72,7 +70,6 @@ private:
 
     // Components
     std::unique_ptr<Renderer> m_renderer;
-    std::unique_ptr<SceneManager> m_sceneManager;
     std::unique_ptr<MediaLibrary> m_mediaLibrary;
     std::unique_ptr<OutputManager> m_outputManager;
     std::unique_ptr<InputManager> m_inputManager;

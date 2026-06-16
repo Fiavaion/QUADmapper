@@ -10,8 +10,6 @@
 
 namespace quadmapper {
 
-class SceneManager;
-
 // Vertex structure for quad mesh
 struct QuadVertex {
     float position[2];
@@ -38,9 +36,6 @@ public:
     // Render all quads from a QuadManager with selection highlighting
     void renderQuads(const QuadManager& quadManager,
                      const std::unordered_map<UUID, Texture*>& textures);
-
-    // Render all quads in a scene
-    void renderScene(const SceneManager& sceneManager);
 
     // Render selection outline for a quad
     void renderQuadOutline(const Quad& quad, const glm::vec4& color, float lineWidth = 2.0f);

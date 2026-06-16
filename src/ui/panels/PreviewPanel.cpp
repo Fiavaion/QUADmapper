@@ -1,9 +1,6 @@
 #include "PreviewPanel.hpp"
-#include "scene/SceneManager.hpp"
-#include "scene/Scene.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadGeometry.hpp"
-#include "scene/QuadManager.hpp"
 #include "renderer/Renderer.hpp"
 #include <imgui.h>
 #include <algorithm>
@@ -17,17 +14,9 @@ void PreviewPanel::render() {
     if (!visible_) return;
 
     ImGui::Begin(title_.c_str(), &visible_);
-
-    if (!sceneManager_) {
-        ImGui::TextDisabled("No scene manager connected");
-        ImGui::End();
-        return;
-    }
-
     renderToolbar();
     ImGui::Separator();
     renderPreviewArea();
-
     ImGui::End();
 }
 
@@ -157,86 +146,8 @@ void PreviewPanel::renderPreviewArea() {
         IM_COL32(80, 80, 80, 255));
 }
 
-void PreviewPanel::renderSceneContent(ImVec2 canvasPos, ImVec2 canvasSize) {
-    Scene* scene = sceneManager_->getActiveScene();
-    if (!scene) return;
-
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    const QuadManager& quadManager = scene->getQuadManager();
-    const auto& selectedIds = quadManager.getSelectedIds();
-
-    // Render quads in z-order
-    auto quads = quadManager.getQuadsByZOrder();
-    for (Quad* quad : quads) {
-        if (!quad->isVisible()) continue;
-
-        const QuadGeometry& geom = quad->getGeometry();
-        const auto& corners = geom.getCorners();
-        bool isSelected = selectedIds.count(quad->getId()) > 0;
-
-        // Convert corners to screen positions
-        ImVec2 screenCorners[4];
-        for (int i = 0; i < 4; i++) {
-            screenCorners[i] = sceneToScreen(corners[i], canvasPos, canvasSize);
-        }
-
-        // Draw quad fill
-        ImU32 fillColor = isSelected ?
-            IM_COL32(100, 150, 200, 100) :
-            IM_COL32(80, 80, 80, 100);
-        drawList->AddQuadFilled(
-            screenCorners[0], screenCorners[1],
-            screenCorners[2], screenCorners[3],
-            fillColor);
-
-        // Draw quad outline
-        ImU32 outlineColor = isSelected ?
-            IM_COL32(100, 200, 255, 255) :
-            IM_COL32(150, 150, 150, 255);
-        drawList->AddQuad(
-            screenCorners[0], screenCorners[1],
-            screenCorners[2], screenCorners[3],
-            outlineColor, isSelected ? 2.0f : 1.0f);
-
-        // Draw mesh lines if in mesh edit mode and quad has mesh modifications
-        if (editMode_ == PreviewEditMode::MESH && isSelected &&
-            geom.getMeshMode() == MeshMode::MESH_EDIT) {
-            int resolution = geom.getMeshResolution();
-            auto meshPositions = geom.generateMeshPositions();
-
-            // Draw horizontal lines
-            for (int row = 0; row <= resolution; row++) {
-                for (int col = 0; col < resolution; col++) {
-                    int idx1 = row * (resolution + 1) + col;
-                    int idx2 = row * (resolution + 1) + col + 1;
-                    ImVec2 p1 = sceneToScreen(meshPositions[idx1], canvasPos, canvasSize);
-                    ImVec2 p2 = sceneToScreen(meshPositions[idx2], canvasPos, canvasSize);
-                    drawList->AddLine(p1, p2, IM_COL32(100, 100, 100, 128), 1.0f);
-                }
-            }
-
-            // Draw vertical lines
-            for (int row = 0; row < resolution; row++) {
-                for (int col = 0; col <= resolution; col++) {
-                    int idx1 = row * (resolution + 1) + col;
-                    int idx2 = (row + 1) * (resolution + 1) + col;
-                    ImVec2 p1 = sceneToScreen(meshPositions[idx1], canvasPos, canvasSize);
-                    ImVec2 p2 = sceneToScreen(meshPositions[idx2], canvasPos, canvasSize);
-                    drawList->AddLine(p1, p2, IM_COL32(100, 100, 100, 128), 1.0f);
-                }
-            }
-        }
-
-        // Draw quad name label
-        if (isSelected) {
-            Vec2 center = (corners[0] + corners[1] + corners[2] + corners[3]) * 0.25f;
-            ImVec2 labelPos = sceneToScreen(center, canvasPos, canvasSize);
-            ImVec2 textSize = ImGui::CalcTextSize(quad->getName().c_str());
-            labelPos.x -= textSize.x * 0.5f;
-            labelPos.y -= textSize.y * 0.5f;
-            drawList->AddText(labelPos, IM_COL32(255, 255, 255, 200), quad->getName().c_str());
-        }
-    }
+void PreviewPanel::renderSceneContent(ImVec2 /*canvasPos*/, ImVec2 /*canvasSize*/) {
+    // No scene connected — nothing to render.
 }
 
 void PreviewPanel::renderGrid(ImVec2 canvasPos, ImVec2 canvasSize) {
@@ -281,26 +192,8 @@ void PreviewPanel::renderGrid(ImVec2 canvasPos, ImVec2 canvasSize) {
     }
 }
 
-void PreviewPanel::renderSelectionHandles(ImVec2 canvasPos, ImVec2 canvasSize) {
-    Scene* scene = sceneManager_->getActiveScene();
-    if (!scene) return;
-
-    QuadManager& quadManager = scene->getQuadManager();
-    Quad* primaryQuad = quadManager.getPrimarySelectedQuad();
-
-    if (!primaryQuad) return;
-
-    // Render appropriate handles based on edit mode
-    if (editMode_ == PreviewEditMode::CORNERS) {
-        renderCornerHandles(primaryQuad, canvasPos, canvasSize);
-    } else if (editMode_ == PreviewEditMode::MESH) {
-        if (primaryQuad->getGeometry().getMeshMode() == MeshMode::MESH_EDIT) {
-            renderMeshHandles(primaryQuad, canvasPos, canvasSize);
-        } else {
-            // Show message that mesh mode needs to be enabled
-            ImGui::SetTooltip("Enable Mesh Edit mode in the Inspector to edit mesh vertices");
-        }
-    }
+void PreviewPanel::renderSelectionHandles(ImVec2 /*canvasPos*/, ImVec2 /*canvasSize*/) {
+    // No scene connected — nothing to render.
 }
 
 void PreviewPanel::renderCornerHandles(Quad* quad, ImVec2 canvasPos, ImVec2 canvasSize) {
@@ -359,78 +252,8 @@ void PreviewPanel::renderMeshHandles(Quad* quad, ImVec2 canvasPos, ImVec2 canvas
     }
 }
 
-void PreviewPanel::handleMouseInput(ImVec2 canvasPos, ImVec2 canvasSize) {
-    ImVec2 mousePos = ImGui::GetMousePos();
-    Scene* scene = sceneManager_->getActiveScene();
-    if (!scene) return;
-
-    QuadManager& quadManager = scene->getQuadManager();
-    Quad* primaryQuad = quadManager.getPrimarySelectedQuad();
-
-    // Update hovered state
-    hoveredCornerIndex_ = -1;
-    hoveredMeshIndex_ = -1;
-
-    if (primaryQuad && !isDragging_) {
-        if (editMode_ == PreviewEditMode::CORNERS) {
-            hoveredCornerIndex_ = findCornerHandle(primaryQuad, mousePos, canvasPos, canvasSize);
-        } else if (editMode_ == PreviewEditMode::MESH &&
-                   primaryQuad->getGeometry().getMeshMode() == MeshMode::MESH_EDIT) {
-            hoveredMeshIndex_ = findMeshHandle(primaryQuad, mousePos, canvasPos, canvasSize);
-        }
-    }
-
-    // Handle mouse button press
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        Vec2 scenePos = screenToScene(mousePos, canvasPos, canvasSize);
-        dragStartScenePos_ = scenePos;
-
-        if (editMode_ == PreviewEditMode::SELECT) {
-            // Select quad at click position
-            Quad* clickedQuad = findQuadAtPosition(scenePos);
-            if (clickedQuad) {
-                if (ImGui::GetIO().KeyCtrl) {
-                    quadManager.toggleSelection(clickedQuad->getId());
-                } else if (ImGui::GetIO().KeyShift) {
-                    quadManager.addToSelection(clickedQuad->getId());
-                } else {
-                    quadManager.selectQuad(clickedQuad->getId());
-                }
-            } else {
-                quadManager.deselectAll();
-            }
-        } else if (editMode_ == PreviewEditMode::CORNERS && primaryQuad) {
-            if (hoveredCornerIndex_ >= 0) {
-                isDragging_ = true;
-                dragCornerIndex_ = hoveredCornerIndex_;
-            }
-        } else if (editMode_ == PreviewEditMode::MESH && primaryQuad) {
-            if (hoveredMeshIndex_ >= 0) {
-                isDragging_ = true;
-                dragMeshIndex_ = hoveredMeshIndex_;
-            }
-        }
-    }
-
-    // Handle dragging
-    if (isDragging_ && primaryQuad) {
-        Vec2 currentScenePos = screenToScene(mousePos, canvasPos, canvasSize);
-
-        if (dragCornerIndex_ >= 0) {
-            applyCornerDrag(primaryQuad, dragCornerIndex_, currentScenePos);
-        } else if (dragMeshIndex_ >= 0) {
-            applyMeshDrag(primaryQuad, dragMeshIndex_, currentScenePos);
-        }
-    }
-
-    // Handle mouse release
-    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-        isDragging_ = false;
-        dragCornerIndex_ = -1;
-        dragMeshIndex_ = -1;
-    }
-
-    lastMousePos_ = mousePos;
+void PreviewPanel::handleMouseInput(ImVec2 /*canvasPos*/, ImVec2 /*canvasSize*/) {
+    // No scene connected — no interaction to handle.
 }
 
 void PreviewPanel::handleZoom(ImVec2 canvasPos, ImVec2 canvasSize) {
@@ -503,48 +326,8 @@ ImVec2 PreviewPanel::sceneToScreen(Vec2 scenePos, ImVec2 canvasPos, ImVec2 canva
     return ImVec2(screenX, screenY);
 }
 
-Quad* PreviewPanel::findQuadAtPosition(Vec2 scenePos) {
-    Scene* scene = sceneManager_->getActiveScene();
-    if (!scene) return nullptr;
-
-    // Check quads in reverse z-order (top-most first)
-    auto quads = scene->getQuadManager().getQuadsByZOrderDescending();
-    for (Quad* quad : quads) {
-        if (!quad->isVisible()) continue;
-
-        const auto& corners = quad->getGeometry().getCorners();
-
-        // Simple point-in-quad test using cross products
-        // Check if point is on the same side of all edges
-        auto sign = [](Vec2 p1, Vec2 p2, Vec2 p3) {
-            return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
-        };
-
-        // Split quad into two triangles for robust test
-        bool inTri1 = true;
-        bool inTri2 = true;
-
-        float d1 = sign(scenePos, corners[0], corners[1]);
-        float d2 = sign(scenePos, corners[1], corners[2]);
-        float d3 = sign(scenePos, corners[2], corners[0]);
-
-        bool hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-        bool hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
-        inTri1 = !(hasNeg && hasPos);
-
-        d1 = sign(scenePos, corners[0], corners[2]);
-        d2 = sign(scenePos, corners[2], corners[3]);
-        d3 = sign(scenePos, corners[3], corners[0]);
-
-        hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-        hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
-        inTri2 = !(hasNeg && hasPos);
-
-        if (inTri1 || inTri2) {
-            return quad;
-        }
-    }
-
+Quad* PreviewPanel::findQuadAtPosition(Vec2 /*scenePos*/) {
+    // No scene connected — no quads to hit-test.
     return nullptr;
 }
 

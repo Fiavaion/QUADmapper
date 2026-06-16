@@ -4,8 +4,8 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 3 (TD-02 step 2, TD-07, TD-08 — see TECHNICAL_DEBT.md)
-- Done: 52
+- Todo: 3 (TD-02 render()→panels decomposition, TD-07, TD-08 — see TECHNICAL_DEBT.md)
+- Done: 53
 - Blocked: 0
 
 ---
@@ -13,6 +13,10 @@ Last Updated: 2026-06-16
 ## Done
 
 ### Phase 8: ADR-031 Refactor (Session 10 — 2026-06-16)
+
+#### QM-053: TD-02 step 2 — retire dual-track scene state (one scene of truth)
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** ADR-033. Deleted the unwired multi-scene machinery (`SceneManager` +35 tests, `ScenePanel`, scene-based `ProjectSerializer` methods, orphan `SceneManager` hooks in Inspector/Preview/Renderer, `m_sceneManager`). `EditorState::scene` is now the single source of truth. Reconciled render()'s 5 hand-rolled save/load sync sites into two shared helpers (`syncSceneToProject`/`syncProjectToScene`) using whole-geometry/whole-texture copies — fixing a latent bug that dropped mesh-edit vertex offsets + flipH/V on save/load. Build clean; 589/590 tests (1 pre-existing flaky timer test); success metric harness-verified (vertex warp + F11 projector output). Remaining TD-02 work: decompose render() UI into real panels.
 
 #### QM-052: TD-05 — `.qmap` versioning, migration & save/load de-dup
 - **Status:** DONE — **Completed:** 2026-06-16
@@ -758,5 +762,6 @@ Last Updated: 2026-06-16
 | QM-043 | Create integration tests | DONE | Phase 7 |
 | QM-044 | Manual test protocols | DONE | Phase 7 |
 | QM-052 | TD-05 .qmap versioning, migration & save/load de-dup | DONE | Phase 8 |
+| QM-053 | TD-02 step 2 retire dual-track scene state (one scene of truth) | DONE | Phase 8 |
 
 ---

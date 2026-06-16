@@ -9,7 +9,6 @@
 
 namespace quadmapper {
 
-class SceneManager;
 class Renderer;
 class Quad;
 class QuadGeometry;
@@ -30,11 +29,6 @@ enum class PreviewEditMode {
 class PreviewPanel : public Panel {
 public:
     PreviewPanel();
-
-    /**
-     * Set the scene manager for rendering and editing.
-     */
-    void setSceneManager(SceneManager* manager) { sceneManager_ = manager; }
 
     /**
      * Set the renderer for preview rendering.
@@ -113,7 +107,6 @@ private:
     // Apply mesh vertex drag to quad geometry
     void applyMeshDrag(Quad* quad, int vertexIndex, Vec2 newPos);
 
-    SceneManager* sceneManager_ = nullptr;
     Renderer* renderer_ = nullptr;
 
     // View state
