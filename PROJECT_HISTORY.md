@@ -36,8 +36,23 @@ handle) → **fresh-context Opus verifier: APPROVE**, all 7 success-metric crite
 block comparison (306 lines, zero diff).
 
 **Net:** `Application.cpp` 2411 → ~960 lines; `render()` body ~1910 → ~400. **TD-02 closed**
-(moved to Resolved in TECHNICAL_DEBT.md). PR #1 (`refactor/app-decomposition`) green and
-ready to merge. Remaining open debt (none blocking): TD-07, TD-08, TD-09.
+(moved to Resolved in TECHNICAL_DEBT.md).
+
+**Merged PR #1 → `master`** (merge commit `5ef8809`): the entire ADR-031 keep-and-refactor
+(TD-01/03/04/05/06 + all TD-02 steps) is now on `master`; the refactor phase is complete.
+
+**Media workflow verified end-to-end (image + video).** The original smoke harness only warped
+a white quad, so "apply image/video and perform" was unverified. Drove the real UI with assets
+from `D:\testing Videos`: `greenCrystals_15Sec_4x3.mp4` (FFmpeg) and `knowledge-graph.png`
+(1800×1200) each load → assign → warp → F11, rendering on the warped quad in the editor **and**
+fullscreen on the projector (monitor 2). Added two reusable harnesses
+(`tests/smoke/drive_media_smoke.ps1`, `drive_image_smoke.ps1`; commit `6caf8dc`). The core
+projection-mapping workflow (add quad → warp → apply media → perform to projector) is confirmed
+fully functional.
+
+**Handoff:** refactor done + merged; start v1.1 from `master`. Recommended next: Color
+correction per quad (US-104) with an ADR + acceptance criteria. Open debt (none blocking):
+TD-07, TD-08, TD-09. Detailed log: `docs/sessions/2026-06-16-td02-batch4-merge-media-verify.md`.
 
 ---
 

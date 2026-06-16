@@ -1,32 +1,33 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-16T14:30:00Z",
+  "lastUpdated": "2026-06-16T15:00:00Z",
   "sessionInfo": {
     "sessionNumber": 12,
     "startTime": "2026-06-16T14:00:00Z",
-    "endTime": null,
-    "status": "active"
+    "endTime": "2026-06-16T15:00:00Z",
+    "status": "completed"
   },
   "currentWork": {
     "activeTaskId": null,
-    "activeTaskTitle": "TD-02 complete — no task in progress",
-    "currentFile": "src/ui/panels/ViewportEditor.cpp",
-    "currentFunction": "ViewportEditor::render()",
-    "workInProgress": "TD-02 render() decomposition (ADR-034) COMPLETE — all 6 batches done+pushed on refactor/app-decomposition (PR #1), each build-clean + 590/590 + smoke-green (incl F11 projector output): batch 0 EditorContext.hpp + Application::{newProject,saveProject,loadProject}; batch 1 MainMenuBar (708d267); batch 2 QuadListPanel (fb23972); batch 3 InspectorPanel/context-sensitive Properties (6d522af); batch 3b VideoPlayerPanel (3a13950); batch 4 (last, success-metric-critical) ViewportEditor + delete dead PreviewPanel shell (f2dd41f), byte-for-byte verbatim extraction confirmed by a fresh-context Opus verifier. Application.cpp 2411->~960 lines; render() ~1910->~400. PR #1 ready to merge. Next: pick from TD-07/TD-08/TD-09 (none blocking).",
+    "activeTaskTitle": "ADR-031 refactor DONE + MERGED to master — ready to start v1.1",
+    "currentFile": "master (no work in progress)",
+    "currentFunction": null,
+    "workInProgress": "Session 12 closed. TD-02 render() decomposition (ADR-034) COMPLETE (all 6 batches, ending with batch 4 ViewportEditor f2dd41f). PR #1 MERGED into master (merge commit 5ef8809) — the whole ADR-031 keep-and-refactor is now on master; refactor phase done. Application.cpp 2411->~960 lines; render() ~1910->~400. Media workflow verified end-to-end this session (image knowledge-graph.png + video greenCrystals_15Sec_4x3.mp4 both load->assign->warp->F11 projector, watched working); added tests/smoke/drive_media_smoke.ps1 + drive_image_smoke.ps1 (6caf8dc). The core projection-mapping workflow is confirmed fully functional. Next session starts v1.1 from a clean master.",
     "nextSteps": [
-      "Merge PR #1 (refactor/app-decomposition) into master — TD-02 done, all batches green.",
+      "Start v1.1: Color correction per quad (US-104, P1) — Quad property + shader uniforms + Inspector section + additive .qmap field (ADR-032 versioning covers it). No new deps, no success-metric risk. Open an ADR + checkable acceptance criteria FIRST, then build in small build->test->verify batches.",
+      "Alternative v1.1 features: soft-edge blending (US-101, moderate risk) or MIDI/OSC control (US-102/103, needs a dependency-approval ADR — Change Boundary).",
       "TD-09: converge the two media models onto the source architecture (deferred from TD-02; success-metric risk — do as a deliberate feature, not debt cleanup).",
-      "TD-07: build exit-code flake (gtest discovery timeout) - touches CMake, needs approval.",
-      "TD-08: defer audio snapshot reclamation to the control thread (LOW)."
+      "TD-07: build exit-code flake (gtest discovery timeout) - touches CMake, needs approval. TD-08: defer audio snapshot reclamation to the control thread (LOW)."
     ]
   },
   "context": {
     "recentFiles": [
+      "src/ui/panels/ViewportEditor.cpp",
       "src/app/Application.cpp",
       "src/app/EditorState.hpp",
-      "src/project/ProjectSerializer.cpp",
-      "docs/adr/0033-retire-multi-scene.md",
-      "tests/smoke/drive_smoke.ps1"
+      "tests/smoke/drive_media_smoke.ps1",
+      "tests/smoke/drive_image_smoke.ps1",
+      "docs/adr/0034-render-decomposition.md"
     ],
     "keyDecisions": [
       "ADR-032: additive .qmap versioning + migration; one validateVersion() policy; no on-disk format change.",
@@ -39,7 +40,7 @@
     "blockers": []
   },
   "projectState": {
-    "currentPhase": "ADR-031 Refactor (post-v1.0.0)",
+    "currentPhase": "ADR-031 Refactor COMPLETE + merged to master; next = v1.1 features",
     "completedPhases": [
       "Phase 0: Infrastructure Setup",
       "Phase 1: Core Foundation",
@@ -53,7 +54,7 @@
     ],
     "buildStatus": "success",
     "lastSuccessfulBuild": "2026-06-16T14:20:00Z",
-    "note": "Full success metric verified end-to-end (vertex warp + F11 projector output). 590/590 tests (4 audio integration skipped). TD-02 render()->panels decomposition (ADR-034) COMPLETE — all 6 batches: MainMenuBar, QuadListPanel, InspectorPanel, VideoPlayerPanel, ViewportEditor + EditorContext/project-action methods; dead PreviewPanel shell deleted. Application.cpp 2411->~960 lines; render() ~1910->~400. PR #1 ready to merge. Remaining open debt (none blocking): TD-07, TD-08, TD-09."
+    "note": "ADR-031 refactor COMPLETE and MERGED to master (PR #1, merge commit 5ef8809). Full success metric verified end-to-end incl. MEDIA: image (knowledge-graph.png) AND video (greenCrystals_15Sec_4x3.mp4) both load->assign->warp->F11 projector, watched working this session. 590/590 tests (4 audio integration skipped). TD-02 render()->panels decomposition done (all 6 batches: MainMenuBar, QuadListPanel, InspectorPanel, VideoPlayerPanel, ViewportEditor + EditorContext); dead PreviewPanel shell deleted. Application.cpp 2411->~960 lines; render() ~1910->~400. Next: v1.1 features (Color correction per quad recommended). Open debt (none blocking): TD-07, TD-08, TD-09."
   },
   "statistics": {
     "totalSessions": 12,
