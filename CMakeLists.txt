@@ -56,6 +56,7 @@ if(PkgConfig_FOUND)
     pkg_check_modules(FFMPEG IMPORTED_TARGET
         libavcodec
         libavformat
+        libavdevice
         libavutil
         libswscale
         libswresample

@@ -23,16 +23,32 @@ Shift ×10 / Alt ×0.1) → apply an **image or video** → perform it fullscree
 `VideoPlayerPanel`, and `ViewportEditor` (the non-`Panel`, pre-`NewFrame()` on-canvas warp
 surface). `Application.cpp` 2411 → ~960 lines; `render()` body ~1910 → ~400.
 
-## NEXT TASK — resume here (start v1.1 from `master`)
-**Recommended: Color correction per quad** (US-104, P1, v1.1). Lowest-risk, best-fit first feature:
-- A `Quad` property (brightness/contrast/gamma) + a few shader uniforms + an `InspectorPanel`
-  section + an additive `.qmap` field (ADR-032 versioning already supports additive fields).
-- No new dependencies; no success-metric risk.
-- **Process:** open an ADR + write *checkable acceptance criteria* FIRST, then build in small
-  build → test → verify (smoke) batches. Branch off `master`.
+## NEXT TASK — resume here: **QM-055 (AI Pre-Show Assist, Phase 9)**
+**ADR-035 Accepted (2026-06-16):** integrate AI pre-show auto-warp via an **optional
+out-of-process Python sidecar** — render path / C++ build / `.qmap` all untouched. Full plan:
+@docs/research/ai-preshow-roadmap-2026-06-16.md (QM-055..062). Grounded by 3 cited docs in
+`docs/research/` (AI prior-art, competitor audit, GO feasibility spike + `snap-spike-evidence/`).
 
-Alternatives: **soft-edge blending** (US-101, moderate rendering risk) or **MIDI/OSC control**
-(US-102/103 — needs a NEW vcpkg dependency → an ADR + approval first, Change Boundary).
+**QM-055 DONE (capture rail + PNG)** on branch `feature/qm-055-camera-input` (not yet merged):
+`VideoDecoder::openCamera` (dshow, libavdevice), `CameraSource`+`CameraDevices` enumeration,
+`SourceManager::createCameraSource`, and `writeRgbPng` (dependency-free; OpenCV-verified). All
+verified on the real webcam; 592/592 ctest; media smoke green (success metric intact). **On-quad
+display deferred to TD-09** (renderer isn't wired to `SourceManager`) — capture+PNG is what the AI
+roadmap needs and it's complete.
+
+**Start NEXT with QM-056 — AI sidecar skeleton + IPC contract (ADR-035):**
+- Stand up `tools/ai-sidecar/` (Python); app launches/health-checks/tears it down; versioned
+  `POST /surface` stub round-trips; sidecar-absent disables AI UI cleanly (existing workflows
+  unaffected). Models already on disk (Depth-Anything-V2 / Metric3D under ComfyUI controlnet_aux).
+- The sidecar consumes the PNG `CameraSource::captureCurrentFrameToPng()` now produces.
+- **Process:** AC first (TASKS.md QM-056) → small batches → reviewer-mode. Merge QM-055 first or
+  continue on a stacked branch.
+
+**The make-or-break later:** 🚩 QM-061 (real-device test on an actual projector+phone) — the
+wedge's novelty is a hypothesis until watched working on real hardware.
+
+Parallel/alternative track if desired: v1.1 polish — **color correction per quad** (US-104, low
+risk) or **soft-edge blending** (US-101). MIDI/OSC (US-102/103) needs its own dependency ADR.
 
 ## Open debt (none blocking — see TECHNICAL_DEBT.md)
 - **TD-09** — converge the two media models (MediaBin `SourceManager` vs quad-assignment

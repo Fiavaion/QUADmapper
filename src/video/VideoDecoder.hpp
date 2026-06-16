@@ -63,6 +63,24 @@ public:
     bool open(const std::filesystem::path& path);
 
     /**
+     * @brief Open a live webcam / capture device (Windows dshow)
+     * @param deviceName dshow device name, e.g. "HD User Facing"
+     * @param width  Desired capture width  (0 = device default)
+     * @param height Desired capture height (0 = device default)
+     * @param fps    Desired capture frame rate (0 = device default)
+     * @return true if successful
+     *
+     * Live sources have no duration and cannot seek. Requires libavdevice
+     * (QUADMAPPER_HAS_AVDEVICE); returns false if unavailable. See QM-055.
+     */
+    bool openCamera(const std::string& deviceName, int width = 0, int height = 0, double fps = 0.0);
+
+    /**
+     * @brief Whether the open source is a live capture device (no seek/duration)
+     */
+    bool isLive() const;
+
+    /**
      * @brief Close the video and release resources
      */
     void close();

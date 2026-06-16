@@ -6,6 +6,42 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 13 - 2026-06-16 - AI pre-show planning + QM-055 (camera capture rail)
+
+**Focus:** A planning thread on integrating AI into the **pre-show setup** stage, carried to a
+verified first implementation. Detailed log: `docs/sessions/2026-06-16-session13-ai-preshow-qm055.md`.
+
+**Planning (Phase 9 opened — "AI Pre-Show Assist"):**
+- Ran `deep-research`; synthesized 3 cited docs in `docs/research/` (AI prior-art landscape;
+  17-product competitor audit; feasibility spike). Key market finding: the affordable + easy +
+  AI-assisted niche is **empty** — Lightform vacated it in 2022, camera auto-warp is paywalled to
+  the high end, mobile "AI mapping" is vaporware.
+- **Feasibility spike (GO):** Depth-Anything-V2 runs locally (RTX 3080; weights already on disk),
+  ~0.6s/photo, planes fit <0.5% RMS. Reshaped the feature: fully-automatic surface picking is
+  unreliable → **human-confirm is load-bearing**; projector-off passive warp is geometrically
+  impossible → build **One-Flash Auto-Warp** (one pattern + one phone photo).
+- **ADR-035 Accepted:** AI via an **optional out-of-process Python sidecar** (render path / C++
+  build / `.qmap` untouched). Roadmap QM-055..062 with 🚩 QM-061 (real-device test) as the gate.
+
+**Completed — QM-055 (capture rail + PNG), verified on the real webcam:**
+- `VideoDecoder::openCamera()` (FFmpeg dshow; `libavdevice` linked — already in vcpkg, no new dep;
+  `open()` refactored into shared `setupDecoderFromFormat()`, behavior-preserving).
+- `CameraSource : TextureSource` + `CameraDevices` DirectShow enumeration +
+  `SourceManager::createCameraSource`; `test_source` group (2 tests, real-hardware, skip-if-absent).
+- **AC2:** `writeRgbPng()` — dependency-free PNG encoder (default vcpkg ffmpeg has no PNG encoder);
+  **verified readable by OpenCV** (720×1280×3).
+- **Gate:** 592/592 ctest (+2); media smoke green (video→quad→projector success metric intact).
+- **Deferred (user decision):** on-quad camera *display* → TD-09 (renderer not wired to
+  `SourceManager`). Capture+PNG — the AI-roadmap-critical part — is complete.
+
+**Decisions:** ADR-035 (Python sidecar); One-Flash reframe; enable libavdevice (no new dep);
+on-quad display deferred to TD-09.
+
+**⚠️ Handoff:** work is **uncommitted** on `feature/qm-055-camera-input` (verified, clean). Next:
+commit (split docs/ADR from code), then **QM-056** (AI sidecar skeleton, consumes the captured PNG).
+
+---
+
 ### Session 12 - 2026-06-16 - TD-02 batch 4 (last): ViewportEditor — render() decomposition COMPLETE
 
 **Focus:** The final, success-metric-critical batch of TD-02 (QM-054). Plan-first, then

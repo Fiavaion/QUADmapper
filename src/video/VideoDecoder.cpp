@@ -9,7 +9,13 @@ extern "C" {
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/error.h>
+#ifdef QUADMAPPER_HAS_AVDEVICE
+#include <libavdevice/avdevice.h>
+#endif
 }
+
+#include <string>
 
 namespace quadmapper {
 
@@ -29,6 +35,58 @@ public:
             return false;
         }
 
+        isLive_ = false;
+        return setupDecoderFromFormat();
+    }
+
+    bool openCamera(const std::string& deviceName, int width, int height, double fps) {
+        close();
+#ifdef QUADMAPPER_HAS_AVDEVICE
+        avdevice_register_all();
+        const AVInputFormat* ifmt = av_find_input_format("dshow");
+        if (!ifmt) {
+            LOG_ERROR("dshow input format not available");
+            return false;
+        }
+
+        AVDictionary* opts = nullptr;
+        if (width > 0 && height > 0) {
+            std::string sz = std::to_string(width) + "x" + std::to_string(height);
+            av_dict_set(&opts, "video_size", sz.c_str(), 0);
+        }
+        if (fps > 0.0) {
+            av_dict_set(&opts, "framerate", std::to_string(static_cast<int>(fps)).c_str(), 0);
+        }
+        // Generous real-time buffer so brief decode hitches don't drop frames
+        av_dict_set(&opts, "rtbufsize", "100000000", 0);
+
+        std::string url = "video=" + deviceName;
+        int rc = avformat_open_input(&formatCtx_, url.c_str(), ifmt, &opts);
+        av_dict_free(&opts);
+        if (rc < 0) {
+            char err[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(rc, err, sizeof(err));
+            LOG_ERROR("Failed to open camera '{}': {}", deviceName, err);
+            return false;
+        }
+
+        isLive_ = true;
+        if (!setupDecoderFromFormat()) {
+            return false;
+        }
+        info_.duration = 0.0;   // live capture: no duration, no seek
+        info_.totalFrames = 0;
+        LOG_INFO("Opened camera '{}': {}x{}, {} fps", deviceName, info_.width, info_.height, info_.frameRate);
+        return true;
+#else
+        (void)deviceName; (void)width; (void)height; (void)fps;
+        LOG_ERROR("openCamera requires libavdevice (not compiled in)");
+        return false;
+#endif
+    }
+
+    // Shared decoder setup; assumes formatCtx_ is already open on an input.
+    bool setupDecoderFromFormat() {
         // Find stream info
         if (avformat_find_stream_info(formatCtx_, nullptr) < 0) {
             LOG_ERROR("Failed to find stream info");
@@ -186,12 +244,14 @@ public:
         videoStreamIndex_ = -1;
         audioStreamIndex_ = -1;
         isOpen_ = false;
+        isLive_ = false;
         currentFrame_ = 0;
         currentTime_ = 0.0;
         atEnd_ = false;
     }
 
     bool isOpen() const { return isOpen_; }
+    bool isLive() const { return isLive_; }
     const VideoInfo& getInfo() const { return info_; }
     double getCurrentTime() const { return currentTime_; }
     int64_t getCurrentFrame() const { return currentFrame_; }
@@ -382,6 +442,7 @@ private:
     VideoInfo info_;
     double timeBase_ = 0.0;
     bool isOpen_ = false;
+    bool isLive_ = false;   // live capture device (no seek/duration)
     // Written by the background decode thread, read on the main thread (via the getters /
     // VideoPlayer::update). Atomic to avoid a data race / UB. Single-writer-at-a-time (seek
     // joins the decode thread first), so plain load/store ordering is sufficient.
@@ -406,8 +467,10 @@ namespace quadmapper {
 class VideoDecoder::Impl {
 public:
     bool open(const std::filesystem::path&) { return false; }
+    bool openCamera(const std::string&, int, int, double) { return false; }
     void close() {}
     bool isOpen() const { return false; }
+    bool isLive() const { return false; }
     const VideoInfo& getInfo() const { return info_; }
     bool seek(double) { return false; }
     bool seekFrame(int64_t) { return false; }
@@ -433,8 +496,12 @@ VideoDecoder::VideoDecoder(VideoDecoder&&) noexcept = default;
 VideoDecoder& VideoDecoder::operator=(VideoDecoder&&) noexcept = default;
 
 bool VideoDecoder::open(const std::filesystem::path& path) { return impl_->open(path); }
+bool VideoDecoder::openCamera(const std::string& deviceName, int width, int height, double fps) {
+    return impl_->openCamera(deviceName, width, height, fps);
+}
 void VideoDecoder::close() { impl_->close(); }
 bool VideoDecoder::isOpen() const { return impl_->isOpen(); }
+bool VideoDecoder::isLive() const { return impl_->isLive(); }
 const VideoInfo& VideoDecoder::getInfo() const { return impl_->getInfo(); }
 bool VideoDecoder::seek(double timeSeconds) { return impl_->seek(timeSeconds); }
 bool VideoDecoder::seekFrame(int64_t frameNumber) { return impl_->seekFrame(frameNumber); }

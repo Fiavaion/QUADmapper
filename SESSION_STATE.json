@@ -1,46 +1,49 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-16T15:00:00Z",
+  "lastUpdated": "2026-06-16T17:30:00Z",
   "sessionInfo": {
-    "sessionNumber": 12,
-    "startTime": "2026-06-16T14:00:00Z",
-    "endTime": "2026-06-16T15:00:00Z",
-    "status": "completed"
+    "sessionNumber": 14,
+    "startTime": "2026-06-16T17:30:00Z",
+    "endTime": null,
+    "status": "active"
   },
   "currentWork": {
     "activeTaskId": null,
-    "activeTaskTitle": "ADR-031 refactor DONE + MERGED to master — ready to start v1.1",
-    "currentFile": "master (no work in progress)",
+    "activeTaskTitle": "QM-055 DONE (camera capture rail + PNG); on-quad display deferred to TD-09",
+    "currentFile": "feature/qm-055-camera-input (UNCOMMITTED — verified, clean)",
     "currentFunction": null,
-    "workInProgress": "Session 12 closed. TD-02 render() decomposition (ADR-034) COMPLETE (all 6 batches, ending with batch 4 ViewportEditor f2dd41f). PR #1 MERGED into master (merge commit 5ef8809) — the whole ADR-031 keep-and-refactor is now on master; refactor phase done. Application.cpp 2411->~960 lines; render() ~1910->~400. Media workflow verified end-to-end this session (image knowledge-graph.png + video greenCrystals_15Sec_4x3.mp4 both load->assign->warp->F11 projector, watched working); added tests/smoke/drive_media_smoke.ps1 + drive_image_smoke.ps1 (6caf8dc). The core projection-mapping workflow is confirmed fully functional. Next session starts v1.1 from a clean master.",
+    "workInProgress": "Session 13 opened Phase 9 (AI Pre-Show Assist). Planning thread produced 3 cited research docs (AI prior-art, competitor audit, GO feasibility spike) in docs/research/, ADR-035 (Accepted: AI via optional out-of-process Python sidecar), and a phased roadmap QM-055..062. Implemented and hardware-verified QM-055 (capture rail + PNG): VideoDecoder::openCamera (dshow/libavdevice, no new dep; open() refactored into shared setupDecoderFromFormat), CameraSource + CameraDevices DirectShow enumeration + SourceManager::createCameraSource, and a dependency-free writeRgbPng (default vcpkg ffmpeg has no PNG encoder) verified readable by OpenCV. Gate green: 592/592 ctest, media smoke (video->quad->projector success metric intact). On-quad camera DISPLAY deferred to TD-09 (renderer not wired to SourceManager) per user. ALL WORK UNCOMMITTED on branch feature/qm-055-camera-input.",
     "nextSteps": [
-      "Start v1.1: Color correction per quad (US-104, P1) — Quad property + shader uniforms + Inspector section + additive .qmap field (ADR-032 versioning covers it). No new deps, no success-metric risk. Open an ADR + checkable acceptance criteria FIRST, then build in small build->test->verify batches.",
-      "Alternative v1.1 features: soft-edge blending (US-101, moderate risk) or MIDI/OSC control (US-102/103, needs a dependency-approval ADR — Change Boundary).",
-      "TD-09: converge the two media models onto the source architecture (deferred from TD-02; success-metric risk — do as a deliberate feature, not debt cleanup).",
-      "TD-07: build exit-code flake (gtest discovery timeout) - touches CMake, needs approval. TD-08: defer audio snapshot reclamation to the control thread (LOW)."
+      "FIRST: commit the QM-055 work (suggest splitting planning docs + ADR-035 from the QM-055 code) on feature/qm-055-camera-input; then merge to master or stack QM-056 on top.",
+      "QM-056: AI sidecar skeleton + IPC contract (ADR-035) — stand up tools/ai-sidecar/ (Python); app launch/health-check/teardown; versioned POST /surface stub; sidecar-absent disables AI UI cleanly (existing workflows unaffected); contract test + Python unit test GPU-free. Consumes the PNG CameraSource::captureCurrentFrameToPng() produces. Models already on disk (Depth-Anything-V2 / Metric3D under ComfyUI controlnet_aux).",
+      "Then QM-057 (Metric3D surface service) -> QM-058 (propose-corners UI, human-confirm) = Phase 1 ships; QM-059/060 -> 🚩 QM-061 real-device gate = Phase 2 wedge.",
+      "TD-09 now also gates QM-055's on-quad camera display — converging the dual media model lets camera + all sources render on quads in one stroke (do deliberately, success-metric risk).",
+      "Open debt: TD-07 (build exit-code flake, CMake), TD-08 (audio snapshot reclamation, LOW)."
     ]
   },
   "context": {
     "recentFiles": [
-      "src/ui/panels/ViewportEditor.cpp",
-      "src/app/Application.cpp",
-      "src/app/EditorState.hpp",
-      "tests/smoke/drive_media_smoke.ps1",
-      "tests/smoke/drive_image_smoke.ps1",
-      "docs/adr/0034-render-decomposition.md"
+      "src/video/VideoDecoder.cpp",
+      "src/source/CameraSource.cpp",
+      "src/source/CameraDevices.cpp",
+      "src/video/PngWriter.cpp",
+      "tests/unit/source/CameraSourceTest.cpp",
+      "docs/adr/0035-ai-preshow-sidecar.md",
+      "docs/research/ai-preshow-roadmap-2026-06-16.md"
     ],
     "keyDecisions": [
-      "ADR-032: additive .qmap versioning + migration; one validateVersion() policy; no on-disk format change.",
-      "ADR-033: delete the unwired multi-scene track (SceneManager/ScenePanel/scene-serializer) rather than wire it up; EditorState::scene is the one source of truth; legacy v2 files still read via the flat-flatten path.",
-      "ADR-031: refactor-in-place, not full rebuild. Accepted.",
-      "Verification gate = tests/smoke/drive_smoke.ps1 (drives the real app, screenshots monitors).",
+      "ADR-035: AI pre-show assist via an optional out-of-process Python sidecar (localhost HTTP+JSON); render path / C++ build / .qmap untouched. Accepted.",
+      "Snap-to-Surface reframed (spike findings): One-Flash Auto-Warp + human-confirm — projector-off passive warp is geometrically impossible (projector pose unobserved); fully-automatic surface picking is unreliable.",
+      "Enable libavdevice for webcam capture — already in the vcpkg ffmpeg, no new dependency (CMake one-liner approved).",
+      "On-quad camera display deferred to TD-09 (renderer not wired to SourceManager; success-metric-adjacent).",
+      "writeRgbPng is dependency-free (default vcpkg ffmpeg ships no PNG encoder) — verified readable by OpenCV.",
       "Git author for this repo: Jones <fiavaion101@gmail.com> (local config)."
     ],
     "openQuestions": [],
     "blockers": []
   },
   "projectState": {
-    "currentPhase": "ADR-031 Refactor COMPLETE + merged to master; next = v1.1 features",
+    "currentPhase": "Phase 9: AI Pre-Show Assist (QM-055 done; QM-056 next)",
     "completedPhases": [
       "Phase 0: Infrastructure Setup",
       "Phase 1: Core Foundation",
@@ -50,33 +53,32 @@
       "Phase 5: Scene System",
       "Phase 6: Audio System",
       "Phase 7: Polish",
-      "Phase 8: ADR-031 Refactor (in progress)"
+      "Phase 8: ADR-031 Refactor (complete, merged to master)"
     ],
     "buildStatus": "success",
-    "lastSuccessfulBuild": "2026-06-16T14:20:00Z",
-    "note": "ADR-031 refactor COMPLETE and MERGED to master (PR #1, merge commit 5ef8809). Full success metric verified end-to-end incl. MEDIA: image (knowledge-graph.png) AND video (greenCrystals_15Sec_4x3.mp4) both load->assign->warp->F11 projector, watched working this session. 590/590 tests (4 audio integration skipped). TD-02 render()->panels decomposition done (all 6 batches: MainMenuBar, QuadListPanel, InspectorPanel, VideoPlayerPanel, ViewportEditor + EditorContext); dead PreviewPanel shell deleted. Application.cpp 2411->~960 lines; render() ~1910->~400. Next: v1.1 features (Color correction per quad recommended). Open debt (none blocking): TD-07, TD-08, TD-09."
+    "lastSuccessfulBuild": "2026-06-16T17:10:00Z",
+    "note": "Phase 9 (AI Pre-Show Assist) opened. QM-055 DONE (camera capture rail + PNG), verified on the real 'HD User Facing' webcam (1280x720/30fps): VideoDecoder::openCamera (dshow/libavdevice), CameraSource + CameraDevices enumeration + SourceManager factory, dependency-free writeRgbPng (OpenCV-verified). 592/592 ctest; media smoke green (success metric intact). On-quad display deferred to TD-09. ADR-035 (Python sidecar) Accepted; roadmap QM-055..062. ALL SESSION-13 WORK UNCOMMITTED on feature/qm-055-camera-input. Next: commit, then QM-056 (sidecar skeleton)."
   },
   "statistics": {
-    "totalSessions": 12,
-    "tasksCompleted": 55,
+    "totalSessions": 13,
+    "tasksCompleted": 56,
     "tasksInProgress": 0,
-    "tasksTodo": 3
+    "tasksTodo": 9
   },
-  "session9Accomplishments": {
-    "shipped": "branch refactor/app-decomposition pushed; PR #1 (https://github.com/Fiavaion/QUADmapper/pull/1)",
+  "session13Accomplishments": {
+    "shipped": "branch feature/qm-055-camera-input (UNCOMMITTED — verified, clean)",
     "items": [
-      "ADR-031 audit (refactor-in-place) + UI smoke harness",
-      "TD-02 step 1: render() statics -> owned EditorState",
-      "TD-01: projector output renders warped scene (success metric complete)",
-      "TD-04: atomic cross-thread video decoder state",
-      "TD-03: lock-free + alloc-free audio RT callback",
-      "TD-06: deleted dead code",
-      "Fixed two full-build regressions (AudioBuffer capacity, test signature)"
+      "Phase 9 opened: AI Pre-Show Assist research (3 cited docs) + ADR-035 + roadmap QM-055..062",
+      "Feasibility spike (GO): Depth-Anything-V2 local inference; reframed feature to One-Flash + human-confirm",
+      "QM-055: VideoDecoder::openCamera (dshow/libavdevice, no new dep) + open() refactor",
+      "QM-055: CameraSource + CameraDevices enumeration + SourceManager::createCameraSource + test_source",
+      "QM-055 AC2: dependency-free writeRgbPng, verified readable by OpenCV",
+      "Gate: 592/592 ctest + media smoke green (success metric intact)"
     ],
     "lessons": [
-      "LESSON-BUILD-007: full-build before ctest (partial builds run stale test exes)",
-      "LESSON-TEST-004: GLFW maps keys by scancode, not VK",
-      "LESSON-ARCH-006: de-static a god-function via owned struct + same-named aliases"
+      "Default vcpkg ffmpeg ships no PNG encoder — a self-contained stored-DEFLATE PNG writer avoids a vcpkg.json change.",
+      "FFmpeg dshow webcam capture reuses the existing VideoDecoder pimpl with just an input-format + options change; libavdevice was already installed.",
+      "Spike-before-roadmap paid off: running real inference reframed the feature (One-Flash, human-confirm) instead of confirming the opening guess."
     ]
   }
 }

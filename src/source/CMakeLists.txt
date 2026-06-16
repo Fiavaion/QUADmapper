@@ -15,6 +15,12 @@ add_library(quadmapper_source STATIC
     VideoFileSource.hpp
     VideoFileSource.cpp
 
+    # Live camera / capture-device source (QM-055)
+    CameraDevices.hpp
+    CameraDevices.cpp
+    CameraSource.hpp
+    CameraSource.cpp
+
     # Procedural sources
     procedural/ProceduralSource.hpp
     procedural/ProceduralSource.cpp
