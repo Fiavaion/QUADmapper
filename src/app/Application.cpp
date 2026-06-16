@@ -941,56 +941,14 @@ void Application::render() {
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Project", "Ctrl+N")) {
-                // Clear all quads and textures
-                quadManager.clear();
-                quadTextures.clear();
-                quadTexturePaths.clear();
-                currentTexturePath[0] = '\0';
-
-                // Create default quad
-                quadManager.createQuad("Quad 1");
-                if (quadManager.getQuadCount() > 0) {
-                    quadManager.selectQuad(quadManager.getQuads()[0]->getId());
-                }
-
-                m_project->setName("Untitled Project");
-                m_project->setFilePath("");
-                m_project->clearQuads();
-                m_project->getTexturePaths().clear();
-
-                snprintf(statusMessage, sizeof(statusMessage), "New project created");
-                statusTimer = 3.0f;
+                newProject();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
-                if (strlen(projectPath) > 0) {
-                    syncSceneToProject(es, *m_project);
-
-                    auto result = ProjectSerializer::save(*m_project, projectPath);
-                    if (result) {
-                        m_project->setFilePath(projectPath);
-                        m_project->setModified(false);
-                        snprintf(statusMessage, sizeof(statusMessage), "Project saved: %s", projectPath);
-                    } else {
-                        snprintf(statusMessage, sizeof(statusMessage), "Save failed: %s", result.error().message.c_str());
-                    }
-                    statusTimer = 3.0f;
-                }
+                saveProject();
             }
             if (ImGui::MenuItem("Load Project", "Ctrl+O")) {
-                if (strlen(projectPath) > 0) {
-                    auto result = ProjectSerializer::load(projectPath);
-                    if (result) {
-                        *m_project = std::move(result.value());
-
-                        syncProjectToScene(es, *m_project);
-
-                        snprintf(statusMessage, sizeof(statusMessage), "Project loaded: %s", projectPath);
-                    } else {
-                        snprintf(statusMessage, sizeof(statusMessage), "Load failed: %s", result.error().message.c_str());
-                    }
-                    statusTimer = 3.0f;
-                }
+                loadProject();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) {
@@ -1038,20 +996,7 @@ void Application::render() {
 
     // Handle keyboard shortcuts
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
-        // Save shortcut - same as menu
-        if (strlen(projectPath) > 0) {
-            syncSceneToProject(es, *m_project);
-
-            auto result = ProjectSerializer::save(*m_project, projectPath);
-            if (result) {
-                m_project->setFilePath(projectPath);
-                m_project->setModified(false);
-                snprintf(statusMessage, sizeof(statusMessage), "Project saved: %s", projectPath);
-            } else {
-                snprintf(statusMessage, sizeof(statusMessage), "Save failed: %s", result.error().message.c_str());
-            }
-            statusTimer = 3.0f;
-        }
+        saveProject();
     }
 
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
@@ -2131,35 +2076,11 @@ void Application::render() {
             ImGui::InputText("##projectpath", projectPath, sizeof(projectPath));
             ImGui::SameLine();
             if (ImGui::Button("Save")) {
-                if (strlen(projectPath) > 0) {
-                    syncSceneToProject(es, *m_project);
-
-                    auto result = ProjectSerializer::save(*m_project, projectPath);
-                    if (result) {
-                        m_project->setFilePath(projectPath);
-                        m_project->setModified(false);
-                        snprintf(statusMessage, sizeof(statusMessage), "Project saved: %s", projectPath);
-                    } else {
-                        snprintf(statusMessage, sizeof(statusMessage), "Save failed: %s", result.error().message.c_str());
-                    }
-                    statusTimer = 3.0f;
-                }
+                saveProject();
             }
             ImGui::SameLine();
             if (ImGui::Button("Load")) {
-                if (strlen(projectPath) > 0) {
-                    auto result = ProjectSerializer::load(projectPath);
-                    if (result) {
-                        *m_project = std::move(result.value());
-
-                        syncProjectToScene(es, *m_project);
-
-                        snprintf(statusMessage, sizeof(statusMessage), "Project loaded: %s", projectPath);
-                    } else {
-                        snprintf(statusMessage, sizeof(statusMessage), "Load failed: %s", result.error().message.c_str());
-                    }
-                    statusTimer = 3.0f;
-                }
+                loadProject();
             }
 
             // Status message display
@@ -2355,6 +2276,64 @@ void Application::render() {
         ImGui::RenderPlatformWindowsDefault();
         glfwMakeContextCurrent(backupContext);
     }
+}
+
+// ---- Project lifecycle actions (TD-02) ----
+// Single home for New/Save/Load, replacing the blocks previously duplicated
+// across render() (File menu, Ctrl+S shortcut, Resources>Project tab). Save and
+// load read the editor's project-path buffer and no-op when it is empty.
+void Application::newProject() {
+    EditorState& es = *m_editorState;
+
+    es.quadManager.clear();
+    es.quadTextures.clear();
+    es.quadTexturePaths.clear();
+    es.currentTexturePath[0] = '\0';
+
+    es.quadManager.createQuad("Quad 1");
+    if (es.quadManager.getQuadCount() > 0) {
+        es.quadManager.selectQuad(es.quadManager.getQuads()[0]->getId());
+    }
+
+    m_project->setName("Untitled Project");
+    m_project->setFilePath("");
+    m_project->clearQuads();
+    m_project->getTexturePaths().clear();
+
+    snprintf(es.statusMessage, sizeof(es.statusMessage), "New project created");
+    es.statusTimer = 3.0f;
+}
+
+void Application::saveProject() {
+    EditorState& es = *m_editorState;
+    if (strlen(es.projectPath) == 0) return;
+
+    syncSceneToProject(es, *m_project);
+
+    auto result = ProjectSerializer::save(*m_project, es.projectPath);
+    if (result) {
+        m_project->setFilePath(es.projectPath);
+        m_project->setModified(false);
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Project saved: %s", es.projectPath);
+    } else {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Save failed: %s", result.error().message.c_str());
+    }
+    es.statusTimer = 3.0f;
+}
+
+void Application::loadProject() {
+    EditorState& es = *m_editorState;
+    if (strlen(es.projectPath) == 0) return;
+
+    auto result = ProjectSerializer::load(es.projectPath);
+    if (result) {
+        *m_project = std::move(result.value());
+        syncProjectToScene(es, *m_project);
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Project loaded: %s", es.projectPath);
+    } else {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Load failed: %s", result.error().message.c_str());
+    }
+    es.statusTimer = 3.0f;
 }
 
 void Application::renderToProjectorOutputs() {

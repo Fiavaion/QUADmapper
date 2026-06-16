@@ -57,6 +57,14 @@ private:
     void update(float deltaTime);
     void render();
 
+    // Project lifecycle actions, invoked from the menu bar, the Ctrl+N/S/O
+    // shortcuts, and the Resources>Project tab. Single home for New/Save/Load,
+    // replacing the blocks that were duplicated across render() (TD-02). Save
+    // and load no-op when the editor's project path is empty.
+    void newProject();
+    void saveProject();
+    void loadProject();
+
     // Build the per-frame texture map from m_editorState and push the warped
     // scene to all enabled output windows.  Called from run() after each main
     // frame's render()+ImGui+swap so it never runs mid-ImGui-frame.
