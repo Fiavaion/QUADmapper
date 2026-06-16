@@ -17,7 +17,6 @@ add_quadmapper_test(test_scene
     scene/QuadTest.cpp
     scene/QuadGeometryTest.cpp
     scene/SceneTest.cpp
-    scene/SceneManagerTest.cpp
     scene/MeshSubdivisionTest.cpp
     scene/QuadManagerTest.cpp
     scene/QuadGroupTest.cpp

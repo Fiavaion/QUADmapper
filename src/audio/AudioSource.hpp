@@ -2,10 +2,11 @@
 
 #include "core/UUID.hpp"
 #include "AudioBuffer.hpp"
-#include <memory>
-#include <string>
 #include <atomic>
 #include <cmath>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace quadmapper {
 
@@ -162,6 +163,13 @@ private:
     std::atomic<float> pan_{0.0f};
 
     std::shared_ptr<AudioBuffer> buffer_;
+
+    // Pre-allocated scratch buffer for readSamples(); avoids heap allocation
+    // on the RT audio callback. Grown (at most once per block size change) in
+    // readSamples() before any audio data is touched, never inside the hot
+    // per-frame loop. The audio thread is the sole writer and reader, so no
+    // synchronisation is needed.
+    mutable std::vector<float> readBuffer_;
 };
 
 } // namespace quadmapper

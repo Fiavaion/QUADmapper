@@ -190,5 +190,29 @@ TEST(ProjectSerializerExtraTest, BackwardCompatibilityNoTextureBinding) {
     EXPECT_FLOAT_EQ(loadedBinding.uvRotation, 0.0f);
 }
 
+// ============ ADR-032: version policy & migration ============
+
+// A file from a newer major than this build supports must be rejected loudly (on every read
+// path), not silently half-parsed. Previously the scene paths ignored version entirely.
+TEST(ProjectSerializerVersionTest, FutureMajorVersionRejectedFlat) {
+    ProjectSerializer serializer;
+    Project project;
+
+    std::string json = R"({"version": "3.0.0", "name": "FromTheFuture", "quads": []})";
+    Result<void, std::string> result = serializer.deserialize(json, project);
+
+    EXPECT_TRUE(result.isError());
+}
+
+TEST(ProjectSerializerVersionTest, MalformedVersionRejected) {
+    ProjectSerializer serializer;
+    Project project;
+
+    std::string json = R"({"version": "not-a-version", "name": "Test"})";
+    Result<void, std::string> result = serializer.deserialize(json, project);
+
+    EXPECT_TRUE(result.isError());
+}
+
 } // namespace test
 } // namespace quadmapper

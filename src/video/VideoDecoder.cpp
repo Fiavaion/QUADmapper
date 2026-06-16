@@ -268,7 +268,9 @@ public:
                             currentTime_ = result.pts;
                         } else {
                             result.pts = currentTime_;
-                            currentTime_ += 1.0 / info_.frameRate;
+                            // std::atomic<double> has no operator+= in C++17; single writer
+                            // (this thread), so load+store is correct.
+                            currentTime_.store(currentTime_.load() + 1.0 / info_.frameRate);
                         }
 
                         // Copy pixel data
@@ -380,9 +382,12 @@ private:
     VideoInfo info_;
     double timeBase_ = 0.0;
     bool isOpen_ = false;
-    int64_t currentFrame_ = 0;
-    double currentTime_ = 0.0;
-    bool atEnd_ = false;
+    // Written by the background decode thread, read on the main thread (via the getters /
+    // VideoPlayer::update). Atomic to avoid a data race / UB. Single-writer-at-a-time (seek
+    // joins the decode thread first), so plain load/store ordering is sufficient.
+    std::atomic<int64_t> currentFrame_{0};
+    std::atomic<double> currentTime_{0.0};
+    std::atomic<bool> atEnd_{false};
 
     // Background decoding
     std::thread backgroundThread_;

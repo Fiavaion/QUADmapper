@@ -1,9 +1,10 @@
 #include "Application.hpp"
+#include "EditorContext.hpp"
+#include "EditorState.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
 #include "../project/Project.hpp"
 #include "../project/ProjectSerializer.hpp"
-#include "../scene/SceneManager.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/Quad.hpp"
 #include "../scene/QuadManager.hpp"
@@ -19,10 +20,10 @@
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
 #include "../input/InputManager.hpp"
-#include "../ui/UIManager.hpp"
 #include "../ui/Theme.hpp"
 #include "../ui/panels/OutputPanel.hpp"
 #include "../ui/panels/MediaBinPanel.hpp"
+#include "../ui/panels/QuadListPanel.hpp"
 #include "../ui/dialogs/PreferencesDialog.hpp"
 #include "../video/VideoPlayer.hpp"
 
@@ -41,6 +42,61 @@ Application* Application::s_instance = nullptr;
 // GLFW error callback
 static void glfwErrorCallback(int error, const char* description) {
     Logger::error("GLFW Error {}: {}", error, description);
+}
+
+// ---- Editor scene <-> flat Project persistence sync (ADR-033) ----
+// The live scene of truth is es.quadManager; the flat Project is only the serialization DTO.
+// These two helpers are the single place that copies between them, replacing the save/load
+// blocks that were duplicated 3x/2x across render(). They copy the WHOLE geometry and texture
+// binding, fixing the latent bug where the hand-rolled copies dropped mesh-edit vertex offsets
+// and flipH/flipV on save/load.
+static void syncSceneToProject(EditorState& es, Project& project) {
+    project.clearQuads();
+    project.getTexturePaths().clear();
+    for (const auto& quadPtr : es.quadManager.getQuads()) {
+        project.addQuad(*quadPtr);
+        auto pathIt = es.quadTexturePaths.find(quadPtr->getId());
+        project.getTexturePaths().push_back(
+            pathIt != es.quadTexturePaths.end() ? pathIt->second : std::string());
+    }
+}
+
+static void syncProjectToScene(EditorState& es, const Project& project) {
+    es.quadManager.clear();
+    es.quadTextures.clear();
+    es.quadTexturePaths.clear();
+
+    const auto& quads = project.getQuads();
+    const auto& texPaths = project.getTexturePaths();
+    for (size_t i = 0; i < quads.size(); ++i) {
+        Quad* newQuad = es.quadManager.createQuad(quads[i].getName());
+        newQuad->setVisible(quads[i].isVisible());
+        newQuad->setLocked(quads[i].isLocked());
+        newQuad->setOpacity(quads[i].getOpacity());
+        newQuad->setZOrder(quads[i].getZOrder());
+        newQuad->getGeometry() = quads[i].getGeometry();  // corners + resolution + mode + mesh offsets
+        newQuad->getTexture() = quads[i].getTexture();    // UV transform + flip flags
+
+        if (i < texPaths.size() && !texPaths[i].empty()) {
+            es.quadTexturePaths[newQuad->getId()] = texPaths[i];
+            auto texture = std::make_unique<Texture>();
+            if (texture->loadFromFile(texPaths[i])) {
+                es.quadTextures[newQuad->getId()] = std::move(texture);
+            }
+        }
+    }
+
+    // Select the first quad and sync the texture-path edit buffer.
+    if (es.quadManager.getQuadCount() > 0) {
+        es.quadManager.selectQuad(es.quadManager.getQuads()[0]->getId());
+        auto pathIt = es.quadTexturePaths.find(es.quadManager.getQuads()[0]->getId());
+        if (pathIt != es.quadTexturePaths.end()) {
+            strncpy(es.currentTexturePath, pathIt->second.c_str(), sizeof(es.currentTexturePath) - 1);
+            es.currentTexturePath[sizeof(es.currentTexturePath) - 1] = '\0';
+        } else {
+            es.currentTexturePath[0] = '\0';
+        }
+    }
 }
 
 // GLFW framebuffer size callback
@@ -254,8 +310,8 @@ bool Application::initializeComponents() {
     // Create project first (other components may depend on it)
     m_project = std::make_unique<Project>();
 
-    // Create scene manager
-    m_sceneManager = std::make_unique<SceneManager>();
+    // Per-session editor/scene state (replaces render()'s function-statics; see ADR-031 TD-02)
+    m_editorState = std::make_unique<EditorState>();
 
     // Create media library
     m_mediaLibrary = std::make_unique<MediaLibrary>();
@@ -329,9 +385,6 @@ bool Application::initializeComponents() {
     // Create input manager
     m_inputManager = std::make_unique<InputManager>();
 
-    // Create UI manager
-    m_uiManager = std::make_unique<UIManager>();
-
     Logger::debug("All components initialized");
     return true;
 }
@@ -361,6 +414,10 @@ int Application::run() {
 
         // Swap buffers
         glfwSwapBuffers(m_window);
+
+        // Push the warped scene to all projector outputs (after the main frame
+        // is committed so we never run inside an ImGui frame).
+        renderToProjectorOutputs();
     }
 
     Logger::info("Main loop ended");
@@ -381,11 +438,6 @@ void Application::processInput() {
 }
 
 void Application::update(float deltaTime) {
-    // Update scene manager
-    if (m_sceneManager) {
-        // m_sceneManager->update(deltaTime);
-    }
-
     // Update output manager
     if (m_outputManager) {
         // m_outputManager->update(deltaTime);
@@ -399,62 +451,35 @@ void Application::render() {
     // Clear the framebuffer
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Static state for quad management
-    static Scene scene;
-    static QuadManager& quadManager = scene.getQuadManager();
-    static std::unordered_map<UUID, std::unique_ptr<Texture>> quadTextures;
-    static std::unordered_map<UUID, std::string> quadTexturePaths;
-    static char currentTexturePath[512] = "";
-    static char projectPath[512] = "project.qmap";
-    static char statusMessage[256] = "";
-    static float statusTimer = 0.0f;
-    static bool initialized = false;
-    static UUID dragDropQuadId;  // For drag-drop between groups
+    // Per-session editor state now lives in m_editorState (owned member; see ADR-031 TD-02).
+    // Each field is aliased to a same-named local reference so the body below is unchanged.
+    EditorState& es = *m_editorState;
+    using SelectionType = EditorState::SelectionType;
+    auto& quadManager = es.quadManager;
+    auto& quadTextures = es.quadTextures;
+    auto& quadTexturePaths = es.quadTexturePaths;
+    auto& projectPath = es.projectPath;
+    auto& statusMessage = es.statusMessage;
+    auto& statusTimer = es.statusTimer;
+    auto& initialized = es.initialized;
 
-    // Corner editing state (for CORNERS_ONLY mode - the default)
-    static int cornerHoveredVertex = -1;
-    static int cornerDraggedVertex = -1;
-    static int cornerSelectedVertex = -1;  // Persistent selection for keyboard control
-    static Vec2 cornerDragStartMousePos(0.0f);
-    static Vec2 cornerDragStartPos(0.0f);
+    // Corner/mesh/snap editing state + videoAssignedQuadId now live in ViewportEditor
+    // (the pre-NewFrame warp surface); their aliases moved there with the block (ADR-0034).
 
-    // Mesh editing state (for MESH_EDIT mode)
-    static int meshHoveredVertex = -1;
-    static int meshDraggedVertex = -1;
-    static int meshSelectedVertex = -1;  // Persistent selection for keyboard control
-    static Vec2 meshDragStartMousePos(0.0f);
+    auto& videoPlayer = es.videoPlayer;
+    auto& videoTextureId = es.videoTextureId;
+    auto& videoTextureWidth = es.videoTextureWidth;
+    auto& videoTextureHeight = es.videoTextureHeight;
 
-    // Snap indicator state (for visual feedback when snapping)
-    static bool snapActive = false;
-    static Vec2 snapTargetPos(0.0f);
-    static Vec2 meshDragStartOffset(0.0f);
+    auto& mediaBinPanel = es.mediaBinPanel;
+    auto& mediaBinInitialized = es.mediaBinInitialized;
 
-    // Video player state
-    static VideoPlayer videoPlayer;
-    static char videoPath[512] = "";
-    static GLuint videoTextureId = 0;
-    static int videoTextureWidth = 0;
-    static int videoTextureHeight = 0;
-    static UUID videoAssignedQuadId;  // Which quad has video assigned
+    auto& outputPanel = es.outputPanel;
+    auto& outputPanelInitialized = es.outputPanelInitialized;
 
-    // Media Bin Panel
-    static MediaBinPanel mediaBinPanel;
-    static bool mediaBinInitialized = false;
+    auto& showResources = es.showResources;
 
-    // Output Panel
-    static OutputPanel outputPanel;
-    static bool outputPanelInitialized = false;
-
-    // Panel visibility toggles
-    static bool showQuadList = true;
-    static bool showProperties = true;
-    static bool showResources = true;
-    static bool showVideoPlayer = true;
-
-    // Context-sensitive selection tracking
-    enum class SelectionType { None, Quad, Output, Media };
-    static SelectionType currentSelectionType = SelectionType::Quad;
-    static UUID currentSelectionId;
+    auto& currentSelectionType = es.currentSelectionType;
 
     // Initialize with one default quad
     if (!initialized) {
@@ -478,6 +503,14 @@ void Application::render() {
     if (!outputPanelInitialized && m_outputManager) {
         outputPanel.setOutputManager(m_outputManager.get());
         outputPanelInitialized = true;
+    }
+
+    // Initialize Main Menu Bar callbacks (set once; lambdas capture this)
+    if (!es.mainMenuBarInitialized) {
+        es.mainMenuBar.setOnNewProject( [this]() { newProject();  });
+        es.mainMenuBar.setOnSaveProject([this]() { saveProject(); });
+        es.mainMenuBar.setOnLoadProject([this]() { loadProject(); });
+        es.mainMenuBarInitialized = true;
     }
 
     // Update video player
@@ -518,313 +551,16 @@ void Application::render() {
         }
     }
 
-    // Disable depth test for 2D rendering
-    glDisable(GL_DEPTH_TEST);
-
-    // Render all quads
-    if (m_renderer) {
-        m_renderer->beginFrame();
-
-        // Build texture pointer map for rendering
-        std::unordered_map<UUID, Texture*> texturePtrs;
-        for (const auto& [id, texPtr] : quadTextures) {
-            texturePtrs[id] = texPtr.get();
-        }
-
-        // Handle video texture rendering for assigned quad
-        static Texture videoTexWrapper;  // Static wrapper for video texture
-        if (!videoAssignedQuadId.isNull() && videoTextureId != 0) {
-            // Use raw OpenGL texture binding for video
-            videoTexWrapper.setGLTextureId(videoTextureId, videoTextureWidth, videoTextureHeight);
-            texturePtrs[videoAssignedQuadId] = &videoTexWrapper;
-        }
-
-        m_renderer->renderQuads(quadManager, texturePtrs);
-
-        // Render handles for selected quad based on mode
-        Quad* selectedQuadForHandles = quadManager.getPrimarySelectedQuad();
-        if (selectedQuadForHandles) {
-            MeshMode mode = selectedQuadForHandles->getGeometry().getMeshMode();
-            if (mode == MeshMode::MESH_EDIT) {
-                // Full mesh editing - show all mesh vertex handles
-                m_renderer->renderMeshHandles(*selectedQuadForHandles, meshHoveredVertex, meshDraggedVertex, meshSelectedVertex);
-            } else {
-                // CORNERS_ONLY mode (default) - show just the 4 corner handles
-                m_renderer->renderCornerHandles(*selectedQuadForHandles, cornerHoveredVertex, cornerDraggedVertex, cornerSelectedVertex);
-            }
-
-            // Render snap indicator if actively snapping to another quad's vertex
-            if (snapActive) {
-                m_renderer->renderSnapIndicator(snapTargetPos);
-            }
-        }
-
-        m_renderer->endFrame();
-    }
-
-    // Handle vertex interaction (before ImGui to capture mouse before UI)
+    // On-canvas viewport: render every quad to the main GL framebuffer + the
+    // corner-pin / mesh-edit warp interaction. Runs BEFORE ImGui::NewFrame() so it
+    // owns the fullscreen GL surface and captures the mouse/keyboard ahead of any
+    // panel (the success-metric vertex-warp UX). See ADR-0034 / ViewportEditor.
     {
-        Quad* selectedQuad = quadManager.getPrimarySelectedQuad();
-        if (selectedQuad) {
-            QuadGeometry& geometry = selectedQuad->getGeometry();
-            MeshMode mode = geometry.getMeshMode();
-
-            // Get mouse position in normalized coordinates
-            double mouseX, mouseY;
-            glfwGetCursorPos(m_window, &mouseX, &mouseY);
-
-            int fbWidth, fbHeight;
-            glfwGetFramebufferSize(m_window, &fbWidth, &fbHeight);
-
-            Vec2 mouseNorm(
-                static_cast<float>(mouseX) / fbWidth,
-                static_cast<float>(mouseY) / fbHeight
-            );
-
-            bool mouseDown = glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-            constexpr float HIT_RADIUS = 0.015f;  // Slightly larger hit radius for corners
-            constexpr float SNAP_RADIUS = 0.02f;  // Snap threshold for vertex snapping
-
-            // Reset snap state at start of each frame
-            snapActive = false;
-
-            // Helper lambda to find snap target from other quads
-            auto findSnapTarget = [&](const Vec2& pos, const UUID& excludeQuadId) -> Vec2 {
-                Vec2 snappedPos = pos;
-                float closestSnapDist = SNAP_RADIUS;
-
-                // Check all other quads for snap targets
-                const auto& allQuads = quadManager.getQuads();
-                for (const auto& otherQuad : allQuads) {
-                    if (otherQuad->getId() == excludeQuadId) continue;  // Skip same quad
-
-                    const auto& otherCorners = otherQuad->getGeometry().getCorners();
-                    for (int i = 0; i < 4; ++i) {
-                        float dist = glm::length(pos - otherCorners[i]);
-                        if (dist < closestSnapDist) {
-                            closestSnapDist = dist;
-                            snappedPos = otherCorners[i];
-                        }
-                    }
-
-                    // Also check mesh vertices if in mesh edit mode
-                    if (otherQuad->getGeometry().getMeshMode() == MeshMode::MESH_EDIT) {
-                        auto meshPositions = otherQuad->getGeometry().generateMeshPositions();
-                        for (const auto& meshPos : meshPositions) {
-                            float dist = glm::length(pos - meshPos);
-                            if (dist < closestSnapDist) {
-                                closestSnapDist = dist;
-                                snappedPos = meshPos;
-                            }
-                        }
-                    }
-                }
-
-                // Set snap indicator state if snapping occurred
-                if (snappedPos != pos) {
-                    snapActive = true;
-                    snapTargetPos = snappedPos;
-                }
-
-                return snappedPos;
-            };
-
-            if (mode == MeshMode::CORNERS_ONLY) {
-                // ===== CORNER PIN MODE (Default) =====
-                const auto& corners = geometry.getCorners();
-
-                if (cornerDraggedVertex >= 0) {
-                    // Currently dragging a corner
-                    if (mouseDown) {
-                        Vec2 mouseDelta = mouseNorm - cornerDragStartMousePos;
-                        Vec2 newPos = cornerDragStartPos + mouseDelta;
-
-                        // Apply snapping to other quads' vertices
-                        newPos = findSnapTarget(newPos, selectedQuad->getId());
-
-                        geometry.setCorner(cornerDraggedVertex, newPos);
-                        m_project->setModified(true);
-                    } else {
-                        // Mouse released
-                        cornerSelectedVertex = cornerDraggedVertex;
-                        cornerDraggedVertex = -1;
-                    }
-                } else {
-                    // Check for hover over corners
-                    cornerHoveredVertex = -1;
-                    float closestDist = HIT_RADIUS;
-
-                    for (int i = 0; i < 4; ++i) {
-                        float dist = glm::length(mouseNorm - corners[i]);
-                        if (dist < closestDist) {
-                            closestDist = dist;
-                            cornerHoveredVertex = i;
-                        }
-                    }
-
-                    // Start drag if mouse pressed on a corner
-                    if (mouseDown && cornerHoveredVertex >= 0) {
-                        cornerDraggedVertex = cornerHoveredVertex;
-                        cornerSelectedVertex = cornerHoveredVertex;
-                        cornerDragStartMousePos = mouseNorm;
-                        cornerDragStartPos = corners[cornerHoveredVertex];
-                    }
-                }
-
-                // Keyboard controls for corners
-                ImGuiIO& cornerIO = ImGui::GetIO();
-                if (!cornerIO.WantTextInput && !cornerIO.WantCaptureKeyboard) {
-                    // Tab: Cycle through corners (TL, TR, BR, BL)
-                    if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
-                        if (cornerIO.KeyShift) {
-                            cornerSelectedVertex = (cornerSelectedVertex <= 0) ? 3 : cornerSelectedVertex - 1;
-                        } else {
-                            cornerSelectedVertex = (cornerSelectedVertex + 1) % 4;
-                        }
-                    }
-
-                    // Arrow keys: Move selected corner
-                    if (cornerSelectedVertex >= 0 && cornerSelectedVertex < 4) {
-                        float moveAmount = 0.001f;
-                        if (cornerIO.KeyShift) moveAmount *= 10.0f;
-                        if (cornerIO.KeyAlt) moveAmount *= 0.1f;
-
-                        Vec2 pos = corners[cornerSelectedVertex];
-                        bool moved = false;
-
-                        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
-                            pos.y -= moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
-                            pos.y += moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) {
-                            pos.x -= moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) {
-                            pos.x += moveAmount;
-                            moved = true;
-                        }
-
-                        if (moved) {
-                            geometry.setCorner(cornerSelectedVertex, pos);
-                            m_project->setModified(true);
-                        }
-                    }
-                }
-
-                // Reset mesh state when in corner mode
-                meshHoveredVertex = -1;
-                meshDraggedVertex = -1;
-                meshSelectedVertex = -1;
-
-            } else {
-                // ===== MESH EDIT MODE =====
-                auto positions = geometry.generateMeshPositions();
-                auto bilinearPositions = geometry.generateBilinearPositions();
-                int vertexCount = geometry.getVertexCount();
-
-                if (meshDraggedVertex >= 0) {
-                    if (mouseDown) {
-                        Vec2 mouseDelta = mouseNorm - meshDragStartMousePos;
-                        Vec2 newOffset = meshDragStartOffset + mouseDelta;
-
-                        // Calculate actual position, apply snapping, then compute offset
-                        Vec2 bilinearPos = bilinearPositions[meshDraggedVertex];
-                        Vec2 actualPos = bilinearPos + newOffset;
-                        Vec2 snappedPos = findSnapTarget(actualPos, selectedQuad->getId());
-                        newOffset = snappedPos - bilinearPos;
-
-                        geometry.setMeshVertexByIndex(meshDraggedVertex, newOffset);
-                        m_project->setModified(true);
-                    } else {
-                        meshSelectedVertex = meshDraggedVertex;
-                        meshDraggedVertex = -1;
-                    }
-                } else {
-                    meshHoveredVertex = -1;
-                    float closestDist = 0.012f;  // Mesh handles are smaller
-
-                    for (size_t i = 0; i < positions.size(); ++i) {
-                        float dist = glm::length(mouseNorm - positions[i]);
-                        if (dist < closestDist) {
-                            closestDist = dist;
-                            meshHoveredVertex = static_cast<int>(i);
-                        }
-                    }
-
-                    if (mouseDown && meshHoveredVertex >= 0) {
-                        meshDraggedVertex = meshHoveredVertex;
-                        meshSelectedVertex = meshHoveredVertex;
-                        meshDragStartMousePos = mouseNorm;
-                        meshDragStartOffset = geometry.getMeshVertexByIndex(meshHoveredVertex);
-                    }
-                }
-
-                // Keyboard controls for mesh editing
-                ImGuiIO& meshIO = ImGui::GetIO();
-                if (!meshIO.WantTextInput && !meshIO.WantCaptureKeyboard) {
-                    if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
-                        if (meshIO.KeyShift) {
-                            meshSelectedVertex = (meshSelectedVertex <= 0) ? vertexCount - 1 : meshSelectedVertex - 1;
-                        } else {
-                            meshSelectedVertex = (meshSelectedVertex + 1) % vertexCount;
-                        }
-                    }
-
-                    if (meshSelectedVertex >= 0 && meshSelectedVertex < vertexCount) {
-                        float moveAmount = 0.001f;
-                        if (meshIO.KeyShift) moveAmount *= 10.0f;
-                        if (meshIO.KeyAlt) moveAmount *= 0.1f;
-
-                        Vec2 offset = geometry.getMeshVertexByIndex(meshSelectedVertex);
-                        bool moved = false;
-
-                        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
-                            offset.y -= moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
-                            offset.y += moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) {
-                            offset.x -= moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) {
-                            offset.x += moveAmount;
-                            moved = true;
-                        }
-
-                        if (moved) {
-                            geometry.setMeshVertexByIndex(meshSelectedVertex, offset);
-                            m_project->setModified(true);
-                        }
-                    }
-                }
-
-                // Reset corner state when in mesh mode
-                cornerHoveredVertex = -1;
-                cornerDraggedVertex = -1;
-                cornerSelectedVertex = -1;
-            }
-        } else {
-            // No quad selected, reset all state
-            cornerHoveredVertex = -1;
-            cornerDraggedVertex = -1;
-            cornerSelectedVertex = -1;
-            meshHoveredVertex = -1;
-            meshDraggedVertex = -1;
-            meshSelectedVertex = -1;
-        }
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        es.viewportEditor.render(ctx);
     }
-
-    // Re-enable depth test
-    glEnable(GL_DEPTH_TEST);
 
     // Start ImGui frame
     ImGui_ImplOpenGL3_NewFrame();
@@ -895,187 +631,16 @@ void Application::render() {
     ImGuiIO& io = ImGui::GetIO();
 
     // Main menu bar
-    if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("New Project", "Ctrl+N")) {
-                // Clear all quads and textures
-                quadManager.clear();
-                quadTextures.clear();
-                quadTexturePaths.clear();
-                currentTexturePath[0] = '\0';
-
-                // Create default quad
-                quadManager.createQuad("Quad 1");
-                if (quadManager.getQuadCount() > 0) {
-                    quadManager.selectQuad(quadManager.getQuads()[0]->getId());
-                }
-
-                m_project->setName("Untitled Project");
-                m_project->setFilePath("");
-                m_project->clearQuads();
-                m_project->getTexturePaths().clear();
-
-                snprintf(statusMessage, sizeof(statusMessage), "New project created");
-                statusTimer = 3.0f;
-            }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
-                if (strlen(projectPath) > 0) {
-                    // Sync QuadManager to Project for serialization
-                    m_project->clearQuads();
-                    m_project->getTexturePaths().clear();
-
-                    for (const auto& quadPtr : quadManager.getQuads()) {
-                        m_project->addQuad(*quadPtr);
-                        auto pathIt = quadTexturePaths.find(quadPtr->getId());
-                        if (pathIt != quadTexturePaths.end()) {
-                            m_project->getTexturePaths().push_back(pathIt->second);
-                        } else {
-                            m_project->getTexturePaths().push_back("");
-                        }
-                    }
-
-                    auto result = ProjectSerializer::save(*m_project, projectPath);
-                    if (result) {
-                        m_project->setFilePath(projectPath);
-                        m_project->setModified(false);
-                        snprintf(statusMessage, sizeof(statusMessage), "Project saved: %s", projectPath);
-                    } else {
-                        snprintf(statusMessage, sizeof(statusMessage), "Save failed: %s", result.error().message.c_str());
-                    }
-                    statusTimer = 3.0f;
-                }
-            }
-            if (ImGui::MenuItem("Load Project", "Ctrl+O")) {
-                if (strlen(projectPath) > 0) {
-                    auto result = ProjectSerializer::load(projectPath);
-                    if (result) {
-                        *m_project = std::move(result.value());
-
-                        // Sync Project to QuadManager
-                        quadManager.clear();
-                        quadTextures.clear();
-                        quadTexturePaths.clear();
-
-                        const auto& quads = m_project->getQuads();
-                        const auto& texPaths = m_project->getTexturePaths();
-
-                        for (size_t i = 0; i < quads.size(); ++i) {
-                            Quad* newQuad = quadManager.createQuad(quads[i].getName());
-                            // Copy properties
-                            newQuad->setVisible(quads[i].isVisible());
-                            newQuad->setLocked(quads[i].isLocked());
-                            newQuad->setOpacity(quads[i].getOpacity());
-                            newQuad->setZOrder(quads[i].getZOrder());
-                            newQuad->getGeometry().setCorners(quads[i].getGeometry().getCorners());
-                            newQuad->getGeometry().setMeshResolution(quads[i].getGeometry().getMeshResolution());
-                            newQuad->getGeometry().setMeshMode(quads[i].getGeometry().getMeshMode());
-
-                            // Copy texture binding UV settings
-                            newQuad->getTexture().uvOffset = quads[i].getTexture().uvOffset;
-                            newQuad->getTexture().uvScale = quads[i].getTexture().uvScale;
-                            newQuad->getTexture().uvRotation = quads[i].getTexture().uvRotation;
-
-                            // Load texture if path exists
-                            if (i < texPaths.size() && !texPaths[i].empty()) {
-                                quadTexturePaths[newQuad->getId()] = texPaths[i];
-                                auto texture = std::make_unique<Texture>();
-                                if (texture->loadFromFile(texPaths[i])) {
-                                    quadTextures[newQuad->getId()] = std::move(texture);
-                                }
-                            }
-                        }
-
-                        // Select first quad
-                        if (quadManager.getQuadCount() > 0) {
-                            quadManager.selectQuad(quadManager.getQuads()[0]->getId());
-                            auto pathIt = quadTexturePaths.find(quadManager.getQuads()[0]->getId());
-                            if (pathIt != quadTexturePaths.end()) {
-                                strncpy(currentTexturePath, pathIt->second.c_str(), sizeof(currentTexturePath) - 1);
-                                currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
-                            } else {
-                                currentTexturePath[0] = '\0';
-                            }
-                        }
-
-                        snprintf(statusMessage, sizeof(statusMessage), "Project loaded: %s", projectPath);
-                    } else {
-                        snprintf(statusMessage, sizeof(statusMessage), "Load failed: %s", result.error().message.c_str());
-                    }
-                    statusTimer = 3.0f;
-                }
-            }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Exit", "Alt+F4")) {
-                glfwSetWindowShouldClose(m_window, true);
-            }
-            ImGui::EndMenu();
-        }
-
-        if (ImGui::BeginMenu("Edit")) {
-            if (ImGui::MenuItem("Select All", "Ctrl+A")) {
-                quadManager.selectAll();
-            }
-            if (ImGui::MenuItem("Deselect All", "Escape")) {
-                quadManager.deselectAll();
-            }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Delete Selected", "Delete", false, quadManager.hasSelection())) {
-                // Remove textures for selected quads
-                for (const UUID& id : quadManager.getSelectedIds()) {
-                    quadTextures.erase(id);
-                    quadTexturePaths.erase(id);
-                }
-                quadManager.deleteSelectedQuads();
-            }
-            ImGui::EndMenu();
-        }
-
-        if (ImGui::BeginMenu("Window")) {
-            ImGui::MenuItem("Quad List", nullptr, &showQuadList);
-            ImGui::MenuItem("Properties", nullptr, &showProperties);
-            ImGui::MenuItem("Resources", nullptr, &showResources);
-            ImGui::MenuItem("Video Player", nullptr, &showVideoPlayer);
-            ImGui::Separator();
-            if (ImGui::MenuItem("Reset Layout")) {
-                showQuadList = true;
-                showProperties = true;
-                showResources = true;
-                showVideoPlayer = true;
-            }
-            ImGui::EndMenu();
-        }
-
-        ImGui::EndMainMenuBar();
+    {
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        es.mainMenuBar.render(ctx);
     }
 
     // Handle keyboard shortcuts
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
-        // Save shortcut - same as menu
-        if (strlen(projectPath) > 0) {
-            m_project->clearQuads();
-            m_project->getTexturePaths().clear();
-
-            for (const auto& quadPtr : quadManager.getQuads()) {
-                m_project->addQuad(*quadPtr);
-                auto pathIt = quadTexturePaths.find(quadPtr->getId());
-                if (pathIt != quadTexturePaths.end()) {
-                    m_project->getTexturePaths().push_back(pathIt->second);
-                } else {
-                    m_project->getTexturePaths().push_back("");
-                }
-            }
-
-            auto result = ProjectSerializer::save(*m_project, projectPath);
-            if (result) {
-                m_project->setFilePath(projectPath);
-                m_project->setModified(false);
-                snprintf(statusMessage, sizeof(statusMessage), "Project saved: %s", projectPath);
-            } else {
-                snprintf(statusMessage, sizeof(statusMessage), "Save failed: %s", result.error().message.c_str());
-            }
-            statusTimer = 3.0f;
-        }
+        saveProject();
     }
 
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
@@ -1175,967 +740,20 @@ void Application::render() {
     }
 
     // ============ Quad List Panel ============
-    if (showQuadList) {
-    ImGui::Begin("Quad List");
-
-    // Add Quad button
-    if (ImGui::Button("+ Add Quad")) {
-        Quad* newQuad = quadManager.createQuad();
-        quadManager.selectQuad(newQuad->getId());
-        currentTexturePath[0] = '\0';
-        m_project->setModified(true);
-        // Switch to Quad properties
-        currentSelectionType = SelectionType::Quad;
-        mediaBinPanel.clearSelection();
-        outputPanel.clearSelection();
+    {
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        es.quadListPanel.render(ctx);
     }
-
-    ImGui::SameLine();
-
-    // Delete button
-    if (ImGui::Button("Delete") && quadManager.hasSelection()) {
-        for (const UUID& id : quadManager.getSelectedIds()) {
-            quadTextures.erase(id);
-            quadTexturePaths.erase(id);
-        }
-        quadManager.deleteSelectedQuads();
-        currentTexturePath[0] = '\0';
-        m_project->setModified(true);
-    }
-
-    ImGui::SameLine();
-
-    // Duplicate button
-    if (ImGui::Button("Duplicate") && quadManager.getPrimarySelectedQuad()) {
-        auto primaryId = quadManager.getPrimarySelectedId();
-        if (primaryId.has_value()) {
-            Quad* newQuad = quadManager.duplicateQuad(*primaryId);
-            if (newQuad) {
-                // Duplicate texture too
-                auto texIt = quadTextures.find(*primaryId);
-                if (texIt != quadTextures.end()) {
-                    auto pathIt = quadTexturePaths.find(*primaryId);
-                    if (pathIt != quadTexturePaths.end()) {
-                        quadTexturePaths[newQuad->getId()] = pathIt->second;
-                        auto newTex = std::make_unique<Texture>();
-                        if (newTex->loadFromFile(pathIt->second)) {
-                            quadTextures[newQuad->getId()] = std::move(newTex);
-                        }
-                    }
-                }
-                m_project->setModified(true);
-            }
-        }
-    }
-
-    // Group creation button (enabled when multiple quads selected)
-    if (quadManager.getSelectionCount() >= 2) {
-        ImGui::SameLine();
-        if (ImGui::Button("Group")) {
-            QuadGroup* newGroup = scene.createGroupFromSelection();
-            if (newGroup) {
-                m_project->setModified(true);
-            }
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Create group from selected quads (Ctrl+G)");
-        }
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Quads: %zu  Groups: %zu (top = front)", quadManager.getQuadCount(), scene.getGroupCount());
-    ImGui::Separator();
-
-    // Helper lambda to render a single quad item
-    auto renderQuadItem = [&](const Quad* quad, bool indented = false) {
-        bool isSelected = quadManager.isSelected(quad->getId());
-
-        if (indented) {
-            ImGui::Indent(20.0f);
-        }
-
-        ImGui::PushID(quad->getId().toString().c_str());
-
-        // Z-order display
-        ImGui::Text("[%d]", quad->getZOrder());
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Z-Order: %d (higher = on top)", quad->getZOrder());
-        }
-        ImGui::SameLine();
-
-        // Up/Down arrow buttons for z-order
-        bool isFirst = (quad->getZOrder() == static_cast<int>(quadManager.getQuadCount()) - 1);
-        bool isLast = (quad->getZOrder() == 0);
-
-        ImGui::BeginDisabled(isFirst);
-        if (ImGui::SmallButton("^")) {
-            quadManager.moveQuadDown(quad->getId());
-            m_project->setModified(true);
-        }
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            ImGui::SetTooltip("Bring Forward (Ctrl+])");
-        }
-        ImGui::SameLine();
-
-        ImGui::BeginDisabled(isLast);
-        if (ImGui::SmallButton("v")) {
-            quadManager.moveQuadUp(quad->getId());
-            m_project->setModified(true);
-        }
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            ImGui::SetTooltip("Send Backward (Ctrl+[)");
-        }
-        ImGui::SameLine();
-
-        // Visibility checkbox
-        bool visible = quad->isVisible();
-        if (ImGui::Checkbox("##visible", &visible)) {
-            Quad* mutableQuad = quadManager.getQuad(quad->getId());
-            if (mutableQuad) {
-                mutableQuad->setVisible(visible);
-                m_project->setModified(true);
-            }
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Visible");
-        }
-        ImGui::SameLine();
-
-        // Lock checkbox
-        bool locked = quad->isLocked();
-        if (ImGui::Checkbox("##locked", &locked)) {
-            Quad* mutableQuad = quadManager.getQuad(quad->getId());
-            if (mutableQuad) {
-                mutableQuad->setLocked(locked);
-                m_project->setModified(true);
-            }
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Locked");
-        }
-        ImGui::SameLine();
-
-        // Selectable quad name
-        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-        if (isSelected) {
-            flags |= ImGuiTreeNodeFlags_Selected;
-        }
-        ImGui::TreeNodeEx(quad->getName().c_str(), flags);
-
-        // Drag source for moving quads between groups
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-            dragDropQuadId = quad->getId();
-            ImGui::SetDragDropPayload("QUAD_DND", &dragDropQuadId, sizeof(UUID));
-            ImGui::Text("Move: %s", quad->getName().c_str());
-            ImGui::EndDragDropSource();
-        }
-
-        if (ImGui::IsItemClicked()) {
-            if (io.KeyCtrl) {
-                quadManager.toggleSelection(quad->getId());
-            } else if (io.KeyShift && quadManager.getPrimarySelectedId().has_value()) {
-                quadManager.selectRange(*quadManager.getPrimarySelectedId(), quad->getId());
-            } else {
-                quadManager.selectQuad(quad->getId());
-            }
-
-            // Switch to Quad properties and clear other selections
-            currentSelectionType = SelectionType::Quad;
-            mediaBinPanel.clearSelection();
-            outputPanel.clearSelection();
-
-            auto pathIt = quadTexturePaths.find(quad->getId());
-            if (pathIt != quadTexturePaths.end()) {
-                strncpy(currentTexturePath, pathIt->second.c_str(), sizeof(currentTexturePath) - 1);
-                currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
-            } else {
-                currentTexturePath[0] = '\0';
-            }
-        }
-
-        // Context menu for z-order and groups
-        if (ImGui::BeginPopupContextItem()) {
-            if (ImGui::MenuItem("Bring to Front", "Ctrl+Shift+]")) {
-                quadManager.moveQuadToBottom(quad->getId());
-                m_project->setModified(true);
-            }
-            if (ImGui::MenuItem("Bring Forward", "Ctrl+]")) {
-                quadManager.moveQuadDown(quad->getId());
-                m_project->setModified(true);
-            }
-            if (ImGui::MenuItem("Send Backward", "Ctrl+[")) {
-                quadManager.moveQuadUp(quad->getId());
-                m_project->setModified(true);
-            }
-            if (ImGui::MenuItem("Send to Back", "Ctrl+Shift+[")) {
-                quadManager.moveQuadToTop(quad->getId());
-                m_project->setModified(true);
-            }
-
-            // Group submenu
-            if (scene.getGroupCount() > 0) {
-                ImGui::Separator();
-                if (ImGui::BeginMenu("Add to Group")) {
-                    for (const auto& groupPtr : scene.getGroups()) {
-                        QuadGroup* grp = groupPtr.get();
-                        bool inGroup = grp->hasMember(quad->getId());
-                        if (ImGui::MenuItem(grp->getName().c_str(), nullptr, inGroup)) {
-                            if (inGroup) {
-                                scene.removeQuadFromGroup(grp->getId(), quad->getId());
-                            } else {
-                                scene.addQuadToGroup(grp->getId(), quad->getId());
-                            }
-                            m_project->setModified(true);
-                        }
-                    }
-                    ImGui::EndMenu();
-                }
-            }
-
-            ImGui::EndPopup();
-        }
-
-        ImGui::PopID();
-
-        if (indented) {
-            ImGui::Unindent(20.0f);
-        }
-    };
-
-    // Track which quads are shown in groups (to avoid duplicates)
-    std::unordered_set<UUID> quadsShownInGroups;
-
-    // Render groups first
-    for (const auto& groupPtr : scene.getGroups()) {
-        QuadGroup* group = groupPtr.get();
-        ImGui::PushID(group->getId().toString().c_str());
-
-        // Group visibility checkbox
-        bool groupVisible = group->isVisible();
-        if (ImGui::Checkbox("##grpVisible", &groupVisible)) {
-            scene.applyGroupVisibility(group->getId(), groupVisible);
-            m_project->setModified(true);
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Toggle group visibility");
-        }
-        ImGui::SameLine();
-
-        // Group lock checkbox
-        bool groupLocked = group->isLocked();
-        if (ImGui::Checkbox("##grpLocked", &groupLocked)) {
-            scene.applyGroupLock(group->getId(), groupLocked);
-            m_project->setModified(true);
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Toggle group lock");
-        }
-        ImGui::SameLine();
-
-        // Group tree node with expand/collapse
-        ImGuiTreeNodeFlags groupFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
-        if (!group->isCollapsed()) {
-            groupFlags |= ImGuiTreeNodeFlags_DefaultOpen;
-        }
-
-        std::string groupLabel = group->getName() + " (" + std::to_string(group->getMemberCount()) + ")";
-        bool nodeOpen = ImGui::TreeNodeEx(groupLabel.c_str(), groupFlags);
-
-        // Update collapsed state based on tree node state
-        group->setCollapsed(!nodeOpen);
-
-        // Context menu for group
-        if (ImGui::BeginPopupContextItem()) {
-            static char groupNameBuf[128] = "";
-            strncpy(groupNameBuf, group->getName().c_str(), sizeof(groupNameBuf) - 1);
-            groupNameBuf[sizeof(groupNameBuf) - 1] = '\0';
-
-            if (ImGui::InputText("Rename", groupNameBuf, sizeof(groupNameBuf), ImGuiInputTextFlags_EnterReturnsTrue)) {
-                group->setName(groupNameBuf);
-                m_project->setModified(true);
-                ImGui::CloseCurrentPopup();
-            }
-
-            ImGui::Separator();
-
-            if (ImGui::MenuItem("Delete Group")) {
-                scene.deleteGroup(group->getId());
-                m_project->setModified(true);
-                ImGui::CloseCurrentPopup();
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Removes group but keeps quads");
-            }
-
-            ImGui::EndPopup();
-        }
-
-        // Drop target for adding quads to group
-        if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("QUAD_DND")) {
-                UUID droppedQuadId = *(const UUID*)payload->Data;
-                scene.addQuadToGroup(group->getId(), droppedQuadId);
-                m_project->setModified(true);
-            }
-            ImGui::EndDragDropTarget();
-        }
-
-        // Render member quads if node is open
-        if (nodeOpen) {
-            for (const UUID& quadId : group->getMemberQuadIds()) {
-                const Quad* quad = quadManager.getQuad(quadId);
-                if (quad) {
-                    quadsShownInGroups.insert(quadId);
-                    renderQuadItem(quad, true);
-                }
-            }
-            ImGui::TreePop();
-        } else {
-            // Even if collapsed, mark quads as shown in groups
-            for (const UUID& quadId : group->getMemberQuadIds()) {
-                quadsShownInGroups.insert(quadId);
-            }
-        }
-
-        ImGui::PopID();
-    }
-
-    // Render ungrouped quads
-    bool hasUngroupedQuads = false;
-    for (const auto& quadPtr : quadManager.getQuads()) {
-        if (quadsShownInGroups.find(quadPtr->getId()) == quadsShownInGroups.end()) {
-            hasUngroupedQuads = true;
-            break;
-        }
-    }
-
-    if (hasUngroupedQuads) {
-        if (scene.getGroupCount() > 0) {
-            ImGui::Separator();
-            ImGui::TextDisabled("Ungrouped:");
-        }
-
-        // Sort ungrouped quads by z-order descending
-        auto sortedQuads = quadManager.getQuadsByZOrderDescending();
-        for (const Quad* quad : sortedQuads) {
-            if (quadsShownInGroups.find(quad->getId()) == quadsShownInGroups.end()) {
-                renderQuadItem(quad, false);
-            }
-        }
-    }
-
-    // Drop target for removing quads from all groups (drop on empty space)
-    if (scene.getGroupCount() > 0) {
-        ImGui::Dummy(ImVec2(0, 20));
-        if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("QUAD_DND")) {
-                UUID droppedQuadId = *(const UUID*)payload->Data;
-                for (auto& grp : scene.getGroups()) {
-                    grp->removeMember(droppedQuadId);
-                }
-                m_project->setModified(true);
-            }
-            ImGui::EndDragDropTarget();
-        }
-    }
-
-    ImGui::End();
-    } // end showQuadList
 
     // ============ Properties Panel (Context-Sensitive) ============
-    if (showProperties) {
-    ImGui::Begin("Properties");
-
-    // Show header indicating current selection type
-    switch (currentSelectionType) {
-        case SelectionType::Quad: ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Quad Properties"); break;
-        case SelectionType::Output: ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Output Properties"); break;
-        case SelectionType::Media: ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f), "Media Properties"); break;
-        default: ImGui::TextDisabled("Properties"); break;
+    {
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        es.inspectorPanel.render(ctx);
     }
-    ImGui::Separator();
-
-    // -------- Quad Properties --------
-    if (currentSelectionType == SelectionType::Quad) {
-    Quad* selectedQuad = quadManager.getPrimarySelectedQuad();
-
-    if (selectedQuad) {
-        // Editable name
-        static char quadName[128];
-        strncpy(quadName, selectedQuad->getName().c_str(), sizeof(quadName) - 1);
-        quadName[sizeof(quadName) - 1] = '\0';
-
-        if (ImGui::InputText("Name", quadName, sizeof(quadName), ImGuiInputTextFlags_EnterReturnsTrue)) {
-            selectedQuad->setName(quadName);
-            m_project->setModified(true);
-        }
-
-        ImGui::Separator();
-
-        // Texture section
-        ImGui::Text("Texture:");
-
-        // Drag-drop target for media from Media Bin
-        ImGui::BeginGroup();
-        ImGui::InputText("Path", currentTexturePath, sizeof(currentTexturePath));
-        ImGui::SameLine();
-        if (ImGui::Button("Load")) {
-            if (strlen(currentTexturePath) > 0) {
-                auto texture = std::make_unique<Texture>();
-                if (texture->loadFromFile(currentTexturePath)) {
-                    quadTextures[selectedQuad->getId()] = std::move(texture);
-                    quadTexturePaths[selectedQuad->getId()] = currentTexturePath;
-                    Logger::info("Loaded texture for quad '{}': {}", selectedQuad->getName(), currentTexturePath);
-                    snprintf(statusMessage, sizeof(statusMessage), "Loaded texture: %s", currentTexturePath);
-                    statusTimer = 3.0f;
-                    m_project->setModified(true);
-                } else {
-                    Logger::error("Failed to load texture: {}", currentTexturePath);
-                    snprintf(statusMessage, sizeof(statusMessage), "Failed to load texture: %s", currentTexturePath);
-                    statusTimer = 5.0f;
-                }
-            } else {
-                snprintf(statusMessage, sizeof(statusMessage), "Please enter a texture path");
-                statusTimer = 3.0f;
-            }
-        }
-
-        auto texIt = quadTextures.find(selectedQuad->getId());
-        if (texIt != quadTextures.end() && texIt->second) {
-            ImGui::Text("Size: %dx%d", texIt->second->getWidth(), texIt->second->getHeight());
-            if (ImGui::Button("Clear Texture")) {
-                quadTextures.erase(selectedQuad->getId());
-                quadTexturePaths.erase(selectedQuad->getId());
-                currentTexturePath[0] = '\0';
-                m_project->setModified(true);
-            }
-        }
-        ImGui::EndGroup();
-
-        // Drag-drop target for media from Media Bin
-        if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MEDIA_ITEM_ID")) {
-                UUID mediaId = *(const UUID*)payload->Data;
-                MediaItem* item = m_mediaLibrary->getItem(mediaId);
-                if (item && item->getType() != MediaType::PROCEDURAL) {
-                    // Load texture from media item path
-                    auto texture = std::make_unique<Texture>();
-                    if (texture->loadFromFile(item->getPath().string())) {
-                        quadTextures[selectedQuad->getId()] = std::move(texture);
-                        quadTexturePaths[selectedQuad->getId()] = item->getPath().string();
-                        strncpy(currentTexturePath, item->getPath().string().c_str(),
-                                sizeof(currentTexturePath) - 1);
-                        currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
-                        Logger::info("Assigned media '{}' to quad '{}'",
-                                    item->getName(), selectedQuad->getName());
-                        snprintf(statusMessage, sizeof(statusMessage),
-                                "Assigned: %s", item->getName().c_str());
-                        statusTimer = 3.0f;
-                        m_project->setModified(true);
-                    }
-                }
-            }
-            ImGui::EndDragDropTarget();
-        }
-
-        // UV Controls section
-        ImGui::Separator();
-        if (ImGui::CollapsingHeader("UV Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
-            TextureBinding& texBinding = selectedQuad->getTexture();
-
-            // Flip buttons at the top
-            if (ImGui::Button(texBinding.flipH ? "Flip H [ON]" : "Flip H")) {
-                texBinding.flipH = !texBinding.flipH;
-                m_project->setModified(true);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button(texBinding.flipV ? "Flip V [ON]" : "Flip V")) {
-                texBinding.flipV = !texBinding.flipV;
-                m_project->setModified(true);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Reset UV")) {
-                texBinding.resetUV();
-                texBinding.flipH = false;
-                texBinding.flipV = false;
-                m_project->setModified(true);
-            }
-
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            // Offset (Pan) - DragFloat with Ctrl+Click for input
-            ImGui::Text("Offset (Pan):");
-            ImGui::TextDisabled("Ctrl+Click to type value");
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Offset X", &texBinding.uvOffset.x, 0.01f, -2.0f, 2.0f, "%.3f")) {
-                m_project->setModified(true);
-            }
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Offset Y", &texBinding.uvOffset.y, 0.01f, -2.0f, 2.0f, "%.3f")) {
-                m_project->setModified(true);
-            }
-
-            ImGui::Spacing();
-
-            // Coverage (easier for multi-quad spanning) - inverse of scale
-            // Coverage 100% = full texture, 50% = half texture visible (scale = 2.0)
-            ImGui::Text("Coverage (for spanning):");
-            ImGui::TextDisabled("50%% = texture spans 2 quads");
-
-            float coverageU = (texBinding.uvScale.x > 0.001f) ? (100.0f / texBinding.uvScale.x) : 100.0f;
-            float coverageV = (texBinding.uvScale.y > 0.001f) ? (100.0f / texBinding.uvScale.y) : 100.0f;
-
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("U Coverage", &coverageU, 1.0f, 10.0f, 400.0f, "%.0f%%")) {
-                texBinding.uvScale.x = 100.0f / std::max(coverageU, 1.0f);
-                m_project->setModified(true);
-            }
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("V Coverage", &coverageV, 1.0f, 10.0f, 400.0f, "%.0f%%")) {
-                texBinding.uvScale.y = 100.0f / std::max(coverageV, 1.0f);
-                m_project->setModified(true);
-            }
-
-            ImGui::Spacing();
-
-            // Scale (direct control)
-            ImGui::Text("Scale (Zoom):");
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Scale X", &texBinding.uvScale.x, 0.01f, 0.1f, 10.0f, "%.3f")) {
-                m_project->setModified(true);
-            }
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Scale Y", &texBinding.uvScale.y, 0.01f, 0.1f, 10.0f, "%.3f")) {
-                m_project->setModified(true);
-            }
-
-            ImGui::Spacing();
-
-            // Rotation with direct input
-            float rotationDegrees = texBinding.uvRotation * 180.0f / 3.14159265f;
-            ImGui::Text("Rotation:");
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Rotation##uv", &rotationDegrees, 0.5f, -180.0f, 180.0f, "%.1f deg")) {
-                texBinding.uvRotation = rotationDegrees * 3.14159265f / 180.0f;
-                m_project->setModified(true);
-            }
-            // Quick rotation buttons
-            ImGui::SameLine();
-            if (ImGui::Button("0##rot")) {
-                texBinding.uvRotation = 0.0f;
-                m_project->setModified(true);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("90##rot")) {
-                texBinding.uvRotation = 90.0f * 3.14159265f / 180.0f;
-                m_project->setModified(true);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("180##rot")) {
-                texBinding.uvRotation = 180.0f * 3.14159265f / 180.0f;
-                m_project->setModified(true);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("270##rot")) {
-                texBinding.uvRotation = 270.0f * 3.14159265f / 180.0f;
-                m_project->setModified(true);
-            }
-        }
-
-        // Geometry section
-        ImGui::Separator();
-        if (ImGui::CollapsingHeader("Geometry", ImGuiTreeNodeFlags_DefaultOpen)) {
-            auto& geometry = selectedQuad->getGeometry();
-            auto corners = geometry.getCorners();
-            bool cornersChanged = false;
-
-            ImGui::Text("Corners (normalized 0-1):");
-            if (ImGui::DragFloat2("Top Left", &corners[0].x, 0.01f, 0.0f, 1.0f)) cornersChanged = true;
-            if (ImGui::DragFloat2("Top Right", &corners[1].x, 0.01f, 0.0f, 1.0f)) cornersChanged = true;
-            if (ImGui::DragFloat2("Bottom Right", &corners[2].x, 0.01f, 0.0f, 1.0f)) cornersChanged = true;
-            if (ImGui::DragFloat2("Bottom Left", &corners[3].x, 0.01f, 0.0f, 1.0f)) cornersChanged = true;
-
-            if (cornersChanged) {
-                geometry.setCorners(corners);
-                m_project->setModified(true);
-            }
-
-            if (ImGui::Button("Reset Corners")) {
-                geometry.resetCorners();
-                m_project->setModified(true);
-            }
-
-            ImGui::Separator();
-            int meshRes = geometry.getMeshResolution();
-            if (ImGui::SliderInt("Mesh Resolution", &meshRes, 2, 64)) {
-                geometry.setMeshResolution(meshRes);
-                m_project->setModified(true);
-            }
-
-            // Mesh Edit Mode
-            ImGui::Separator();
-            ImGui::Text("Mesh Editing:");
-
-            bool meshEditMode = (geometry.getMeshMode() == MeshMode::MESH_EDIT);
-            if (ImGui::Checkbox("Edit Mesh Vertices", &meshEditMode)) {
-                geometry.setMeshMode(meshEditMode ? MeshMode::MESH_EDIT : MeshMode::CORNERS_ONLY);
-                // Reset all handle state when toggling mode
-                meshDraggedVertex = -1;
-                meshHoveredVertex = -1;
-                meshSelectedVertex = -1;
-                cornerDraggedVertex = -1;
-                cornerHoveredVertex = -1;
-                cornerSelectedVertex = -1;
-                m_project->setModified(true);
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Enable to drag individual mesh vertices for fine-tuned warping");
-            }
-
-            if (meshEditMode) {
-                ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Click and drag vertex handles to edit");
-
-                if (geometry.hasMeshModifications()) {
-                    ImGui::SameLine();
-                    if (ImGui::Button("Reset Mesh to Bilinear")) {
-                        geometry.resetMesh();
-                        m_project->setModified(true);
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Clear all mesh vertex offsets and return to bilinear interpolation");
-                    }
-                }
-
-                // Show vertex count info
-                ImGui::Text("Vertices: %d (%dx%d grid)", geometry.getVertexCount(),
-                           meshRes + 1, meshRes + 1);
-            }
-        }
-
-        // Display section
-        ImGui::Separator();
-        if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
-            float opacity = selectedQuad->getOpacity();
-            if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f)) {
-                selectedQuad->setOpacity(opacity);
-                m_project->setModified(true);
-            }
-
-            ImGui::Separator();
-            ImGui::Text("Z-Order");
-            int zOrder = selectedQuad->getZOrder();
-            int maxZ = static_cast<int>(quadManager.getQuadCount()) - 1;
-            ImGui::Text("Current: %d / %d (higher = on top)", zOrder, maxZ);
-
-            // Z-order buttons with proper labels
-            if (ImGui::Button("Bring to Front")) {
-                quadManager.moveQuadToBottom(selectedQuad->getId()); // To highest z-order
-                m_project->setModified(true);
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Ctrl+Shift+]");
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Send to Back")) {
-                quadManager.moveQuadToTop(selectedQuad->getId()); // To lowest z-order
-                m_project->setModified(true);
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Ctrl+Shift+[");
-            }
-
-            if (ImGui::Button("Bring Forward")) {
-                quadManager.moveQuadDown(selectedQuad->getId()); // Increase z-order by 1
-                m_project->setModified(true);
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Ctrl+]");
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Send Backward")) {
-                quadManager.moveQuadUp(selectedQuad->getId()); // Decrease z-order by 1
-                m_project->setModified(true);
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Ctrl+[");
-            }
-        }
-    } else {
-        ImGui::TextDisabled("No quad selected");
-        ImGui::TextDisabled("Select a quad from the Quad List");
-    }
-    } // end SelectionType::Quad
-
-    // -------- Output Properties --------
-    else if (currentSelectionType == SelectionType::Output) {
-        OutputWindow* selectedOutput = nullptr;
-        if (outputPanel.hasSelection() && m_outputManager) {
-            selectedOutput = m_outputManager->getOutput(outputPanel.getSelectedOutputId());
-        }
-
-        if (selectedOutput) {
-            // Editable name
-            static char outputName[128];
-            strncpy(outputName, selectedOutput->getName().c_str(), sizeof(outputName) - 1);
-            outputName[sizeof(outputName) - 1] = '\0';
-            if (ImGui::InputText("Name", outputName, sizeof(outputName), ImGuiInputTextFlags_EnterReturnsTrue)) {
-                selectedOutput->setName(outputName);
-            }
-
-            ImGui::Separator();
-
-            // Monitor dropdown
-            ImGui::Text("Display:");
-            const auto& monitors = m_outputManager->getMonitors();
-            int currentMonitor = selectedOutput->getMonitor();
-            if (currentMonitor < 0) currentMonitor = 0;
-
-            // Build monitor combo string
-            std::string monitorPreview = "Monitor " + std::to_string(currentMonitor + 1);
-            if (currentMonitor < static_cast<int>(monitors.size())) {
-                monitorPreview = monitors[currentMonitor].name + " (" +
-                    std::to_string(monitors[currentMonitor].resolution.x) + "x" +
-                    std::to_string(monitors[currentMonitor].resolution.y) + ")";
-            }
-
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::BeginCombo("##Monitor", monitorPreview.c_str())) {
-                for (size_t i = 0; i < monitors.size(); ++i) {
-                    const auto& mon = monitors[i];
-                    std::string label = mon.name + " (" +
-                        std::to_string(mon.resolution.x) + "x" +
-                        std::to_string(mon.resolution.y) + ")";
-                    if (mon.isPrimary) label += " [Primary]";
-
-                    bool isSelected = (static_cast<int>(i) == currentMonitor);
-                    if (ImGui::Selectable(label.c_str(), isSelected)) {
-                        selectedOutput->setMonitor(static_cast<int>(i));
-                        // Update resolution to match monitor's native resolution
-                        selectedOutput->setResolution(mon.resolution);
-                        if (selectedOutput->isCreated()) {
-                            selectedOutput->applyResolution();
-                        }
-                    }
-                    if (isSelected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-
-            ImGui::Spacing();
-
-            // Resolution dropdown
-            ImGui::Text("Resolution:");
-            IVec2 currentRes = selectedOutput->getResolution();
-            std::string resPreview = std::to_string(currentRes.x) + " x " + std::to_string(currentRes.y);
-
-            // Get available resolutions for the selected monitor
-            auto videoModes = m_outputManager->getMonitorVideoModes(currentMonitor);
-
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::BeginCombo("##Resolution", resPreview.c_str())) {
-                for (const auto& mode : videoModes) {
-                    std::string label = std::to_string(mode.width) + " x " + std::to_string(mode.height);
-                    bool isSelected = (mode.width == currentRes.x && mode.height == currentRes.y);
-                    if (ImGui::Selectable(label.c_str(), isSelected)) {
-                        selectedOutput->setResolution(IVec2(mode.width, mode.height));
-                        if (selectedOutput->isCreated()) {
-                            selectedOutput->applyResolution();
-                        }
-                    }
-                    if (isSelected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-
-            ImGui::Spacing();
-
-            // Rotation dropdown
-            ImGui::Text("Rotation:");
-            int rotationDeg = selectedOutput->getRotationDegrees();
-            const char* rotLabels[] = { "0 degrees", "90 degrees", "180 degrees", "270 degrees" };
-            int rotIndex = rotationDeg / 90;
-            if (rotIndex < 0 || rotIndex > 3) rotIndex = 0;
-
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::BeginCombo("##Rotation", rotLabels[rotIndex])) {
-                for (int i = 0; i < 4; ++i) {
-                    bool isSelected = (i == rotIndex);
-                    if (ImGui::Selectable(rotLabels[i], isSelected)) {
-                        selectedOutput->setRotationDegrees(i * 90);
-                    }
-                    if (isSelected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-
-            // Enabled checkbox
-            ImGui::Separator();
-            bool enabled = selectedOutput->isEnabled();
-            if (ImGui::Checkbox("Enabled", &enabled)) {
-                selectedOutput->setEnabled(enabled);
-            }
-
-            // State info
-            ImGui::Separator();
-            ImGui::TextDisabled("Status:");
-            ImGui::Text("Window: %s", selectedOutput->isCreated() ? "Created" : "Not Created");
-            ImGui::Text("Fullscreen: %s", selectedOutput->isFullscreen() ? "Yes" : "No");
-
-            // Window control buttons
-            ImGui::Separator();
-            if (selectedOutput->isCreated()) {
-                if (selectedOutput->isVisible()) {
-                    if (ImGui::Button("Hide Window")) {
-                        selectedOutput->hide();
-                    }
-                } else {
-                    if (ImGui::Button("Show Window")) {
-                        selectedOutput->show();
-                    }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Destroy Window")) {
-                    selectedOutput->destroy();
-                }
-            } else {
-                if (ImGui::Button("Create Window")) {
-                    selectedOutput->create(m_outputManager->getMainWindow());
-                }
-            }
-        } else {
-            ImGui::TextDisabled("No output selected");
-            ImGui::TextDisabled("Select an output from the Outputs tab");
-        }
-    }
-
-    // -------- Media Properties --------
-    else if (currentSelectionType == SelectionType::Media) {
-        MediaItem* selectedMedia = nullptr;
-        if (mediaBinPanel.hasSelection() && m_mediaLibrary) {
-            selectedMedia = m_mediaLibrary->getItem(mediaBinPanel.getSelectedItemId());
-        }
-
-        if (selectedMedia) {
-            // Editable name
-            static char mediaName[128];
-            strncpy(mediaName, selectedMedia->getName().c_str(), sizeof(mediaName) - 1);
-            mediaName[sizeof(mediaName) - 1] = '\0';
-            if (ImGui::InputText("Name", mediaName, sizeof(mediaName), ImGuiInputTextFlags_EnterReturnsTrue)) {
-                selectedMedia->setName(mediaName);
-            }
-
-            ImGui::Separator();
-
-            // Type
-            const char* typeStr = "Unknown";
-            switch (selectedMedia->getType()) {
-                case MediaType::IMAGE: typeStr = "Image"; break;
-                case MediaType::VIDEO: typeStr = "Video"; break;
-                case MediaType::AUDIO: typeStr = "Audio"; break;
-                case MediaType::PROCEDURAL: typeStr = "Procedural"; break;
-            }
-            ImGui::Text("Type: %s", typeStr);
-
-            // Path (for file-based media)
-            if (selectedMedia->hasPath()) {
-                ImGui::Separator();
-                ImGui::Text("File:");
-                ImGui::TextWrapped("%s", selectedMedia->getPath().string().c_str());
-            }
-
-            // Procedural source parameters
-            if (selectedMedia->getType() == MediaType::PROCEDURAL && selectedMedia->hasSource()) {
-                ImGui::Separator();
-                const char* procTypeStr = "Unknown";
-                switch (selectedMedia->getProceduralType()) {
-                    case ProceduralType::SOLID_COLOR: procTypeStr = "Solid Color"; break;
-                    case ProceduralType::GRADIENT: procTypeStr = "Gradient"; break;
-                    case ProceduralType::CHECKERBOARD: procTypeStr = "Checkerboard"; break;
-                    case ProceduralType::TEST_PATTERN: procTypeStr = "Test Pattern"; break;
-                    case ProceduralType::NOISE: procTypeStr = "Noise"; break;
-                    case ProceduralType::PLASMA: procTypeStr = "Plasma"; break;
-                    case ProceduralType::GRID: procTypeStr = "Grid"; break;
-                }
-                ImGui::Text("Procedural Type: %s", procTypeStr);
-
-                // Get the procedural source and show editable parameters
-                TextureSource* source = m_sourceManager->getSource(selectedMedia->getSourceId());
-                ProceduralSource* procSource = dynamic_cast<ProceduralSource*>(source);
-                if (procSource) {
-                    ImGui::Separator();
-                    ImGui::Text("Parameters:");
-                    auto params = procSource->getParameters();
-                    for (const auto& param : params) {
-                        ImGui::PushID(param.name.c_str());
-                        switch (param.type) {
-                            case SourceParameter::Type::Float: {
-                                float val = std::get<float>(param.value);
-                                if (ImGui::SliderFloat(param.displayName.c_str(), &val, param.minValue, param.maxValue)) {
-                                    procSource->setParameter(param.name, val);
-                                }
-                                break;
-                            }
-                            case SourceParameter::Type::Int: {
-                                int val = std::get<int>(param.value);
-                                if (ImGui::SliderInt(param.displayName.c_str(), &val, (int)param.minValue, (int)param.maxValue)) {
-                                    procSource->setParameter(param.name, val);
-                                }
-                                break;
-                            }
-                            case SourceParameter::Type::Bool: {
-                                bool val = std::get<bool>(param.value);
-                                if (ImGui::Checkbox(param.displayName.c_str(), &val)) {
-                                    procSource->setParameter(param.name, val);
-                                }
-                                break;
-                            }
-                            case SourceParameter::Type::Color: {
-                                Color col = std::get<Color>(param.value);
-                                float colArr[4] = { col.r, col.g, col.b, col.a };
-                                if (ImGui::ColorEdit4(param.displayName.c_str(), colArr,
-                                        ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar)) {
-                                    procSource->setParameter(param.name, Color(colArr[0], colArr[1], colArr[2], colArr[3]));
-                                }
-                                break;
-                            }
-                        }
-                        ImGui::PopID();
-                    }
-
-                    // Reset button
-                    if (ImGui::Button("Reset to Defaults")) {
-                        procSource->resetParameters();
-                    }
-
-                    // Show dimensions
-                    ImGui::Separator();
-                    ImGui::Text("Size: %dx%d", procSource->getWidth(), procSource->getHeight());
-                }
-            }
-        } else {
-            ImGui::TextDisabled("No media selected");
-            ImGui::TextDisabled("Select media from the Media tab");
-        }
-    }
-
-    // -------- No Selection --------
-    else {
-        ImGui::TextDisabled("Nothing selected");
-        ImGui::TextDisabled("Select a quad, output, or media item");
-    }
-
-    ImGui::End();
-    } // end showProperties
 
     // ============ Resources Panel (Tabbed: Project, Media, Outputs) ============
     if (showResources) {
@@ -2155,85 +773,11 @@ void Application::render() {
             ImGui::InputText("##projectpath", projectPath, sizeof(projectPath));
             ImGui::SameLine();
             if (ImGui::Button("Save")) {
-                if (strlen(projectPath) > 0) {
-                    m_project->clearQuads();
-                    m_project->getTexturePaths().clear();
-
-                    for (const auto& quadPtr : quadManager.getQuads()) {
-                        m_project->addQuad(*quadPtr);
-                        auto pathIt = quadTexturePaths.find(quadPtr->getId());
-                        if (pathIt != quadTexturePaths.end()) {
-                            m_project->getTexturePaths().push_back(pathIt->second);
-                        } else {
-                            m_project->getTexturePaths().push_back("");
-                        }
-                    }
-
-                    auto result = ProjectSerializer::save(*m_project, projectPath);
-                    if (result) {
-                        m_project->setFilePath(projectPath);
-                        m_project->setModified(false);
-                        snprintf(statusMessage, sizeof(statusMessage), "Project saved: %s", projectPath);
-                    } else {
-                        snprintf(statusMessage, sizeof(statusMessage), "Save failed: %s", result.error().message.c_str());
-                    }
-                    statusTimer = 3.0f;
-                }
+                saveProject();
             }
             ImGui::SameLine();
             if (ImGui::Button("Load")) {
-                if (strlen(projectPath) > 0) {
-                    auto result = ProjectSerializer::load(projectPath);
-                    if (result) {
-                        *m_project = std::move(result.value());
-
-                        // Sync Project to QuadManager
-                        quadManager.clear();
-                        quadTextures.clear();
-                        quadTexturePaths.clear();
-
-                        const auto& quads = m_project->getQuads();
-                        const auto& texPaths = m_project->getTexturePaths();
-
-                        for (size_t i = 0; i < quads.size(); ++i) {
-                            Quad* newQuad = quadManager.createQuad(quads[i].getName());
-                            newQuad->setVisible(quads[i].isVisible());
-                            newQuad->setLocked(quads[i].isLocked());
-                            newQuad->setOpacity(quads[i].getOpacity());
-                            newQuad->setZOrder(quads[i].getZOrder());
-                            newQuad->getGeometry().setCorners(quads[i].getGeometry().getCorners());
-                            newQuad->getGeometry().setMeshResolution(quads[i].getGeometry().getMeshResolution());
-                            newQuad->getGeometry().setMeshMode(quads[i].getGeometry().getMeshMode());
-                            newQuad->getTexture().uvOffset = quads[i].getTexture().uvOffset;
-                            newQuad->getTexture().uvScale = quads[i].getTexture().uvScale;
-                            newQuad->getTexture().uvRotation = quads[i].getTexture().uvRotation;
-
-                            if (i < texPaths.size() && !texPaths[i].empty()) {
-                                quadTexturePaths[newQuad->getId()] = texPaths[i];
-                                auto texture = std::make_unique<Texture>();
-                                if (texture->loadFromFile(texPaths[i])) {
-                                    quadTextures[newQuad->getId()] = std::move(texture);
-                                }
-                            }
-                        }
-
-                        if (quadManager.getQuadCount() > 0) {
-                            quadManager.selectQuad(quadManager.getQuads()[0]->getId());
-                            auto pathIt = quadTexturePaths.find(quadManager.getQuads()[0]->getId());
-                            if (pathIt != quadTexturePaths.end()) {
-                                strncpy(currentTexturePath, pathIt->second.c_str(), sizeof(currentTexturePath) - 1);
-                                currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
-                            } else {
-                                currentTexturePath[0] = '\0';
-                            }
-                        }
-
-                        snprintf(statusMessage, sizeof(statusMessage), "Project loaded: %s", projectPath);
-                    } else {
-                        snprintf(statusMessage, sizeof(statusMessage), "Load failed: %s", result.error().message.c_str());
-                    }
-                    statusTimer = 3.0f;
-                }
+                loadProject();
             }
 
             // Status message display
@@ -2279,138 +823,12 @@ void Application::render() {
     } // end showResources
 
     // ============ Video Player Panel ============
-    if (showVideoPlayer) {
-    ImGui::Begin("Video Player");
-
-    ImGui::Text("Video File:");
-    ImGui::InputText("##videopath", videoPath, sizeof(videoPath));
-    ImGui::SameLine();
-    if (ImGui::Button("Load Video")) {
-        if (strlen(videoPath) > 0) {
-            if (videoPlayer.load(videoPath)) {
-                snprintf(statusMessage, sizeof(statusMessage), "Video loaded: %s", videoPath);
-            } else {
-                snprintf(statusMessage, sizeof(statusMessage), "Failed to load video: %s", videoPath);
-            }
-            statusTimer = 3.0f;
-        }
+    {
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        es.videoPlayerPanel.render(ctx);
     }
-
-    if (videoPlayer.isLoaded()) {
-        const VideoInfo& info = videoPlayer.getVideoInfo();
-        const VideoPlaybackState& state = videoPlayer.getState();
-
-        ImGui::Separator();
-
-        // Video info
-        ImGui::Text("Size: %dx%d | FPS: %.2f | Duration: %.1fs",
-                   info.width, info.height, info.frameRate, info.duration);
-        if (info.hasAudio) {
-            ImGui::Text("Audio: %d ch @ %d Hz", info.audioChannels, info.audioSampleRate);
-        }
-
-        ImGui::Separator();
-
-        // Playback controls
-        if (state.isPlaying()) {
-            if (ImGui::Button("Pause")) {
-                videoPlayer.pause();
-            }
-        } else {
-            if (ImGui::Button("Play")) {
-                videoPlayer.play();
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Stop")) {
-            videoPlayer.stop();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("<< 5s")) {
-            videoPlayer.skip(-5.0);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button(">> 5s")) {
-            videoPlayer.skip(5.0);
-        }
-
-        // Progress slider
-        float progress = state.getProgress();
-        if (ImGui::SliderFloat("Progress", &progress, 0.0f, 1.0f, "%.1f%%")) {
-            videoPlayer.seekProgress(progress);
-        }
-
-        // Time display
-        ImGui::Text("Time: %.1f / %.1f s  Frame: %lld / %lld",
-                   state.position, state.duration,
-                   static_cast<long long>(state.currentFrame),
-                   static_cast<long long>(state.totalFrames));
-
-        ImGui::Separator();
-
-        // Speed control
-        float speed = videoPlayer.getSpeed();
-        if (ImGui::SliderFloat("Speed", &speed, 0.1f, 4.0f, "%.1fx")) {
-            videoPlayer.setSpeed(speed);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("1x")) {
-            videoPlayer.setSpeed(1.0f);
-        }
-
-        // Loop mode
-        const char* loopModes[] = { "Once", "Loop", "Ping-Pong" };
-        int loopMode = static_cast<int>(videoPlayer.getLoopMode());
-        if (ImGui::Combo("Loop Mode", &loopMode, loopModes, 3)) {
-            videoPlayer.setLoopMode(static_cast<LoopMode>(loopMode));
-        }
-
-        ImGui::Separator();
-
-        // Assign to quad section
-        ImGui::Text("Assign Video to Quad:");
-        Quad* selected = quadManager.getPrimarySelectedQuad();
-        if (selected) {
-            bool isAssigned = (videoAssignedQuadId == selected->getId());
-            if (ImGui::Button(isAssigned ? "Remove from Quad" : "Assign to Selected Quad")) {
-                if (isAssigned) {
-                    // Remove video texture from quad
-                    quadTextures.erase(selected->getId());
-                    videoAssignedQuadId = UUID::null();  // Clear
-                } else {
-                    // Create a texture wrapper for the video
-                    // Note: We'll use the raw OpenGL texture ID
-                    videoAssignedQuadId = selected->getId();
-                }
-                m_project->setModified(true);
-            }
-            if (isAssigned) {
-                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f),
-                                  "Video assigned to: %s", selected->getName().c_str());
-            }
-        } else {
-            ImGui::TextDisabled("Select a quad to assign video");
-        }
-
-        // Unload button
-        ImGui::Separator();
-        if (ImGui::Button("Unload Video")) {
-            videoPlayer.unload();
-            if (videoTextureId != 0) {
-                glDeleteTextures(1, &videoTextureId);
-                videoTextureId = 0;
-                videoTextureWidth = 0;
-                videoTextureHeight = 0;
-            }
-            videoAssignedQuadId = UUID::null();
-        }
-    } else {
-        ImGui::TextDisabled("No video loaded");
-        ImGui::TextDisabled("Enter a video file path and click Load");
-    }
-
-    ImGui::End();
-    } // end showVideoPlayer
 
     // Demo window for testing ImGui (can be removed later)
     static bool showDemo = false;
@@ -2431,6 +849,85 @@ void Application::render() {
     }
 }
 
+// ---- Project lifecycle actions (TD-02) ----
+// Single home for New/Save/Load, replacing the blocks previously duplicated
+// across render() (File menu, Ctrl+S shortcut, Resources>Project tab). Save and
+// load read the editor's project-path buffer and no-op when it is empty.
+void Application::newProject() {
+    EditorState& es = *m_editorState;
+
+    es.quadManager.clear();
+    es.quadTextures.clear();
+    es.quadTexturePaths.clear();
+    es.currentTexturePath[0] = '\0';
+
+    es.quadManager.createQuad("Quad 1");
+    if (es.quadManager.getQuadCount() > 0) {
+        es.quadManager.selectQuad(es.quadManager.getQuads()[0]->getId());
+    }
+
+    m_project->setName("Untitled Project");
+    m_project->setFilePath("");
+    m_project->clearQuads();
+    m_project->getTexturePaths().clear();
+
+    snprintf(es.statusMessage, sizeof(es.statusMessage), "New project created");
+    es.statusTimer = 3.0f;
+}
+
+void Application::saveProject() {
+    EditorState& es = *m_editorState;
+    if (strlen(es.projectPath) == 0) return;
+
+    syncSceneToProject(es, *m_project);
+
+    auto result = ProjectSerializer::save(*m_project, es.projectPath);
+    if (result) {
+        m_project->setFilePath(es.projectPath);
+        m_project->setModified(false);
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Project saved: %s", es.projectPath);
+    } else {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Save failed: %s", result.error().message.c_str());
+    }
+    es.statusTimer = 3.0f;
+}
+
+void Application::loadProject() {
+    EditorState& es = *m_editorState;
+    if (strlen(es.projectPath) == 0) return;
+
+    auto result = ProjectSerializer::load(es.projectPath);
+    if (result) {
+        *m_project = std::move(result.value());
+        syncProjectToScene(es, *m_project);
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Project loaded: %s", es.projectPath);
+    } else {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Load failed: %s", result.error().message.c_str());
+    }
+    es.statusTimer = 3.0f;
+}
+
+void Application::renderToProjectorOutputs() {
+    if (!m_outputManager || !m_editorState) {
+        return;
+    }
+
+    EditorState& es = *m_editorState;
+
+    // Mirror the texture-map construction from render(): static image textures
+    // plus the video wrapper for the video-assigned quad.
+    std::unordered_map<UUID, Texture*> textures;
+    textures.reserve(es.quadTextures.size() + 1);
+    for (const auto& [id, texPtr] : es.quadTextures) {
+        textures[id] = texPtr.get();
+    }
+    if (!es.videoAssignedQuadId.isNull() && es.videoTextureId != 0) {
+        textures[es.videoAssignedQuadId] = &es.videoTexWrapper;
+    }
+
+    m_outputManager->renderToOutputs(es.quadManager, textures);
+}
+
 void Application::shutdown() {
     if (!m_window) {
         return; // Already shut down
@@ -2439,14 +936,12 @@ void Application::shutdown() {
     Logger::info("Shutting down QUADmapper...");
 
     // Cleanup components in reverse order of creation
-    m_uiManager.reset();
     m_inputManager.reset();
     m_outputManager.reset();
     m_thumbnailCache.reset();  // Clear GL textures before context destroyed
     m_renderer.reset();
     m_folderWatcher.reset();  // Stop watching before destroying media library
     m_mediaLibrary.reset();
-    m_sceneManager.reset();
     m_project.reset();
 
     // Shutdown ImGui

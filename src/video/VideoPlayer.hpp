@@ -2,7 +2,6 @@
 
 #include "VideoDecoder.hpp"
 #include "VideoPlaybackState.hpp"
-#include "FrameBuffer.hpp"
 #include <filesystem>
 #include <memory>
 #include <functional>

@@ -3,8 +3,6 @@
 add_library(quadmapper_scene STATIC
     Scene.hpp
     Scene.cpp
-    SceneManager.hpp
-    SceneManager.cpp
     Quad.hpp
     Quad.cpp
     QuadGeometry.hpp

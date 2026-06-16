@@ -57,6 +57,20 @@ void OutputManager::shutdown() {
         exitPerformMode();
     }
 
+    // Destroy per-output renderers in their respective GL contexts before windows close.
+    GLFWwindow* previousContext = glfwGetCurrentContext();
+    for (auto& output : outputs_) {
+        auto rendererIt = outputRenderers_.find(output->getId());
+        if (rendererIt != outputRenderers_.end() && output->isCreated()) {
+            output->makeContextCurrent();
+            rendererIt->second->shutdown();
+        }
+    }
+    outputRenderers_.clear();
+    if (previousContext != nullptr) {
+        glfwMakeContextCurrent(previousContext);
+    }
+
     // Destroy all output windows
     for (auto& output : outputs_) {
         output->destroy();
@@ -93,6 +107,23 @@ OutputWindow* OutputManager::createOutput(const std::string& name) {
                       outputName, result.error().message);
             return nullptr;
         }
+
+        // Create a Renderer for this output in its own GL context.
+        // VAOs are NOT shared across contexts, so each output needs its own.
+        // Shaders and VBOs are shared and will be re-created per-context (cheap).
+        GLFWwindow* previousContext = glfwGetCurrentContext();
+        output->makeContextCurrent();
+
+        auto renderer = std::make_unique<Renderer>();
+        if (!renderer->initialize()) {
+            LOG_ERROR("Failed to initialize renderer for output '{}'", outputName);
+            glfwMakeContextCurrent(previousContext);
+            output->destroy();
+            return nullptr;
+        }
+
+        outputRenderers_[output->getId()] = std::move(renderer);
+        glfwMakeContextCurrent(previousContext);
     }
 
     OutputWindow* ptr = output.get();
@@ -111,6 +142,17 @@ void OutputManager::deleteOutput(const UUID& id) {
 
     if (it != outputs_.end()) {
         std::string name = (*it)->getName();
+
+        // Destroy the per-output renderer in its own GL context before the window goes away.
+        auto rendererIt = outputRenderers_.find(id);
+        if (rendererIt != outputRenderers_.end()) {
+            GLFWwindow* previousContext = glfwGetCurrentContext();
+            (*it)->makeContextCurrent();
+            rendererIt->second->shutdown();
+            outputRenderers_.erase(rendererIt);
+            glfwMakeContextCurrent(previousContext);
+        }
+
         (*it)->destroy();
         outputs_.erase(it);
         LOG_INFO("Deleted output '{}' (remaining: {})", name, outputs_.size());
@@ -342,12 +384,12 @@ Result<void, Error> OutputManager::togglePerformMode(bool borderless) {
     }
 }
 
-void OutputManager::renderToOutputs() {
+void OutputManager::renderToOutputs(const QuadManager& quadManager,
+                                     const std::unordered_map<UUID, Texture*>& textures) {
     if (!mainWindow_) {
         return;
     }
 
-    // Store the current context so we can restore it
     GLFWwindow* previousContext = glfwGetCurrentContext();
 
     for (auto& output : outputs_) {
@@ -355,28 +397,43 @@ void OutputManager::renderToOutputs() {
             continue;
         }
 
-        // Make this output's context current
+        auto rendererIt = outputRenderers_.find(output->getId());
+        if (rendererIt == outputRenderers_.end()) {
+            continue;
+        }
+        Renderer* renderer = rendererIt->second.get();
+
         output->makeContextCurrent();
 
-        // Get the framebuffer size for the viewport
         int width, height;
         glfwGetFramebufferSize(output->getGLFWwindow(), &width, &height);
-
-        // Set viewport
         glViewport(0, 0, width, height);
 
-        // Clear with a dark color (placeholder rendering)
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
 
-        // TODO: Actual rendering will be done by the Renderer
-        // This is just placeholder code to verify the context is working
+        // Render the warped scene without selection outlines or editor handles.
+        // renderQuads() calls renderQuad(*quad, texture, isSelected) — passing
+        // false for every quad via the overload keeps the output clean.
+        auto sortedQuads = quadManager.getQuadsByZOrder();
+        for (const Quad* quad : sortedQuads) {
+            if (!quad || !quad->isVisible()) {
+                continue;
+            }
+            const Texture* tex = nullptr;
+            auto it = textures.find(quad->getId());
+            if (it != textures.end()) {
+                tex = it->second;
+            }
+            renderer->renderQuad(*quad, tex, /*selected=*/false);
+        }
 
-        // Swap buffers
+        glEnable(GL_DEPTH_TEST);
+
         output->swapBuffers();
     }
 
-    // Restore the previous context
     if (previousContext != nullptr) {
         glfwMakeContextCurrent(previousContext);
     }
@@ -447,6 +504,26 @@ void OutputManager::glfwMonitorCallback(GLFWmonitor* monitor, int event) {
 
 void OutputManager::handleF11Key() {
     LOG_DEBUG("F11 key pressed - toggling perform mode");
+
+    // If there are no outputs yet, auto-create one on the best secondary monitor
+    // so a single F11 press immediately sends the scene fullscreen to a projector.
+    if (!performMode_ && outputs_.empty()) {
+        refreshMonitors();
+        int monitorCount = static_cast<int>(monitors_.size());
+        int targetMonitor = (monitorCount > 1) ? 1 : 0;
+
+        OutputWindow* output = createOutput("Projector 1");
+        if (output) {
+            output->setMonitor(targetMonitor);
+            LOG_INFO("F11 auto-created output on monitor {} ({})",
+                     targetMonitor,
+                     targetMonitor < monitorCount ? monitors_[targetMonitor].name : "unknown");
+        } else {
+            LOG_ERROR("F11 auto-create output failed — cannot enter perform mode");
+            return;
+        }
+    }
+
     togglePerformMode(useBorderlessFullscreen_);
 }
 

@@ -8,15 +8,14 @@ struct GLFWwindow;
 namespace quadmapper {
 
 class Renderer;
-class SceneManager;
 class MediaLibrary;
 class OutputManager;
 class InputManager;
-class UIManager;
 class Project;
 class FolderWatcher;
 class ThumbnailCache;
 class SourceManager;
+struct EditorState;
 
 class Application {
 public:
@@ -39,11 +38,9 @@ public:
     // Accessors
     GLFWwindow* getWindow() const { return m_window; }
     Renderer* getRenderer() const { return m_renderer.get(); }
-    SceneManager* getSceneManager() const { return m_sceneManager.get(); }
     MediaLibrary* getMediaLibrary() const { return m_mediaLibrary.get(); }
     OutputManager* getOutputManager() const { return m_outputManager.get(); }
     InputManager* getInputManager() const { return m_inputManager.get(); }
-    UIManager* getUIManager() const { return m_uiManager.get(); }
     Project* getProject() const { return m_project.get(); }
     SourceManager* getSourceManager() const { return m_sourceManager.get(); }
 
@@ -60,6 +57,19 @@ private:
     void update(float deltaTime);
     void render();
 
+    // Project lifecycle actions, invoked from the menu bar, the Ctrl+N/S/O
+    // shortcuts, and the Resources>Project tab. Single home for New/Save/Load,
+    // replacing the blocks that were duplicated across render() (TD-02). Save
+    // and load no-op when the editor's project path is empty.
+    void newProject();
+    void saveProject();
+    void loadProject();
+
+    // Build the per-frame texture map from m_editorState and push the warped
+    // scene to all enabled output windows.  Called from run() after each main
+    // frame's render()+ImGui+swap so it never runs mid-ImGui-frame.
+    void renderToProjectorOutputs();
+
     // Window
     GLFWwindow* m_window = nullptr;
     int m_windowWidth = 1920;
@@ -68,15 +78,16 @@ private:
 
     // Components
     std::unique_ptr<Renderer> m_renderer;
-    std::unique_ptr<SceneManager> m_sceneManager;
     std::unique_ptr<MediaLibrary> m_mediaLibrary;
     std::unique_ptr<OutputManager> m_outputManager;
     std::unique_ptr<InputManager> m_inputManager;
-    std::unique_ptr<UIManager> m_uiManager;
     std::unique_ptr<Project> m_project;
     std::unique_ptr<FolderWatcher> m_folderWatcher;
     std::unique_ptr<ThumbnailCache> m_thumbnailCache;
     std::unique_ptr<SourceManager> m_sourceManager;
+
+    // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
+    std::unique_ptr<EditorState> m_editorState;
 
     // State
     bool m_running = false;

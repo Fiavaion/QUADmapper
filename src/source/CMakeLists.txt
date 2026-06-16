@@ -3,7 +3,6 @@
 add_library(quadmapper_source STATIC
     # Core infrastructure
     FrameData.hpp
-    DoubleBuffer.hpp
     TextureSource.hpp
     SourceManager.hpp
     SourceManager.cpp

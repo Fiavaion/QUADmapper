@@ -1,132 +1,141 @@
 #pragma once
 
-#include <vector>
-#include <mutex>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <mutex>
+#include <vector>
 
 namespace quadmapper {
 
 /**
- * @brief Thread-safe ring buffer for audio samples
+ * @brief Lock-free SPSC ring buffer for audio samples
  *
- * Used for buffering decoded audio samples between the decoder thread
- * and the audio output thread. Stores contiguous interleaved float samples.
+ * Threading model:
+ *   Producer (decode / control thread): push(), pushBlocking(), clear(),
+ *     signalEndOfStream(), resetEndOfStream().
+ *   Consumer (audio RT callback): read(), isEmpty(), available(),
+ *     getCurrentPTS().
+ *
+ * head_ is owned exclusively by the producer; tail_ is owned exclusively by
+ * the consumer. Each side only stores into its own index and loads the
+ * counterpart with acquire ordering, which gives correct visibility without
+ * any mutex in the hot path.
+ *
+ * Blocking variants (pushBlocking / readBlocking) use a separate mutex only
+ * to wait on condition variables; the actual index updates still go through
+ * the atomic head_/tail_ path.
+ *
+ * The logical capacity is exactly as requested; the backing array is rounded up
+ * to the next power of two so wrap-around is a cheap bitmask.
  */
 class AudioBuffer {
 public:
     /**
      * @brief Construct an audio buffer
-     * @param capacity Maximum number of samples to buffer (total across all channels)
+     * @param capacity Maximum number of samples the buffer holds (exact). The backing
+     *                 array is rounded up to the next power of two internally.
      */
-    explicit AudioBuffer(size_t capacity = 48000 * 2 * 2);  // 2 seconds stereo default
+    explicit AudioBuffer(size_t capacity = 48000 * 2 * 2);  // 2 sec stereo default
     ~AudioBuffer();
 
     // Non-copyable
     AudioBuffer(const AudioBuffer&) = delete;
     AudioBuffer& operator=(const AudioBuffer&) = delete;
 
+    // --- Producer interface (decode thread) ---
+
     /**
-     * @brief Push samples into the buffer
-     * @param samples Pointer to interleaved float samples
-     * @param count Number of samples to push (total, not per channel)
-     * @param pts Presentation timestamp of first sample in seconds
-     * @return true if all samples were pushed, false if buffer is full
+     * @brief Push samples into the buffer (non-blocking).
+     * @return true if all samples were pushed; false if not enough space.
      */
     bool push(const float* samples, size_t count, double pts);
 
     /**
-     * @brief Push samples, blocking until space is available
-     * @param samples Pointer to interleaved float samples
-     * @param count Number of samples to push
-     * @param pts Presentation timestamp of first sample
-     * @param timeoutMs Timeout in milliseconds (0 = infinite)
-     * @return true if successful, false if timeout or end of stream
+     * @brief Push samples, blocking until space is available.
+     * @param timeoutMs 0 = infinite wait.
+     * @return true if successful; false on timeout or end-of-stream.
      */
-    bool pushBlocking(const float* samples, size_t count, double pts, uint32_t timeoutMs = 0);
+    bool pushBlocking(const float* samples, size_t count, double pts,
+                      uint32_t timeoutMs = 0);
+
+    // --- Consumer interface (audio RT callback) ---
 
     /**
-     * @brief Read samples from the buffer
-     * @param output Buffer to write samples to
-     * @param sampleCount Number of samples to read (total, not per channel)
-     * @param channels Number of channels (for calculating frame count)
-     * @return Number of samples actually read
+     * @brief Read samples from the buffer (lock-free, RT-safe).
+     * @return Number of samples actually read.
      */
     size_t read(float* output, size_t sampleCount, int channels);
 
     /**
-     * @brief Read samples, blocking until enough are available
-     * @param output Buffer to write samples to
-     * @param sampleCount Number of samples to read
-     * @param channels Number of channels
-     * @param timeoutMs Timeout in milliseconds (0 = infinite)
-     * @return Number of samples actually read
+     * @brief Read samples, blocking until enough are available.
+     * @param timeoutMs 0 = infinite wait.
      */
-    size_t readBlocking(float* output, size_t sampleCount, int channels, uint32_t timeoutMs = 0);
+    size_t readBlocking(float* output, size_t sampleCount, int channels,
+                        uint32_t timeoutMs = 0);
+
+    // --- Control interface ---
 
     /**
-     * @brief Clear all samples from the buffer
+     * @brief Clear all samples (producer must be stopped before calling).
      */
     void clear();
 
-    /**
-     * @brief Check if buffer is empty
-     */
+    /** Lock-free: true if no samples are available. RT-safe. */
     bool isEmpty() const;
 
-    /**
-     * @brief Check if buffer is full
-     */
+    /** Lock-free: true if buffer is full. */
     bool isFull() const;
 
-    /**
-     * @brief Get number of samples currently in buffer
-     */
+    /** Lock-free: samples currently in the buffer. RT-safe. */
     size_t available() const;
 
-    /**
-     * @brief Get buffer capacity in samples
-     */
     size_t capacity() const;
 
     /**
-     * @brief Get the presentation timestamp of the next sample to be read
-     * @return PTS in seconds, or -1 if buffer is empty
+     * @brief Presentation timestamp of the next sample to be read.
+     * @return PTS in seconds, or -1 if buffer is empty.
      */
     double getCurrentPTS() const;
 
-    /**
-     * @brief Signal that no more samples will be pushed (EOF)
-     */
+    /** Signal end-of-stream (no more pushes coming). */
     void signalEndOfStream();
 
-    /**
-     * @brief Check if end of stream has been signaled
-     */
     bool isEndOfStream() const;
 
-    /**
-     * @brief Reset end of stream flag (for looping)
-     */
+    /** Reset EOS flag (for looping). */
     void resetEndOfStream();
 
 private:
-    mutable std::mutex mutex_;
+    // Ring buffer storage — allocated once at construction.
+    std::vector<float> buffer_;
+    const size_t capacity_;     // Logical max samples (exact, as requested).
+    const size_t bufferSize_;   // Backing array size = next power of two >= capacity_.
+    const size_t mask_;         // bufferSize_ - 1; used for fast modulo on the array.
+
+    // head_ is the write position (producer-owned).
+    // tail_ is the read  position (consumer-owned).
+    // Available samples = (head_ - tail_) & mask_.
+    // Both indices grow monotonically and wrap via masking.
+    std::atomic<size_t> head_{0};
+    std::atomic<size_t> tail_{0};
+
+    // PTS of the next sample the consumer will read.
+    // Written by the producer (when the buffer transitions empty→non-empty)
+    // and read by the consumer. Relaxed store/load is sufficient because the
+    // sequence point that makes the stored value meaningful (head_ update) uses
+    // release/acquire ordering that already provides the necessary happens-before.
+    std::atomic<double> currentPTS_{0.0};
+
+    std::atomic<bool> endOfStream_{false};
+
+    // Used only by the blocking variants to sleep on a condvar.
+    // Never held by the RT audio callback.
+    mutable std::mutex blockingMutex_;
     std::condition_variable notEmpty_;
     std::condition_variable notFull_;
 
-    std::vector<float> buffer_;
-    size_t capacity_;
-    size_t head_ = 0;           // Write position
-    size_t tail_ = 0;           // Read position
-    size_t count_ = 0;          // Current sample count
-
-    double currentPTS_ = 0.0;   // PTS of next sample to be read
-    double ptsIncrement_ = 0.0; // PTS increment per sample (1/sampleRate)
-    int channels_ = 2;          // Channel count for PTS calculation
-
-    std::atomic<bool> endOfStream_{false};
+    static size_t nextPowerOfTwo(size_t v);
 };
 
 } // namespace quadmapper

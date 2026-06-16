@@ -188,8 +188,10 @@ TEST(OutputManagerTest, RenderToOutputsIsSafeWhenNotInitialized) {
     OutputManager manager;
     manager.createOutput("Test");
 
-    // Should not crash
-    manager.renderToOutputs();
+    // Should not crash with no enabled/created outputs (no GL context here).
+    QuadManager quadManager;
+    std::unordered_map<UUID, Texture*> textures;
+    manager.renderToOutputs(quadManager, textures);
 }
 
 TEST(OutputManagerTest, CreateMultipleOutputsAndDelete) {

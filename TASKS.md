@@ -1,16 +1,66 @@
 # QUADmapper Tasks
 
-Last Updated: 2025-12-19
+Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 0
-- Done: 44
+- Todo: 3 (TD-07, TD-08, TD-09 — see TECHNICAL_DEBT.md)
+- Done: 55
 - Blocked: 0
 
 ---
 
+## In Progress
+
+*No tasks currently in progress*
+
 ## Done
+
+#### QM-054: TD-02 — decompose render() into panels (ADR-034)
+- **Status:** DONE (6 of 6 batches) — **Completed:** 2026-06-16
+- **Notes:** ADR-034: decomposed the ~1900-line `render()` into panel classes over the live `EditorState` model (behavior-preserving), via a per-frame `EditorContext` bundle. All on `refactor/app-decomposition`, each build-clean + 590/590 ctest + smoke-green (incl. F11 projector output): batch 0 — `EditorContext.hpp` + `Application::{newProject,saveProject,loadProject}` (de-dup 3× save/load); batch 1 `MainMenuBar` (708d267); batch 2 `QuadListPanel` (fb23972); batch 3 `InspectorPanel` = context-sensitive Properties (6d522af); batch 3b `VideoPlayerPanel` (3a13950); **batch 4 (last, success-metric-critical) `ViewportEditor`** — the pre-`ImGui::NewFrame()` on-canvas warp surface (quad render + corner/mesh warp + keyboard-capture guard) extracted **byte-for-byte** into a non-`Panel` class; dead `PreviewPanel` shell deleted (f2dd41f). `Application.cpp` 2411→~960 lines; `render()` ~1910→~400. Verified: build clean, 590/590, smoke harness 05 (Tab-cycle + arrow-nudge warp sent fullscreen to the projector), fresh-context Opus verifier APPROVE. Source-arch convergence tracked separately as TD-09.
+
+## Done
+
+### Phase 8: ADR-031 Refactor (Session 10 — 2026-06-16)
+
+#### QM-053: TD-02 step 2 — retire dual-track scene state (one scene of truth)
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** ADR-033. Deleted the unwired multi-scene machinery (`SceneManager` +35 tests, `ScenePanel`, scene-based `ProjectSerializer` methods, orphan `SceneManager` hooks in Inspector/Preview/Renderer, `m_sceneManager`). `EditorState::scene` is now the single source of truth. Reconciled render()'s 5 hand-rolled save/load sync sites into two shared helpers (`syncSceneToProject`/`syncProjectToScene`) using whole-geometry/whole-texture copies — fixing a latent bug that dropped mesh-edit vertex offsets + flipH/V on save/load. Build clean; 589/590 tests (1 pre-existing flaky timer test); success metric harness-verified (vertex warp + F11 projector output). Remaining TD-02 work: decompose render() UI into real panels.
+
+#### QM-052: TD-05 — `.qmap` versioning, migration & save/load de-dup
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** ADR-032. One `validateVersion()` policy across all 4 read paths (accept major ≤ 2, reject newer majors loudly — scene paths previously ignored version). v1.x→single-scene migration; v2.x→flat-model flatten. Collapsed the 4× quad-copy into `loadQuadInto()` (whole-geometry copy), which also fixed a silent mesh-offset drop on scene load. No on-disk change. 631/631 tests (+7 new).
+
+### Phase 8: ADR-031 Refactor (Session 9 — 2026-06-16)
+
+#### QM-045: ADR-031 audit + decision + UI smoke harness
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** 5-specialist audit → refactor-in-place (not rebuild). Added `tests/smoke/drive_smoke.ps1` (drives the real app via Win32 scancode input, screenshots monitors) as the verification gate.
+
+#### QM-046: TD-02 step 1 — extract render() statics → owned EditorState
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** ~40 function-statics → `src/app/EditorState.hpp`; body unchanged via same-named aliases. Behavior-preserved (harness + 624 tests).
+
+#### QM-047: TD-01 — projector output renders the warped scene (SUCCESS METRIC)
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** Per-output `Renderer`; `renderToOutputs(quadManager, textures)` from `run()`; F11 auto-creates an output on the secondary monitor. Was a never-called gray-clear stub. Full success metric verified end-to-end.
+
+#### QM-048: TD-04 — atomic cross-thread video decoder state
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** `currentFrame_`/`currentTime_`/`atEnd_` → `std::atomic` (fixes UB).
+
+#### QM-049: TD-03 — lock-free + alloc-free audio RT callback
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** SPSC ring (`AudioBuffer`), atomic source/callback snapshots (`AudioMixer`), preallocated buffer (`AudioSource`). Residual reclamation nit → TD-08.
+
+#### QM-050: TD-06 — delete dead code
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** Removed `FrameBuffer`/`DoubleBuffer`/`AudioEngine`/`UIManager`/renderer `Framebuffer`+`TextureCache` (files + CMake + wiring).
+
+#### QM-051: Fix full-build regressions (AudioBuffer capacity, test signature)
+- **Status:** DONE — **Completed:** 2026-06-16
+- **Notes:** Caught on full rebuild (LESSON-BUILD-007: full-build before ctest). AudioBuffer now honors exact capacity; OutputManagerTest updated to new signature.
 
 ### Phase 1: Core Foundation
 
@@ -721,5 +771,8 @@ Last Updated: 2025-12-19
 | QM-042 | Create unit tests for project | DONE | Phase 7 |
 | QM-043 | Create integration tests | DONE | Phase 7 |
 | QM-044 | Manual test protocols | DONE | Phase 7 |
+| QM-052 | TD-05 .qmap versioning, migration & save/load de-dup | DONE | Phase 8 |
+| QM-053 | TD-02 step 2 retire dual-track scene state (one scene of truth) | DONE | Phase 8 |
+| QM-054 | TD-02 decompose render() into panels (ADR-034, 6 batches) | DONE | Phase 8 |
 
 ---
