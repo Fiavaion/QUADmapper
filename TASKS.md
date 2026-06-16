@@ -4,8 +4,8 @@ Last Updated: 2026-06-16
 
 ## Quick Status
 - In Progress: 0
-- Todo: 4 debt (TD-07/08/09/10) + 3 AI (QM-060..QM-062 — Phase 9; Phase 1 shipped, Phase 2 underway)
-- Done: 60
+- Todo: 4 debt (TD-07/08/09/10) + 2 AI (🚩 QM-061 hardware gate + QM-062 anamorphic; Phase 1 shipped, Phase 2 software-complete)
+- Done: 61
 - Blocked: 0
 
 ---
@@ -63,8 +63,11 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Verified:** `drive_ai_smoke.ps1 -SelfTestMode oneflash` — pattern white-on-black fullscreen on the projector (screenshot) + `quadmapper_oneflash_capture.png` on disk. Success-metric smoke green; 596/596 ctest; QM-058 unaffected.
 
 #### QM-060: One-Flash homography solve → push warp
-- **Status:** TODO · **Effort:** M · **Depends On:** QM-059, QM-057
-- **AC:** `POST /oneflash` detects pattern+surface, returns homography as 4 corner offsets; applying it lands projected content aligned (no projector pose needed, one photo); `.qmap`-safe; smoke green.
+- **Status:** DONE (software-complete) — **Completed:** 2026-06-16 (Session 14). Branch `feature/qm-056-ai-sidecar`. Real-projection alignment is the 🚩 QM-061 gate.
+- **Effort:** M · **Depends On:** QM-059, QM-057
+- **Delivered:** `oneflash.py` — detect ChArUco in reference + photo, match by id → homography `H` (projector-norm ↔ photo px); target surface corners (QM-057 or passed) → `H⁻¹` → projector-norm quad corners; confidence from inlier ratio + reprojection RMS (cv2.aruco only, GPU-free). `POST /oneflash` route (surface target via QM-057 or full-frame fallback; stub on failure). `SidecarClient::requestOneFlash()` (shared `parseCornersResponse`). App: AI → One-Flash → **Solve & Apply** → apply corners to selected quad (geometry only, no `.qmap` change).
+- **AC met (software):** AC1 `/oneflash` returns homography as 4 corner offsets ✓ · AC2 applying warps the quad ✓ (the *physical* "lands aligned on surface" claim is QM-061) · AC3 geometry-only, `.qmap`-safe, smoke green ✓.
+- **Verified without hardware:** synthetic known-homography test recovers corners to **<0.02** (conf 0.99, 0.13px RMS); HTTP round-trip; in-app Solve & Apply via `QM_AI_SELFTEST=solve` (conf 0.99, watched). 14/14 sidecar pytest; 596/596 ctest.
 
 #### QM-061: 🚩 Real-device validation gate (Phase 2 not "done" until this passes)
 - **Status:** TODO · **Effort:** S · **Depends On:** QM-060
@@ -845,7 +848,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-057 | Sidecar surface service (Metric3D → plane → corners) | DONE | Phase 9 |
 | QM-058 | "Propose corners" UI (human-in-the-loop confirm) | DONE | Phase 9 |
 | QM-059 | Projector test-pattern emit + single-photo capture | DONE | Phase 9 |
-| QM-060 | One-Flash homography solve → push warp | TODO | Phase 9 |
+| QM-060 | One-Flash homography solve → push warp | DONE | Phase 9 |
 | QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |
 | QM-062 | Audience-perspective anamorphic warp | TODO | Phase 9 |
 
