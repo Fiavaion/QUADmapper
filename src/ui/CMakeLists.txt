@@ -12,6 +12,8 @@ add_library(quadmapper_ui STATIC
     panels/OutputPanel.cpp
     panels/MainMenuBar.hpp
     panels/MainMenuBar.cpp
+    panels/QuadListPanel.hpp
+    panels/QuadListPanel.cpp
     panels/MediaBinPanel.hpp
     panels/MediaBinPanel.cpp
     panels/ProceduralEditorPanel.hpp

@@ -22,6 +22,7 @@
 #include "../ui/panels/MainMenuBar.hpp"
 #include "../ui/panels/MediaBinPanel.hpp"
 #include "../ui/panels/OutputPanel.hpp"
+#include "../ui/panels/QuadListPanel.hpp"
 
 namespace quadmapper {
 
@@ -75,6 +76,7 @@ struct EditorState {
     bool mediaBinInitialized = false;
     OutputPanel outputPanel;
     bool outputPanelInitialized = false;
+    QuadListPanel quadListPanel;
 
     // Panel visibility toggles
     bool showQuadList = true;
