@@ -4,8 +4,8 @@
   "sessionInfo": {
     "sessionNumber": 11,
     "startTime": "2026-06-16T10:00:00Z",
-    "endTime": null,
-    "status": "checkpoint"
+    "endTime": "2026-06-16T12:30:00Z",
+    "status": "completed"
   },
   "currentWork": {
     "activeTaskId": "QM-054",

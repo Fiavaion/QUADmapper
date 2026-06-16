@@ -6,6 +6,56 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 11 - 2026-06-16 - TD-02: decompose render() into panels (5 of 6 batches)
+
+**Focus:** The last open ADR-031 item — TD-02, decomposing the ~1900-line `render()`
+god-function into real panel classes. User asked to scope it, then to apply the model-switcher
+rubric and "work optimally." Result: an ADR + contract + a sequenced, model-tiered batch plan,
+executed batch-by-batch with per-batch verification.
+
+**Decisions:**
+- [ADR-034](docs/adr/0034-render-decomposition.md): decompose over the **live `EditorState`
+  model** (behavior-preserving) rather than finishing the half-done `SourceManager` migration the
+  unwired `InspectorPanel`/`PreviewPanel` shells assume. The migration is logged separately as
+  **TD-09**. Key finding: the vertex-editing block runs **before `ImGui::NewFrame()`** and renders
+  via OpenGL, so it cannot become a docked `Panel` — it gets a non-`Panel` `ViewportEditor`.
+- Contract: a per-frame `EditorContext` bundle (`EditorState&` + manager pointers) passed to each
+  panel's `render(ctx)`; panels are value members of `EditorState`; ImGui window names preserved
+  (imgui.ini layout keys).
+- Model schedule (modelswitcher): Opus for the contract design + batch-3 review + batch 4;
+  Sonnet (via `ui-specialist`) for the mechanical extractions. Fable confirmed unavailable → Opus floor.
+- Batch 3b deviation: kept the Video Player as its own `VideoPlayerPanel` window instead of
+  "folding" it into the Inspector (the plan's wording) — folding would orphan the
+  `showVideoPlayer` toggle / window layout key; behavior-preservation wins.
+
+**Completed (QM-054, in progress — 5 of 6 batches):**
+- Batch 0: `src/app/EditorContext.hpp` + extracted New/Save/Load into
+  `Application::{newProject,saveProject,loadProject}` (de-duped the 3× inline save/load).
+- Batch 1: `MainMenuBar` (`708d267`).
+- Batch 2: `QuadListPanel` (`fb23972`).
+- Batch 3: `InspectorPanel` rebuilt on the live model = context-sensitive Properties
+  (Quad/Output/Media) (`6d522af`) — Opus diff-review confirmed faithful.
+- Batch 3b: `VideoPlayerPanel` (`3a13950`).
+- Checkpoint: restart package + tracking updated, pushed (`e5cb792`).
+
+**Verified working:** every batch was build-clean + **590/590 ctest** + smoke-harness green
+(the full success metric incl. `tests/smoke/out/05_projector_output.png`). `Application.cpp`
+2411→1271 lines; `render()` body ~1910→~710.
+
+**Shipped:** commits `708d267`, `fb23972`, `6d522af`, `3a13950`, `e5cb792` (+ batch-0/ADR
+commits) pushed to `refactor/app-decomposition` (PR #1).
+
+**Handoff / next steps:** **Batch 4 (last; success-metric critical)** — extract the
+pre-`NewFrame()` viewport editing (quad render + corner/mesh warp + keyboard-capture guard,
+`render()` ~564–867) into a non-`Panel` `ViewportEditor`; delete the dead `PreviewPanel` shell.
+Recommended in a **fresh context**, **Opus + high in the main session** (not Sonnet) + a
+fresh-context verifier subagent vs the success metric. Full brief in
+[notes/CURRENT_STATUS.md](notes/CURRENT_STATUS.md); contract in
+[docs/adr/0034-render-decomposition.md](docs/adr/0034-render-decomposition.md). Then TD-07
+(CMake, needs approval), TD-08 (LOW), TD-09 (source-arch convergence).
+
+---
+
 ### Session 10 - 2026-06-16 - Debt cleanup: .qmap versioning + retire multi-scene track
 
 **Focus:** Two ADR-031 debt items — `.qmap` versioning/migration (TD-05) and "one scene of
