@@ -6,6 +6,60 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 15 - 2026-06-17 - v1.1 polish + Kantan-style grid Tier 1 (2D wedge focus)
+
+**Focus:** Independent-of-AI 2D-wedge work while QM-061 stays hardware-gated: paid down TD-10,
+shipped two v1.1 polish features, answered four user feature questions (sizing each honestly),
+shelved 3D as out-of-scope, and built **Tier 1 of the Kantan-style non-uniform grid warp** end
+to end. 14 commits, all on `dev` (pushed to `origin/dev`); `master` untouched.
+
+**Completed this session:**
+- **TD-10 resolved** — `SidecarClient::startAsync()` runs attach/launch/health-poll on a worker
+  thread (atomic state + new `Starting`; worker joined in stop()/dtor). AI-enable no longer
+  freezes the UI ~1–3s; run-loop posts the connect outcome. Unit test added.
+- **US-104** per-quad color correction (ADR-036) — brightness/contrast/gamma/RGB gain in
+  `quad.frag`; additive `.qmap` field; Inspector section. Identity = render no-op.
+- **US-101** per-quad soft-edge blending (ADR-037) — per-edge feather + gamma; for multi-projector
+  overlap. **Visually verified** (feathered projector screenshot).
+- **Load-path fix** — `syncProjectToScene` now carries colorCorrection/softEdge (they round-tripped
+  in JSON but were dropped on the app's scene rebuild).
+- **#2 UV test-grid** — Blender-style colored UV grid (`src/renderer/UvTestGrid.*`, `test_renderer`)
+  + "Apply UV Test Grid" button + "UV grid on new quads" toggle. **Visually verified** warped on
+  quad+projector.
+- **#3 Kantan grid — ADR-038 accepted; Tier 1 COMPLETE** (Kantan Linear parity):
+  - batch 1: non-uniform control-grid model (uCoords/vCoords replace uniform N×N), behavior-
+    preserving; insert/remove division logic. Success-metric edit path is index-based → unchanged.
+  - batch 2: `.qmap` persistence + migration (coords written only when non-uniform; old files
+    migrate losslessly); writer `1.1.0 → 1.2.0`.
+  - batch 3a: Inspector — Even Grid slider + Insert-pos + Add/Del Column/Row.
+  - batch 3b: viewport **click-on-edge insert** via `QuadGeometry::inverseBilinear` (unit-tested
+    round-trips); arming suppresses drag-starts.
+- **#4 3D scan / model-UV — researched then SHELVED** (deliberate 2D focus; roadmap/spike preserved).
+- **QM-061** turnkey hardware runbook + ready `dev`→`master` PR-prep doc.
+
+**Decisions:** ADR-036 (color correction), ADR-037 (soft-edge), ADR-038 (Kantan grid — Tiers 1+2
+then field-test then Tier 3; **one mesh model**, uniform migrated away + "even grid" action). 3D
+shelved. `.qmap` bumped 1.0.0 → 1.2.0 (two additive MINOR steps, major unchanged, backward+forward
+compatible).
+
+**Verification:** build clean; **615/615 ctest** (+19 this session); success-metric smoke green
+throughout; US-101 / #2 / Tier-1 grid each visually confirmed via temporary env demos (scaffolding
+removed). The live *positioned mouse-click* grid gesture isn't automatable by the keyboard-only
+smoke harness — its pieces (inverse-bilinear round-trip, insert logic, division rendering) are each
+verified; needs a ~10s manual click-confirm.
+
+**Files (highlights):** `src/scene/QuadGeometry.*` (control-grid model + inverseBilinear),
+`src/scene/MeshSubdivision.cpp`, `src/renderer/Renderer.cpp` + `UvTestGrid.*`,
+`src/ui/panels/{InspectorPanel,ViewportEditor}.cpp`, `src/ai/SidecarClient.*`,
+`src/app/{Application,EditorState}.*`, `src/project/ProjectSerializer.cpp`, `src/shaders/quad.frag`,
+ADR-036/037/038, `docs/QM-061-*`, `docs/research/3d-...-roadmap`.
+
+**Handoff / next:** **Tier 2 — Bezier handles + decoupled fine tessellation** (smooth curves, full
+Kantan parity), then field-test → **Tier 3** (local subdivision + T-junction stitching). Also still
+open: **🚩 QM-061** hardware test → then the `dev`→`master` PR (body ready). Optional debt: TD-07/08/09.
+
+---
+
 ### Session 14 - 2026-06-16 - AI Pre-Show wedge built end-to-end (QM-055→060 + 062)
 
 **Focus:** Took Phase 9 from "QM-055 done, uncommitted" to **the entire AI pre-show initiative

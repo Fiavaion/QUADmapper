@@ -3,9 +3,9 @@
 Last Updated: 2026-06-16 (Session 15)
 
 ## Quick Status
-- In Progress: 0
-- Todo: 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate — the only remaining wedge work, hardware-only)
-- Done: 64 — **all software-doable AI tasks complete; + v1.1 polish US-104, US-101; TD-10 resolved**
+- In Progress: 1 (Kantan grid #3 — Tier 1 done; Tier 2 Bezier next)
+- Todo: 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate — hardware-only)
+- Done: 66 — **AI wedge software-complete; v1.1 polish US-104/US-101 + UV grid #2; TD-10 resolved; Kantan grid Tier 1 (Linear parity)**
 - Blocked: 0
 
 ## Session 15 (2026-06-16) — v1.1 polish + QM-061 prep

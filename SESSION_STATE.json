@@ -4,20 +4,20 @@
   "sessionInfo": {
     "sessionNumber": 15,
     "startTime": "2026-06-16T20:00:00Z",
-    "endTime": null,
-    "status": "active"
+    "endTime": "2026-06-17T00:00:00Z",
+    "status": "completed"
   },
   "currentWork": {
     "activeTaskId": null,
-    "activeTaskTitle": "AI Pre-Show initiative SOFTWARE-COMPLETE (QM-055..060 + 062); only hardware-gated QM-061 remains",
-    "currentFile": "branch dev (all session-14 work; pushed to origin/dev). master = clean baseline fb4c85b.",
+    "activeTaskTitle": "v1.1 polish shipped + Kantan-style grid Tier 1 COMPLETE; AI wedge still gated on hardware QM-061",
+    "currentFile": "branch dev (all session-15 work; pushed to origin/dev). master = clean baseline fb4c85b.",
     "currentFunction": null,
-    "workInProgress": "Nothing in progress. Session 14 took Phase 9 from 'QM-055 done, uncommitted' to the entire AI pre-show wedge built end-to-end: Surface-Snap Assist (QM-055..058) + One-Flash auto-warp (QM-059/060) + anamorphic (QM-062), 7 tasks, each watched working in the real app. QM-056 sidecar (Python stdlib HTTP + C++ WinHTTP/SidecarClient, Job Object lifecycle, graceful absence). QM-057 Metric3D metric-depth + Open3D segment_plane -> 4 corners + confidence (verticality gate drops gallery floor-trap to ~0). QM-058 Detect Surface UI (apply proposed quad, Tab+arrow refine, low-conf 'tap the surface') = Phase 1 ships. QM-059 ChArUco pattern emit (renderPatternToOutputs) + camera capture to disk. QM-060 POST /oneflash homography solve (detect ChArUco ref+photo, match by id -> H, surface target -> H^-1 -> projector corners), validated WITHOUT hardware by a synthetic known-homography test (<0.02, conf 0.99, 0.13px RMS). QM-062 anamorphic (audience rect through H^-1 -> frontal-from-viewpoint). Verified via guarded headless self-test hooks (QM_AI_SELFTEST in {1,oneflash,solve,anamorphic}, QM_AI_TEST_IMAGE) because ImGui menu-driving is unreliable here. Gate held all session: 596/596 ctest, 15/15 sidecar pytest, success-metric smoke green.",
+    "workInProgress": "Nothing mid-edit. Session 15 (2D-wedge focus while QM-061 stays hardware-gated): TD-10 resolved (SidecarClient::startAsync worker thread, atomic state + Starting; AI-enable no longer freezes UI). US-104 per-quad color correction (ADR-036, quad.frag uniforms + Inspector + additive .qmap). US-101 per-quad soft-edge blending (ADR-037). Load-path fix: syncProjectToScene now carries colorCorrection/softEdge. #2 UV test-grid (src/renderer/UvTestGrid.*, Blender-style colored grid + 'UV grid on new quads' toggle + test_renderer). #3 Kantan grid ADR-038 accepted and Tier 1 COMPLETE (Kantan Linear parity): batch1 non-uniform control-grid model (uCoords/vCoords replace uniform N x N, behavior-preserving, success-metric edit path index-based so unchanged), batch2 .qmap persistence+migration (writer 1.1.0 -> 1.2.0), batch3a Inspector add/remove divisions, batch3b viewport click-on-edge insert via QuadGeometry::inverseBilinear (unit-tested). #4 3D scan/model-UV researched then SHELVED (deliberate 2D focus). QM-061 runbook + dev->master PR-prep doc written. Gate held: 615/615 ctest (+19), success-metric smoke green; US-101/#2/Tier-1 visually verified via temp env demos (removed).",
     "nextSteps": [
-      "🚩 QM-061 (HARDWARE-ONLY, the make-or-break gate): connect a projector as a 2nd display -> AI > Enable AI Assist -> One-Flash > Emit Pattern -> F11 (flashes ChArUco on the projector) -> photograph surface+pattern with a phone -> point QM_AI_TEST_IMAGE at that photo -> One-Flash > Solve & Apply (or Anamorphic Warp) -> verify content lands aligned. Document failure modes (lighting, throw angle, surface texture). Fallback if it fails: port MIT gray-code structured-light behind the same /oneflash contract.",
-      "Open a dev->master PR (https://github.com/Fiavaion/QUADmapper/pull/new/dev) once QM-061 passes / after review, to bring the AI wedge into master.",
-      "Optional debt: TD-10 (sidecar start() blocks UI ~1-3s -> async worker thread), TD-09 (converge dual media model + on-quad camera display), TD-07 (build exit-code flake, CMake), TD-08 (audio snapshot reclamation, LOW).",
-      "Parallel/alternative track (independent of AI): v1.1 polish — color correction per quad (US-104, low risk) or soft-edge blending (US-101)."
+      "Kantan grid Tier 2: per-control-vertex Bezier handles + decoupled fine render tessellation (smooth curves, full Kantan parity). Then FIELD-TEST the workflow, then Tier 3 (local cell subdivision + T-junction stitching). See ADR-038.",
+      "Manual ~10s confirm of the Tier-1 click-on-edge gesture (the keyboard-only smoke harness can't drive a positioned viewport click; its pieces are unit/visually verified).",
+      "🚩 QM-061 (HARDWARE-ONLY): projector as 2nd display -> AI > Enable AI Assist -> One-Flash > Emit Pattern -> F11 -> phone photo -> QM_AI_TEST_IMAGE -> Solve & Apply -> verify alignment. Runbook: docs/QM-061-hardware-test-runbook.md. On pass, open dev->master PR (body ready: docs/QM-061-pr-prep.md).",
+      "Optional debt: TD-09 (converge dual media model + on-quad camera display), TD-07 (build exit-code flake, CMake), TD-08 (audio snapshot reclamation, LOW). TD-10 is DONE."
     ]
   },
   "context": {
@@ -33,6 +33,12 @@
       "resources/patterns/charuco.png"
     ],
     "keyDecisions": [
+      "ADR-038 Kantan grid: ONE mesh model — the non-uniform control grid (uCoords/vCoords) is the only representation; uniform N x N migrated away with an 'even grid' convenience action (no parallel mesh code paths). Tiers 1+2 then field-test then Tier 3 (local subdivision + T-junction stitching).",
+      "Kantan grid stays within GL 3.3; success-metric edit UX preserved because mesh editing is index-based (drag/Tab-cycle/arrow-nudge unaffected by non-uniform spacing).",
+      "click-on-edge division insert uses QuadGeometry::inverseBilinear (pure, static, unit-tested) to map a viewport click to the quad's (u,v).",
+      ".qmap additive policy (ADR-032 §5): colorCorrection (ADR-036) + softEdge (ADR-037) + control-grid coords (ADR-038) are optional fields written only when non-identity/non-uniform; writer 1.0.0 -> 1.2.0, major unchanged so old builds still open files.",
+      "3D scan / model-UV (#4) SHELVED deliberately to keep focus on the 2D quad-mapping wedge; roadmap + feasibility-spike plan preserved (docs/research) for revisit.",
+      "TD-10 fix: SidecarClient state is std::atomic with a Starting state; startAsync runs the connect on a worker thread joined in stop()/dtor.",
       "C++<->sidecar transport: WinHTTP client + CreateProcess in a Job Object (KILL_ON_JOB_CLOSE) so no orphan; Windows system libs only, no vcpkg dep (ADR-035's HTTP choice).",
       "Authorized running the local ComfyUI Metric3D model (execute code + torch.load weights) and installing open3d/addict/yapf into Python 3.11 — the sidecar's own out-of-build deps.",
       "QM-057 confidence = planar-quality x verticality gate (floor/ceiling -> ~0) x ambiguity gate, so the gallery floor-trap returns LOW confidence instead of confidently wrong.",
@@ -49,7 +55,7 @@
     ]
   },
   "projectState": {
-    "currentPhase": "Phase 9: AI Pre-Show Assist — SOFTWARE-COMPLETE (QM-055..060 + 062 done; only hardware-gated QM-061 remains)",
+    "currentPhase": "v1.1 polish + Kantan-style grid (ADR-038) — Tier 1 COMPLETE; AI wedge (Phase 9) software-complete, gated on hardware QM-061",
     "completedPhases": [
       "Phase 0: Infrastructure Setup",
       "Phase 1: Core Foundation",
@@ -60,17 +66,39 @@
       "Phase 6: Audio System",
       "Phase 7: Polish",
       "Phase 8: ADR-031 Refactor (complete, merged to master)",
-      "Phase 9: AI Pre-Show Assist — software-complete (Surface-Snap + One-Flash + anamorphic); QM-061 hardware gate outstanding"
+      "Phase 9: AI Pre-Show Assist — software-complete (Surface-Snap + One-Flash + anamorphic); QM-061 hardware gate outstanding",
+      "v1.1 polish: US-104 color correction + US-101 soft-edge blending + UV test-grid (#2)",
+      "Kantan-style grid (ADR-038) Tier 1 COMPLETE — non-uniform control grid (Linear parity); Tier 2 (Bezier) next"
     ],
     "buildStatus": "success",
-    "lastSuccessfulBuild": "2026-06-16T19:45:00Z",
-    "note": "Entire AI pre-show wedge built end-to-end and verified in the real app this session (QM-055..060 + 062). Optional Python sidecar (tools/ai-sidecar/): Metric3D surface detection + Open3D plane fit + ChArUco One-Flash homography solve + anamorphic. C++ src/ai/SidecarClient (WinHTTP + Job Object), AI menu (Enable / Detect Surface / One-Flash {Emit, Capture, Solve & Apply, Anamorphic, Clear}). Geometry-only results; .qmap + C++ build + vcpkg manifest untouched. 596/596 ctest; 15/15 sidecar pytest; success-metric smoke green. ALL work on branch dev (origin/dev); master clean at fb4c85b. Only remaining AI work: 🚩 QM-061 real-device test (hardware-only)."
+    "lastSuccessfulBuild": "2026-06-17T00:00:00Z",
+    "note": "Session 15 (2D-wedge focus). v1.1 polish shipped: per-quad color correction (ADR-036) + soft-edge blending (ADR-037) in quad.frag + Inspector; UV test-grid (#2). TD-10 resolved (async sidecar start). Kantan grid (ADR-038) Tier 1 complete: non-uniform control-grid model (uCoords/vCoords), .qmap persistence/migration (writer 1.2.0), Inspector add/remove, viewport click-on-edge insert (inverseBilinear). 3D (#4) shelved. .qmap + C++ build untouched by AI; vcpkg manifest untouched. 615/615 ctest; success-metric smoke green. All work on dev (origin/dev); master clean at fb4c85b. Outstanding: Kantan Tier 2 (Bezier); 🚩 QM-061 hardware test; then dev->master PR."
   },
   "statistics": {
-    "totalSessions": 14,
-    "tasksCompleted": 62,
-    "tasksInProgress": 0,
-    "tasksTodo": 5
+    "totalSessions": 15,
+    "tasksCompleted": 66,
+    "tasksInProgress": 1,
+    "tasksTodo": 4
+  },
+  "session15Accomplishments": {
+    "shipped": "14 commits on dev (pushed to origin/dev); master clean at fb4c85b. v1.1 polish + Kantan grid Tier 1.",
+    "items": [
+      "TD-10 RESOLVED: SidecarClient::startAsync worker thread (atomic state + Starting); AI-enable no longer freezes UI; unit test.",
+      "US-104 per-quad color correction (ADR-036): quad.frag brightness/contrast/gamma/RGB-gain + Inspector + additive .qmap; identity = no-op.",
+      "US-101 per-quad soft-edge blending (ADR-037): per-edge feather + gamma; visually verified.",
+      "Fix: syncProjectToScene carries colorCorrection/softEdge through the app's scene rebuild (were dropped on load).",
+      "#2 UV test-grid: src/renderer/UvTestGrid.* (Blender-style colored grid), Apply button + 'UV grid on new quads' toggle, test_renderer (4 tests); visually verified.",
+      "#3 Kantan grid ADR-038 ACCEPTED + Tier 1 COMPLETE: control-grid model (batch1), .qmap persistence/migration 1.2.0 (batch2), Inspector add/remove (batch3a), viewport click-on-edge insert via inverseBilinear (batch3b).",
+      "#4 3D scan/model-UV researched then SHELVED (roadmap preserved).",
+      "QM-061 hardware runbook + dev->master PR-prep doc.",
+      "Gate: 615/615 ctest (+19), success-metric smoke green throughout."
+    ],
+    "lessons": [
+      "A success-metric-critical refactor stays safe when the editing path is index-based: swapping the uniform N x N model for a non-uniform control grid left drag/Tab-cycle/arrow-nudge untouched.",
+      "Make new geometry math testable by extracting it as a pure static (QuadGeometry::inverseBilinear) instead of a UI-TU file-static — forward-then-inverse round-trip tests catch sign/ordering bugs the smoke harness can't.",
+      "Temporary env-gated visual demos (QM_SOFTEDGE_DEMO / QM_UVGRID_DEMO / QM_GRIDDEMO) are an honest way to screenshot-verify a visual feature, then remove the scaffolding (git keeps nothing).",
+      "Keyboard-only smoke harness can't drive a positioned viewport mouse click; verify the pieces (math round-trip + insert logic + render) and flag the live gesture for manual confirm rather than claim it tested."
+    ]
   },
   "session14Accomplishments": {
     "shipped": "branch dev (pushed to origin/dev); master clean at fb4c85b — dev->master PR pending review/hardware test",

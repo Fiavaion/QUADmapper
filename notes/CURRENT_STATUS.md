@@ -1,79 +1,63 @@
 # Current Status
 
-**Last updated:** 2026-06-16 (end of Session 14)
-**Phase / focus:** **Phase 9 (AI Pre-Show Assist) is SOFTWARE-COMPLETE.** The whole wedge —
-Surface-Snap Assist + One-Flash auto-warp + anamorphic — is built and watched working. The only
-remaining AI work is the hardware-gated **🚩 QM-061** (real projector + surface + phone photo).
-**Branch:** `dev` (all Session-14 work, pushed to `origin/dev`). **`master` = clean baseline
-`fb4c85b`** (Session 12) — main stays clean until a `dev`→`master` PR.
-**Build:** ✅ app builds & launches   **Tests:** ✅ 596/596 ctest + 15/15 sidecar pytest
-**Smoke:** ✅ green (success metric intact: warp + F11 projector)
+**Last updated:** 2026-06-17 (end of Session 15)
+**Phase / focus:** **2D-wedge work.** v1.1 polish shipped + **Kantan-style grid (ADR-038) Tier 1
+COMPLETE**. The AI pre-show wedge (Phase 9) stays software-complete and gated on the hardware-only
+**🚩 QM-061**.
+**Branch:** `dev` (all Session-15 work, pushed to `origin/dev`). **`master` = clean baseline
+`fb4c85b`** — main stays clean until a `dev`→`master` PR.
+**Build:** ✅ app builds & launches   **Tests:** ✅ 615/615 ctest (+ 15/15 sidecar pytest)
+**Smoke:** ✅ green (success metric intact: warp + F11 projector). **`.qmap` writer = 1.2.0.**
 
-## What works right now (grounded, verified this session)
-The **core projection-mapping success metric is intact** (add quad → warp via Tab-cycle +
-arrow-nudge → F11 to projector) AND the **entire AI pre-show wedge runs end-to-end in the app:**
+## What shipped this session (grounded, verified)
+- **TD-10 resolved** — `SidecarClient::startAsync()` (worker thread, atomic state + `Starting`);
+  AI-enable no longer freezes the UI.
+- **US-104 color correction** (ADR-036) — per-quad brightness/contrast/gamma/RGB in `quad.frag` +
+  Inspector "Color Correction"; identity = render no-op.
+- **US-101 soft-edge blending** (ADR-037) — per-edge feather + gamma; Inspector "Soft Edge
+  Blending". Visually verified.
+- **#2 UV test-grid** — `src/renderer/UvTestGrid.*` (Blender-style colored grid) + "Apply UV Test
+  Grid" button + "UV grid on new quads" toggle. Visually verified.
+- **#3 Kantan grid (ADR-038) Tier 1 COMPLETE** — non-uniform control grid (Kantan **Linear**
+  parity): model (uCoords/vCoords) + `.qmap` persistence/migration + Inspector add/remove + viewport
+  **click-on-edge insert** (`QuadGeometry::inverseBilinear`, unit-tested). Success-metric edit path
+  (drag + Tab-cycle + arrow-nudge) unchanged because it's index-based.
+- **#4 3D scan / model-UV** — researched then **SHELVED** (deliberate 2D focus; roadmap preserved).
+- **Load-path fix** — `syncProjectToScene` now carries colorCorrection/softEdge.
 
-- **Detect Surface (QM-058):** capture a frame → Metric3D surface detection → the proposed quad is
-  applied to the selected quad; low confidence prompts "tap the surface" (gallery floor-trap → 0.00,
-  screen → 0.58). Refine with the normal Tab+arrow UX, send F11.
-- **One-Flash (QM-059/060):** AI ▸ One-Flash ▸ Emit Pattern flashes a ChArUco fullscreen on the
-  projector; Solve & Apply detects the pattern in a photo, solves the projector↔surface homography,
-  and warps the quad so content lands on the surface. Synthetic test recovers corners to <0.02
-  (conf 0.99).
-- **Anamorphic (QM-062):** AI ▸ One-Flash ▸ Anamorphic Warp maps a centered audience rectangle back
-  through the homography so content reads frontal from the captured viewpoint.
+## NEXT TASK — resume here
+**Kantan grid Tier 2 — Bezier handles + decoupled fine tessellation** (smooth curves, full Kantan
+parity). Then **field-test the workflow**, then **Tier 3** (local cell subdivision + T-junction
+stitching — the "beyond Kantan" capability; its real cost is crack-free rendering). Design + phased
+plan: @docs/adr/0038-kantan-style-grid-warp.md.
 
-All AI results are **geometry-only** (ordinary quad corners) — `.qmap`, the C++ build, and the
-vcpkg manifest are **untouched** (the Python sidecar is an optional out-of-build component).
+Quick before/alongside: a **~10s manual confirm of the Tier-1 click-on-edge gesture** — the
+keyboard-only smoke harness can't drive a positioned viewport click; its pieces (inverse-bilinear
+round-trip, insert logic, division rendering) are each verified.
 
-## NEXT TASK — resume here: **🚩 QM-061 (hardware-only — the make-or-break gate)**
-This is the one thing this environment couldn't close. Phase 2 is not "done" until it passes.
-1. Connect a **projector** as a second display, aimed at a real surface.
-2. App: select a quad → **AI ▸ Enable AI Assist** → **One-Flash ▸ Emit Pattern** → **F11**.
-3. **Photograph** the surface + projected pattern with a phone; copy the photo to the PC.
-4. Set `QM_AI_TEST_IMAGE` to that photo → **One-Flash ▸ Solve & Apply** (or **Anamorphic Warp**) →
-   verify the projected content lands aligned. Document failure modes (lighting, throw, texture).
-5. **Fallback if it fails:** port MIT gray-code structured-light behind the same `/oneflash` contract.
+## Still open (independent of the grid)
+- **🚩 QM-061** real-device test (projector + surface + phone) — turnkey runbook at
+  @docs/QM-061-hardware-test-runbook.md. On pass → open the `dev`→`master` PR (body ready:
+  @docs/QM-061-pr-prep.md).
+- Optional debt: TD-09 (dual media model + on-quad camera), TD-07 (build exit-code flake, CMake),
+  TD-08 (audio snapshot reclamation, LOW). **TD-10 is done.**
 
-When QM-061 passes / after review, open the **`dev`→`master` PR**
-(https://github.com/Fiavaion/QUADmapper/pull/new/dev) to bring the wedge into `master`.
-
-Parallel/alternative track (independent of AI): v1.1 polish — color correction per quad (US-104,
-low risk) or soft-edge blending (US-101).
-
-## The AI sidecar (how to run it / where things are)
-- `tools/ai-sidecar/` — optional Python service (loopback HTTP+JSON). `sidecar.py` routes
-  `/health`, `/surface` (Metric3D), `/oneflash` (ChArUco homography). `surface.py`, `oneflash.py`,
-  `gen_pattern.py` (regenerates `resources/patterns/charuco.png`). Deps in `requirements.txt`
-  (numpy/opencv/open3d/+ torch with CUDA; Metric3D from the local ComfyUI tree via `QM_M3D_*` env).
-- C++ side: `src/ai/SidecarClient` (WinHTTP client + Job-Object process lifecycle). AI menu in
-  `MainMenuBar`; flow in `Application::{aiDetectSurface, oneFlashEmitPattern, oneFlashCapturePhoto,
-  runOneFlash, oneFlashSolveAndApply, oneFlashAnamorphic}`.
-- **Verification seams (off in normal runs):** `QM_AI_SELFTEST` ∈ {1, oneflash, solve, anamorphic}
-  drives a headless self-test; `QM_AI_TEST_IMAGE` feeds a fixed photo. Driven by
-  `tests/smoke/drive_ai_smoke.ps1 -SelfTestMode <mode>`.
-
-## Open debt (none blocking — see TECHNICAL_DEBT.md)
-- **TD-10** — sidecar `start()` blocks the UI ~1–3s on enable (pre-show, button-triggered);
-  async worker thread when convenient.
-- **TD-09** — converge the two media models + on-quad camera display (success-metric risk; own ADR).
-- **TD-07** — build exit-code flake (gtest discovery timeout; CMake → needs approval).
-- **TD-08** — defer audio snapshot reclamation to the control thread (LOW).
+## How to try the grid (app launched this session)
+Select a quad → Inspector ▸ Geometry: **Click-add Column/Row** then click in the viewport to drop a
+division where you click; **Insert pos** + **Add/Del Column/Row** for precise placement; **Even Grid
+(N×N)** resets; tick **Edit Mesh Vertices** then drag handles / Tab+arrows to warp. `.qmap` stores
+the non-uniform grid (v1.2). Color Correction + Soft Edge sections are below Geometry.
 
 ## Verification gate (non-negotiable)
-`cmake --build build/debug` → `ctest --test-dir build/debug` (596/596) →
-`tests/smoke/drive_smoke.ps1` (warp + projector). AI: `tools/ai-sidecar` → `python -m pytest`
-(15/15, surface tests skip without the model). When media is touched, also the media/image smoke.
-Run smoke harnesses by **absolute path** (nested `$PSScriptRoot` mangles).
-
-## Blockers
-QM-061 needs physical hardware (projector + surface + phone). Everything else is done & green.
+`cmake --build build/debug` → `ctest --test-dir build/debug` (615/615) →
+`tests/smoke/drive_smoke.ps1` (warp + projector). Run smoke harnesses by **absolute path**. When
+media is touched, also the media/image smoke. AI: `tools/ai-sidecar` `python -m pytest` (15/15).
 
 ## Reference links
-- Decisions: @docs/adr/0035-ai-preshow-sidecar.md · @docs/adr/0034-render-decomposition.md · @docs/adr/0031-keep-vs-rebuild.md
-- Roadmap: @docs/research/ai-preshow-roadmap-2026-06-16.md (QM-055..062) · spike @docs/research/snap-to-surface-spike-2026-06-16.md
+- Decisions: @docs/adr/0038-kantan-style-grid-warp.md · @docs/adr/0036-per-quad-color-correction.md ·
+  @docs/adr/0037-per-quad-soft-edge-blending.md · @docs/adr/0035-ai-preshow-sidecar.md
+- Tasks: @TASKS.md · Machine state: @SESSION_STATE.json · Latest log: @docs/sessions/2026-06-17-session15-v11-grid.md
 - Debt: @TECHNICAL_DEBT.md · Success metric: @CLAUDE.md#success-metric
-- Tasks: @TASKS.md · Machine state: @SESSION_STATE.json · Latest log: @docs/sessions/2026-06-16-session14-ai-wedge.md
 
 <!-- Rewrite this whole file at /end. It is the restart package: the next session reads
 THIS (plus the latest docs/sessions/ log), not the chat history. Keep it to one page. -->
