@@ -1,7 +1,10 @@
 # 3D Object Scan / Model-UV Projection — Research & Roadmap
 
 **Date:** 2026-06-16 (Session 15)
-**Status:** Research / planning only — **no implementation; needs a feasibility spike then an ADR**
+**Status:** **SHELVED (2026-06-17) — deliberate decision to keep focus on the 2D quad-mapping
+wedge + QM-061.** Not rejected on technical merit; parked. Revisit by running the Spike-1/2
+feasibility (below) if/when 3D projection mapping becomes a priority. No 3D code will be written
+until that spike is run and ADR-039 is accepted.
 **Owner:** Jones
 
 ## The ask (#4)
