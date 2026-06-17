@@ -4,6 +4,7 @@
 #include "core/Result.hpp"
 #include "core/UUID.hpp"
 #include "scene/QuadManager.hpp"
+#include "scene/Scene.hpp"
 #include "renderer/Renderer.hpp"
 #include "renderer/Texture.hpp"
 #include <vector>
@@ -230,15 +231,23 @@ public:
 
     // Rendering
     /**
-     * Render the warped scene to all enabled, created output windows.
-     * Each output uses its own Renderer instance (created in that output's GL context)
-     * so VAOs are always context-local. Shared textures bind fine across contexts.
+     * Render each enabled output's ASSIGNED scene to that output window (ADR-039
+     * per-output routing). An output shows the one scene whose assignedOutputId is
+     * this output's id; outputs with no assigned scene clear to black. Each output
+     * uses its own context-local Renderer; shared textures bind across contexts.
      * Selection highlighting and editor handles are suppressed — output is clean.
-     * @param quadManager  The live scene's quad manager (read-only)
-     * @param textures     Map of quad UUID → Texture* (pointers owned by EditorState)
+     * @param scenes    The project's scenes (read-only); each may target one output
+     * @param textures  Map of quad UUID → Texture* (pointers owned by EditorState)
      */
-    void renderToOutputs(const QuadManager& quadManager,
+    void renderToOutputs(const std::vector<std::unique_ptr<Scene>>& scenes,
                          const std::unordered_map<UUID, Texture*>& textures);
+
+    /**
+     * Pure routing decision: the scene assigned to a given output id, or nullptr if
+     * none. Static + side-effect-free so the routing rule is unit-testable without GL.
+     */
+    static const Scene* sceneForOutput(const std::vector<std::unique_ptr<Scene>>& scenes,
+                                       const UUID& outputId);
 
     /**
      * Render a single fullscreen calibration quad (One-Flash pattern, QM-059) to

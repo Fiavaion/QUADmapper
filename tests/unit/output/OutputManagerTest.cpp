@@ -189,9 +189,26 @@ TEST(OutputManagerTest, RenderToOutputsIsSafeWhenNotInitialized) {
     manager.createOutput("Test");
 
     // Should not crash with no enabled/created outputs (no GL context here).
-    QuadManager quadManager;
+    std::vector<std::unique_ptr<Scene>> scenes;
     std::unordered_map<UUID, Texture*> textures;
-    manager.renderToOutputs(quadManager, textures);
+    manager.renderToOutputs(scenes, textures);
+}
+
+TEST(OutputManagerTest, SceneForOutputRoutesByAssignedOutputId) {
+    std::vector<std::unique_ptr<Scene>> scenes;
+    auto a = std::make_unique<Scene>();
+    auto b = std::make_unique<Scene>();
+    UUID outA = UUID::generate();
+    UUID outB = UUID::generate();
+    a->setAssignedOutputId(outA);
+    // b intentionally left unassigned
+    Scene* aPtr = a.get();
+    scenes.push_back(std::move(a));
+    scenes.push_back(std::move(b));
+
+    EXPECT_EQ(OutputManager::sceneForOutput(scenes, outA), aPtr);   // routed
+    EXPECT_EQ(OutputManager::sceneForOutput(scenes, outB), nullptr); // nothing assigned
+    EXPECT_EQ(OutputManager::sceneForOutput(scenes, UUID::null()), nullptr);
 }
 
 TEST(OutputManagerTest, CreateMultipleOutputsAndDelete) {

@@ -417,6 +417,22 @@ bool Application::initializeComponents() {
     m_outputManager->enableMonitorChangeDetection();
     Logger::info("Output manager initialized with {} monitors", m_outputManager->getMonitorCount());
 
+    // ADR-039 P2: create the default output and route the default scene to it. The
+    // default scene targets the 2nd monitor (the projector) when present, else the
+    // only display — "launch already aimed at the projector". There is always >= 1
+    // output, so the F11 lazy-create path becomes a no-op.
+    {
+        int monitorCount = static_cast<int>(m_outputManager->getMonitorCount());
+        int targetMonitor = (monitorCount > 1) ? 1 : 0;
+        OutputWindow* defaultOutput = m_outputManager->createOutput("Projector 1");
+        if (defaultOutput) {
+            defaultOutput->setMonitor(targetMonitor);
+            m_editorState->activeScene().setAssignedOutputId(defaultOutput->getId());
+            Logger::info("Default scene assigned to output '{}' on monitor {}",
+                         defaultOutput->getName(), targetMonitor);
+        }
+    }
+
     // Create input manager
     m_inputManager = std::make_unique<InputManager>();
 
@@ -1315,7 +1331,7 @@ void Application::renderToProjectorOutputs() {
         textures[es.videoAssignedQuadId] = &es.videoTexWrapper;
     }
 
-    m_outputManager->renderToOutputs(es.quadManager(), textures);
+    m_outputManager->renderToOutputs(es.scenes, textures);
 }
 
 void Application::shutdown() {

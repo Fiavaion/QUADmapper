@@ -384,7 +384,20 @@ Result<void, Error> OutputManager::togglePerformMode(bool borderless) {
     }
 }
 
-void OutputManager::renderToOutputs(const QuadManager& quadManager,
+const Scene* OutputManager::sceneForOutput(
+        const std::vector<std::unique_ptr<Scene>>& scenes, const UUID& outputId) {
+    if (outputId.isNull()) {
+        return nullptr;
+    }
+    for (const auto& scene : scenes) {
+        if (scene && scene->getAssignedOutputId() == outputId) {
+            return scene.get();
+        }
+    }
+    return nullptr;
+}
+
+void OutputManager::renderToOutputs(const std::vector<std::unique_ptr<Scene>>& scenes,
                                      const std::unordered_map<UUID, Texture*>& textures) {
     if (!mainWindow_) {
         return;
@@ -413,20 +426,22 @@ void OutputManager::renderToOutputs(const QuadManager& quadManager,
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // Render the warped scene without selection outlines or editor handles.
-        // renderQuads() calls renderQuad(*quad, texture, isSelected) — passing
-        // false for every quad via the overload keeps the output clean.
-        auto sortedQuads = quadManager.getQuadsByZOrder();
-        for (const Quad* quad : sortedQuads) {
-            if (!quad || !quad->isVisible()) {
-                continue;
+        // Render only the scene assigned to THIS output (ADR-039 routing). An output
+        // with no assigned scene stays black. renderQuad(...false) keeps it clean
+        // (no selection outlines / editor handles).
+        const Scene* scene = sceneForOutput(scenes, output->getId());
+        if (scene) {
+            for (const Quad* quad : scene->getQuadsByZOrder()) {
+                if (!quad || !quad->isVisible()) {
+                    continue;
+                }
+                const Texture* tex = nullptr;
+                auto it = textures.find(quad->getId());
+                if (it != textures.end()) {
+                    tex = it->second;
+                }
+                renderer->renderQuad(*quad, tex, /*selected=*/false);
             }
-            const Texture* tex = nullptr;
-            auto it = textures.find(quad->getId());
-            if (it != textures.end()) {
-                tex = it->second;
-            }
-            renderer->renderQuad(*quad, tex, /*selected=*/false);
         }
 
         glEnable(GL_DEPTH_TEST);

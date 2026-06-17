@@ -31,6 +31,12 @@ public:
     bool isActive() const { return isActive_; }
     void setActive(bool active) { isActive_ = active; }
 
+    // Output routing (ADR-039): the output window this scene projects to. At most
+    // one output per scene; null means the scene is edit-only (not projected).
+    const UUID& getAssignedOutputId() const { return assignedOutputId_; }
+    void setAssignedOutputId(const UUID& id) { assignedOutputId_ = id; }
+    bool hasAssignedOutput() const { return !assignedOutputId_.isNull(); }
+
     // View state access
     SceneViewState& getViewState() { return viewState_; }
     const SceneViewState& getViewState() const { return viewState_; }
@@ -81,6 +87,7 @@ private:
     UUID id_;
     std::string name_;
     bool isActive_ = false;
+    UUID assignedOutputId_;  // output this scene projects to (null = edit-only)
     SceneViewState viewState_;
     QuadManager quadManager_;
     std::vector<std::unique_ptr<QuadGroup>> groups_;
