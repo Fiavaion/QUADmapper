@@ -51,6 +51,17 @@ void QuadGeometry::setUniformGrid(int n) {
     initializeMeshVertices();
 }
 
+void QuadGeometry::setGridCoords(const std::vector<float>& u,
+                                 const std::vector<float>& v) {
+    if (u.size() < 2 || v.size() < 2) return;
+    uCoords_ = u;
+    vCoords_ = v;
+    // Force pinned endpoints; assume the caller supplied sorted interior values.
+    uCoords_.front() = 0.0f; uCoords_.back() = 1.0f;
+    vCoords_.front() = 0.0f; vCoords_.back() = 1.0f;
+    initializeMeshVertices();
+}
+
 bool QuadGeometry::isUniform() const {
     if (uCoords_.size() != vCoords_.size()) return false;
     const int n = getColumns();

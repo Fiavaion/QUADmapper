@@ -262,6 +262,52 @@ TEST(ProjectSerializerExtraTest, SoftEdgeIdentityOmittedAndBackwardCompatible) {
     EXPECT_TRUE(loadedProject.getQuads()[0].getSoftEdge().isIdentity());
 }
 
+// ADR-038: a non-uniform control grid survives a save/load round-trip; a plain
+// uniform grid stays byte-clean (no uCoords written) and still loads.
+TEST(ProjectSerializerExtraTest, NonUniformGridRoundTrip) {
+    ProjectSerializer serializer;
+
+    Project originalProject;
+    originalProject.setName("Grid Project");
+    Quad quad;
+    quad.setName("Grid Quad");
+    quad.getGeometry().setUniformGrid(2);          // 0, 0.5, 1
+    quad.getGeometry().insertUDivision(0.25f);     // -> 0, 0.25, 0.5, 1
+    quad.getGeometry().insertVDivision(0.8f);
+    ASSERT_FALSE(quad.getGeometry().isUniform());
+    originalProject.getQuads().push_back(std::move(quad));
+    originalProject.getTexturePaths().push_back("");
+
+    std::string json = serializer.serialize(originalProject);
+    EXPECT_NE(json.find("uCoords"), std::string::npos);
+
+    Project loaded;
+    ASSERT_TRUE(serializer.deserialize(json, loaded).isSuccess());
+    const auto& g = loaded.getQuads()[0].getGeometry();
+    EXPECT_FALSE(g.isUniform());
+    ASSERT_EQ(g.getUCoords().size(), 4u);
+    EXPECT_NEAR(g.getUCoord(1), 0.25f, 1e-4f);
+    EXPECT_NEAR(g.getVCoords().back(), 1.0f, 1e-4f);
+}
+
+TEST(ProjectSerializerExtraTest, UniformGridOmitsCoordsButLoads) {
+    ProjectSerializer serializer;
+    Project p;
+    p.setName("Uniform");
+    Quad q;
+    q.getGeometry().setUniformGrid(8);
+    p.getQuads().push_back(std::move(q));
+    p.getTexturePaths().push_back("");
+
+    std::string json = serializer.serialize(p);
+    EXPECT_EQ(json.find("uCoords"), std::string::npos);  // byte-clean uniform
+
+    Project loaded;
+    ASSERT_TRUE(serializer.deserialize(json, loaded).isSuccess());
+    EXPECT_TRUE(loaded.getQuads()[0].getGeometry().isUniform());
+    EXPECT_EQ(loaded.getQuads()[0].getGeometry().getColumns(), 8);
+}
+
 TEST(ProjectSerializerExtraTest, BackwardCompatibilityNoTextureBinding) {
     ProjectSerializer serializer;
     Project project;

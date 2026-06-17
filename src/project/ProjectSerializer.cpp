@@ -72,6 +72,13 @@ static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
     j["meshResolution"] = geometry.getMeshResolution();
     j["meshMode"] = static_cast<int>(geometry.getMeshMode());
 
+    // Non-uniform control grid (ADR-038): persist the division coordinates.
+    // Uniform grids stay byte-clean (reconstructed from meshResolution on load).
+    if (!geometry.isUniform()) {
+        j["uCoords"] = geometry.getUCoords();
+        j["vCoords"] = geometry.getVCoords();
+    }
+
     // Serialize mesh vertex offsets if any exist
     if (geometry.hasMeshModifications()) {
         const auto& meshVertices = geometry.getMeshVertices();
@@ -95,7 +102,14 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
         geometry.setCorners(corners);
     }
 
-    if (j.contains("meshResolution")) {
+    // Control grid (ADR-038): prefer explicit division coords; otherwise migrate
+    // the legacy uniform meshResolution into an even grid. Either way this sets
+    // the vertex count before the offsets below are applied.
+    if (j.contains("uCoords") && j["uCoords"].is_array() &&
+        j.contains("vCoords") && j["vCoords"].is_array()) {
+        geometry.setGridCoords(j["uCoords"].get<std::vector<float>>(),
+                               j["vCoords"].get<std::vector<float>>());
+    } else if (j.contains("meshResolution")) {
         geometry.setMeshResolution(j["meshResolution"].get<int>());
     }
 
@@ -361,7 +375,7 @@ static void loadFlatProject(const nlohmann::json& json, Project& project) {
 Result<void, Error> ProjectSerializer::save(const Project& project, const std::filesystem::path& path) {
     nlohmann::json json;
     json["$schema"] = "quadmapper/project/1.0";
-    json["version"] = "1.1.0";  // 1.1: additive per-quad colorCorrection (ADR-036)
+    json["version"] = "1.2.0";  // 1.2: additive non-uniform control grid (ADR-038)
     json["name"] = project.getName();
 
     // Serialize quads
@@ -424,7 +438,7 @@ Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path
 std::string ProjectSerializer::serialize(const Project& project) {
     nlohmann::json json;
     json["$schema"] = "quadmapper/project/1.0";
-    json["version"] = "1.1.0";  // 1.1: additive per-quad colorCorrection (ADR-036)
+    json["version"] = "1.2.0";  // 1.2: additive non-uniform control grid (ADR-038)
     json["name"] = project.getName();
 
     const auto& quads = project.getQuads();

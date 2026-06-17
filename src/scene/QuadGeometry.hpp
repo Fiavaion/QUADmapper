@@ -47,6 +47,11 @@ public:
     // ADR-038). Clears all mesh offsets. n is clamped to [MIN,MAX]_MESH_RESOLUTION.
     void setUniformGrid(int n);
 
+    // Replace the division coordinates wholesale (used by deserialization). Both
+    // lists must have >= 2 entries; endpoints are forced to exactly 0 and 1.
+    // Resizes (and zero-fills) the offset store to match; caller sets offsets after.
+    void setGridCoords(const std::vector<float>& u, const std::vector<float>& v);
+
     // Insert a division line at normalized position p (0<p<1). No-op if it would
     // duplicate an existing line. New control-vertex offsets are interpolated from
     // the two neighbouring lines so the surface does not jump.
