@@ -213,7 +213,7 @@ TEST(MeshSubdivisionTest, IsValidResolutionReturnsTrueForValidValues) {
 
 TEST(MeshSubdivisionTest, IsValidResolutionReturnsFalseForInvalidValues) {
     EXPECT_FALSE(MeshSubdivision::isValidResolution(0));
-    EXPECT_FALSE(MeshSubdivision::isValidResolution(1));
+    // 1x1 (single cell) is a valid grid since the ADR-038 stopgap (MIN_MESH_RESOLUTION=1).
     EXPECT_FALSE(MeshSubdivision::isValidResolution(MIN_MESH_RESOLUTION - 1));
     EXPECT_FALSE(MeshSubdivision::isValidResolution(MAX_MESH_RESOLUTION + 1));
     EXPECT_FALSE(MeshSubdivision::isValidResolution(100));

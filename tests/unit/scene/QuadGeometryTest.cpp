@@ -427,6 +427,42 @@ TEST(QuadGeometryControlGridTest, EndpointsAndDuplicatesRejected) {
     EXPECT_EQ(g.vertsPerRow(), before);
 }
 
+// --- ADR-038 stopgap: clean 1x1 start, insert-returns-index, drag-to-position ---
+
+TEST(QuadGeometryControlGridTest, DefaultGeometryStartsAsSingleCell) {
+    QuadGeometry g;
+    EXPECT_EQ(g.getColumns(), 1);   // no internal divisions out of the box
+    EXPECT_EQ(g.getRows(), 1);
+    EXPECT_EQ(g.vertsPerRow(), 2);
+}
+
+TEST(QuadGeometryControlGridTest, InsertDivisionReturnsInsertedIndex) {
+    QuadGeometry g;                 // 1x1: uCoords {0,1}
+    const int col = g.insertUDivision(0.4f);
+    EXPECT_EQ(col, 1);              // inserted between the two endpoints
+    EXPECT_FLOAT_EQ(g.getUCoord(col), 0.4f);
+    const int row = g.insertVDivision(0.6f);
+    EXPECT_EQ(row, 1);
+    EXPECT_FLOAT_EQ(g.getVCoord(row), 0.6f);
+    // Rejected inserts report -1 and don't change the grid.
+    EXPECT_EQ(g.insertUDivision(0.4f), -1);  // duplicate
+    EXPECT_EQ(g.insertUDivision(1.0f), -1);  // endpoint
+}
+
+TEST(QuadGeometryControlGridTest, MoveDivisionRepositionsLineClampedBetweenNeighbours) {
+    QuadGeometry g;
+    g.setUniformGrid(4);                 // 0,.25,.5,.75,1
+    g.moveUDivision(2, 0.40f);           // move the .5 line left
+    EXPECT_FLOAT_EQ(g.getUCoord(2), 0.40f);
+    // Cannot cross a neighbour: clamps to just inside [.25, .75].
+    g.moveUDivision(2, 0.95f);
+    EXPECT_LT(g.getUCoord(2), 0.75f);
+    EXPECT_GT(g.getUCoord(2), 0.74f);
+    // Endpoints never move.
+    g.moveUDivision(0, 0.5f);
+    EXPECT_FLOAT_EQ(g.getUCoord(0), 0.0f);
+}
+
 // --- Inverse bilinear (ADR-038 batch 3b: click-on-edge insert) --------------
 
 TEST(QuadGeometryControlGridTest, InverseBilinearRoundTripsOnWarpedQuad) {

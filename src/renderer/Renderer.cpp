@@ -81,6 +81,14 @@ void Renderer::shutdown() {
         glDeleteBuffers(1, &outlineVBO_);
         outlineVBO_ = 0;
     }
+    if (gridVAO_ != 0) {
+        glDeleteVertexArrays(1, &gridVAO_);
+        gridVAO_ = 0;
+    }
+    if (gridVBO_ != 0) {
+        glDeleteBuffers(1, &gridVBO_);
+        gridVBO_ = 0;
+    }
     if (handleVAO_ != 0) {
         glDeleteVertexArrays(1, &handleVAO_);
         handleVAO_ = 0;
@@ -145,6 +153,17 @@ void Renderer::createOutlineBuffers() {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 
+    glBindVertexArray(0);
+
+    // Mesh-grid wireframe buffer (dynamic; reuses the outline shader). Sized for the
+    // worst-case 64x64 control grid: 2 axes * 65 lines * 64 segments * 2 endpoints.
+    glGenVertexArrays(1, &gridVAO_);
+    glGenBuffers(1, &gridVBO_);
+    glBindVertexArray(gridVAO_);
+    glBindBuffer(GL_ARRAY_BUFFER, gridVBO_);
+    glBufferData(GL_ARRAY_BUFFER, 2 * 65 * 64 * 2 * 2 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
     glBindVertexArray(0);
 }
 
@@ -333,6 +352,45 @@ void Renderer::renderQuadOutline(const Quad& quad, const glm::vec4& color, float
     glLineWidth(1.0f);
 }
 
+void Renderer::renderMeshGrid(const Quad& quad, const glm::vec4& color, float lineWidth) {
+    if (!initialized_) {
+        return;
+    }
+
+    const QuadGeometry& geometry = quad.getGeometry();
+    const auto positions = geometry.generateMeshPositions();  // includes edit offsets
+    const int vpr = geometry.vertsPerRow();
+    const int vpc = geometry.vertsPerCol();
+
+    // Build a GL_LINES list: every horizontal and vertical edge of the control grid.
+    gridVertices_.clear();
+    auto pushSeg = [&](const Vec2& a, const Vec2& b) {
+        gridVertices_.push_back(a.x); gridVertices_.push_back(a.y);
+        gridVertices_.push_back(b.x); gridVertices_.push_back(b.y);
+    };
+    for (int r = 0; r < vpc; ++r)
+        for (int c = 0; c + 1 < vpr; ++c)
+            pushSeg(positions[r * vpr + c], positions[r * vpr + c + 1]);
+    for (int c = 0; c < vpr; ++c)
+        for (int r = 0; r + 1 < vpc; ++r)
+            pushSeg(positions[r * vpr + c], positions[(r + 1) * vpr + c]);
+    if (gridVertices_.empty()) {
+        return;
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, gridVBO_);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, gridVertices_.size() * sizeof(float), gridVertices_.data());
+
+    outlineShader_.bind();
+    outlineShader_.setVec4("u_OutlineColor", color);
+    glLineWidth(lineWidth);
+    glBindVertexArray(gridVAO_);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridVertices_.size() / 2));
+    glBindVertexArray(0);
+    ShaderProgram::unbind();
+    glLineWidth(1.0f);
+}
+
 void Renderer::createHandleBuffers() {
     // Create a unit circle for handle rendering
     // We'll use 16 segments for a smooth circle
@@ -366,6 +424,16 @@ void Renderer::createHandleBuffers() {
     glBindVertexArray(0);
 }
 
+namespace {
+// Set the handle shader's aspect uniform from the current GL viewport so the
+// unit-circle handles render round instead of stretched by the window aspect.
+void setHandleAspect(ShaderProgram& shader) {
+    GLint vp[4] = {0, 0, 1, 1};
+    glGetIntegerv(GL_VIEWPORT, vp);
+    shader.setFloat("u_Aspect", (vp[3] > 0) ? static_cast<float>(vp[2]) / vp[3] : 1.0f);
+}
+}  // namespace
+
 void Renderer::renderCornerHandles(const Quad& quad, int hoveredIndex, int draggedIndex, int selectedIndex) {
     if (!initialized_) {
         return;
@@ -375,10 +443,12 @@ void Renderer::renderCornerHandles(const Quad& quad, int hoveredIndex, int dragg
     const auto& corners = geometry.getCorners();  // TL, TR, BR, BL
 
     // Handle sizes - corners are slightly larger than mesh handles
-    constexpr float HANDLE_SIZE = 0.010f;
-    constexpr float SELECTED_HANDLE_SIZE = 0.013f;
+    constexpr float HANDLE_SIZE = 0.009f;
+    constexpr float SELECTED_HANDLE_SIZE = 0.012f;
 
     handleShader_.bind();
+
+    setHandleAspect(handleShader_);
 
     // Draw each corner handle
     constexpr int SEGMENTS = 16;
@@ -433,11 +503,14 @@ void Renderer::renderMeshHandles(const Quad& quad, int hoveredIndex, int dragged
     // Get mesh positions (with offsets applied)
     auto positions = geometry.generateMeshPositions();
 
-    // Handle size in normalized coordinates (approx 10 pixels for a 1920 wide window)
-    constexpr float HANDLE_SIZE = 0.008f;
-    constexpr float SELECTED_HANDLE_SIZE = 0.010f;  // Slightly larger for selected
+    // Mesh handles are small so a dense control grid stays readable (not a blob
+    // field). Sizes are radii in normalized-Y units; the shader keeps them round.
+    constexpr float HANDLE_SIZE = 0.005f;
+    constexpr float SELECTED_HANDLE_SIZE = 0.008f;  // Slightly larger for selected
 
     handleShader_.bind();
+
+    setHandleAspect(handleShader_);
 
     // Draw each handle
     constexpr int SEGMENTS = 16;
@@ -485,10 +558,12 @@ void Renderer::renderSnapIndicator(const Vec2& position) {
     }
 
     // Snap indicator: magenta pulsing circle, larger than normal handles
-    constexpr float SNAP_INDICATOR_SIZE = 0.018f;
+    constexpr float SNAP_INDICATOR_SIZE = 0.014f;
     constexpr int SEGMENTS = 16;
 
     handleShader_.bind();
+
+    setHandleAspect(handleShader_);
 
     // Set handle center
     handleShader_.setVec2("u_HandleCenter", position);

@@ -82,7 +82,10 @@ void ViewportEditor::render(EditorContext& ctx) {
         if (selectedQuadForHandles) {
             MeshMode mode = selectedQuadForHandles->getGeometry().getMeshMode();
             if (mode == MeshMode::MESH_EDIT) {
-                // Full mesh editing - show all mesh vertex handles
+                // Draw the control-grid wireframe so division lines are visible,
+                // then the vertex handles on top.
+                m_renderer->renderMeshGrid(*selectedQuadForHandles,
+                                           glm::vec4(0.0f, 0.8f, 1.0f, 0.6f), 1.0f);
                 m_renderer->renderMeshHandles(*selectedQuadForHandles, meshHoveredVertex, meshDraggedVertex, meshSelectedVertex);
             } else {
                 // CORNERS_ONLY mode (default) - show just the 4 corner handles
@@ -105,19 +108,25 @@ void ViewportEditor::render(EditorContext& ctx) {
             QuadGeometry& geometry = selectedQuad->getGeometry();
             MeshMode mode = geometry.getMeshMode();
 
-            // Get mouse position in normalized coordinates
+            // Get mouse position in normalized coordinates.
+            // glfwGetCursorPos returns screen/window (logical) coordinates, so it
+            // must be normalized by the WINDOW size — not the framebuffer size.
+            // On a display with scaling != 100% the framebuffer (pixels) is larger
+            // than the window (logical), and dividing by the framebuffer skews every
+            // hit-test by the DPI factor, making the on-canvas handles unclickable.
             double mouseX, mouseY;
             glfwGetCursorPos(m_window, &mouseX, &mouseY);
 
-            int fbWidth, fbHeight;
-            glfwGetFramebufferSize(m_window, &fbWidth, &fbHeight);
+            int winWidth, winHeight;
+            glfwGetWindowSize(m_window, &winWidth, &winHeight);
 
             Vec2 mouseNorm(
-                static_cast<float>(mouseX) / fbWidth,
-                static_cast<float>(mouseY) / fbHeight
+                static_cast<float>(mouseX) / winWidth,
+                static_cast<float>(mouseY) / winHeight
             );
 
             bool mouseDown = glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+
             constexpr float HIT_RADIUS = 0.015f;  // Slightly larger hit radius for corners
             constexpr float SNAP_RADIUS = 0.02f;  // Snap threshold for vertex snapping
 
@@ -165,24 +174,43 @@ void ViewportEditor::render(EditorContext& ctx) {
                 return snappedPos;
             };
 
-            // Grid-division insert tool (ADR-038 Tier 1 batch 3b): when armed, a
-            // fresh click inside the quad inserts a division at the clicked param
-            // position. Latched so one press inserts once; suppresses drag-starts.
+            // Grid-division insert tool (ADR-038): when armed, pressing inside the
+            // quad inserts ONE division at the clicked param position and then lets
+            // you DRAG it to fine-position the line; releasing commits and disarms
+            // (one-shot, so dragging vertices resumes). Esc cancels. This avoids the
+            // trap of an armed mode silently swallowing every click with no way out.
             if (es.gridInsert != EditorState::GridInsert::None) {
-                if (mouseDown && !es.gridInsertMouseLatch) {
-                    es.gridInsertMouseLatch = true;
+                const bool isColumn = (es.gridInsert == EditorState::GridInsert::Column);
+                if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                    es.gridInsert = EditorState::GridInsert::None;
+                    es.gridInsertMouseLatch = false;
+                    es.gridInsertDragIndex = -1;
+                } else if (mouseDown) {
                     Vec2 uv = QuadGeometry::inverseBilinear(geometry.getCorners(), mouseNorm);
-                    if (uv.x > 0.001f && uv.x < 0.999f &&
-                        uv.y > 0.001f && uv.y < 0.999f) {
-                        if (es.gridInsert == EditorState::GridInsert::Column) {
-                            geometry.insertUDivision(uv.x);
-                        } else {
-                            geometry.insertVDivision(uv.y);
+                    if (!es.gridInsertMouseLatch) {
+                        // Press edge: insert the new line where the user clicked.
+                        es.gridInsertMouseLatch = true;
+                        if (uv.x > 0.001f && uv.x < 0.999f &&
+                            uv.y > 0.001f && uv.y < 0.999f) {
+                            es.gridInsertDragIndex = isColumn
+                                ? geometry.insertUDivision(uv.x)
+                                : geometry.insertVDivision(uv.y);
+                            m_project->setModified(true);
                         }
+                    } else if (es.gridInsertDragIndex >= 0) {
+                        // Held: drag the just-inserted line to fine-position it.
+                        if (isColumn) geometry.moveUDivision(es.gridInsertDragIndex, uv.x);
+                        else          geometry.moveVDivision(es.gridInsertDragIndex, uv.y);
                         m_project->setModified(true);
                     }
+                } else {
+                    // Release: commit + disarm only if a line was actually placed.
+                    es.gridInsertMouseLatch = false;
+                    if (es.gridInsertDragIndex >= 0) {
+                        es.gridInsert = EditorState::GridInsert::None;
+                        es.gridInsertDragIndex = -1;
+                    }
                 }
-                if (!mouseDown) es.gridInsertMouseLatch = false;
             }
             const bool insertArmed = (es.gridInsert != EditorState::GridInsert::None);
 

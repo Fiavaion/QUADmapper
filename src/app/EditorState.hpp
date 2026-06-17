@@ -107,6 +107,7 @@ struct EditorState {
     enum class GridInsert { None, Column, Row };
     GridInsert gridInsert = GridInsert::None;
     bool gridInsertMouseLatch = false;
+    int gridInsertDragIndex = -1;  // index of the just-inserted division being dragged
 };
 
 }  // namespace quadmapper

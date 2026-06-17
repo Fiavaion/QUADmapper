@@ -22,6 +22,7 @@
 #include <string>
 #include <cstdio>
 #include <cstring>
+#include <cfloat>  // FLT_MIN (full-width button sizing)
 
 namespace quadmapper {
 
@@ -194,12 +195,19 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 texBinding.flipV = !texBinding.flipV;
                 ctx.project->setModified(true);
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Reset UV")) {
-                texBinding.resetUV();
+
+            // Prominent one-click reset for the whole UV transform (offset / coverage
+            // / scale / rotation / flips) back to defaults.
+            ImGui::Spacing();
+            if (ImGui::Button("Reset Transform (Offset / Coverage / Scale / Rotation)",
+                              ImVec2(-FLT_MIN, 0.0f))) {
+                texBinding.resetUV();   // uvOffset=0, uvScale=1 (=100% coverage), uvRotation=0
                 texBinding.flipH = false;
                 texBinding.flipV = false;
                 ctx.project->setModified(true);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Reset pan, coverage/scale, rotation and flips to defaults");
             }
 
             ImGui::Spacing();
@@ -324,7 +332,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::Separator();
             // Even grid (uniform N×N) — the convenience action; resets divisions.
             int meshRes = geometry.getMeshResolution();
-            if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 2, 64)) {
+            if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64)) {
                 geometry.setUniformGrid(meshRes);
                 ctx.project->setModified(true);
             }
@@ -373,7 +381,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             }
             if (ctx.es.gridInsert != GridInsert::None) {
                 ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                                   "Click in the viewport to add a line");
+                                   "Press in the viewport and drag to position the line "
+                                   "(Esc to cancel)");
             }
 
             // Mesh Edit Mode

@@ -40,6 +40,9 @@ public:
     // Render selection outline for a quad
     void renderQuadOutline(const Quad& quad, const glm::vec4& color, float lineWidth = 2.0f);
 
+    // Render the control-grid wireframe (division lines) for mesh-edit feedback.
+    void renderMeshGrid(const Quad& quad, const glm::vec4& color, float lineWidth = 1.0f);
+
     // Render corner handles for corner-pin warping (CORNERS_ONLY mode)
     // hoveredIndex: index of handle under mouse (-1 if none, 0-3 for corners)
     // draggedIndex: index of handle being dragged (-1 if none)
@@ -79,6 +82,11 @@ private:
     // OpenGL objects for outline
     uint32_t outlineVAO_ = 0;
     uint32_t outlineVBO_ = 0;
+
+    // OpenGL objects for the mesh-grid wireframe (dynamic, edit-mode only)
+    uint32_t gridVAO_ = 0;
+    uint32_t gridVBO_ = 0;
+    std::vector<float> gridVertices_;
 
     // OpenGL objects for handle circles
     uint32_t handleVAO_ = 0;

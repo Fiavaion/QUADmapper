@@ -7,8 +7,12 @@
 namespace quadmapper {
 
 // Constants
-constexpr int DEFAULT_MESH_RESOLUTION = 16;
-constexpr int MIN_MESH_RESOLUTION = 2;
+// A new quad starts as a single cell (1x1) — no internal divisions — so the user
+// adds division lines deliberately (ADR-038 stopgap). The control grid doubles as
+// the render tessellation in Tier 1, so a 1x1 quad textures affinely until the
+// user adds divisions / Tier 2 decouples render density from the control grid.
+constexpr int DEFAULT_MESH_RESOLUTION = 1;
+constexpr int MIN_MESH_RESOLUTION = 1;
 constexpr int MAX_MESH_RESOLUTION = 64;
 
 // Quad geometry — corners + a control grid (ADR-038).
@@ -54,9 +58,15 @@ public:
 
     // Insert a division line at normalized position p (0<p<1). No-op if it would
     // duplicate an existing line. New control-vertex offsets are interpolated from
-    // the two neighbouring lines so the surface does not jump.
-    void insertUDivision(float u);
-    void insertVDivision(float v);
+    // the two neighbouring lines so the surface does not jump. Returns the index of
+    // the inserted line (its column/row), or -1 if rejected (out of range / dup).
+    int insertUDivision(float u);
+    int insertVDivision(float v);
+    // Move an existing interior division line to a new normalized position, clamped
+    // strictly between its neighbours (endpoints are pinned and cannot move). Used
+    // for drag-to-position placement. No-op for endpoint indices.
+    void moveUDivision(int col, float u);
+    void moveVDivision(int row, float v);
     // Remove an interior division line by index (1..count-1; endpoints can't be
     // removed). Preserves the offsets of the remaining lines.
     void removeUDivision(int col);

@@ -87,11 +87,11 @@ float QuadGeometry::getVCoord(int row) const {
 // Insert a division at p along one axis, interpolating the per-vertex offsets of
 // the new line from its two neighbours. Shared by insertU/VDivision via a lambda
 // that knows whether we are inserting a column (U) or a row (V).
-void QuadGeometry::insertUDivision(float u) {
-    if (u <= 0.0f || u >= 1.0f) return;
+int QuadGeometry::insertUDivision(float u) {
+    if (u <= 0.0f || u >= 1.0f) return -1;
     // Reject near-duplicates.
     for (float c : uCoords_) {
-        if (std::abs(c - u) < 1e-4f) return;
+        if (std::abs(c - u) < 1e-4f) return -1;
     }
     // Find insertion column index k (uCoords_[k-1] < u < uCoords_[k]).
     int k = static_cast<int>(std::upper_bound(uCoords_.begin(), uCoords_.end(), u) -
@@ -114,12 +114,13 @@ void QuadGeometry::insertUDivision(float u) {
     }
     uCoords_.insert(uCoords_.begin() + k, u);
     meshVertices_ = std::move(next);
+    return k;
 }
 
-void QuadGeometry::insertVDivision(float v) {
-    if (v <= 0.0f || v >= 1.0f) return;
+int QuadGeometry::insertVDivision(float v) {
+    if (v <= 0.0f || v >= 1.0f) return -1;
     for (float c : vCoords_) {
-        if (std::abs(c - v) < 1e-4f) return;
+        if (std::abs(c - v) < 1e-4f) return -1;
     }
     int k = static_cast<int>(std::upper_bound(vCoords_.begin(), vCoords_.end(), v) -
                              vCoords_.begin());
@@ -142,6 +143,26 @@ void QuadGeometry::insertVDivision(float v) {
     }
     vCoords_.insert(vCoords_.begin() + k, v);
     meshVertices_ = std::move(next);
+    return k;
+}
+
+void QuadGeometry::moveUDivision(int col, float u) {
+    // Only interior lines move; clamp strictly between the two neighbours.
+    if (col <= 0 || col >= static_cast<int>(uCoords_.size()) - 1) return;
+    constexpr float GAP = 1e-3f;
+    const float lo = uCoords_[col - 1] + GAP;
+    const float hi = uCoords_[col + 1] - GAP;
+    if (hi < lo) return;
+    uCoords_[col] = std::clamp(u, lo, hi);
+}
+
+void QuadGeometry::moveVDivision(int row, float v) {
+    if (row <= 0 || row >= static_cast<int>(vCoords_.size()) - 1) return;
+    constexpr float GAP = 1e-3f;
+    const float lo = vCoords_[row - 1] + GAP;
+    const float hi = vCoords_[row + 1] - GAP;
+    if (hi < lo) return;
+    vCoords_[row] = std::clamp(v, lo, hi);
 }
 
 void QuadGeometry::removeUDivision(int col) {
