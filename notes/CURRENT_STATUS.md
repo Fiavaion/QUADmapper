@@ -6,7 +6,7 @@ multi-scene output routing is **complete (P1–P5) and app-verified end-to-end**
 (Phase 9) stays software-complete, gated on 🚩 QM-061 (hardware).
 **Branch:** `dev` (Sessions 16+17, pushed to `origin/dev` @ `e5c08fa`). **`master` = clean
 baseline `fb4c85b`** (pre-Session-16 — `dev` is well ahead).
-**Build:** ✅ app builds & launches   **Tests:** ✅ 624/624 ctest
+**Build:** ✅ app builds & launches   **Tests:** ✅ 625/625 ctest
 
 ## What shipped this session (grounded, app-verified)
 - **QM-065 (P3) — Scenes UI.** "Scenes" tab ([ScenePanel](../src/ui/panels/ScenePanel.cpp)):
@@ -31,9 +31,8 @@ baseline `fb4c85b`** (pre-Session-16 — `dev` is well ahead).
    after the QM-061 hardware test, but a PR could go up now since everything is software-verified.
 2. 🚩 **QM-061** — real-device AI test (projector + surface + phone). Hardware-only. Runbook
    @docs/QM-061-hardware-test-runbook.md. On pass, this is the trigger to merge `dev`→`master`.
-3. **Optional follow-up:** groups-on-load in `syncProjectToEditor` (see limitation below).
-4. **Optional debt:** TD-07 (build exit-code flake), TD-08 (audio snapshot, LOW), TD-09 (dual
-   media model + on-quad camera).
+3. **Optional debt:** TD-08 (audio snapshot, LOW), TD-09 (dual media model + on-quad camera).
+   *(groups-on-load and TD-07 were closed 2026-06-17 — see below.)*
 
 ## How to use multi-projector today (now fully operable)
 **Resources ▸ Scenes** tab: New/rename scenes, click to make one active, assign each to an output
@@ -42,10 +41,14 @@ via the dropdown. **Resources ▸ Preview** tab: live thumbnail of each projecto
 Save/Load (Project tab or Ctrl+S) persists the whole multi-scene + outputs setup as `.qmap` v3
 (old v1/v2 files still load).
 
-## Known limitation (pre-existing, NOT a regression)
-Quad **groups** round-trip in the `.qmap` file but the load bridge (`syncProjectToEditor`) does
-**not** re-apply them to live scenes — the same gap the old flat bridge had. Fixable in a small
-follow-up if needed.
+## Recently closed follow-ups (2026-06-17, on `dev`)
+- **Groups-on-load FIXED** (`d586da6`). `deserializeQuad`/`deserializeGroup` now preserve the
+  persisted `id`, and `syncProjectToEditor` re-applies each scene's groups onto the live scene
+  (member + nested-parent ids remapped onto the freshly minted quad/group ids). Regression test
+  `V3GroupMembershipRoundTrips`. *Runtime note:* the serializer linkage is unit-verified; the
+  live-scene re-application is verified by code review + the round-trip test, not a GUI run.
+- **TD-07 FIXED** (`4ca12c5`). `gtest_discover_tests DISCOVERY_TIMEOUT 60` ends the spurious
+  `cmake --build` non-zero exit (see TECHNICAL_DEBT.md).
 
 ## Verification gate (non-negotiable)
 `cmake --build build/debug` → `ctest --test-dir build/debug` (624/624) → success-metric warp
