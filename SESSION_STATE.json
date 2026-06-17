@@ -1,58 +1,57 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-17T13:00:00Z",
+  "lastUpdated": "2026-06-17T18:00:00Z",
   "sessionInfo": {
-    "sessionNumber": 16,
-    "startTime": "2026-06-17T09:30:00Z",
-    "endTime": "2026-06-17T13:00:00Z",
+    "sessionNumber": 17,
+    "startTime": "2026-06-17T14:00:00Z",
+    "endTime": "2026-06-17T18:00:00Z",
     "status": "completed"
   },
   "currentWork": {
-    "activeTaskId": "QM-065",
-    "activeTaskTitle": "Multi-scene Scenes UI (ADR-039 P3) — make the working per-output routing user-operable",
-    "currentFile": "branch dev (all session-16 work; pushed to origin/dev @ 54dcec0). master = clean baseline fb4c85b.",
+    "activeTaskId": null,
+    "activeTaskTitle": "ADR-039 multi-scene output routing COMPLETE (P1-P5). No task in progress.",
+    "currentFile": "branch dev (Sessions 16+17; pushed to origin/dev @ e5c08fa). master = clean baseline fb4c85b.",
     "currentFunction": null,
-    "workInProgress": "Nothing mid-edit. Session 16: (1) Mapping-editor fixes — DPI-correct picking (window-size not framebuffer), round aspect-corrected handles + smaller mesh dots, cyan mesh-grid wireframe in edit mode, clean 1x1 default grid (MIN_MESH_RESOLUTION=1), drag-to-position division insert (arm->press->drag->release commits+auto-disarm, Esc cancels; insertU/V return index + new moveU/V clamp), prominent Reset Transform button. (2) ADR-039 multi-scene + per-output routing + preview written (supersedes ADR-033's removal, which anticipated revival). (3) QM-063 P1 DONE — EditorState holds a scene list, edits the ACTIVE scene via activeScene()/quadManager() accessors. (4) QM-064 P2 DONE — Scene::assignedOutputId; renderToOutputs renders each output's assigned scene; pure unit-tested sceneForOutput(); default scene auto-assigned to 2nd monitor at startup; VERIFIED on real 2-monitor hardware (each projector showed its own scene). 619/619 ctest; all green.",
+    "workInProgress": "Nothing mid-edit. Session 17 finished ADR-039 (the multi-projector feature): P3 Scenes UI (QM-065), P4 live per-output preview (QM-066), P5 .qmap v3 persistence (QM-067). 4 commits on dev, pushed. Working tree clean. 624/624 ctest. Every phase app-verified by running the real app via the synthetic-input smoke harness (tests/smoke/drive_scenes_smoke.ps1).",
     "nextSteps": [
-      "QM-065 (P3) Scenes UI: a Scenes panel to add/delete/rename/switch the active scene + assign each scene to an output; viewport + Quad List + Inspector follow the active scene. This is what makes the (working) P2 routing operable from the UI. Revive ScenePanel from 669a05c^ as a reference but wire it as the active-scene controller.",
-      "QM-066 (P4) Live per-output preview: render each output's assigned scene to an offscreen FBO once/frame and show ImGui thumbnails (revive PreviewPanel from 669a05c^).",
-      "QM-067 (P5) .qmap v3 persistence: writer emits scenes[] + outputs[] (each scene: id/name/quads/groups/view/assignedOutputId; each output: monitor/resolution/rotation/enabled); readers still accept v1 (flat->one scene) + v2 (legacy scenes); migration tests. Touches the protected .qmap boundary — additive v3, backward-compatible.",
-      "Outstanding from before: 🚩 QM-061 hardware AI test (projector+surface+phone); optional debt TD-07/08/09."
+      "QM-061 (BLOCKED on hardware): real-device AI test (projector + surface + phone). Runbook: docs/QM-061-hardware-test-runbook.md. On pass, open the dev->master PR.",
+      "Consider opening the dev -> master PR now: master is still at the pre-Session-16 baseline fb4c85b, while dev has all of Sessions 16 (mapping fixes + ADR-039 P1/P2) and 17 (ADR-039 P3/P4/P5). ADR-039 is complete and app-verified.",
+      "Optional follow-up: groups-on-load in syncProjectToEditor (groups round-trip in the .qmap file but the load bridge does not re-apply them to live scenes - a pre-existing gap, not a regression).",
+      "Optional debt: TD-07 (build exit-code flake), TD-08 (audio snapshot, LOW), TD-09 (dual media model + on-quad camera)."
     ]
   },
   "context": {
     "recentFiles": [
-      "src/app/EditorState.hpp",
-      "src/scene/Scene.hpp",
+      "src/ui/panels/ScenePanel.cpp",
+      "src/ui/panels/ScenePanel.hpp",
+      "src/ui/panels/OutputPreviewPanel.cpp",
+      "src/renderer/Framebuffer.cpp",
+      "src/renderer/Framebuffer.hpp",
       "src/output/OutputManager.cpp",
-      "src/output/OutputManager.hpp",
+      "src/project/Project.hpp",
+      "src/project/ProjectSerializer.cpp",
       "src/app/Application.cpp",
-      "src/scene/QuadGeometry.cpp",
-      "src/ui/panels/ViewportEditor.cpp",
-      "src/ui/panels/InspectorPanel.cpp",
-      "src/renderer/Renderer.cpp",
-      "src/shaders/handle.vert",
-      "docs/adr/0039-multi-scene-output-routing.md"
+      "src/app/EditorState.hpp",
+      "tests/unit/project/ProjectSerializerTest.cpp",
+      "tests/smoke/drive_scenes_smoke.ps1"
     ],
     "keyDecisions": [
-      "ADR-039: revive multi-scene as a WIRED feature (ADR-033 retired it only as unwired dead code and explicitly anticipated this revival). 1 scene -> at most 1 output; output shows its assigned scene; unassigned outputs render black.",
-      "Live scenes are runtime state in EditorState (the 'active scene of truth'); Project is the serialized DTO. EditorState.scene/quadManager became activeScene()/quadManager() accessors that lazily guarantee >=1 scene.",
-      "Default scene auto-assigns to the 2nd monitor at startup (the projector) via a default output created in Application init; F11 lazy-create becomes a no-op since an output already exists.",
-      "renderToOutputs(scenes, textures) routes per output via the pure, unit-tested OutputManager::sceneForOutput(); replaces the old 'render all quads to every output'.",
-      "Mapping stopgap (ADR-038): a new quad starts 1x1 (no internal divisions); MIN_MESH_RESOLUTION=1. Control grid still doubles as the render mesh, so few-division textured warps are affine until Tier 2 decouples them (user-approved).",
-      "Picking must normalize the cursor by glfwGetWindowSize, not glfwGetFramebufferSize (DPI-correct). Handle shader takes u_Aspect to render round handles.",
-      "P5 will restore SceneManager/ScenePanel/PreviewPanel + v2 serializer from git 669a05c^ as a reference, wiring them properly rather than re-introducing the inert stub.",
-      "Verification method that works on this machine for GUI/mouse/multi-monitor: drive synthetic Win32 input (AttachThreadInput to steal foreground, SetCursorPos + mouse_event/keybd_event) and CopyFromScreen the virtual desktop; cross-check with in-app Logger output.",
-      "Build gotcha: cmake --build --target QUADmapper sometimes skips the exe relink after a source/generated-header change; touch the .cpp (and re-run cmake --preset debug for shader edits) to force it. Detect by grepping the exe for a new string.",
-      "Git author for this repo: Jones <fiavaion101@gmail.com> (local config). Work on dev (pushed to origin/dev); master stays clean."
+      "P3 Scenes UI is wired as the ACTIVE-SCENE CONTROLLER over EditorState (NOT the retired SceneManager stub). Switching the active scene (setActiveScene) is enough for the viewport/QuadList/Inspector to follow, since they all read es.quadManager()/activeScene().",
+      "One-scene-per-output is enforced in the Scenes UI assignment dropdown AND on load remap, because OutputManager::sceneForOutput returns the FIRST scene matching an output (a shared output would be ambiguous).",
+      "P4 previews render in the MAIN GL context via a single shared Renderer (not the per-output contexts), into a 320x180 RAII Framebuffer per output; updatePreviews saves/restores the framebuffer binding + viewport. The per-output Renderers stay for real perform-mode output.",
+      "P4 did NOT revive the reference PreviewPanel from 669a05c^ - it was an interactive vector editor overlapping ViewportEditor. P4 ships a true FBO thumbnail of what each projector shows.",
+      ".qmap v3 (ADR-039): writer emits scenes[]+outputs[] only when the project carries scene DTOs; a flat-only Project still writes legacy v1.2 (byte-clean, keeps old files/tests compatible). Unified reader yields >=1 scene for v1 (flat->1 scene) / v2 (scenes->list) / v3 (+outputs). kMaxSupportedMajor 2->3.",
+      "EditorState owns live scenes (Scene/QuadManager) and OutputManager owns outputs; Project is the serialization DTO with new SceneData/OutputData structs. syncEditorToProject/syncProjectToEditor are the single save/load bridge; load rebuilds outputs (v3) and remaps each scene's assignedOutputId onto the freshly created live output ids.",
+      "UUID() default-constructs to NULL (0,0); use UUID::generate() for a fresh id. This bit the serializer first draft (scene/output ids stayed null) - fixed.",
+      "Smoke harness robustness: pin the QUADmapper window TOPMOST at (0,0) (the Claude desktop app kept stealing foreground and the window drifted run-to-run, breaking hardcoded click coords) + AttachThreadInput foreground-steal. Click coords are read from cropped screenshots; SetCursorPos uses PHYSICAL pixels (capture is 2560x1440 physical though Screen.Bounds reports 2048x1152 logical at 125%)."
     ],
     "openQuestions": [],
     "blockers": [
-      "QM-061 (AI real-device validation) still needs physical projector + surface + phone (unchanged from Session 15)."
+      "QM-061 (AI real-device validation) still needs physical projector + surface + phone (unchanged)."
     ]
   },
   "projectState": {
-    "currentPhase": "Multi-scene output routing (ADR-039) — P1+P2 done & hardware-verified; P3 (Scenes UI) next. Mapping-editor UX fixes shipped. AI wedge (Phase 9) still gated on hardware QM-061.",
+    "currentPhase": "ADR-039 multi-scene output routing COMPLETE (P1-P5, all app-verified). Mapping-editor UX fixes shipped (Session 16). AI wedge (Phase 9) still gated on hardware QM-061.",
     "completedPhases": [
       "Phase 0: Infrastructure Setup",
       "Phase 1: Core Foundation",
@@ -63,37 +62,36 @@
       "Phase 6: Audio System",
       "Phase 7: Polish",
       "Phase 8: ADR-031 Refactor (merged to master)",
-      "Phase 9: AI Pre-Show Assist — software-complete; QM-061 hardware gate outstanding",
+      "Phase 9: AI Pre-Show Assist - software-complete; QM-061 hardware gate outstanding",
       "v1.1 polish: color correction + soft-edge + UV grid",
       "Kantan-style grid (ADR-038) Tier 1 (Linear parity)",
       "Mapping-editor UX fixes (round handles, DPI picking, clean grid, drag-to-add divisions, Reset)",
-      "ADR-039 multi-scene routing: P1 (runtime foundation) + P2 (per-output routing, hardware-verified)"
+      "ADR-039 multi-scene routing: P1 (runtime) + P2 (per-output routing, hardware-verified) + P3 (Scenes UI) + P4 (live preview) + P5 (.qmap v3 persistence) - COMPLETE"
     ],
     "buildStatus": "success",
-    "lastSuccessfulBuild": "2026-06-17T12:55:00Z",
-    "note": "Session 16. Mapping-editor fixes + ADR-039 multi-scene P1/P2. 8 commits on dev (pushed origin/dev @ 54dcec0); master clean at fb4c85b. Multi-projector routing works and is verified on real 2-monitor hardware (each projector shows its assigned scene), but is NOT yet user-operable — no UI to create/assign scenes (that's P3). 619/619 ctest. .qmap format unchanged this session (v3 comes in P5). Next: QM-065 P3 Scenes UI."
+    "lastSuccessfulBuild": "2026-06-17T17:50:00Z",
+    "note": "Session 17. ADR-039 COMPLETE (P3+P4+P5 this session). 4 commits on dev (pushed origin/dev @ e5c08fa); master clean at fb4c85b. 624/624 ctest (+5 serializer migration tests). Multi-projector is now fully user-operable: create/assign scenes (Scenes tab), see each projector live (Preview tab), and save/load the whole multi-scene+outputs setup (.qmap v3, backward-compatible). All app-verified. dev is well ahead of master (Sessions 16+17) - dev->master PR is a sensible next step, ideally after QM-061 hardware validation."
   },
   "statistics": {
-    "totalSessions": 16,
-    "tasksCompleted": 68,
-    "tasksInProgress": 1,
-    "tasksTodo": 6
+    "totalSessions": 17,
+    "tasksCompleted": 71,
+    "tasksInProgress": 0,
+    "tasksTodo": 4
   },
-  "session16Accomplishments": {
-    "shipped": "8 commits on dev (pushed origin/dev @ 54dcec0); master clean at fb4c85b. Mapping-editor fixes + multi-scene P1/P2.",
+  "session17Accomplishments": {
+    "shipped": "4 commits on dev (pushed origin/dev @ e5c08fa); master clean at fb4c85b. ADR-039 P3+P4+P5 - multi-projector feature complete.",
     "items": [
-      "Mapping-editor fixes: DPI-correct picking (window-size), round aspect-corrected handles + smaller mesh dots, cyan mesh-grid wireframe, clean 1x1 default grid (MIN_MESH_RESOLUTION=1), drag-to-position division insert (one-shot + Esc), prominent Reset Transform button. +3 control-grid unit tests.",
-      "ADR-039 written: multi-scene project model + per-scene output routing + live preview; supersedes ADR-033; .qmap additive v3 reading v1/v2; phased P1-P5.",
-      "QM-063 (P1) DONE: multi-scene runtime foundation — EditorState scene list + active-scene accessor (activeScene()/quadManager()), behaviour-preserving.",
-      "QM-064 (P2) DONE: per-output scene routing (Scene::assignedOutputId, renderToOutputs per assigned scene, pure unit-tested sceneForOutput, default scene -> 2nd monitor). VERIFIED on real 2-monitor hardware.",
-      "Docs: TASKS.md Session-16 block + QM-063..067; ADR-039; build-stale-relink memory.",
-      "Gate: 619/619 ctest; app launches and edits; multi-output verified in perform mode."
+      "QM-065 (P3) DONE: Scenes UI - ScenePanel tab (New/Delete/rename/switch-active + per-scene output dropdown, one-scene-per-output); EditorState scene mutators; panels follow active scene. Reviewer fix: deferred context-menu delete (UAF). App-verified.",
+      "QM-066 (P4) DONE: live per-output preview - RAII Framebuffer + OutputManager::updatePreviews (320x180 FBO per output in main context) + OutputPreviewPanel thumbnails (V-flipped, name->scene). App-verified.",
+      "QM-067 (P5) DONE: .qmap v3 persistence - Project SceneData/OutputData DTOs; serializer v3 write + v1/v2/v3 read (kMaxSupportedMajor 2->3); Application save/load bridge round-trips all scenes+outputs with assignedOutputId remap. 5 migration unit tests. App-verified end-to-end (save default->v3 file; load 2-scene v3->Scenes Alpha/Beta + Preview Beamer->Alpha).",
+      "Gate: 624/624 ctest; build green; all phases app-verified via tests/smoke/drive_scenes_smoke.ps1.",
+      "Docs: TASKS.md (QM-065/066/067 DONE, ADR-039 complete), PROJECT_HISTORY.md Session 17, docs/sessions/2026-06-17-session17-*.md."
     ],
     "lessons": [
-      "Reproduce-first paid off: the reported 'can't drag vertices' was NOT a fundamental picking bug (synthetic-input proof showed corner + mesh drag both work) — the real causes were oversized aspect-distorted handles + an armed Click-add mode that silently suppressed dragging. Don't fix from the bug report's stated cause; instrument and watch.",
-      "An accepted ADR's REMOVAL can be the right starting point for revival: ADR-033 kept the Scene primitive, preserved git history, and the v2 read path specifically so multi-scene could come back as a deliberate feature — read the retiring ADR before rebuilding from scratch.",
-      "Synthetic Win32 input (AttachThreadInput foreground-steal + SetCursorPos/mouse_event/keybd_event) + virtual-desktop CopyFromScreen is a reliable way to verify GUI/mouse/multi-monitor behaviour headlessly when ImGui menu-driving is unreliable.",
-      "cmake --build --target can silently skip the exe relink after a source/generated-header change; verify by exe timestamp / grepping the binary for a new string, and touch the .cpp to force it."
+      "When reviving retired code as a reference (ADR's listed PreviewPanel/SceneManager from 669a05c^), CHECK WHAT IT ACTUALLY DID before wiring it - the reference PreviewPanel was an interactive vector editor (overlaps ViewportEditor), not the FBO thumbnail P4 needed. Shipped the right thing instead of blindly reviving.",
+      "Protected .qmap boundary: keep the writer emitting the OLD format for the OLD shape (flat-only Project -> v1.2) and only emit the new format for new data (scenes -> v3). This keeps every existing file + round-trip test byte-compatible while adding v3 - no migration of existing files needed.",
+      "UUID() is NULL, UUID::generate() is fresh - a subtle default-ctor trap that left serialized scene/output ids null until caught by the round-trip test asserting a non-null assignedOutputId.",
+      "Foreground-stealing apps (Claude desktop) + run-to-run window drift make hardcoded synthetic-click coords flaky. Pin the target window TOPMOST at a fixed origin (0,0) for deterministic coords; re-assert focus before every click."
     ]
   }
 }

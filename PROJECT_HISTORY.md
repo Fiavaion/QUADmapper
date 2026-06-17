@@ -6,6 +6,54 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 17 - 2026-06-17 - ADR-039 multi-scene: UI + preview + persistence (P3–P5) — COMPLETE
+
+**Focus:** Finish the multi-projector feature. Sessions 15–16 built the runtime foundation (P1)
+and per-output routing (P2, hardware-verified), but it was **not user-operable**. This session
+shipped **P3 + P4 + P5**, completing **ADR-039 (P1–P5)**. 4 commits on `dev` (pushed to
+`origin/dev` @ `e5c08fa`); `master` untouched (`fb4c85b`). **624/624 ctest** (+5 new serializer
+migration tests); every phase app-verified by running the real app.
+
+**Completed this session:**
+- **QM-065 (P3) — Scenes UI.** A "Scenes" tab (`ScenePanel`) over `EditorState`: New/Delete/
+  rename/switch-active + per-scene output-assignment dropdown (one-scene-per-output enforced);
+  viewport/QuadList/Inspector follow the active scene via existing accessors. `EditorState`
+  gained thin scene-list mutators. Reviewer-mode fix: deferred context-menu Delete to avoid a
+  use-after-free. Verified: created Scene 2 → auto-active, "(2 scenes)", Delete enabled.
+- **QM-066 (P4) — Live per-output preview.** New RAII `Framebuffer`; `OutputManager::
+  updatePreviews()` renders each output's assigned scene to a 320×180 offscreen FBO in the main
+  GL context (saves/restores framebuffer+viewport); `OutputPreviewPanel` shows V-flipped
+  thumbnails with a "name → scene" label. Verified: "Projector 1 → New Scene" with the quad
+  rendered on black. (The reference `PreviewPanel` was an interactive editor overlapping
+  `ViewportEditor`, so a true FBO thumbnail shipped instead.)
+- **QM-067 (P5) — `.qmap` v3 persistence** (protected boundary; additive + backward-compatible).
+  Serializer writes v3 (`scenes[]` + `outputs[]`) when scenes exist, else legacy v1.2 flat;
+  unified reader yields ≥1 scene for v1/v2/v3; `kMaxSupportedMajor` 2→3 (v4 rejected). `Project`
+  gained `SceneData`/`OutputData` DTOs; Application `syncEditorToProject`/`syncProjectToEditor`
+  round-trip ALL scenes + outputs (load rebuilds outputs and remaps `assignedOutputId`).
+  Verified end-to-end: default save → v3 file with output+scene+assignment; 2-scene v3 load →
+  Scenes "Alpha→Beamer"/"Beta→(no output)", Preview "Beamer → Alpha" rendering the quad.
+
+**Files changed:** 18 files, +1290 / −110. New: `ScenePanel.*`, `OutputPreviewPanel.*`,
+`Framebuffer.*`, `drive_scenes_smoke.ps1`. See
+[docs/sessions/2026-06-17-session17-multiscene-ui-preview-persist.md](docs/sessions/2026-06-17-session17-multiscene-ui-preview-persist.md)
+for the detailed log.
+
+**Commits (dev, pushed):** `1fcaf43` P3 · `72adf6e` P4 · `3a721d3` P5a · `e5c08fa` P5b.
+
+**Decisions:** P3 wired the panel as the active-scene controller (not the retired SceneManager);
+one-scene-per-output enforced because `sceneForOutput` returns the first match; P4 previews
+render in the main context; the writer stays v1.2 for flat-only projects (byte-clean).
+
+**Known limitation (pre-existing):** groups round-trip in the file but the load bridge does not
+re-apply them to live scenes (same as the old flat bridge).
+
+**Handoff:** ADR-039 done. Remaining is independent — 🚩 QM-061 hardware AI test, debt
+TD-07/08/09, optional groups-on-load follow-up. Consider opening the `dev`→`master` PR
+(`master` is still at pre-Session-16 `fb4c85b`; `dev` has all of Sessions 16+17).
+
+---
+
 ### Session 16 - 2026-06-17 - mapping-editor fixes + multi-scene output routing (ADR-039 P1+P2)
 
 **Focus:** Field-driven fixes to the on-canvas mapping editor, then the start of the
