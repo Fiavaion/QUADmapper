@@ -1,12 +1,45 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-06-17 (Session 17)
+Last Updated: 2026-06-17 (Session 18)
 
 ## Quick Status
-- In Progress: 0 — **ADR-039 multi-scene output routing COMPLETE (P1–P5)**
-- Todo: 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate)
-- Done: 71 — **mapping-editor fixes; multi-scene ADR-039 P1 (runtime) + P2 (per-output routing, hardware-verified) + P3 (Scenes UI) + P4 (live preview) + P5 (.qmap v3 persistence) — all app-verified**
+- In Progress: 0 — **ADR-040 shared media sources + per-quad crop PLANNED (P1–P5, QM-068–072)**
+- Todo: 5 ADR-040 (QM-068–072) + 2 debt (TD-08/09; TD-07 RESOLVED) + 1 AI (🚩 QM-061 hardware gate)
+- Done: 71 — **mapping-editor fixes; multi-scene ADR-039 P1–P5; groups-on-load + TD-07 fixes (Session 18)**
 - Blocked: 0
+
+## Session 18 (2026-06-17) — ADR-040 scoping (shared media sources + per-quad crop)
+
+**Proposed: [ADR-040](docs/adr/0040-shared-media-sources-and-per-quad-crop.md).** Lets ONE
+decoded video file feed MULTIPLE quads, each cropped to a sub-region, from a SINGLE decode —
+so a panorama can wrap a box's faces across 2 projectors, frame-synced, with no AE/Premiere
+pre-cut. Converges TD-09 (renderer reads `SourceManager` via `TextureBinding::mediaId`) and
+wires the dormant `mediaId`/`cropRegion` fields. `.qmap` → additive **v3.1** (sources list +
+per-quad `mediaId` + `crop`; old files migrate). Phased:
+
+- **QM-068 (P1) TODO** — per-quad normalized crop rectangle: shader compose (crop before UV
+  pan/zoom; identity = no-op), compact Inspector control, `.qmap` v3.1 `crop` field +
+  migration/round-trip tests. Independently shippable; works on images + the single video today.
+- **QM-069 (P2) TODO** — renderer resolves a quad's texture via `mediaId` → `SourceManager`
+  (TD-09 convergence, behavior-preserving); dedupe sources by path; retire the `quadTextures`
+  map. Success metric re-verified unchanged. **Risk phase.**
+- **QM-070 (P3) TODO** — shared / multi-quad video: retire singular `videoPlayer`/
+  `videoAssignedQuadId`; video is a `VideoFileSource` in `SourceManager`; N quads → one decode.
+  Verify 2+ quads play the same file in sync.
+- **QM-071 (P4) TODO** — cross-scene / cross-output sharing: one source feeding quads in 2
+  scenes on 2 projectors, frame-synced (the box-wrap proof).
+- **QM-072 (P5) TODO** — persistence: `sources` + `mediaId` + `crop` round-trip in v3.1;
+  old-file migration tests; box-wrap project saves/reloads intact.
+
+Gate per phase: `cmake --build` + `ctest` green + success-metric warp intact.
+
+## Session 18 (2026-06-17) — follow-up fixes (dev)
+
+- **Groups-on-load FIXED** (`d586da6`): `deserializeQuad`/`deserializeGroup` preserve the
+  persisted id (defensive parse); `syncProjectToEditor` re-applies each scene's groups with
+  member + nested-parent remap. Test `V3GroupMembershipRoundTrips`.
+- **TD-07 RESOLVED** (`4ca12c5`): `gtest_discover_tests DISCOVERY_TIMEOUT 60` ends the spurious
+  `cmake --build` non-zero exit. 625/625 ctest.
 
 ## Session 16 (2026-06-17) — mapping-editor fixes + multi-scene output routing (ADR-039)
 
@@ -924,5 +957,10 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |
 | QM-066 | Live per-output preview (P4) | DONE | ADR-039 |
 | QM-067 | .qmap v3 scenes+outputs persistence (P5) | DONE | ADR-039 |
+| QM-068 | Per-quad normalized crop rectangle (P1) | TODO | ADR-040 |
+| QM-069 | Renderer reads SourceManager via mediaId (P2, TD-09) | TODO | ADR-040 |
+| QM-070 | Shared / multi-quad video — one decode (P3) | TODO | ADR-040 |
+| QM-071 | Cross-scene / cross-output source sharing (P4) | TODO | ADR-040 |
+| QM-072 | .qmap v3.1 sources + mediaId + crop persistence (P5) | TODO | ADR-040 |
 
 ---
