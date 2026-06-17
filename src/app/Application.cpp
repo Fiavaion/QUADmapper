@@ -52,54 +52,149 @@ static void glfwErrorCallback(int error, const char* description) {
     Logger::error("GLFW Error {}: {}", error, description);
 }
 
-// ---- Editor scene <-> flat Project persistence sync (ADR-033) ----
-// The live scene of truth is es.quadManager(); the flat Project is only the serialization DTO.
-// These two helpers are the single place that copies between them, replacing the save/load
-// blocks that were duplicated 3x/2x across render(). They copy the WHOLE geometry and texture
-// binding, fixing the latent bug where the hand-rolled copies dropped mesh-edit vertex offsets
-// and flipH/flipV on save/load.
-static void syncSceneToProject(EditorState& es, Project& project) {
-    project.clearQuads();
-    project.getTexturePaths().clear();
-    for (const auto& quadPtr : es.quadManager().getQuads()) {
-        project.addQuad(*quadPtr);
-        auto pathIt = es.quadTexturePaths.find(quadPtr->getId());
-        project.getTexturePaths().push_back(
-            pathIt != es.quadTexturePaths.end() ? pathIt->second : std::string());
+// ---- Editor <-> Project persistence bridge (ADR-039 P5) ----
+// The live state of truth is EditorState's scene list (Scene/QuadManager) plus the
+// OutputManager's output config; the Project DTO is only the serialization shape.
+// These two helpers are the single place that copies between them. Save gathers EVERY
+// scene + output into the DTO (the serializer then writes .qmap v3); load rebuilds the
+// live scenes/outputs and remaps each scene's output assignment onto the freshly
+// created output ids. Quad geometry + texture binding (incl. mesh offsets, flipH/V,
+// colour, soft edge) copy whole, so nothing is dropped on round-trip.
+static void syncEditorToProject(EditorState& es, OutputManager* om, Project& project) {
+    project.getScenes().clear();
+    project.getOutputs().clear();
+
+    for (const auto& scenePtr : es.scenes) {
+        if (!scenePtr) continue;
+        Scene& sc = *scenePtr;
+        Project::SceneData sd;
+        sd.id = sc.getId();
+        sd.name = sc.getName();
+        sd.assignedOutputId = sc.getAssignedOutputId();
+        const SceneViewState& vs = sc.getViewState();
+        sd.view.pan = vs.panOffset;
+        sd.view.zoom = vs.zoomLevel;
+        sd.view.gridVisible = vs.gridVisible;
+        sd.view.snapToGrid = vs.snapToGrid;
+        for (const auto& quadPtr : sc.getQuadManager().getQuads()) {
+            sd.quads.push_back(*quadPtr);
+            auto it = es.quadTexturePaths.find(quadPtr->getId());
+            sd.texturePaths.push_back(
+                it != es.quadTexturePaths.end() ? it->second : std::string());
+        }
+        for (const auto& groupPtr : sc.getGroups()) {
+            if (groupPtr) sd.groups.push_back(*groupPtr);
+        }
+        project.getScenes().push_back(std::move(sd));
+    }
+
+    if (om) {
+        for (const auto& outPtr : om->getOutputs()) {
+            if (!outPtr) continue;
+            Project::OutputData od;
+            od.id = outPtr->getId();
+            od.name = outPtr->getName();
+            od.monitor = outPtr->getMonitor();
+            od.resolution = outPtr->getResolution();
+            od.rotationDegrees = outPtr->getRotationDegrees();
+            od.enabled = outPtr->isEnabled();
+            project.getOutputs().push_back(std::move(od));
+        }
     }
 }
 
-static void syncProjectToScene(EditorState& es, const Project& project) {
-    es.quadManager().clear();
+// Copy a DTO quad's full state onto a freshly created live quad.
+static void applyQuadData(const Quad& src, Quad* dst) {
+    dst->setVisible(src.isVisible());
+    dst->setLocked(src.isLocked());
+    dst->setOpacity(src.getOpacity());
+    dst->setZOrder(src.getZOrder());
+    dst->getGeometry() = src.getGeometry();  // corners + grid + mode + mesh offsets
+    dst->getTexture() = src.getTexture();    // UV transform + flip flags
+    dst->setColorCorrection(src.getColorCorrection());  // ADR-036
+    dst->setSoftEdge(src.getSoftEdge());                // ADR-037
+}
+
+static void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project) {
+    es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
 
-    const auto& quads = project.getQuads();
-    const auto& texPaths = project.getTexturePaths();
-    for (size_t i = 0; i < quads.size(); ++i) {
-        Quad* newQuad = es.quadManager().createQuad(quads[i].getName());
-        newQuad->setVisible(quads[i].isVisible());
-        newQuad->setLocked(quads[i].isLocked());
-        newQuad->setOpacity(quads[i].getOpacity());
-        newQuad->setZOrder(quads[i].getZOrder());
-        newQuad->getGeometry() = quads[i].getGeometry();  // corners + resolution + mode + mesh offsets
-        newQuad->getTexture() = quads[i].getTexture();    // UV transform + flip flags
-        newQuad->setColorCorrection(quads[i].getColorCorrection());  // ADR-036
-        newQuad->setSoftEdge(quads[i].getSoftEdge());                // ADR-037
+    // Rebuild outputs from the file (v3) so scene assignments remap onto the freshly
+    // created output ids. v1/v2 files carry no outputs — keep the existing ones (e.g.
+    // the startup default Projector 1) untouched.
+    std::unordered_map<UUID, UUID> outputRemap;  // saved output id -> live output id
+    if (om && !project.getOutputs().empty()) {
+        std::vector<UUID> existing;
+        for (const auto& o : om->getOutputs()) {
+            if (o) existing.push_back(o->getId());
+        }
+        for (const UUID& id : existing) om->deleteOutput(id);
 
-        if (i < texPaths.size() && !texPaths[i].empty()) {
-            es.quadTexturePaths[newQuad->getId()] = texPaths[i];
-            auto texture = std::make_unique<Texture>();
-            if (texture->loadFromFile(texPaths[i])) {
-                es.quadTextures[newQuad->getId()] = std::move(texture);
-            }
+        for (const auto& od : project.getOutputs()) {
+            OutputWindow* ow = om->createOutput(od.name);
+            if (!ow) continue;
+            ow->setName(od.name);
+            ow->setMonitor(od.monitor);
+            ow->setResolution(od.resolution);
+            ow->setRotationDegrees(od.rotationDegrees);
+            ow->setEnabled(od.enabled);
+            outputRemap[od.id] = ow->getId();
         }
     }
 
-    // Select the first quad and sync the texture-path edit buffer.
-    if (es.quadManager().getQuadCount() > 0) {
-        es.quadManager().selectQuad(es.quadManager().getQuads()[0]->getId());
-        auto pathIt = es.quadTexturePaths.find(es.quadManager().getQuads()[0]->getId());
+    for (const auto& sd : project.getScenes()) {
+        auto scene = std::make_unique<Scene>(sd.id);
+        scene->setName(sd.name);
+        if (!sd.assignedOutputId.isNull()) {
+            auto it = outputRemap.find(sd.assignedOutputId);
+            scene->setAssignedOutputId(it != outputRemap.end() ? it->second : UUID::null());
+        }
+        SceneViewState& vs = scene->getViewState();
+        vs.panOffset = sd.view.pan;
+        vs.zoomLevel = sd.view.zoom;
+        vs.gridVisible = sd.view.gridVisible;
+        vs.snapToGrid = sd.view.snapToGrid;
+
+        QuadManager& qm = scene->getQuadManager();
+        for (size_t i = 0; i < sd.quads.size(); ++i) {
+            Quad* nq = qm.createQuad(sd.quads[i].getName());
+            applyQuadData(sd.quads[i], nq);
+            if (i < sd.texturePaths.size() && !sd.texturePaths[i].empty()) {
+                es.quadTexturePaths[nq->getId()] = sd.texturePaths[i];
+                auto texture = std::make_unique<Texture>();
+                if (texture->loadFromFile(sd.texturePaths[i])) {
+                    es.quadTextures[nq->getId()] = std::move(texture);
+                }
+            }
+        }
+        es.scenes.push_back(std::move(scene));
+    }
+
+    // Guarantee >= 1 scene, then make the first one active.
+    if (es.scenes.empty()) {
+        es.activeScene();  // lazily creates a default scene
+    }
+    es.setActiveScene(es.scenes.front()->getId());
+
+    // Preserve "launch is aimed at the projector": if outputs exist but no scene is
+    // assigned to any (e.g. a v1/v2 file), route the active scene to the first output
+    // so it still projects on F11.
+    if (om && !om->getOutputs().empty()) {
+        bool anyAssigned = false;
+        for (const auto& scenePtr : es.scenes) {
+            if (scenePtr && scenePtr->hasAssignedOutput()) { anyAssigned = true; break; }
+        }
+        if (!anyAssigned) {
+            es.activeScene().setAssignedOutputId(om->getOutputs().front()->getId());
+        }
+    }
+
+    // Select the first quad of the active scene + sync the texture-path edit buffer.
+    QuadManager& aqm = es.quadManager();
+    if (aqm.getQuadCount() > 0) {
+        aqm.selectQuad(aqm.getQuads()[0]->getId());
+        auto pathIt = es.quadTexturePaths.find(aqm.getQuads()[0]->getId());
         if (pathIt != es.quadTexturePaths.end()) {
             strncpy(es.currentTexturePath, pathIt->second.c_str(), sizeof(es.currentTexturePath) - 1);
             es.currentTexturePath[sizeof(es.currentTexturePath) - 1] = '\0';
@@ -1058,7 +1153,7 @@ void Application::saveProject() {
     EditorState& es = *m_editorState;
     if (strlen(es.projectPath) == 0) return;
 
-    syncSceneToProject(es, *m_project);
+    syncEditorToProject(es, m_outputManager.get(), *m_project);
 
     auto result = ProjectSerializer::save(*m_project, es.projectPath);
     if (result) {
@@ -1078,7 +1173,7 @@ void Application::loadProject() {
     auto result = ProjectSerializer::load(es.projectPath);
     if (result) {
         *m_project = std::move(result.value());
-        syncProjectToScene(es, *m_project);
+        syncProjectToEditor(es, m_outputManager.get(), *m_project);
         snprintf(es.statusMessage, sizeof(es.statusMessage), "Project loaded: %s", es.projectPath);
     } else {
         snprintf(es.statusMessage, sizeof(es.statusMessage), "Load failed: %s", result.error().message.c_str());

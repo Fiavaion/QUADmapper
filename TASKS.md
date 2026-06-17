@@ -3,9 +3,9 @@
 Last Updated: 2026-06-17 (Session 16)
 
 ## Quick Status
-- In Progress: 0 (QM-067 P5 .qmap v3 persistence is next)
-- Todo: QM-067 (P5 .qmap v3) + 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate)
-- Done: 70 — **mapping-editor fixes (round handles, DPI picking, clean grid, drag-add divisions, Reset); multi-scene ADR-039 P1 (runtime) + P2 (per-output routing, hardware-verified) + P3 (Scenes UI, app-verified) + P4 (live per-output preview, app-verified)**
+- In Progress: 0 — **ADR-039 multi-scene output routing COMPLETE (P1–P5)**
+- Todo: 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate)
+- Done: 71 — **mapping-editor fixes; multi-scene ADR-039 P1 (runtime) + P2 (per-output routing, hardware-verified) + P3 (Scenes UI) + P4 (live preview) + P5 (.qmap v3 persistence) — all app-verified**
 - Blocked: 0
 
 ## Session 16 (2026-06-17) — mapping-editor fixes + multi-scene output routing (ADR-039)
@@ -42,8 +42,16 @@ monitor; live per-output preview. `.qmap` → additive **v3** (still reads v1/v2
   **App-verified** (Preview tab showed "Projector 1 → New Scene" with the default quad
   rendered on black). The reference `PreviewPanel` from `669a05c^` was an interactive vector
   editor (overlaps ViewportEditor), so P4 ships a true FBO thumbnail instead. 619/619 ctest.
-- **QM-067 (P5) TODO** — `.qmap` v3 writer (scenes + outputs arrays) + v1/v2/v3 readers +
-  migration tests.
+- **QM-067 (P5) DONE** — `.qmap` v3 persistence. Serializer writes v3 (scenes[] + outputs[])
+  when the project has scene DTOs, else legacy v1.2 flat; unified reader yields >=1 scene
+  for v1 (flat→1 scene) / v2 (scenes→list) / v3 (+outputs); `kMaxSupportedMajor` 2→3.
+  `Project` gained `SceneData`/`OutputData` DTOs. Application `syncEditorToProject`/
+  `syncProjectToEditor` bridge ALL scenes + outputs (load rebuilds outputs and remaps each
+  scene's `assignedOutputId` onto the live output ids; falls back to assigning the active
+  scene so v1/v2 files still project). **App-verified**: saved default → v3 file with
+  output+scene+assignment; hand-crafted 2-scene v3 loaded → Scenes tab "Alpha→Beamer" +
+  "Beta→(no output)", Preview "Beamer → Alpha" rendering the quad. 5 migration unit tests;
+  624/624 ctest.
 
 Gate per phase: `cmake --build` + `ctest` green + success-metric warp intact.
 
@@ -915,6 +923,6 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |
 | QM-066 | Live per-output preview (P4) | DONE | ADR-039 |
-| QM-067 | .qmap v3 scenes+outputs persistence (P5) | TODO | ADR-039 |
+| QM-067 | .qmap v3 scenes+outputs persistence (P5) | DONE | ADR-039 |
 
 ---

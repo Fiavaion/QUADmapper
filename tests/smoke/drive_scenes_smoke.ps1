@@ -25,7 +25,9 @@ param(
     [int]$TabX = 0, [int]$TabY = 0,        # the "Scenes" tab header
     [int]$NewX = 0, [int]$NewY = 0,        # the "New" button
     [int]$ComboX = 0, [int]$ComboY = 0,    # the first scene's output dropdown
-    [switch]$InitialOnly
+    [int]$LoadX = 0, [int]$LoadY = 0,      # the Project tab's Load button (clicked first)
+    [switch]$InitialOnly,
+    [switch]$SaveAfter                     # send Ctrl+S after the actions
 )
 
 Set-StrictMode -Version Latest
@@ -47,9 +49,25 @@ public static class Win32Native {
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+    [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint uCode, uint uMapType);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 }
 "@
+}
+
+function Send-CtrlS {
+    $VK_CONTROL = 0x11; $VK_S = 0x53; $SCAN = 0x0008; $KEYUP = 0x0002
+    $sCtrl = [Win32Native]::MapVirtualKey([uint32]$VK_CONTROL, 0)
+    $sS = [Win32Native]::MapVirtualKey([uint32]$VK_S, 0)
+    [Win32Native]::keybd_event([byte]$VK_CONTROL, [byte]$sCtrl, $SCAN, 0)
+    Start-Sleep -Milliseconds 30
+    [Win32Native]::keybd_event([byte]$VK_S, [byte]$sS, $SCAN, 0)
+    Start-Sleep -Milliseconds 30
+    [Win32Native]::keybd_event([byte]$VK_S, [byte]$sS, ($SCAN -bor $KEYUP), 0)
+    Start-Sleep -Milliseconds 30
+    [Win32Native]::keybd_event([byte]$VK_CONTROL, [byte]$sCtrl, ($SCAN -bor $KEYUP), 0)
+    Start-Sleep -Milliseconds 200
 }
 [Win32Native]::SetProcessDPIAware() | Out-Null
 
@@ -117,12 +135,14 @@ try {
         Click ($screen.X + $x) ($screen.Y + $y)
         Click ($screen.X + $x) ($screen.Y + $y)   # 2nd click: 1st may be eaten by activation
     }
+    if ($LoadX -gt 0) { Act $LoadX $LoadY; Focus-App $proc; Capture "00b_after_load.png" $screen }
     if ($TabX -gt 0) { Act $TabX $TabY; Focus-App $proc; Capture "01_scenes_tab.png" $screen }
     if ($NewX -gt 0) {
         Act $NewX $NewY; Focus-App $proc; Capture "02_after_new.png" $screen
         Act $NewX $NewY; Focus-App $proc; Capture "03_after_new2.png" $screen
     }
     if ($ComboX -gt 0) { Act $ComboX $ComboY; Focus-App $proc; Capture "04_combo_open.png" $screen }
+    if ($SaveAfter) { Focus-App $proc; Send-CtrlS; Write-Host "[scenes] sent Ctrl+S" }
     Write-Host "[scenes] sequence complete."
 }
 finally {
