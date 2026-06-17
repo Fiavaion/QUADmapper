@@ -29,7 +29,11 @@ function(add_quadmapper_test TEST_NAME)
     )
 
     include(GoogleTest)
-    gtest_discover_tests(${TEST_NAME})
+    # TD-07: the default 5s discovery timeout races a loaded machine and makes the
+    # post-build discovery step (and thus `cmake --build`) return non-zero while tests
+    # are actually green. A generous timeout removes the race without changing the
+    # discovery mode, so `ctest --test-dir build/debug` keeps working as-is.
+    gtest_discover_tests(${TEST_NAME} DISCOVERY_TIMEOUT 60)
 endfunction()
 
 # Unit tests by module
