@@ -480,6 +480,55 @@ TEST(ProjectSerializerV3Test, V3RoundTripScenesAndOutputs) {
     EXPECT_EQ(loaded.getOutputs()[0].rotationDegrees, 90);
 }
 
+// Quad ids and group member references must survive a round-trip: previously the
+// deserializer minted fresh quad ids while group members kept the saved ids, breaking
+// the linkage so groups could not be re-applied on load. The persisted id is now kept.
+TEST(ProjectSerializerV3Test, V3GroupMembershipRoundTrips) {
+    ProjectSerializer serializer;
+
+    Project original;
+    original.setName("Grouped");
+
+    Project::SceneData s;
+    s.id = UUID::generate();
+    s.name = "Stage";
+
+    Quad q1; q1.setName("A");
+    Quad q2; q2.setName("B");
+    UUID q1Id = q1.getId();
+    UUID q2Id = q2.getId();
+    s.quads.push_back(std::move(q1)); s.texturePaths.push_back("");
+    s.quads.push_back(std::move(q2)); s.texturePaths.push_back("");
+
+    QuadGroup g(UUID::generate());
+    g.setName("Pair");
+    g.addMember(q1Id);
+    g.addMember(q2Id);
+    s.groups.push_back(g);
+    original.getScenes().push_back(std::move(s));
+
+    std::string json = serializer.serialize(original);
+
+    Project loaded;
+    ASSERT_TRUE(serializer.deserialize(json, loaded).isSuccess());
+
+    ASSERT_EQ(loaded.getScenes().size(), 1u);
+    const auto& ls = loaded.getScenes()[0];
+    ASSERT_EQ(ls.quads.size(), 2u);
+    ASSERT_EQ(ls.groups.size(), 1u);
+
+    // Quad ids preserved.
+    EXPECT_EQ(ls.quads[0].getId(), q1Id);
+    EXPECT_EQ(ls.quads[1].getId(), q2Id);
+
+    // Group members still point at the (preserved) quad ids — linkage intact.
+    const auto& members = ls.groups[0].getMemberQuadIds();
+    ASSERT_EQ(members.size(), 2u);
+    EXPECT_TRUE(ls.groups[0].hasMember(q1Id));
+    EXPECT_TRUE(ls.groups[0].hasMember(q2Id));
+    EXPECT_EQ(ls.groups[0].getName(), "Pair");
+}
+
 // A flat-only Project (no scene DTOs) must still write the legacy v1.2 format so
 // existing files and tooling are byte-compatible with before P5.
 TEST(ProjectSerializerV3Test, FlatProjectStillWritesV1) {

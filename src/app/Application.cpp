@@ -157,8 +157,10 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         vs.snapToGrid = sd.view.snapToGrid;
 
         QuadManager& qm = scene->getQuadManager();
+        std::unordered_map<UUID, UUID> quadRemap;  // saved quad id -> fresh live quad id
         for (size_t i = 0; i < sd.quads.size(); ++i) {
             Quad* nq = qm.createQuad(sd.quads[i].getName());
+            quadRemap[sd.quads[i].getId()] = nq->getId();
             applyQuadData(sd.quads[i], nq);
             if (i < sd.texturePaths.size() && !sd.texturePaths[i].empty()) {
                 es.quadTexturePaths[nq->getId()] = sd.texturePaths[i];
@@ -168,6 +170,34 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                 }
             }
         }
+
+        // Re-apply quad groups onto the live scene. createQuad/createGroup mint fresh
+        // ids, so member + parent references are remapped off the saved ids.
+        std::unordered_map<UUID, UUID> groupRemap;  // saved group id -> fresh live group id
+        for (const QuadGroup& sg : sd.groups) {
+            QuadGroup* ng = scene->createGroup(sg.getName());
+            if (!ng) continue;
+            groupRemap[sg.getId()] = ng->getId();
+            ng->setVisible(sg.isVisible());
+            ng->setLocked(sg.isLocked());
+            ng->setCollapsed(sg.isCollapsed());
+            for (const UUID& memberId : sg.getMemberQuadIds()) {
+                auto it = quadRemap.find(memberId);
+                if (it != quadRemap.end()) ng->addMember(it->second);
+            }
+        }
+        // Second pass: rewire nested-group parents once every group exists.
+        for (const QuadGroup& sg : sd.groups) {
+            if (!sg.getParentGroup().has_value()) continue;
+            auto childIt = groupRemap.find(sg.getId());
+            auto parentIt = groupRemap.find(*sg.getParentGroup());
+            if (childIt != groupRemap.end() && parentIt != groupRemap.end()) {
+                if (QuadGroup* live = scene->getGroup(childIt->second)) {
+                    live->setParentGroup(parentIt->second);
+                }
+            }
+        }
+
         es.scenes.push_back(std::move(scene));
     }
 

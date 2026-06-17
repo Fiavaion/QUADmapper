@@ -236,9 +236,22 @@ static nlohmann::json serializeQuad(const Quad& quad, const std::string& texture
     return j;
 }
 
+// Parse an "id" field defensively: a missing or malformed id (older/hand-edited files)
+// yields null so the caller falls back to a fresh id instead of throwing.
+static UUID parseIdOrNull(const nlohmann::json& j) {
+    if (!j.contains("id") || !j["id"].is_string()) return UUID();
+    const std::string s = j["id"].get<std::string>();
+    if (s.length() != 36) return UUID();
+    try { return UUID::fromString(s); } catch (...) { return UUID(); }
+}
+
 // Helper to deserialize a single quad
 static Quad deserializeQuad(const nlohmann::json& j, std::string& texturePath) {
-    Quad quad;
+    // Preserve the persisted id so group membership (which references quad ids by value)
+    // re-links to the right quad on load. The id has always been written; older files
+    // without it fall back to a fresh id.
+    UUID id = parseIdOrNull(j);
+    Quad quad = id.isNull() ? Quad() : Quad(id);
 
     if (j.contains("name")) {
         quad.setName(j["name"].get<std::string>());
@@ -307,7 +320,9 @@ static nlohmann::json serializeGroup(const QuadGroup& group) {
 
 // Helper to deserialize a single group
 static QuadGroup deserializeGroup(const nlohmann::json& j) {
-    QuadGroup group;
+    // Preserve the persisted id so nested-group parent references re-link on load.
+    UUID id = parseIdOrNull(j);
+    QuadGroup group = id.isNull() ? QuadGroup() : QuadGroup(id);
 
     if (j.contains("name")) {
         group.setName(j["name"].get<std::string>());
