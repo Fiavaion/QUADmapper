@@ -73,6 +73,14 @@ add_quadmapper_test(test_renderer
 )
 target_link_libraries(test_renderer PRIVATE quadmapper_renderer quadmapper_core)
 
+# Renderer GL tests — require a real GL 3.3 context (skip-if-absent). Kept in a
+# separate target so the pure test_renderer stays context-free. Links glfw for
+# the hidden-window context (ADR-040 P1 crop readback).
+add_quadmapper_test(test_render_gl
+    renderer/CropRenderTest.cpp
+)
+target_link_libraries(test_render_gl PRIVATE quadmapper_renderer quadmapper_core glfw glad)
+
 # AI sidecar tests (QM-056). Live round-trip launches the real Python sidecar;
 # script path passed in so the test can find it. Skip-if-absent keeps it CI-safe.
 add_quadmapper_test(test_ai
