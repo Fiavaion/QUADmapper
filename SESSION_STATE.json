@@ -1,61 +1,58 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-16T19:55:00Z",
+  "lastUpdated": "2026-06-17T13:00:00Z",
   "sessionInfo": {
-    "sessionNumber": 15,
-    "startTime": "2026-06-16T20:00:00Z",
-    "endTime": "2026-06-17T00:00:00Z",
+    "sessionNumber": 16,
+    "startTime": "2026-06-17T09:30:00Z",
+    "endTime": "2026-06-17T13:00:00Z",
     "status": "completed"
   },
   "currentWork": {
-    "activeTaskId": null,
-    "activeTaskTitle": "v1.1 polish shipped + Kantan-style grid Tier 1 COMPLETE; AI wedge still gated on hardware QM-061",
-    "currentFile": "branch dev (all session-15 work; pushed to origin/dev). master = clean baseline fb4c85b.",
+    "activeTaskId": "QM-065",
+    "activeTaskTitle": "Multi-scene Scenes UI (ADR-039 P3) — make the working per-output routing user-operable",
+    "currentFile": "branch dev (all session-16 work; pushed to origin/dev @ 54dcec0). master = clean baseline fb4c85b.",
     "currentFunction": null,
-    "workInProgress": "Nothing mid-edit. Session 15 (2D-wedge focus while QM-061 stays hardware-gated): TD-10 resolved (SidecarClient::startAsync worker thread, atomic state + Starting; AI-enable no longer freezes UI). US-104 per-quad color correction (ADR-036, quad.frag uniforms + Inspector + additive .qmap). US-101 per-quad soft-edge blending (ADR-037). Load-path fix: syncProjectToScene now carries colorCorrection/softEdge. #2 UV test-grid (src/renderer/UvTestGrid.*, Blender-style colored grid + 'UV grid on new quads' toggle + test_renderer). #3 Kantan grid ADR-038 accepted and Tier 1 COMPLETE (Kantan Linear parity): batch1 non-uniform control-grid model (uCoords/vCoords replace uniform N x N, behavior-preserving, success-metric edit path index-based so unchanged), batch2 .qmap persistence+migration (writer 1.1.0 -> 1.2.0), batch3a Inspector add/remove divisions, batch3b viewport click-on-edge insert via QuadGeometry::inverseBilinear (unit-tested). #4 3D scan/model-UV researched then SHELVED (deliberate 2D focus). QM-061 runbook + dev->master PR-prep doc written. Gate held: 615/615 ctest (+19), success-metric smoke green; US-101/#2/Tier-1 visually verified via temp env demos (removed).",
+    "workInProgress": "Nothing mid-edit. Session 16: (1) Mapping-editor fixes — DPI-correct picking (window-size not framebuffer), round aspect-corrected handles + smaller mesh dots, cyan mesh-grid wireframe in edit mode, clean 1x1 default grid (MIN_MESH_RESOLUTION=1), drag-to-position division insert (arm->press->drag->release commits+auto-disarm, Esc cancels; insertU/V return index + new moveU/V clamp), prominent Reset Transform button. (2) ADR-039 multi-scene + per-output routing + preview written (supersedes ADR-033's removal, which anticipated revival). (3) QM-063 P1 DONE — EditorState holds a scene list, edits the ACTIVE scene via activeScene()/quadManager() accessors. (4) QM-064 P2 DONE — Scene::assignedOutputId; renderToOutputs renders each output's assigned scene; pure unit-tested sceneForOutput(); default scene auto-assigned to 2nd monitor at startup; VERIFIED on real 2-monitor hardware (each projector showed its own scene). 619/619 ctest; all green.",
     "nextSteps": [
-      "Kantan grid Tier 2: per-control-vertex Bezier handles + decoupled fine render tessellation (smooth curves, full Kantan parity). Then FIELD-TEST the workflow, then Tier 3 (local cell subdivision + T-junction stitching). See ADR-038.",
-      "Manual ~10s confirm of the Tier-1 click-on-edge gesture (the keyboard-only smoke harness can't drive a positioned viewport click; its pieces are unit/visually verified).",
-      "🚩 QM-061 (HARDWARE-ONLY): projector as 2nd display -> AI > Enable AI Assist -> One-Flash > Emit Pattern -> F11 -> phone photo -> QM_AI_TEST_IMAGE -> Solve & Apply -> verify alignment. Runbook: docs/QM-061-hardware-test-runbook.md. On pass, open dev->master PR (body ready: docs/QM-061-pr-prep.md).",
-      "Optional debt: TD-09 (converge dual media model + on-quad camera display), TD-07 (build exit-code flake, CMake), TD-08 (audio snapshot reclamation, LOW). TD-10 is DONE."
+      "QM-065 (P3) Scenes UI: a Scenes panel to add/delete/rename/switch the active scene + assign each scene to an output; viewport + Quad List + Inspector follow the active scene. This is what makes the (working) P2 routing operable from the UI. Revive ScenePanel from 669a05c^ as a reference but wire it as the active-scene controller.",
+      "QM-066 (P4) Live per-output preview: render each output's assigned scene to an offscreen FBO once/frame and show ImGui thumbnails (revive PreviewPanel from 669a05c^).",
+      "QM-067 (P5) .qmap v3 persistence: writer emits scenes[] + outputs[] (each scene: id/name/quads/groups/view/assignedOutputId; each output: monitor/resolution/rotation/enabled); readers still accept v1 (flat->one scene) + v2 (legacy scenes); migration tests. Touches the protected .qmap boundary — additive v3, backward-compatible.",
+      "Outstanding from before: 🚩 QM-061 hardware AI test (projector+surface+phone); optional debt TD-07/08/09."
     ]
   },
   "context": {
     "recentFiles": [
-      "tools/ai-sidecar/sidecar.py",
-      "tools/ai-sidecar/surface.py",
-      "tools/ai-sidecar/oneflash.py",
-      "src/ai/SidecarClient.cpp",
-      "src/app/Application.cpp",
+      "src/app/EditorState.hpp",
+      "src/scene/Scene.hpp",
       "src/output/OutputManager.cpp",
-      "src/ui/panels/MainMenuBar.cpp",
-      "tests/smoke/drive_ai_smoke.ps1",
-      "resources/patterns/charuco.png"
+      "src/output/OutputManager.hpp",
+      "src/app/Application.cpp",
+      "src/scene/QuadGeometry.cpp",
+      "src/ui/panels/ViewportEditor.cpp",
+      "src/ui/panels/InspectorPanel.cpp",
+      "src/renderer/Renderer.cpp",
+      "src/shaders/handle.vert",
+      "docs/adr/0039-multi-scene-output-routing.md"
     ],
     "keyDecisions": [
-      "ADR-038 Kantan grid: ONE mesh model — the non-uniform control grid (uCoords/vCoords) is the only representation; uniform N x N migrated away with an 'even grid' convenience action (no parallel mesh code paths). Tiers 1+2 then field-test then Tier 3 (local subdivision + T-junction stitching).",
-      "Kantan grid stays within GL 3.3; success-metric edit UX preserved because mesh editing is index-based (drag/Tab-cycle/arrow-nudge unaffected by non-uniform spacing).",
-      "click-on-edge division insert uses QuadGeometry::inverseBilinear (pure, static, unit-tested) to map a viewport click to the quad's (u,v).",
-      ".qmap additive policy (ADR-032 §5): colorCorrection (ADR-036) + softEdge (ADR-037) + control-grid coords (ADR-038) are optional fields written only when non-identity/non-uniform; writer 1.0.0 -> 1.2.0, major unchanged so old builds still open files.",
-      "3D scan / model-UV (#4) SHELVED deliberately to keep focus on the 2D quad-mapping wedge; roadmap + feasibility-spike plan preserved (docs/research) for revisit.",
-      "TD-10 fix: SidecarClient state is std::atomic with a Starting state; startAsync runs the connect on a worker thread joined in stop()/dtor.",
-      "C++<->sidecar transport: WinHTTP client + CreateProcess in a Job Object (KILL_ON_JOB_CLOSE) so no orphan; Windows system libs only, no vcpkg dep (ADR-035's HTTP choice).",
-      "Authorized running the local ComfyUI Metric3D model (execute code + torch.load weights) and installing open3d/addict/yapf into Python 3.11 — the sidecar's own out-of-build deps.",
-      "QM-057 confidence = planar-quality x verticality gate (floor/ceiling -> ~0) x ambiguity gate, so the gallery floor-trap returns LOW confidence instead of confidently wrong.",
-      "Metric3D: call the package's internal predict_depth_normal() for RAW metric depth; its public __call__ returns a colormapped depth (loses scale).",
-      "ChArUco asset written 3-channel (a grayscale PNG loads as GL_RED -> red-on-black).",
-      "Faithful anamorphic (QM-062) uses the One-Flash homography (projector pose observed via the pattern); a projector-off / QM-057-only version is geometrically underdetermined (the spike's finding).",
-      "Verification via guarded headless self-test hooks (QM_AI_SELFTEST / QM_AI_TEST_IMAGE) — off in normal runs; the programmatic smoke mode the smoke README asked for.",
-      "Git workflow: all session-14 work on dev (pushed to origin/dev); master kept at the clean Session-12 baseline until a dev->master PR.",
-      "Git author for this repo: Jones <fiavaion101@gmail.com> (local config)."
+      "ADR-039: revive multi-scene as a WIRED feature (ADR-033 retired it only as unwired dead code and explicitly anticipated this revival). 1 scene -> at most 1 output; output shows its assigned scene; unassigned outputs render black.",
+      "Live scenes are runtime state in EditorState (the 'active scene of truth'); Project is the serialized DTO. EditorState.scene/quadManager became activeScene()/quadManager() accessors that lazily guarantee >=1 scene.",
+      "Default scene auto-assigns to the 2nd monitor at startup (the projector) via a default output created in Application init; F11 lazy-create becomes a no-op since an output already exists.",
+      "renderToOutputs(scenes, textures) routes per output via the pure, unit-tested OutputManager::sceneForOutput(); replaces the old 'render all quads to every output'.",
+      "Mapping stopgap (ADR-038): a new quad starts 1x1 (no internal divisions); MIN_MESH_RESOLUTION=1. Control grid still doubles as the render mesh, so few-division textured warps are affine until Tier 2 decouples them (user-approved).",
+      "Picking must normalize the cursor by glfwGetWindowSize, not glfwGetFramebufferSize (DPI-correct). Handle shader takes u_Aspect to render round handles.",
+      "P5 will restore SceneManager/ScenePanel/PreviewPanel + v2 serializer from git 669a05c^ as a reference, wiring them properly rather than re-introducing the inert stub.",
+      "Verification method that works on this machine for GUI/mouse/multi-monitor: drive synthetic Win32 input (AttachThreadInput to steal foreground, SetCursorPos + mouse_event/keybd_event) and CopyFromScreen the virtual desktop; cross-check with in-app Logger output.",
+      "Build gotcha: cmake --build --target QUADmapper sometimes skips the exe relink after a source/generated-header change; touch the .cpp (and re-run cmake --preset debug for shader edits) to force it. Detect by grepping the exe for a new string.",
+      "Git author for this repo: Jones <fiavaion101@gmail.com> (local config). Work on dev (pushed to origin/dev); master stays clean."
     ],
     "openQuestions": [],
     "blockers": [
-      "QM-061 (real-device validation) cannot be done without a physical projector + surface + phone — the wedge's novelty stays a hypothesis until then."
+      "QM-061 (AI real-device validation) still needs physical projector + surface + phone (unchanged from Session 15)."
     ]
   },
   "projectState": {
-    "currentPhase": "v1.1 polish + Kantan-style grid (ADR-038) — Tier 1 COMPLETE; AI wedge (Phase 9) software-complete, gated on hardware QM-061",
+    "currentPhase": "Multi-scene output routing (ADR-039) — P1+P2 done & hardware-verified; P3 (Scenes UI) next. Mapping-editor UX fixes shipped. AI wedge (Phase 9) still gated on hardware QM-061.",
     "completedPhases": [
       "Phase 0: Infrastructure Setup",
       "Phase 1: Core Foundation",
@@ -65,60 +62,38 @@
       "Phase 5: Scene System",
       "Phase 6: Audio System",
       "Phase 7: Polish",
-      "Phase 8: ADR-031 Refactor (complete, merged to master)",
-      "Phase 9: AI Pre-Show Assist — software-complete (Surface-Snap + One-Flash + anamorphic); QM-061 hardware gate outstanding",
-      "v1.1 polish: US-104 color correction + US-101 soft-edge blending + UV test-grid (#2)",
-      "Kantan-style grid (ADR-038) Tier 1 COMPLETE — non-uniform control grid (Linear parity); Tier 2 (Bezier) next"
+      "Phase 8: ADR-031 Refactor (merged to master)",
+      "Phase 9: AI Pre-Show Assist — software-complete; QM-061 hardware gate outstanding",
+      "v1.1 polish: color correction + soft-edge + UV grid",
+      "Kantan-style grid (ADR-038) Tier 1 (Linear parity)",
+      "Mapping-editor UX fixes (round handles, DPI picking, clean grid, drag-to-add divisions, Reset)",
+      "ADR-039 multi-scene routing: P1 (runtime foundation) + P2 (per-output routing, hardware-verified)"
     ],
     "buildStatus": "success",
-    "lastSuccessfulBuild": "2026-06-17T00:00:00Z",
-    "note": "Session 15 (2D-wedge focus). v1.1 polish shipped: per-quad color correction (ADR-036) + soft-edge blending (ADR-037) in quad.frag + Inspector; UV test-grid (#2). TD-10 resolved (async sidecar start). Kantan grid (ADR-038) Tier 1 complete: non-uniform control-grid model (uCoords/vCoords), .qmap persistence/migration (writer 1.2.0), Inspector add/remove, viewport click-on-edge insert (inverseBilinear). 3D (#4) shelved. .qmap + C++ build untouched by AI; vcpkg manifest untouched. 615/615 ctest; success-metric smoke green. All work on dev (origin/dev); master clean at fb4c85b. Outstanding: Kantan Tier 2 (Bezier); 🚩 QM-061 hardware test; then dev->master PR."
+    "lastSuccessfulBuild": "2026-06-17T12:55:00Z",
+    "note": "Session 16. Mapping-editor fixes + ADR-039 multi-scene P1/P2. 8 commits on dev (pushed origin/dev @ 54dcec0); master clean at fb4c85b. Multi-projector routing works and is verified on real 2-monitor hardware (each projector shows its assigned scene), but is NOT yet user-operable — no UI to create/assign scenes (that's P3). 619/619 ctest. .qmap format unchanged this session (v3 comes in P5). Next: QM-065 P3 Scenes UI."
   },
   "statistics": {
-    "totalSessions": 15,
-    "tasksCompleted": 66,
+    "totalSessions": 16,
+    "tasksCompleted": 68,
     "tasksInProgress": 1,
-    "tasksTodo": 4
+    "tasksTodo": 6
   },
-  "session15Accomplishments": {
-    "shipped": "14 commits on dev (pushed to origin/dev); master clean at fb4c85b. v1.1 polish + Kantan grid Tier 1.",
+  "session16Accomplishments": {
+    "shipped": "8 commits on dev (pushed origin/dev @ 54dcec0); master clean at fb4c85b. Mapping-editor fixes + multi-scene P1/P2.",
     "items": [
-      "TD-10 RESOLVED: SidecarClient::startAsync worker thread (atomic state + Starting); AI-enable no longer freezes UI; unit test.",
-      "US-104 per-quad color correction (ADR-036): quad.frag brightness/contrast/gamma/RGB-gain + Inspector + additive .qmap; identity = no-op.",
-      "US-101 per-quad soft-edge blending (ADR-037): per-edge feather + gamma; visually verified.",
-      "Fix: syncProjectToScene carries colorCorrection/softEdge through the app's scene rebuild (were dropped on load).",
-      "#2 UV test-grid: src/renderer/UvTestGrid.* (Blender-style colored grid), Apply button + 'UV grid on new quads' toggle, test_renderer (4 tests); visually verified.",
-      "#3 Kantan grid ADR-038 ACCEPTED + Tier 1 COMPLETE: control-grid model (batch1), .qmap persistence/migration 1.2.0 (batch2), Inspector add/remove (batch3a), viewport click-on-edge insert via inverseBilinear (batch3b).",
-      "#4 3D scan/model-UV researched then SHELVED (roadmap preserved).",
-      "QM-061 hardware runbook + dev->master PR-prep doc.",
-      "Gate: 615/615 ctest (+19), success-metric smoke green throughout."
+      "Mapping-editor fixes: DPI-correct picking (window-size), round aspect-corrected handles + smaller mesh dots, cyan mesh-grid wireframe, clean 1x1 default grid (MIN_MESH_RESOLUTION=1), drag-to-position division insert (one-shot + Esc), prominent Reset Transform button. +3 control-grid unit tests.",
+      "ADR-039 written: multi-scene project model + per-scene output routing + live preview; supersedes ADR-033; .qmap additive v3 reading v1/v2; phased P1-P5.",
+      "QM-063 (P1) DONE: multi-scene runtime foundation — EditorState scene list + active-scene accessor (activeScene()/quadManager()), behaviour-preserving.",
+      "QM-064 (P2) DONE: per-output scene routing (Scene::assignedOutputId, renderToOutputs per assigned scene, pure unit-tested sceneForOutput, default scene -> 2nd monitor). VERIFIED on real 2-monitor hardware.",
+      "Docs: TASKS.md Session-16 block + QM-063..067; ADR-039; build-stale-relink memory.",
+      "Gate: 619/619 ctest; app launches and edits; multi-output verified in perform mode."
     ],
     "lessons": [
-      "A success-metric-critical refactor stays safe when the editing path is index-based: swapping the uniform N x N model for a non-uniform control grid left drag/Tab-cycle/arrow-nudge untouched.",
-      "Make new geometry math testable by extracting it as a pure static (QuadGeometry::inverseBilinear) instead of a UI-TU file-static — forward-then-inverse round-trip tests catch sign/ordering bugs the smoke harness can't.",
-      "Temporary env-gated visual demos (QM_SOFTEDGE_DEMO / QM_UVGRID_DEMO / QM_GRIDDEMO) are an honest way to screenshot-verify a visual feature, then remove the scaffolding (git keeps nothing).",
-      "Keyboard-only smoke harness can't drive a positioned viewport mouse click; verify the pieces (math round-trip + insert logic + render) and flag the live gesture for manual confirm rather than claim it tested."
-    ]
-  },
-  "session14Accomplishments": {
-    "shipped": "branch dev (pushed to origin/dev); master clean at fb4c85b — dev->master PR pending review/hardware test",
-    "items": [
-      "QM-055 committed (2-commit split) + merged to master",
-      "QM-056: AI sidecar skeleton + IPC (Python stdlib HTTP; C++ WinHTTP SidecarClient + Job Object lifecycle; graceful absence; contract test + 6 GPU-free pytest)",
-      "QM-057: Metric3D metric-depth + Open3D segment_plane -> 4 corners + confidence; verticality gate (gallery floor-trap 0.00 vs screen 0.58)",
-      "QM-058: Detect Surface UI (apply proposed quad + Tab/arrow refine; low-conf 'tap the surface') — Phase 1 ships",
-      "QM-059: One-Flash ChArUco pattern emit (renderPatternToOutputs) + single-photo capture to disk",
-      "QM-060: POST /oneflash homography solve -> projector corners; synthetic known-homography test (<0.02, conf 0.99, 0.13px RMS)",
-      "QM-062: anamorphic / audience-perspective warp (One-Flash H, audience rect through H^-1)",
-      "Gate held: 596/596 ctest, 15/15 sidecar pytest, success-metric smoke green; new debt TD-10",
-      "Tidied git: work isolated on dev (origin/dev), master reset to clean baseline, stale branches deleted"
-    ],
-    "lessons": [
-      "Metric depth (Metric3D) fixes the spike's affine bow on oblique surfaces; call predict_depth_normal() for raw metric depth (public __call__ returns colormapped).",
-      "A verticality prior (1 - |normal_y|) as a multiplicative gate makes the 'largest plane != intended surface' floor-trap return low confidence instead of confidently wrong.",
-      "One-Flash = detect the SAME ChArUco in the projector reference + the photo, match by marker id, findHomography — avoids board-unit bookkeeping; synthetic warped-pattern test validates the solve with zero hardware.",
-      "A grayscale PNG loads as a single GL_RED channel (renders red-on-black) — write calibration patterns 3-channel.",
-      "ImGui menu-driving for verification is unreliable (foreground-steal, moving window, DPI fonts); a guarded headless self-test hook (env-gated) is the robust, honest way to watch a feature work end-to-end."
+      "Reproduce-first paid off: the reported 'can't drag vertices' was NOT a fundamental picking bug (synthetic-input proof showed corner + mesh drag both work) — the real causes were oversized aspect-distorted handles + an armed Click-add mode that silently suppressed dragging. Don't fix from the bug report's stated cause; instrument and watch.",
+      "An accepted ADR's REMOVAL can be the right starting point for revival: ADR-033 kept the Scene primitive, preserved git history, and the v2 read path specifically so multi-scene could come back as a deliberate feature — read the retiring ADR before rebuilding from scratch.",
+      "Synthetic Win32 input (AttachThreadInput foreground-steal + SetCursorPos/mouse_event/keybd_event) + virtual-desktop CopyFromScreen is a reliable way to verify GUI/mouse/multi-monitor behaviour headlessly when ImGui menu-driving is unreliable.",
+      "cmake --build --target can silently skip the exe relink after a source/generated-header change; verify by exe timestamp / grepping the binary for a new string, and touch the .cpp to force it."
     ]
   }
 }

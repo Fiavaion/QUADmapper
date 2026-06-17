@@ -6,6 +6,59 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 16 - 2026-06-17 - mapping-editor fixes + multi-scene output routing (ADR-039 P1+P2)
+
+**Focus:** Field-driven fixes to the on-canvas mapping editor, then the start of the
+multi-projector feature — reviving multi-scene (retired in ADR-033 as dead code) as a *wired*
+capability so each projector shows its own mapping. 8 commits on `dev` (pushed to `origin/dev`,
+`54dcec0`); `master` untouched. 619/619 ctest throughout.
+
+**Completed this session:**
+- **Mapping-editor UX fixes** (diagnosed by running the app + driving synthetic Win32 input):
+  - **Picking** normalized by **window** size, not framebuffer size (DPI-correct hit-tests).
+  - **Round handles** — aspect-corrected handle shader (was 2:1 ellipses); smaller mesh dots so a
+    dense grid is readable. Verified on screen.
+  - **Mesh-grid wireframe** drawn in edit mode (cyan), so division lines are visible and warp live.
+  - **Clean 1×1 default grid** (`MIN_MESH_RESOLUTION=1`) — a new quad has no internal divisions;
+    you add them. (Stopgap: control grid still = render mesh until Tier 2; textured warps are
+    affine until divisions are added — user-approved tradeoff.)
+  - **Drag-to-position division insert** — arm Click-add Column/Row, press in the viewport and
+    drag the new line into place; release commits + auto-disarms (Esc cancels). `insertU/VDivision`
+    return the inserted index; new `moveU/VDivision` clamps between neighbours.
+  - **Prominent "Reset Transform"** button (offset/coverage/scale/rotation/flips).
+  - +3 control-grid unit tests; MeshSubdivision validity test updated for MIN=1.
+- **ADR-039 written** — multi-scene project model + per-scene output routing + live preview;
+  deliberately supersedes ADR-033's removal (which anticipated this revival). `.qmap` → additive v3
+  reading v1/v2. Phased P1–P5.
+- **QM-063 (P1) DONE** — multi-scene runtime foundation: `EditorState` holds a scene list and edits
+  the **active** scene via `activeScene()`/`quadManager()` accessors (lazily guarantees one scene).
+  Behaviour-preserving; all editor call sites migrated.
+- **QM-064 (P2) DONE** — per-output scene routing: `Scene::assignedOutputId`; `renderToOutputs`
+  renders each output's assigned scene (was: all quads to every output); pure unit-tested
+  `OutputManager::sceneForOutput()`; startup creates a default output and routes the default scene
+  to the **2nd monitor**. **Verified on real 2-monitor hardware** — perform mode showed each
+  projector rendering its own scene (centred quad on monitor 1, top-left quad on monitor 0).
+
+**Decisions:** ADR-039 (revive multi-scene as a wired feature; 1 scene → at most 1 output; restore
+deleted `SceneManager`/`ScenePanel`/`PreviewPanel`/v2-serializer from `669a05c^` as reference and
+wire them properly). Live scenes belong in `EditorState` (runtime truth); `Project` becomes the
+serialized DTO (v3, P5). Multi-scene UX clarified by the user: a project holds multiple scenes,
+each a separate mapping assigned to one output; editor edits one active scene at a time.
+
+**Files (highlights):** `src/shaders/handle.vert`, `src/renderer/Renderer.{hpp,cpp}` (round
+handles + mesh-grid wireframe), `src/ui/panels/ViewportEditor.cpp` + `InspectorPanel.cpp`
+(picking, drag-insert, reset), `src/scene/QuadGeometry.{hpp,cpp}` (1×1 default, move/insert),
+`src/app/EditorState.hpp` (multi-scene accessor), `src/scene/Scene.hpp` (assignedOutputId),
+`src/output/OutputManager.{hpp,cpp}` (per-output routing), `src/app/Application.cpp` (default
+output + render call), `docs/adr/0039-*`, tests.
+
+**Handoff → next session resumes at QM-065 (P3: Scenes UI).** The multi-projector engine works
+but isn't user-operable yet — there's no UI to create a 2nd scene or assign outputs. P3 adds a
+Scenes panel (add/rename/switch active + assign output) with viewport/QuadList/Inspector following
+the active scene. Then P4 (per-output live preview; revive `PreviewPanel` from `669a05c^`) and P5
+(`.qmap` v3 scenes+outputs persistence + v1/v2/v3 migration tests). Build gotcha noted: `cmake
+--build --target` sometimes skips the exe relink — `touch` the .cpp to force it.
+
 ### Session 15 - 2026-06-17 - v1.1 polish + Kantan-style grid Tier 1 (2D wedge focus)
 
 **Focus:** Independent-of-AI 2D-wedge work while QM-061 stays hardware-gated: paid down TD-10,

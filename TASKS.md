@@ -1,11 +1,11 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-06-16 (Session 15)
+Last Updated: 2026-06-17 (Session 16)
 
 ## Quick Status
-- In Progress: 1 (Kantan grid #3 — Tier 1 done; Tier 2 Bezier next)
-- Todo: 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate — hardware-only)
-- Done: 66 — **AI wedge software-complete; v1.1 polish US-104/US-101 + UV grid #2; TD-10 resolved; Kantan grid Tier 1 (Linear parity)**
+- In Progress: 1 — **QM-065 (ADR-039 P3: Scenes UI)** — makes the working per-output routing user-operable
+- Todo: QM-066 (P4 preview) + QM-067 (P5 .qmap v3) + 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate)
+- Done: 68 — **mapping-editor fixes (round handles, DPI picking, clean grid, drag-add divisions, Reset); multi-scene ADR-039 P1 (runtime) + P2 (per-output routing, hardware-verified)**
 - Blocked: 0
 
 ## Session 16 (2026-06-17) — mapping-editor fixes + multi-scene output routing (ADR-039)
