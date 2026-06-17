@@ -351,5 +351,81 @@ TEST(QuadGeometryTest, ResolutionChangeResetsMeshVertices) {
     EXPECT_EQ(geometry.getVertexCount(), 25);
 }
 
+// --- Non-uniform control grid (ADR-038, Tier 1) ----------------------------
+
+TEST(QuadGeometryControlGridTest, DefaultGridIsUniform) {
+    QuadGeometry g;
+    EXPECT_TRUE(g.isUniform());
+    EXPECT_EQ(g.getColumns(), DEFAULT_MESH_RESOLUTION);
+    EXPECT_EQ(g.getRows(), DEFAULT_MESH_RESOLUTION);
+    EXPECT_EQ(g.vertsPerRow(), DEFAULT_MESH_RESOLUTION + 1);
+    // Endpoints pinned to 0 and 1.
+    EXPECT_FLOAT_EQ(g.getUCoords().front(), 0.0f);
+    EXPECT_FLOAT_EQ(g.getUCoords().back(), 1.0f);
+}
+
+TEST(QuadGeometryControlGridTest, SetUniformGridRebuildsEvenCoords) {
+    QuadGeometry g;
+    g.setUniformGrid(4);
+    ASSERT_EQ(g.getColumns(), 4);
+    ASSERT_EQ(g.getUCoords().size(), 5u);
+    EXPECT_FLOAT_EQ(g.getUCoord(0), 0.0f);
+    EXPECT_FLOAT_EQ(g.getUCoord(1), 0.25f);
+    EXPECT_FLOAT_EQ(g.getUCoord(2), 0.5f);
+    EXPECT_FLOAT_EQ(g.getUCoord(4), 1.0f);
+    EXPECT_EQ(g.getVertexCount(), 25);
+}
+
+TEST(QuadGeometryControlGridTest, InsertUDivisionAddsLineAndGrowsGrid) {
+    QuadGeometry g;
+    g.setUniformGrid(2);                 // U coords: 0, 0.5, 1   (3 lines)
+    EXPECT_EQ(g.getVertexCount(), 9);
+    g.insertUDivision(0.25f);            // -> 0, 0.25, 0.5, 1    (4 lines)
+    EXPECT_EQ(g.vertsPerRow(), 4);
+    EXPECT_EQ(g.getVertexCount(), 12);
+    EXPECT_FALSE(g.isUniform());
+    EXPECT_FLOAT_EQ(g.getUCoord(1), 0.25f);
+    // Coords stay sorted with pinned endpoints.
+    EXPECT_FLOAT_EQ(g.getUCoords().front(), 0.0f);
+    EXPECT_FLOAT_EQ(g.getUCoords().back(), 1.0f);
+}
+
+TEST(QuadGeometryControlGridTest, InsertDivisionInterpolatesNeighbourOffsets) {
+    QuadGeometry g;
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    // Row 0: col0 offset (0,0), col1 (at u=0.5) offset (0.2, 0). Insert at u=0.25
+    // -> new col between them, offset interpolated at t=0.5 -> (0.1, 0).
+    g.setMeshVertex(0, 0, Vec2(0.0f, 0.0f));
+    g.setMeshVertex(0, 1, Vec2(0.2f, 0.0f));
+    g.insertUDivision(0.25f);
+    EXPECT_NEAR(g.getMeshVertex(0, 1).x, 0.1f, 1e-4f);  // new column
+    EXPECT_NEAR(g.getMeshVertex(0, 2).x, 0.2f, 1e-4f);  // old col1 shifted right
+}
+
+TEST(QuadGeometryControlGridTest, RemoveUDivisionDropsInteriorLinePreservingOthers) {
+    QuadGeometry g;
+    g.setUniformGrid(4);                 // 0,.25,.5,.75,1
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    g.setMeshVertex(0, 3, Vec2(0.5f, 0.0f));  // mark the 0.75 column
+    g.removeUDivision(2);                 // remove the 0.5 line
+    EXPECT_EQ(g.getColumns(), 3);        // 0,.25,.75,1
+    EXPECT_FLOAT_EQ(g.getUCoord(2), 0.75f);
+    // The marked column (was col3) is now col2 and keeps its offset.
+    EXPECT_NEAR(g.getMeshVertex(0, 2).x, 0.5f, 1e-4f);
+}
+
+TEST(QuadGeometryControlGridTest, EndpointsAndDuplicatesRejected) {
+    QuadGeometry g;
+    g.setUniformGrid(2);
+    const int before = g.vertsPerRow();
+    g.insertUDivision(0.0f);   // endpoint
+    g.insertUDivision(1.0f);   // endpoint
+    g.insertUDivision(0.5f);   // duplicate of existing line
+    EXPECT_EQ(g.vertsPerRow(), before);
+    g.removeUDivision(0);      // can't remove endpoint
+    EXPECT_EQ(g.vertsPerRow(), before);
+}
+
 } // namespace test
 } // namespace quadmapper

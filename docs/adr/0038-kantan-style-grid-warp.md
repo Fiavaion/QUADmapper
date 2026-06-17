@@ -1,7 +1,7 @@
 # ADR-038: Kantan-style non-uniform grid warp (US-101-grid / #3)
 
-**Date:** 2026-06-16
-**Status:** Proposed — **awaiting sign-off before implementation**
+**Date:** 2026-06-16 (accepted 2026-06-17)
+**Status:** **Accepted** — sign-off received; Tier 1 implementation starting.
 **Deciders:** Jones
 
 ## Context
@@ -99,11 +99,13 @@ fine tessellation generated *under* the control grid (decoupled from it). Three 
 3. **Per-cell perspective vs bilinear toggle (Kantan has it).** Deferred to a Tier-2 follow-up;
    bilinear-per-cell with fine tessellation covers the common case first.
 
-## Open questions for sign-off
+## Resolved at sign-off (2026-06-17)
 
-1. **Tier order / stop point:** confirm Tier 1 → 2 → 3 sequential, each merged before the next?
-2. **Tier 3 now or after a Tier-1+2 field test?** (Recommend: build 1+2, validate the workflow,
-   then commit to Tier 3's T-junction work.)
-3. **Replace vs. coexist:** make the new control grid the *only* mesh model (migrate uniform
-   away), or keep "uniform resolution" as a simple preset alongside it? (Recommend: migrate to
-   one model with an "even N×N" convenience action, to avoid two mesh code paths / TD.)
+1. **Tier order:** Tier 1 → Tier 2 sequential, **field-test the workflow**, then commit to
+   Tier 3 (local subdivision + T-junction stitching). Tier 3 stays deferrable if 1+2 suffice.
+2. **One mesh model:** the control grid is the **only** mesh representation. The uniform N×N is
+   migrated away (lossless: even-spaced divisions on load); a **"reset to even N×N" convenience
+   action** replaces the old resolution-as-model. No parallel mesh code paths.
+3. Consequence: the existing `meshResolution_`/`meshVertices_` API and its tests are refactored
+   onto the control grid (even divisions reproduce identical geometry → behavior-preserving
+   first batch).

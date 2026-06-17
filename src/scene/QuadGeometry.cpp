@@ -5,9 +5,10 @@
 namespace quadmapper {
 
 QuadGeometry::QuadGeometry()
-    : meshResolution_(DEFAULT_MESH_RESOLUTION)
-    , meshMode_(MeshMode::CORNERS_ONLY) {
+    : meshMode_(MeshMode::CORNERS_ONLY) {
     resetCorners();
+    uCoords_ = evenCoords(DEFAULT_MESH_RESOLUTION);
+    vCoords_ = evenCoords(DEFAULT_MESH_RESOLUTION);
     initializeMeshVertices();
 }
 
@@ -30,12 +31,142 @@ void QuadGeometry::resetCorners() {
     corners_[3] = Vec2(0.3f, 0.7f);  // BL
 }
 
-void QuadGeometry::setMeshResolution(int resolution) {
-    resolution = std::clamp(resolution, MIN_MESH_RESOLUTION, MAX_MESH_RESOLUTION);
-    if (resolution != meshResolution_) {
-        meshResolution_ = resolution;
-        initializeMeshVertices();
+std::vector<float> QuadGeometry::evenCoords(int n) {
+    n = std::clamp(n, MIN_MESH_RESOLUTION, MAX_MESH_RESOLUTION);
+    std::vector<float> coords(static_cast<size_t>(n) + 1);
+    for (int i = 0; i <= n; ++i) {
+        coords[static_cast<size_t>(i)] = static_cast<float>(i) / n;
     }
+    return coords;
+}
+
+void QuadGeometry::setUniformGrid(int n) {
+    n = std::clamp(n, MIN_MESH_RESOLUTION, MAX_MESH_RESOLUTION);
+    // Rebuild even grids and clear offsets (matches the legacy resolution reset).
+    if (getColumns() == n && getRows() == n && isUniform()) {
+        return;  // already this uniform grid
+    }
+    uCoords_ = evenCoords(n);
+    vCoords_ = evenCoords(n);
+    initializeMeshVertices();
+}
+
+bool QuadGeometry::isUniform() const {
+    if (uCoords_.size() != vCoords_.size()) return false;
+    const int n = getColumns();
+    constexpr float EPS = 1e-5f;
+    for (int i = 0; i <= n; ++i) {
+        const float expected = static_cast<float>(i) / n;
+        if (std::abs(uCoords_[i] - expected) > EPS) return false;
+        if (std::abs(vCoords_[i] - expected) > EPS) return false;
+    }
+    return true;
+}
+
+float QuadGeometry::getUCoord(int col) const {
+    if (col >= 0 && col < static_cast<int>(uCoords_.size())) return uCoords_[col];
+    return 0.0f;
+}
+
+float QuadGeometry::getVCoord(int row) const {
+    if (row >= 0 && row < static_cast<int>(vCoords_.size())) return vCoords_[row];
+    return 0.0f;
+}
+
+// Insert a division at p along one axis, interpolating the per-vertex offsets of
+// the new line from its two neighbours. Shared by insertU/VDivision via a lambda
+// that knows whether we are inserting a column (U) or a row (V).
+void QuadGeometry::insertUDivision(float u) {
+    if (u <= 0.0f || u >= 1.0f) return;
+    // Reject near-duplicates.
+    for (float c : uCoords_) {
+        if (std::abs(c - u) < 1e-4f) return;
+    }
+    // Find insertion column index k (uCoords_[k-1] < u < uCoords_[k]).
+    int k = static_cast<int>(std::upper_bound(uCoords_.begin(), uCoords_.end(), u) -
+                             uCoords_.begin());
+    const int oldCols = vertsPerRow();
+    const int rows = vertsPerCol();
+    const float t = (u - uCoords_[k - 1]) / (uCoords_[k] - uCoords_[k - 1]);
+
+    std::vector<Vec2> next(static_cast<size_t>(rows) * (oldCols + 1));
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < oldCols; ++c) {
+            int dstCol = (c < k) ? c : c + 1;
+            next[static_cast<size_t>(r) * (oldCols + 1) + dstCol] =
+                meshVertices_[static_cast<size_t>(r) * oldCols + c];
+        }
+        // Interpolated offset for the new column.
+        const Vec2 left = meshVertices_[static_cast<size_t>(r) * oldCols + (k - 1)];
+        const Vec2 right = meshVertices_[static_cast<size_t>(r) * oldCols + k];
+        next[static_cast<size_t>(r) * (oldCols + 1) + k] = glm::mix(left, right, t);
+    }
+    uCoords_.insert(uCoords_.begin() + k, u);
+    meshVertices_ = std::move(next);
+}
+
+void QuadGeometry::insertVDivision(float v) {
+    if (v <= 0.0f || v >= 1.0f) return;
+    for (float c : vCoords_) {
+        if (std::abs(c - v) < 1e-4f) return;
+    }
+    int k = static_cast<int>(std::upper_bound(vCoords_.begin(), vCoords_.end(), v) -
+                             vCoords_.begin());
+    const int cols = vertsPerRow();
+    const int oldRows = vertsPerCol();
+    const float t = (v - vCoords_[k - 1]) / (vCoords_[k] - vCoords_[k - 1]);
+
+    std::vector<Vec2> next(static_cast<size_t>(oldRows + 1) * cols);
+    for (int r = 0; r < oldRows; ++r) {
+        int dstRow = (r < k) ? r : r + 1;
+        for (int c = 0; c < cols; ++c) {
+            next[static_cast<size_t>(dstRow) * cols + c] =
+                meshVertices_[static_cast<size_t>(r) * cols + c];
+        }
+    }
+    for (int c = 0; c < cols; ++c) {
+        const Vec2 above = meshVertices_[static_cast<size_t>(k - 1) * cols + c];
+        const Vec2 below = meshVertices_[static_cast<size_t>(k) * cols + c];
+        next[static_cast<size_t>(k) * cols + c] = glm::mix(above, below, t);
+    }
+    vCoords_.insert(vCoords_.begin() + k, v);
+    meshVertices_ = std::move(next);
+}
+
+void QuadGeometry::removeUDivision(int col) {
+    // Only interior lines (endpoints 0 and last stay).
+    if (col <= 0 || col >= static_cast<int>(uCoords_.size()) - 1) return;
+    if (uCoords_.size() <= static_cast<size_t>(MIN_MESH_RESOLUTION) + 1) return;
+    const int oldCols = vertsPerRow();
+    const int rows = vertsPerCol();
+    std::vector<Vec2> next(static_cast<size_t>(rows) * (oldCols - 1));
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0, dst = 0; c < oldCols; ++c) {
+            if (c == col) continue;
+            next[static_cast<size_t>(r) * (oldCols - 1) + dst++] =
+                meshVertices_[static_cast<size_t>(r) * oldCols + c];
+        }
+    }
+    uCoords_.erase(uCoords_.begin() + col);
+    meshVertices_ = std::move(next);
+}
+
+void QuadGeometry::removeVDivision(int row) {
+    if (row <= 0 || row >= static_cast<int>(vCoords_.size()) - 1) return;
+    if (vCoords_.size() <= static_cast<size_t>(MIN_MESH_RESOLUTION) + 1) return;
+    const int cols = vertsPerRow();
+    const int oldRows = vertsPerCol();
+    std::vector<Vec2> next(static_cast<size_t>(oldRows - 1) * cols);
+    for (int r = 0, dst = 0; r < oldRows; ++r) {
+        if (r == row) continue;
+        for (int c = 0; c < cols; ++c) {
+            next[static_cast<size_t>(dst) * cols + c] =
+                meshVertices_[static_cast<size_t>(r) * cols + c];
+        }
+        ++dst;
+    }
+    vCoords_.erase(vCoords_.begin() + row);
+    meshVertices_ = std::move(next);
 }
 
 void QuadGeometry::setMeshVertices(const std::vector<Vec2>& vertices) {
@@ -46,8 +177,7 @@ void QuadGeometry::setMeshVertices(const std::vector<Vec2>& vertices) {
 }
 
 void QuadGeometry::setMeshVertex(int row, int col, const Vec2& offset) {
-    int index = row * (meshResolution_ + 1) + col;
-    setMeshVertexByIndex(index, offset);
+    setMeshVertexByIndex(vertexIndex(row, col), offset);
 }
 
 void QuadGeometry::setMeshVertexByIndex(int index, const Vec2& offset) {
@@ -57,8 +187,7 @@ void QuadGeometry::setMeshVertexByIndex(int index, const Vec2& offset) {
 }
 
 Vec2 QuadGeometry::getMeshVertex(int row, int col) const {
-    int index = row * (meshResolution_ + 1) + col;
-    return getMeshVertexByIndex(index);
+    return getMeshVertexByIndex(vertexIndex(row, col));
 }
 
 Vec2 QuadGeometry::getMeshVertexByIndex(int index) const {
@@ -83,13 +212,11 @@ bool QuadGeometry::hasMeshModifications() const {
 }
 
 int QuadGeometry::getVertexCount() const {
-    return (meshResolution_ + 1) * (meshResolution_ + 1);
+    return vertsPerRow() * vertsPerCol();
 }
 
 void QuadGeometry::initializeMeshVertices() {
-    int count = getVertexCount();
-    meshVertices_.clear();
-    meshVertices_.resize(count, Vec2(0.0f));
+    meshVertices_.assign(static_cast<size_t>(getVertexCount()), Vec2(0.0f));
 }
 
 Vec2 QuadGeometry::transformUVToPosition(const Vec2& uv) const {
@@ -100,46 +227,28 @@ Vec2 QuadGeometry::transformUVToPosition(const Vec2& uv) const {
 }
 
 std::vector<Vec2> QuadGeometry::generateMeshPositions() const {
-    int vertexCount = getVertexCount();
-    std::vector<Vec2> positions(vertexCount);
+    std::vector<Vec2> positions(static_cast<size_t>(getVertexCount()));
+    const bool edit = (meshMode_ == MeshMode::MESH_EDIT);
 
-    for (int row = 0; row <= meshResolution_; ++row) {
-        for (int col = 0; col <= meshResolution_; ++col) {
-            float u = static_cast<float>(col) / meshResolution_;
-            float v = static_cast<float>(row) / meshResolution_;
-
-            Vec2 pos = transformUVToPosition(Vec2(u, v));
-
-            // Add mesh offset if in edit mode
-            if (meshMode_ == MeshMode::MESH_EDIT) {
-                int index = row * (meshResolution_ + 1) + col;
-                pos += meshVertices_[index];
-            }
-
-            int index = row * (meshResolution_ + 1) + col;
+    for (int row = 0; row < vertsPerCol(); ++row) {
+        for (int col = 0; col < vertsPerRow(); ++col) {
+            Vec2 pos = transformUVToPosition(Vec2(uCoords_[col], vCoords_[row]));
+            const int index = vertexIndex(row, col);
+            if (edit) pos += meshVertices_[index];
             positions[index] = pos;
         }
     }
-
     return positions;
 }
 
 std::vector<Vec2> QuadGeometry::generateBilinearPositions() const {
-    int vertexCount = getVertexCount();
-    std::vector<Vec2> positions(vertexCount);
-
-    for (int row = 0; row <= meshResolution_; ++row) {
-        for (int col = 0; col <= meshResolution_; ++col) {
-            float u = static_cast<float>(col) / meshResolution_;
-            float v = static_cast<float>(row) / meshResolution_;
-
-            Vec2 pos = transformUVToPosition(Vec2(u, v));
-
-            int index = row * (meshResolution_ + 1) + col;
-            positions[index] = pos;
+    std::vector<Vec2> positions(static_cast<size_t>(getVertexCount()));
+    for (int row = 0; row < vertsPerCol(); ++row) {
+        for (int col = 0; col < vertsPerRow(); ++col) {
+            positions[vertexIndex(row, col)] =
+                transformUVToPosition(Vec2(uCoords_[col], vCoords_[row]));
         }
     }
-
     return positions;
 }
 

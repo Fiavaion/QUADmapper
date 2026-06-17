@@ -150,36 +150,35 @@ void Renderer::createOutlineBuffers() {
 
 void Renderer::updateQuadBuffers(const Quad& quad) {
     const QuadGeometry& geometry = quad.getGeometry();
-    int resolution = geometry.getMeshResolution();
-    int vertexCount = (resolution + 1) * (resolution + 1);
+    // Control grid may be non-uniform (ADR-038): iterate per-axis using the
+    // actual division coordinates for tex coords, and index the vpr-wide grid.
+    const int vpr = geometry.vertsPerRow();
+    const int vpc = geometry.vertsPerCol();
+    const auto& uCoords = geometry.getUCoords();
+    const auto& vCoords = geometry.getVCoords();
 
-    // Generate vertex data
-    vertices_.resize(vertexCount);
+    vertices_.resize(static_cast<size_t>(vpr) * vpc);
     auto meshPositions = geometry.generateMeshPositions();
 
-    for (int row = 0; row <= resolution; ++row) {
-        for (int col = 0; col <= resolution; ++col) {
-            int index = row * (resolution + 1) + col;
-            float u = static_cast<float>(col) / resolution;
-            float v = static_cast<float>(row) / resolution;
-
+    for (int row = 0; row < vpc; ++row) {
+        for (int col = 0; col < vpr; ++col) {
+            int index = row * vpr + col;
             vertices_[index].position[0] = meshPositions[index].x;
             vertices_[index].position[1] = meshPositions[index].y;
-            vertices_[index].texCoord[0] = u;
-            vertices_[index].texCoord[1] = v;
+            vertices_[index].texCoord[0] = uCoords[col];
+            vertices_[index].texCoord[1] = vCoords[row];
         }
     }
 
-    // Generate index data (two triangles per quad cell)
-    int quadCount = resolution * resolution;
-    indices_.resize(quadCount * 6);
+    // Generate index data (two triangles per cell)
+    indices_.resize(static_cast<size_t>(geometry.getColumns()) * geometry.getRows() * 6);
 
     int indexOffset = 0;
-    for (int row = 0; row < resolution; ++row) {
-        for (int col = 0; col < resolution; ++col) {
-            uint32_t topLeft = row * (resolution + 1) + col;
+    for (int row = 0; row < vpc - 1; ++row) {
+        for (int col = 0; col < vpr - 1; ++col) {
+            uint32_t topLeft = static_cast<uint32_t>(row * vpr + col);
             uint32_t topRight = topLeft + 1;
-            uint32_t bottomLeft = (row + 1) * (resolution + 1) + col;
+            uint32_t bottomLeft = static_cast<uint32_t>((row + 1) * vpr + col);
             uint32_t bottomRight = bottomLeft + 1;
 
             // First triangle (top-left, bottom-left, top-right)
