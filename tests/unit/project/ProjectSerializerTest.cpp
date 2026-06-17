@@ -353,7 +353,8 @@ TEST(ProjectSerializerVersionTest, FutureMajorVersionRejectedFlat) {
     ProjectSerializer serializer;
     Project project;
 
-    std::string json = R"({"version": "3.0.0", "name": "FromTheFuture", "quads": []})";
+    // v3 is the current max (ADR-039); a v4 file must still be rejected loudly.
+    std::string json = R"({"version": "4.0.0", "name": "FromTheFuture", "quads": []})";
     Result<void, std::string> result = serializer.deserialize(json, project);
 
     EXPECT_TRUE(result.isError());
@@ -367,6 +368,131 @@ TEST(ProjectSerializerVersionTest, MalformedVersionRejected) {
     Result<void, std::string> result = serializer.deserialize(json, project);
 
     EXPECT_TRUE(result.isError());
+}
+
+// ============ ADR-039: .qmap v3 multi-scene + outputs migration ============
+
+// Every read path yields >= 1 scene. A v1.x flat file wraps its top-level quads
+// into a single scene while still populating the flat quad list (back-compat).
+TEST(ProjectSerializerV3Test, V1FlatLoadsAsSingleScene) {
+    ProjectSerializer serializer;
+    Project project;
+
+    std::string json = R"({
+        "version": "1.0.0", "name": "Flat",
+        "quads": [{"name": "Q1", "geometry": {"corners": [[0,0],[1,0],[1,1],[0,1]]}}]
+    })";
+    ASSERT_TRUE(serializer.deserialize(json, project).isSuccess());
+    ASSERT_EQ(project.getScenes().size(), 1u);
+    EXPECT_EQ(project.getScenes()[0].quads.size(), 1u);
+    EXPECT_EQ(project.getQuads().size(), 1u);  // flat view still populated
+}
+
+// A v2.x file's "scenes" array maps to scene DTOs (one per scene).
+TEST(ProjectSerializerV3Test, V2ScenesMapToSceneList) {
+    ProjectSerializer serializer;
+    Project project;
+
+    std::string json = R"({
+        "version": "2.0.0", "name": "Legacy",
+        "scenes": [
+            {"name": "A", "quads": [{"name": "Qa"}]},
+            {"name": "B", "quads": [{"name": "Qb1"}, {"name": "Qb2"}]}
+        ]
+    })";
+    ASSERT_TRUE(serializer.deserialize(json, project).isSuccess());
+    ASSERT_EQ(project.getScenes().size(), 2u);
+    EXPECT_EQ(project.getScenes()[0].name, "A");
+    EXPECT_EQ(project.getScenes()[1].quads.size(), 2u);
+    EXPECT_EQ(project.getQuads().size(), 3u);  // flattened union
+}
+
+// v3 is accepted; a v4 (future) major is rejected (covered above with 4.0.0).
+TEST(ProjectSerializerV3Test, V3VersionAccepted) {
+    ProjectSerializer serializer;
+    Project project;
+    std::string json = R"({"version": "3.0.0", "name": "V3", "scenes": []})";
+    ASSERT_TRUE(serializer.deserialize(json, project).isSuccess());
+    // An empty scenes array still yields a guaranteed default scene.
+    EXPECT_EQ(project.getScenes().size(), 1u);
+}
+
+// Full v3 round-trip: multiple scenes, per-scene output assignment, and the
+// outputs array all survive serialize -> deserialize.
+TEST(ProjectSerializerV3Test, V3RoundTripScenesAndOutputs) {
+    ProjectSerializer serializer;
+
+    Project original;
+    original.setName("Show");
+
+    UUID outputId = UUID::generate();  // a concrete output id to link a scene to
+
+    Project::OutputData out;
+    out.id = outputId;
+    out.name = "Projector 1";
+    out.monitor = 1;
+    out.resolution = IVec2(1280, 720);
+    out.rotationDegrees = 90;
+    out.enabled = true;
+    original.getOutputs().push_back(out);
+
+    Project::SceneData s1;
+    s1.id = UUID::generate();
+    s1.name = "Stage";
+    s1.assignedOutputId = outputId;  // routed to the projector
+    s1.view.zoom = 2.5f;
+    {
+        Quad q; q.setName("StageQuad");
+        s1.quads.push_back(std::move(q));
+        s1.texturePaths.push_back("media/stage.png");
+    }
+    original.getScenes().push_back(std::move(s1));
+
+    Project::SceneData s2;
+    s2.id = UUID::generate();
+    s2.name = "Backup";  // no output assigned (edit-only)
+    original.getScenes().push_back(std::move(s2));
+
+    std::string json = serializer.serialize(original);
+    EXPECT_NE(json.find("\"version\": \"3.0.0\""), std::string::npos);
+    EXPECT_NE(json.find("scenes"), std::string::npos);
+    EXPECT_NE(json.find("outputs"), std::string::npos);
+
+    Project loaded;
+    ASSERT_TRUE(serializer.deserialize(json, loaded).isSuccess());
+
+    ASSERT_EQ(loaded.getScenes().size(), 2u);
+    EXPECT_EQ(loaded.getScenes()[0].name, "Stage");
+    EXPECT_EQ(loaded.getScenes()[0].assignedOutputId, outputId);
+    EXPECT_FALSE(loaded.getScenes()[0].assignedOutputId.isNull());
+    EXPECT_NEAR(loaded.getScenes()[0].view.zoom, 2.5f, 1e-4f);
+    ASSERT_EQ(loaded.getScenes()[0].quads.size(), 1u);
+    EXPECT_EQ(loaded.getScenes()[0].quads[0].getName(), "StageQuad");
+    EXPECT_EQ(loaded.getScenes()[0].texturePaths[0], "media/stage.png");
+    EXPECT_TRUE(loaded.getScenes()[1].assignedOutputId.isNull());
+
+    ASSERT_EQ(loaded.getOutputs().size(), 1u);
+    EXPECT_EQ(loaded.getOutputs()[0].id, outputId);
+    EXPECT_EQ(loaded.getOutputs()[0].name, "Projector 1");
+    EXPECT_EQ(loaded.getOutputs()[0].monitor, 1);
+    EXPECT_EQ(loaded.getOutputs()[0].resolution.x, 1280);
+    EXPECT_EQ(loaded.getOutputs()[0].resolution.y, 720);
+    EXPECT_EQ(loaded.getOutputs()[0].rotationDegrees, 90);
+}
+
+// A flat-only Project (no scene DTOs) must still write the legacy v1.2 format so
+// existing files and tooling are byte-compatible with before P5.
+TEST(ProjectSerializerV3Test, FlatProjectStillWritesV1) {
+    ProjectSerializer serializer;
+    Project p;
+    p.setName("FlatOnly");
+    Quad q; q.setName("Q");
+    p.getQuads().push_back(std::move(q));
+    p.getTexturePaths().push_back("");
+
+    std::string json = serializer.serialize(p);
+    EXPECT_NE(json.find("\"version\": \"1.2.0\""), std::string::npos);
+    EXPECT_EQ(json.find("\"scenes\""), std::string::npos);
 }
 
 } // namespace test

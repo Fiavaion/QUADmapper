@@ -5,11 +5,15 @@
 
 namespace quadmapper {
 
-// .qmap format versioning (see ADR-032).
-//   1.x = flat single-quad-list format (the format the app writes)
-//   2.x = legacy scene-based format ("scenes" array) — readable only (ADR-033)
-// Readers accept any major <= kMaxSupportedMajor and flatten v2.x files in memory.
-static constexpr int kMaxSupportedMajor = 2;
+// .qmap format versioning (see ADR-032, ADR-039).
+//   1.x = flat single-quad-list format
+//   2.x = legacy scene-based format ("scenes" array) — read-only (ADR-033)
+//   3.x = multi-scene + per-output routing: "scenes" (id/name/quads/groups/view/
+//         assignedOutputId) + "outputs" arrays (ADR-039). The format the app writes
+//         once a project has scenes; v1/v2 are migrated in memory on read.
+// Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
+// scene model so every read path yields >= 1 scene.
+static constexpr int kMaxSupportedMajor = 3;
 
 // Single version policy for every read path (ADR-032). Returns the validated MAJOR version,
 // or an error message: missing/malformed version rejects, and a major newer than this build
@@ -335,53 +339,208 @@ static QuadGroup deserializeGroup(const nlohmann::json& j) {
     return group;
 }
 
-// Append one quad (and its texture path) to the flat Project model.
-static void loadQuadIntoProject(Project& project, const nlohmann::json& quadJson) {
+// Append one quad (and its texture path) to a scene DTO.
+static void loadQuadIntoScene(Project::SceneData& scene, const nlohmann::json& quadJson) {
     std::string texturePath;
     Quad quad = deserializeQuad(quadJson, texturePath);
-    project.getQuads().push_back(std::move(quad));
-    project.getTexturePaths().push_back(texturePath);
+    scene.quads.push_back(std::move(quad));
+    scene.texturePaths.push_back(texturePath);
 }
 
-// Load a JSON document into the flat Project model. Handles both v1.x (top-level "quads")
-// and v2.x (flattens every scene's quads, since the flat model has no scene concept) so a
-// v2.x file never loads as silently empty. Shared by load() and deserialize() (ADR-032).
-static void loadFlatProject(const nlohmann::json& json, Project& project) {
+// Serialize one scene DTO to a v3 "scenes" element.
+static nlohmann::json serializeScene(const Project::SceneData& scene) {
+    nlohmann::json j;
+    j["id"] = scene.id.toString();
+    j["name"] = scene.name;
+    if (!scene.assignedOutputId.isNull()) {
+        j["assignedOutputId"] = scene.assignedOutputId.toString();
+    }
+    j["view"] = {
+        {"pan", serializeVec2(scene.view.pan)},
+        {"zoom", scene.view.zoom},
+        {"gridVisible", scene.view.gridVisible},
+        {"snapToGrid", scene.view.snapToGrid},
+    };
+
+    nlohmann::json quadsJson = nlohmann::json::array();
+    for (size_t i = 0; i < scene.quads.size(); ++i) {
+        std::string texPath = (i < scene.texturePaths.size()) ? scene.texturePaths[i] : "";
+        quadsJson.push_back(serializeQuad(scene.quads[i], texPath));
+    }
+    j["quads"] = quadsJson;
+
+    if (!scene.groups.empty()) {
+        nlohmann::json groupsJson = nlohmann::json::array();
+        for (const auto& group : scene.groups) {
+            groupsJson.push_back(serializeGroup(group));
+        }
+        j["groups"] = groupsJson;
+    }
+    return j;
+}
+
+// Deserialize a v2/v3 "scenes" element into a scene DTO. v2 elements simply lack
+// the v3-only fields (assignedOutputId/view/id), which fall back to defaults.
+static Project::SceneData deserializeScene(const nlohmann::json& j) {
+    Project::SceneData scene;
+    if (j.contains("id")) {
+        scene.id = UUID::fromString(j["id"].get<std::string>());
+    }
+    if (scene.id.isNull()) {
+        scene.id = UUID::generate();  // generate a fresh id so every scene is addressable
+    }
+    scene.name = j.contains("name") ? j["name"].get<std::string>() : "Scene";
+    if (j.contains("assignedOutputId")) {
+        scene.assignedOutputId = UUID::fromString(j["assignedOutputId"].get<std::string>());
+    }
+    if (j.contains("view") && j["view"].is_object()) {
+        const auto& v = j["view"];
+        if (v.contains("pan") && v["pan"].is_array()) scene.view.pan = deserializeVec2(v["pan"]);
+        if (v.contains("zoom")) scene.view.zoom = v["zoom"].get<float>();
+        if (v.contains("gridVisible")) scene.view.gridVisible = v["gridVisible"].get<bool>();
+        if (v.contains("snapToGrid")) scene.view.snapToGrid = v["snapToGrid"].get<bool>();
+    }
+    if (j.contains("quads") && j["quads"].is_array()) {
+        for (const auto& quadJson : j["quads"]) {
+            loadQuadIntoScene(scene, quadJson);
+        }
+    }
+    if (j.contains("groups") && j["groups"].is_array()) {
+        for (const auto& groupJson : j["groups"]) {
+            scene.groups.push_back(deserializeGroup(groupJson));
+        }
+    }
+    return scene;
+}
+
+static nlohmann::json serializeOutput(const Project::OutputData& output) {
+    nlohmann::json j;
+    j["id"] = output.id.toString();
+    j["name"] = output.name;
+    j["monitor"] = output.monitor;
+    j["resolution"] = nlohmann::json::array({output.resolution.x, output.resolution.y});
+    j["rotation"] = output.rotationDegrees;
+    j["enabled"] = output.enabled;
+    return j;
+}
+
+static Project::OutputData deserializeOutput(const nlohmann::json& j) {
+    Project::OutputData output;
+    if (j.contains("id")) {
+        output.id = UUID::fromString(j["id"].get<std::string>());
+    }
+    if (output.id.isNull()) {
+        output.id = UUID::generate();
+    }
+    output.name = j.contains("name") ? j["name"].get<std::string>() : "Output";
+    if (j.contains("monitor")) output.monitor = j["monitor"].get<int>();
+    if (j.contains("resolution") && j["resolution"].is_array() && j["resolution"].size() == 2) {
+        output.resolution = IVec2(j["resolution"][0].get<int>(), j["resolution"][1].get<int>());
+    }
+    if (j.contains("rotation")) output.rotationDegrees = j["rotation"].get<int>();
+    if (j.contains("enabled")) output.enabled = j["enabled"].get<bool>();
+    return output;
+}
+
+// Rebuild the flat quads_/texturePaths_/groups_ as the union of every scene, so
+// flat consumers (and the existing flat-API tests) keep working after a v3 load.
+static void flattenScenesToFlat(Project& project) {
+    project.clearQuads();
+    project.getTexturePaths().clear();
+    project.clearGroups();
+    for (const auto& scene : project.getScenes()) {
+        for (size_t i = 0; i < scene.quads.size(); ++i) {
+            project.getQuads().push_back(scene.quads[i]);
+            project.getTexturePaths().push_back(
+                i < scene.texturePaths.size() ? scene.texturePaths[i] : std::string());
+        }
+        for (const auto& group : scene.groups) {
+            project.getGroups().push_back(group);
+        }
+    }
+}
+
+// Load a JSON document into the Project model (ADR-032 / ADR-039). Every read path
+// yields >= 1 scene: v1.x flat "quads" wrap into one scene; v2.x/v3.x "scenes" map
+// directly; v3.x also restores the "outputs" array. The flat quads_/groups_ are then
+// derived from the scenes so flat consumers stay backward-compatible.
+static void loadProjectModel(const nlohmann::json& json, Project& project) {
     if (json.contains("name")) {
         project.setName(json["name"].get<std::string>());
     }
 
+    auto& scenes = project.getScenes();
     if (json.contains("scenes") && json["scenes"].is_array()) {
         for (const auto& sceneJson : json["scenes"]) {
-            if (sceneJson.contains("quads") && sceneJson["quads"].is_array()) {
-                for (const auto& quadJson : sceneJson["quads"]) {
-                    loadQuadIntoProject(project, quadJson);
-                }
+            scenes.push_back(deserializeScene(sceneJson));
+        }
+    } else {
+        // v1.x flat: wrap the top-level quads/groups into a single scene.
+        Project::SceneData scene;
+        scene.id = UUID::generate();
+        scene.name = "Scene 1";
+        if (json.contains("quads") && json["quads"].is_array()) {
+            for (const auto& quadJson : json["quads"]) {
+                loadQuadIntoScene(scene, quadJson);
             }
         }
-    } else if (json.contains("quads") && json["quads"].is_array()) {
-        for (const auto& quadJson : json["quads"]) {
-            loadQuadIntoProject(project, quadJson);
+        if (json.contains("groups") && json["groups"].is_array()) {
+            for (const auto& groupJson : json["groups"]) {
+                scene.groups.push_back(deserializeGroup(groupJson));
+            }
+        }
+        scenes.push_back(std::move(scene));
+    }
+
+    // Guarantee at least one scene so the editor is never sceneless.
+    if (scenes.empty()) {
+        Project::SceneData scene;
+        scene.id = UUID::generate();
+        scene.name = "Scene 1";
+        scenes.push_back(std::move(scene));
+    }
+
+    if (json.contains("outputs") && json["outputs"].is_array()) {
+        for (const auto& outputJson : json["outputs"]) {
+            project.getOutputs().push_back(deserializeOutput(outputJson));
         }
     }
 
-    if (json.contains("groups") && json["groups"].is_array()) {
-        for (const auto& groupJson : json["groups"]) {
-            project.getGroups().push_back(deserializeGroup(groupJson));
-        }
-    }
+    flattenScenesToFlat(project);
 }
 
-Result<void, Error> ProjectSerializer::save(const Project& project, const std::filesystem::path& path) {
+// Build the on-disk JSON for a project. Writes v3 (scenes + outputs) when the
+// project carries scene DTOs; otherwise the legacy v1.2 flat format, so a flat-only
+// Project (and the existing flat round-trip tests) is byte-compatible with before.
+static nlohmann::json buildProjectJson(const Project& project) {
     nlohmann::json json;
     json["$schema"] = "quadmapper/project/1.0";
+
+    if (!project.getScenes().empty()) {
+        json["version"] = "3.0.0";  // 3.0: multi-scene + per-output routing (ADR-039)
+        json["name"] = project.getName();
+
+        nlohmann::json scenesJson = nlohmann::json::array();
+        for (const auto& scene : project.getScenes()) {
+            scenesJson.push_back(serializeScene(scene));
+        }
+        json["scenes"] = scenesJson;
+
+        if (!project.getOutputs().empty()) {
+            nlohmann::json outputsJson = nlohmann::json::array();
+            for (const auto& output : project.getOutputs()) {
+                outputsJson.push_back(serializeOutput(output));
+            }
+            json["outputs"] = outputsJson;
+        }
+        return json;
+    }
+
     json["version"] = "1.2.0";  // 1.2: additive non-uniform control grid (ADR-038)
     json["name"] = project.getName();
 
-    // Serialize quads
     const auto& quads = project.getQuads();
     const auto& texturePaths = project.getTexturePaths();
-
     nlohmann::json quadsJson = nlohmann::json::array();
     for (size_t i = 0; i < quads.size(); ++i) {
         std::string texPath = (i < texturePaths.size()) ? texturePaths[i] : "";
@@ -389,7 +548,6 @@ Result<void, Error> ProjectSerializer::save(const Project& project, const std::f
     }
     json["quads"] = quadsJson;
 
-    // Serialize groups
     const auto& groups = project.getGroups();
     if (!groups.empty()) {
         nlohmann::json groupsJson = nlohmann::json::array();
@@ -398,7 +556,11 @@ Result<void, Error> ProjectSerializer::save(const Project& project, const std::f
         }
         json["groups"] = groupsJson;
     }
+    return json;
+}
 
+Result<void, Error> ProjectSerializer::save(const Project& project, const std::filesystem::path& path) {
+    nlohmann::json json = buildProjectJson(project);
     Logger::info("Saving project to: {}", path.string());
     return FileSystem::writeFile(path, json.dump(2));
 }
@@ -420,13 +582,14 @@ Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path
             return Err<Project>(versionResult.error());
         }
 
-        loadFlatProject(json, project);
+        loadProjectModel(json, project);
 
         project.setFilePath(path.string());
         project.setModified(false);
 
-        Logger::info("Loaded project '{}' with {} quads and {} groups",
-                     project.getName(), project.getQuads().size(), project.getGroups().size());
+        Logger::info("Loaded project '{}' with {} scene(s), {} quads and {} groups",
+                     project.getName(), project.getScenes().size(),
+                     project.getQuads().size(), project.getGroups().size());
 
     } catch (const std::exception& e) {
         return Err<Project>(std::string("Failed to parse project: ") + e.what());
@@ -436,32 +599,7 @@ Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path
 }
 
 std::string ProjectSerializer::serialize(const Project& project) {
-    nlohmann::json json;
-    json["$schema"] = "quadmapper/project/1.0";
-    json["version"] = "1.2.0";  // 1.2: additive non-uniform control grid (ADR-038)
-    json["name"] = project.getName();
-
-    const auto& quads = project.getQuads();
-    const auto& texturePaths = project.getTexturePaths();
-
-    nlohmann::json quadsJson = nlohmann::json::array();
-    for (size_t i = 0; i < quads.size(); ++i) {
-        std::string texPath = (i < texturePaths.size()) ? texturePaths[i] : "";
-        quadsJson.push_back(serializeQuad(quads[i], texPath));
-    }
-    json["quads"] = quadsJson;
-
-    // Serialize groups
-    const auto& groups = project.getGroups();
-    if (!groups.empty()) {
-        nlohmann::json groupsJson = nlohmann::json::array();
-        for (const auto& group : groups) {
-            groupsJson.push_back(serializeGroup(group));
-        }
-        json["groups"] = groupsJson;
-    }
-
-    return json.dump(2);
+    return buildProjectJson(project).dump(2);
 }
 
 Result<void, std::string> ProjectSerializer::deserialize(const std::string& jsonStr, Project& project) {
@@ -481,8 +619,10 @@ Result<void, std::string> ProjectSerializer::deserialize(const std::string& json
         project.clearQuads();
         project.getTexturePaths().clear();
         project.clearGroups();
+        project.getScenes().clear();
+        project.getOutputs().clear();
 
-        loadFlatProject(json, project);
+        loadProjectModel(json, project);
 
         project.setModified(false);
 
