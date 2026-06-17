@@ -3,9 +3,9 @@
 Last Updated: 2026-06-17 (Session 16)
 
 ## Quick Status
-- In Progress: 1 — **QM-065 (ADR-039 P3: Scenes UI)** — makes the working per-output routing user-operable
+- In Progress: 0 (QM-066 P4 preview is next)
 - Todo: QM-066 (P4 preview) + QM-067 (P5 .qmap v3) + 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate)
-- Done: 68 — **mapping-editor fixes (round handles, DPI picking, clean grid, drag-add divisions, Reset); multi-scene ADR-039 P1 (runtime) + P2 (per-output routing, hardware-verified)**
+- Done: 69 — **mapping-editor fixes (round handles, DPI picking, clean grid, drag-add divisions, Reset); multi-scene ADR-039 P1 (runtime) + P2 (per-output routing, hardware-verified) + P3 (Scenes UI, app-verified)**
 - Blocked: 0
 
 ## Session 16 (2026-06-17) — mapping-editor fixes + multi-scene output routing (ADR-039)
@@ -29,8 +29,12 @@ monitor; live per-output preview. `.qmap` → additive **v3** (still reads v1/v2
   each output's assigned scene; pure unit-tested `sceneForOutput()`; default scene → 2nd monitor
   at startup. **Verified on real 2-monitor hardware** (perform mode: each projector showed its
   own scene's quad). Committed `6c712a4`. 619/619 ctest.
-- **QM-065 (P3) TODO** — Scenes UI: list/add/delete/rename/switch active + assign output;
-  active-scene editing across viewport/QuadList/Inspector.
+- **QM-065 (P3) DONE** — Scenes UI: a "Scenes" tab in the Resources panel (`ScenePanel`)
+  with New/Delete/rename, active-scene switch, and a per-scene output-assignment dropdown
+  (one-scene-per-output enforced). Viewport/QuadList/Inspector follow the active scene via
+  the existing `quadManager()`/`activeScene()` accessors. **App-verified** (synthetic-input
+  smoke `tests/smoke/drive_scenes_smoke.ps1`: created Scene 2 → auto-active, Delete enabled
+  at 2 scenes, default scene shows "Projector 1", new scene "(no output)"). 619/619 ctest.
 - **QM-066 (P4) TODO** — live per-output preview (offscreen FBO → ImGui thumbnails; revive
   `PreviewPanel` from `669a05c^`).
 - **QM-067 (P5) TODO** — `.qmap` v3 writer (scenes + outputs arrays) + v1/v2/v3 readers +
@@ -904,7 +908,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-062 | Audience-perspective anamorphic warp | DONE | Phase 9 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
-| QM-065 | Scenes UI: create/switch/assign output (P3) | TODO | ADR-039 |
+| QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |
 | QM-066 | Live per-output preview (P4) | TODO | ADR-039 |
 | QM-067 | .qmap v3 scenes+outputs persistence (P5) | TODO | ADR-039 |
 

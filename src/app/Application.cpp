@@ -947,6 +947,15 @@ void Application::render() {
             ImGui::EndTabItem();
         }
 
+        // -------- Scenes Tab --------
+        if (ImGui::BeginTabItem("Scenes")) {
+            EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                              m_sourceManager.get(), m_outputManager.get(),
+                              m_renderer.get(), m_window};
+            es.scenePanel.renderContent(ctx);
+            ImGui::EndTabItem();
+        }
+
         // -------- Outputs Tab --------
         if (ImGui::BeginTabItem("Outputs")) {
             UUID prevOutputSelection = outputPanel.getSelectedOutputId();

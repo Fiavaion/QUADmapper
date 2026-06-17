@@ -11,6 +11,8 @@
 #include <unordered_set>
 #include <memory>
 #include <string>
+#include <vector>
+#include <algorithm>
 
 #include <glad/glad.h>  // GLuint
 
@@ -25,6 +27,7 @@
 #include "../ui/panels/MediaBinPanel.hpp"
 #include "../ui/panels/OutputPanel.hpp"
 #include "../ui/panels/QuadListPanel.hpp"
+#include "../ui/panels/ScenePanel.hpp"
 #include "../ui/panels/VideoPlayerPanel.hpp"
 #include "../ui/panels/ViewportEditor.hpp"
 
@@ -55,6 +58,77 @@ struct EditorState {
         return *scenes.front();
     }
     QuadManager& quadManager() { return activeScene().getQuadManager(); }
+
+    // ---- Scene-list management (ADR-039 P3) -------------------------------
+    // Thin mutators over the scene list. The viewport, Quad List and Inspector
+    // all read through activeScene()/quadManager(), so switching the active
+    // scene makes them follow with no extra wiring. The proper testable
+    // SceneManager returns in P5; these stay deliberately small until then.
+
+    bool canDeleteScene() const { return scenes.size() > 1; }
+
+    std::string generateUniqueSceneName() const {
+        for (int n = static_cast<int>(scenes.size()) + 1; ; ++n) {
+            std::string candidate = "Scene " + std::to_string(n);
+            bool taken = false;
+            for (const auto& s : scenes) {
+                if (s && s->getName() == candidate) { taken = true; break; }
+            }
+            if (!taken) return candidate;
+        }
+    }
+
+    Scene* addScene(const std::string& name) {
+        auto scene = std::make_unique<Scene>();
+        scene->setName(name);
+        Scene* ptr = scene.get();
+        scenes.push_back(std::move(scene));
+        setActiveScene(ptr->getId());
+        return ptr;
+    }
+
+    void setActiveScene(const UUID& id) {
+        activeSceneId = id;
+        for (auto& s : scenes) {
+            if (s) s->setActive(s->getId() == id);
+        }
+        // Switching scenes changes the underlying QuadManager, so any vertex
+        // selection / drag / insert state indexes a quad that is no longer the
+        // active one. Drop it to avoid a stale index into another scene's quad.
+        cornerHoveredVertex = cornerDraggedVertex = cornerSelectedVertex = -1;
+        meshHoveredVertex = meshDraggedVertex = meshSelectedVertex = -1;
+        snapActive = false;
+        gridInsert = GridInsert::None;
+        gridInsertMouseLatch = false;
+        gridInsertDragIndex = -1;
+    }
+
+    bool deleteScene(const UUID& id) {
+        if (scenes.size() <= 1) return false;  // never delete the last scene
+        auto it = std::find_if(scenes.begin(), scenes.end(),
+            [&](const std::unique_ptr<Scene>& s) { return s && s->getId() == id; });
+        if (it == scenes.end()) return false;
+        bool wasActive = (id == activeSceneId);
+        scenes.erase(it);
+        if (wasActive) setActiveScene(scenes.front()->getId());
+        return true;
+    }
+
+    // Assign a scene to an output, enforcing one-scene-per-output (sceneForOutput
+    // returns the first match, so a shared output would be ambiguous). Passing a
+    // null outputId clears the assignment.
+    void assignSceneToOutput(const UUID& sceneId, const UUID& outputId) {
+        if (!outputId.isNull()) {
+            for (auto& s : scenes) {
+                if (s && s->getId() != sceneId && s->getAssignedOutputId() == outputId) {
+                    s->setAssignedOutputId(UUID::null());
+                }
+            }
+        }
+        for (auto& s : scenes) {
+            if (s && s->getId() == sceneId) { s->setAssignedOutputId(outputId); break; }
+        }
+    }
 
     std::unordered_map<UUID, std::unique_ptr<Texture>> quadTextures;
     std::unordered_map<UUID, std::string> quadTexturePaths;
@@ -108,6 +182,7 @@ struct EditorState {
     OutputPanel outputPanel;
     bool outputPanelInitialized = false;
     QuadListPanel quadListPanel;
+    ScenePanel scenePanel;
     VideoPlayerPanel videoPlayerPanel;
     ViewportEditor viewportEditor;  // Non-Panel: pre-NewFrame on-canvas warp surface (ADR-0034)
 
