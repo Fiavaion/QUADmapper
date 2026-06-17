@@ -1,9 +1,9 @@
 # ADR-038: Kantan-style non-uniform grid warp (US-101-grid / #3)
 
 **Date:** 2026-06-16 (accepted 2026-06-17)
-**Status:** **Accepted; Tier 1 in progress.** Batches 1–3a done (control-grid model,
-serializer/migration, Inspector add/remove). Remaining: 3b viewport click-on-edge insertion
-(inverse-bilinear), then Tier 2 (Bezier), then field-test, then Tier 3.
+**Status:** **Accepted; Tier 1 COMPLETE.** Batches 1–3b done — non-uniform control-grid model,
+`.qmap` persistence/migration, Inspector add/remove, and viewport click-on-edge insert
+(inverse-bilinear). Next: Tier 2 (Bezier handles + tessellation), then field-test, then Tier 3.
 **Deciders:** Jones
 
 ## Context
