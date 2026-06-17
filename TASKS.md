@@ -3,8 +3,8 @@
 Last Updated: 2026-06-17 (Session 18)
 
 ## Quick Status
-- In Progress: 0 — **ADR-040 shared media sources + per-quad crop PLANNED (P1–P5, QM-068–072)**
-- Todo: 5 ADR-040 (QM-068–072) + 2 debt (TD-08/09; TD-07 RESOLVED) + 1 AI (🚩 QM-061 hardware gate)
+- In Progress: 0 — **ADR-040 P1 (crop, QM-068) DONE; P2–P5 (QM-069–072) next**
+- Todo: 4 ADR-040 (QM-069–072) + 2 debt (TD-08/09; TD-07 RESOLVED) + 1 AI (🚩 QM-061 hardware gate)
 - Done: 71 — **mapping-editor fixes; multi-scene ADR-039 P1–P5; groups-on-load + TD-07 fixes (Session 18)**
 - Blocked: 0
 
@@ -17,9 +17,16 @@ pre-cut. Converges TD-09 (renderer reads `SourceManager` via `TextureBinding::me
 wires the dormant `mediaId`/`cropRegion` fields. `.qmap` → additive **v3.1** (sources list +
 per-quad `mediaId` + `crop`; old files migrate). Phased:
 
-- **QM-068 (P1) TODO** — per-quad normalized crop rectangle: shader compose (crop before UV
-  pan/zoom; identity = no-op), compact Inspector control, `.qmap` v3.1 `crop` field +
-  migration/round-trip tests. Independently shippable; works on images + the single video today.
+- **QM-068 (P1) DONE** — per-quad normalized crop rectangle. `TextureBinding::cropRect`
+  (`NormalizedRect`, default full frame); `quad.frag` composes crop outside the UV transform
+  (`uv = cropOffset + cropSize·uv`; identity = byte-for-byte no-op); Renderer sets
+  `u_CropOffset`/`u_CropSize`; collapsed Inspector "Crop (source region)" control with
+  X/Width/Y/Height + vertical-quarter quick-sets (1/2/3/4/Full); `.qmap` writes `crop` inside
+  `textureBinding` only when non-identity (pre-crop files byte-stable; missing crop → full
+  frame). **Verified:** `CropRectRoundTrips` + `MissingCropLoadsAsFullFrame` (data) **and a
+  real-GL `test_render_gl` readback** (left-half crop renders red, right-half/right-quarter
+  render green through the actual shader → FBO → glReadPixels). 630/630 ctest. Commits
+  `f5c2920` + `b3912fc`.
 - **QM-069 (P2) TODO** — renderer resolves a quad's texture via `mediaId` → `SourceManager`
   (TD-09 convergence, behavior-preserving); dedupe sources by path; retire the `quadTextures`
   map. Success metric re-verified unchanged. **Risk phase.**
@@ -957,7 +964,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |
 | QM-066 | Live per-output preview (P4) | DONE | ADR-039 |
 | QM-067 | .qmap v3 scenes+outputs persistence (P5) | DONE | ADR-039 |
-| QM-068 | Per-quad normalized crop rectangle (P1) | TODO | ADR-040 |
+| QM-068 | Per-quad normalized crop rectangle (P1) | DONE | ADR-040 |
 | QM-069 | Renderer reads SourceManager via mediaId (P2, TD-09) | TODO | ADR-040 |
 | QM-070 | Shared / multi-quad video — one decode (P3) | TODO | ADR-040 |
 | QM-071 | Cross-scene / cross-output source sharing (P4) | TODO | ADR-040 |
