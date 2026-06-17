@@ -322,9 +322,37 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             }
 
             ImGui::Separator();
+            // Even grid (uniform N×N) — the convenience action; resets divisions.
             int meshRes = geometry.getMeshResolution();
-            if (ImGui::SliderInt("Mesh Resolution", &meshRes, 2, 64)) {
-                geometry.setMeshResolution(meshRes);
+            if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 2, 64)) {
+                geometry.setUniformGrid(meshRes);
+                ctx.project->setModified(true);
+            }
+
+            // Non-uniform grid divisions (ADR-038 Tier 1): add/remove division
+            // lines at an arbitrary position, then warp the control vertices in
+            // mesh-edit mode. Columns split U (vertical lines), rows split V.
+            ImGui::Text("Grid: %d x %d cells", geometry.getColumns(),
+                        geometry.getRows());
+            ImGui::SetNextItemWidth(160.0f);
+            ImGui::SliderFloat("Insert pos", &gridInsertPos_, 0.02f, 0.98f, "%.2f");
+            if (ImGui::Button("Add Column")) {
+                geometry.insertUDivision(gridInsertPos_);
+                ctx.project->setModified(true);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Row")) {
+                geometry.insertVDivision(gridInsertPos_);
+                ctx.project->setModified(true);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Del Column") && geometry.getColumns() > MIN_MESH_RESOLUTION) {
+                geometry.removeUDivision(geometry.getColumns() - 1);
+                ctx.project->setModified(true);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Del Row") && geometry.getRows() > MIN_MESH_RESOLUTION) {
+                geometry.removeVDivision(geometry.getRows() - 1);
                 ctx.project->setModified(true);
             }
 

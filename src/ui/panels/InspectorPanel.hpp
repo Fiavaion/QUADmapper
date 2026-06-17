@@ -30,6 +30,9 @@ private:
     char quadName_[128]   = "";
     char outputName_[128] = "";
     char mediaName_[128]  = "";
+
+    // Normalized position (0..1) for inserting a grid division (ADR-038 Tier 1).
+    float gridInsertPos_ = 0.5f;
 };
 
 }  // namespace quadmapper
