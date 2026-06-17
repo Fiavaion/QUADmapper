@@ -25,9 +25,10 @@ monitor; live per-output preview. `.qmap` → additive **v3** (still reads v1/v2
 - **QM-063 (P1) DONE** — multi-scene runtime foundation: `EditorState` holds a scene list +
   active-scene accessor (`activeScene()`/`quadManager()`), lazily guarantees one scene.
   Behaviour-preserving (one scene today). Committed `af708c3`. 618/618 ctest.
-- **QM-064 (P2) TODO — NEXT** — output routing: `Scene::assignedOutputId`; `renderToOutputs`
-  renders each output's assigned scene (today it draws all quads to every output); default
-  scene → 2nd monitor. Verify with a forced 2-scene test.
+- **QM-064 (P2) DONE** — output routing: `Scene::assignedOutputId`; `renderToOutputs` renders
+  each output's assigned scene; pure unit-tested `sceneForOutput()`; default scene → 2nd monitor
+  at startup. **Verified on real 2-monitor hardware** (perform mode: each projector showed its
+  own scene's quad). Committed `6c712a4`. 619/619 ctest.
 - **QM-065 (P3) TODO** — Scenes UI: list/add/delete/rename/switch active + assign output;
   active-scene editing across viewport/QuadList/Inspector.
 - **QM-066 (P4) TODO** — live per-output preview (offscreen FBO → ImGui thumbnails; revive
@@ -902,7 +903,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |
 | QM-062 | Audience-perspective anamorphic warp | DONE | Phase 9 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
-| QM-064 | Per-output scene routing + default→2nd monitor (P2) | TODO | ADR-039 |
+| QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | TODO | ADR-039 |
 | QM-066 | Live per-output preview (P4) | TODO | ADR-039 |
 | QM-067 | .qmap v3 scenes+outputs persistence (P5) | TODO | ADR-039 |
