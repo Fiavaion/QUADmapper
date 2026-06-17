@@ -3,9 +3,9 @@
 Last Updated: 2026-06-17 (Session 16)
 
 ## Quick Status
-- In Progress: 0 (QM-066 P4 preview is next)
-- Todo: QM-066 (P4 preview) + QM-067 (P5 .qmap v3) + 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate)
-- Done: 69 — **mapping-editor fixes (round handles, DPI picking, clean grid, drag-add divisions, Reset); multi-scene ADR-039 P1 (runtime) + P2 (per-output routing, hardware-verified) + P3 (Scenes UI, app-verified)**
+- In Progress: 0 (QM-067 P5 .qmap v3 persistence is next)
+- Todo: QM-067 (P5 .qmap v3) + 3 debt (TD-07/08/09) + 1 AI (🚩 QM-061 hardware gate)
+- Done: 70 — **mapping-editor fixes (round handles, DPI picking, clean grid, drag-add divisions, Reset); multi-scene ADR-039 P1 (runtime) + P2 (per-output routing, hardware-verified) + P3 (Scenes UI, app-verified) + P4 (live per-output preview, app-verified)**
 - Blocked: 0
 
 ## Session 16 (2026-06-17) — mapping-editor fixes + multi-scene output routing (ADR-039)
@@ -35,8 +35,13 @@ monitor; live per-output preview. `.qmap` → additive **v3** (still reads v1/v2
   the existing `quadManager()`/`activeScene()` accessors. **App-verified** (synthetic-input
   smoke `tests/smoke/drive_scenes_smoke.ps1`: created Scene 2 → auto-active, Delete enabled
   at 2 scenes, default scene shows "Projector 1", new scene "(no output)"). 619/619 ctest.
-- **QM-066 (P4) TODO** — live per-output preview (offscreen FBO → ImGui thumbnails; revive
-  `PreviewPanel` from `669a05c^`).
+- **QM-066 (P4) DONE** — live per-output preview: new RAII `Framebuffer` (renderer);
+  `OutputManager::updatePreviews()` renders each output's assigned scene to a 320×180
+  offscreen FBO in the main GL context (saves/restores framebuffer+viewport); a "Preview"
+  tab (`OutputPreviewPanel`) shows each output's thumbnail (V-flipped) + "name → scene".
+  **App-verified** (Preview tab showed "Projector 1 → New Scene" with the default quad
+  rendered on black). The reference `PreviewPanel` from `669a05c^` was an interactive vector
+  editor (overlaps ViewportEditor), so P4 ships a true FBO thumbnail instead. 619/619 ctest.
 - **QM-067 (P5) TODO** — `.qmap` v3 writer (scenes + outputs arrays) + v1/v2/v3 readers +
   migration tests.
 
@@ -909,7 +914,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |
-| QM-066 | Live per-output preview (P4) | TODO | ADR-039 |
+| QM-066 | Live per-output preview (P4) | DONE | ADR-039 |
 | QM-067 | .qmap v3 scenes+outputs persistence (P5) | TODO | ADR-039 |
 
 ---

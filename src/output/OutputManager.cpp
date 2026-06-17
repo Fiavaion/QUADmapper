@@ -71,6 +71,9 @@ void OutputManager::shutdown() {
         glfwMakeContextCurrent(previousContext);
     }
 
+    // Destroy the preview FBOs (they live in the main context, current now).
+    previewTargets_.clear();
+
     // Destroy all output windows
     for (auto& output : outputs_) {
         output->destroy();
@@ -452,6 +455,72 @@ void OutputManager::renderToOutputs(const std::vector<std::unique_ptr<Scene>>& s
     if (previousContext != nullptr) {
         glfwMakeContextCurrent(previousContext);
     }
+}
+
+void OutputManager::updatePreviews(const std::vector<std::unique_ptr<Scene>>& scenes,
+                                   const std::unordered_map<UUID, Texture*>& textures,
+                                   Renderer& renderer) {
+    if (!mainWindow_) {
+        return;
+    }
+
+    // Save GL state so the surrounding main-context render is undisturbed.
+    GLint prevFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+    GLint prevViewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, prevViewport);
+
+    // Drop thumbnails for outputs that no longer exist.
+    for (auto it = previewTargets_.begin(); it != previewTargets_.end();) {
+        if (!getOutput(it->first)) {
+            it = previewTargets_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    for (auto& output : outputs_) {
+        auto& target = previewTargets_[output->getId()];
+        if (!target) {
+            target = std::make_unique<Framebuffer>();
+        }
+        if (!target->resize(kPreviewWidth, kPreviewHeight)) {
+            continue;
+        }
+
+        target->bind();  // also sets the viewport to the thumbnail size
+        glDisable(GL_DEPTH_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // Same routing + clean-render rules as renderToOutputs, but into the FBO.
+        const Scene* scene = sceneForOutput(scenes, output->getId());
+        if (scene) {
+            for (const Quad* quad : scene->getQuadsByZOrder()) {
+                if (!quad || !quad->isVisible()) {
+                    continue;
+                }
+                const Texture* tex = nullptr;
+                auto texIt = textures.find(quad->getId());
+                if (texIt != textures.end()) {
+                    tex = texIt->second;
+                }
+                renderer.renderQuad(*quad, tex, /*selected=*/false);
+            }
+        }
+    }
+
+    // Restore the previous framebuffer + viewport for the rest of the frame.
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+    glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+}
+
+unsigned int OutputManager::previewTextureFor(const UUID& outputId) const {
+    auto it = previewTargets_.find(outputId);
+    if (it == previewTargets_.end() || !it->second) {
+        return 0;
+    }
+    return it->second->colorTexture();
 }
 
 void OutputManager::renderPatternToOutputs(const Quad& patternQuad,

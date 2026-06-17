@@ -706,6 +706,23 @@ void Application::render() {
         es.viewportEditor.render(ctx);
     }
 
+    // Render each output's assigned scene to an offscreen thumbnail (ADR-039 P4)
+    // so the Resources > Preview tab shows a live view of every projector. Runs in
+    // the main GL context; saves/restores the framebuffer + viewport itself.
+    if (m_outputManager && m_renderer) {
+        std::unordered_map<UUID, Texture*> previewTextures;
+        previewTextures.reserve(es.quadTextures.size() + 1);
+        for (const auto& [id, texPtr] : es.quadTextures) {
+            previewTextures[id] = texPtr.get();
+        }
+        if (!es.videoAssignedQuadId.isNull() && es.videoTextureId != 0) {
+            es.videoTexWrapper.setGLTextureId(es.videoTextureId, es.videoTextureWidth,
+                                              es.videoTextureHeight);
+            previewTextures[es.videoAssignedQuadId] = &es.videoTexWrapper;
+        }
+        m_outputManager->updatePreviews(es.scenes, previewTextures, *m_renderer);
+    }
+
     // Start ImGui frame
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -953,6 +970,15 @@ void Application::render() {
                               m_sourceManager.get(), m_outputManager.get(),
                               m_renderer.get(), m_window};
             es.scenePanel.renderContent(ctx);
+            ImGui::EndTabItem();
+        }
+
+        // -------- Preview Tab --------
+        if (ImGui::BeginTabItem("Preview")) {
+            EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                              m_sourceManager.get(), m_outputManager.get(),
+                              m_renderer.get(), m_window};
+            es.outputPreviewPanel.renderContent(ctx);
             ImGui::EndTabItem();
         }
 

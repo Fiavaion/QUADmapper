@@ -26,6 +26,7 @@
 #include "../ui/panels/MainMenuBar.hpp"
 #include "../ui/panels/MediaBinPanel.hpp"
 #include "../ui/panels/OutputPanel.hpp"
+#include "../ui/panels/OutputPreviewPanel.hpp"
 #include "../ui/panels/QuadListPanel.hpp"
 #include "../ui/panels/ScenePanel.hpp"
 #include "../ui/panels/VideoPlayerPanel.hpp"
@@ -183,6 +184,7 @@ struct EditorState {
     bool outputPanelInitialized = false;
     QuadListPanel quadListPanel;
     ScenePanel scenePanel;
+    OutputPreviewPanel outputPreviewPanel;
     VideoPlayerPanel videoPlayerPanel;
     ViewportEditor viewportEditor;  // Non-Panel: pre-NewFrame on-canvas warp surface (ADR-0034)
 

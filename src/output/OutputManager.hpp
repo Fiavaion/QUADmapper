@@ -7,6 +7,7 @@
 #include "scene/Scene.hpp"
 #include "renderer/Renderer.hpp"
 #include "renderer/Texture.hpp"
+#include "renderer/Framebuffer.hpp"
 #include <vector>
 #include <memory>
 #include <string>
@@ -258,6 +259,30 @@ public:
     void renderPatternToOutputs(const Quad& patternQuad, const Texture* texture);
 
     /**
+     * Render each output's assigned scene to a small offscreen thumbnail (ADR-039
+     * P4) so the UI can show a live preview of what every projector displays
+     * without entering perform mode. Renders in the CURRENT (main) GL context
+     * using the supplied main-context Renderer; saves and restores the framebuffer
+     * binding + viewport. Outputs with no assigned scene get a cleared (black)
+     * thumbnail. Cheap (a few small FBOs); safe to call every frame.
+     * @param scenes    The project's scenes (read-only)
+     * @param textures  Map of quad UUID → Texture* (owned by EditorState)
+     * @param renderer  A Renderer valid in the current (main) GL context
+     */
+    void updatePreviews(const std::vector<std::unique_ptr<Scene>>& scenes,
+                        const std::unordered_map<UUID, Texture*>& textures,
+                        Renderer& renderer);
+
+    /**
+     * Color texture of an output's preview thumbnail, or 0 if none has been
+     * rendered. The texture is bottom-up (GL origin) — display with flipped V.
+     */
+    unsigned int previewTextureFor(const UUID& outputId) const;
+
+    int previewWidth() const { return kPreviewWidth; }
+    int previewHeight() const { return kPreviewHeight; }
+
+    /**
      * Get the main window used for context sharing.
      */
     GLFWwindow* getMainWindow() const { return mainWindow_; }
@@ -282,6 +307,13 @@ private:
     // Each Renderer is created/destroyed in that output's GL context so its
     // VAOs (which are NOT shared) live in the right context.
     std::unordered_map<UUID, std::unique_ptr<Renderer>> outputRenderers_;
+
+    // Per-output offscreen preview thumbnails (ADR-039 P4), keyed by output UUID.
+    // These FBOs live in the MAIN GL context (unlike outputRenderers_) and are
+    // destroyed in shutdown() while it is current.
+    std::unordered_map<UUID, std::unique_ptr<Framebuffer>> previewTargets_;
+    static constexpr int kPreviewWidth = 320;
+    static constexpr int kPreviewHeight = 180;
 
     // Available monitors
     std::vector<MonitorInfo> monitors_;
