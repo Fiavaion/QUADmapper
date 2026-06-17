@@ -529,6 +529,56 @@ TEST(ProjectSerializerV3Test, V3GroupMembershipRoundTrips) {
     EXPECT_EQ(ls.groups[0].getName(), "Pair");
 }
 
+// ADR-040 P1: a non-identity per-quad crop round-trips, and identity crop is not
+// written at all (pre-crop files / untouched quads stay byte-identical).
+TEST(ProjectSerializerExtraTest, CropRectRoundTrips) {
+    ProjectSerializer serializer;
+
+    Project original;
+    Quad cropped; cropped.setName("Strip");
+    cropped.getTexture().cropRect = NormalizedRect{0.25f, 0.0f, 0.25f, 1.0f};  // 2nd column
+    Quad full; full.setName("Full");  // identity crop
+    original.getQuads().push_back(std::move(cropped));
+    original.getTexturePaths().push_back("");
+    original.getQuads().push_back(std::move(full));
+    original.getTexturePaths().push_back("");
+
+    std::string json = serializer.serialize(original);
+
+    Project loaded;
+    ASSERT_TRUE(serializer.deserialize(json, loaded).isSuccess());
+    ASSERT_EQ(loaded.getScenes().size(), 1u);
+    const auto& quads = loaded.getScenes()[0].quads;
+    ASSERT_EQ(quads.size(), 2u);
+
+    // Cropped quad's sub-rect survives.
+    const NormalizedRect& c = quads[0].getTexture().cropRect;
+    EXPECT_FLOAT_EQ(c.x, 0.25f);
+    EXPECT_FLOAT_EQ(c.y, 0.0f);
+    EXPECT_FLOAT_EQ(c.width, 0.25f);
+    EXPECT_FLOAT_EQ(c.height, 1.0f);
+
+    // Identity-crop quad stays identity and writes no "crop" key.
+    EXPECT_TRUE(quads[1].getTexture().isCropIdentity());
+    EXPECT_NE(json.find("\"crop\""), std::string::npos);          // the cropped one wrote it
+    EXPECT_EQ(json.find("\"crop\""), json.rfind("\"crop\""));     // ...exactly once
+}
+
+// An older file with no crop field must load as identity (full frame).
+TEST(ProjectSerializerExtraTest, MissingCropLoadsAsFullFrame) {
+    ProjectSerializer serializer;
+    Project project;
+    std::string json = R"({
+        "version": "1.2.0", "name": "Old",
+        "quads": [{ "name": "Q", "geometry": {
+            "corners": [[0,0],[1,0],[1,1],[0,1]], "meshResolution": 2, "meshMode": 0 } }]
+    })";
+    ASSERT_TRUE(serializer.deserialize(json, project).isSuccess());
+    ASSERT_EQ(project.getScenes().size(), 1u);
+    ASSERT_EQ(project.getScenes()[0].quads.size(), 1u);
+    EXPECT_TRUE(project.getScenes()[0].quads[0].getTexture().isCropIdentity());
+}
+
 // A flat-only Project (no scene DTOs) must still write the legacy v1.2 format so
 // existing files and tooling are byte-compatible with before P5.
 TEST(ProjectSerializerV3Test, FlatProjectStillWritesV1) {

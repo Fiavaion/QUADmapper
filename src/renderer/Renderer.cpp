@@ -271,6 +271,11 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
     quadShader_.setInt("u_FlipV", texBinding.flipV ? 1 : 0);
     quadShader_.setInt("u_Texture", 0);
 
+    // Per-quad crop (ADR-040). Identity {0,0,1,1} is a render no-op.
+    const NormalizedRect& crop = texBinding.cropRect;
+    quadShader_.setVec2("u_CropOffset", glm::vec2(crop.x, crop.y));
+    quadShader_.setVec2("u_CropSize", glm::vec2(crop.width, crop.height));
+
     // Per-quad color correction (ADR-036). Identity values are a render no-op.
     const ColorCorrection& cc = quad.getColorCorrection();
     quadShader_.setVec3("u_ColorRGBGain", cc.rgbGain);

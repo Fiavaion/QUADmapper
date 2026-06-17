@@ -300,6 +300,50 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 texBinding.uvRotation = 270.0f * 3.14159265f / 180.0f;
                 ctx.project->setModified(true);
             }
+
+            // Crop (ADR-040) — sample a sub-rectangle of the source, stretched to
+            // fill the quad. Collapsed by default to keep the inspector tidy.
+            ImGui::Spacing();
+            if (ImGui::TreeNode("Crop (source region)")) {
+                NormalizedRect& crop = texBinding.cropRect;
+                ImGui::TextDisabled("Sample only part of the source (0-1)");
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::DragFloat("X##crop", &crop.x, 0.005f, 0.0f, 1.0f, "%.3f")) {
+                    ctx.project->setModified(true);
+                }
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::DragFloat("Width##crop", &crop.width, 0.005f, 0.0f, 1.0f, "%.3f")) {
+                    ctx.project->setModified(true);
+                }
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::DragFloat("Y##crop", &crop.y, 0.005f, 0.0f, 1.0f, "%.3f")) {
+                    ctx.project->setModified(true);
+                }
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::DragFloat("Height##crop", &crop.height, 0.005f, 0.0f, 1.0f, "%.3f")) {
+                    ctx.project->setModified(true);
+                }
+
+                // Quick-set vertical quarter-strips (the box-wrap helper): each
+                // button selects one 25%-wide full-height column of the source.
+                ImGui::TextDisabled("Vertical quarters:");
+                auto column = [&](const char* label, float x) {
+                    if (ImGui::Button(label)) {
+                        crop.x = x; crop.width = 0.25f;
+                        crop.y = 0.0f; crop.height = 1.0f;
+                        ctx.project->setModified(true);
+                    }
+                };
+                column("1##cq", 0.0f);  ImGui::SameLine();
+                column("2##cq", 0.25f); ImGui::SameLine();
+                column("3##cq", 0.5f);  ImGui::SameLine();
+                column("4##cq", 0.75f); ImGui::SameLine();
+                if (ImGui::Button("Full##cq")) {
+                    texBinding.resetCrop();
+                    ctx.project->setModified(true);
+                }
+                ImGui::TreePop();
+            }
         }
 
         // Geometry section

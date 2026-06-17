@@ -11,6 +11,11 @@ uniform float u_UVRotation;
 uniform int u_FlipH;
 uniform int u_FlipV;
 
+// Per-quad crop (ADR-040): sample only this source sub-rectangle, stretched to
+// fill the quad. Identity (offset 0, size 1) is a no-op.
+uniform vec2 u_CropOffset;
+uniform vec2 u_CropSize;
+
 // Per-quad color correction (ADR-036). Identity = no change:
 // gain (1,1,1), brightness 0, contrast 1, gamma 1.
 uniform vec3 u_ColorRGBGain;
@@ -51,6 +56,9 @@ void main() {
 
     // Apply scale (centered) and offset, then recenter
     vec2 uv = rotated * u_UVScale + 0.5 + u_UVOffset;
+
+    // Crop: remap the [0,1] sample range into the source sub-rectangle (ADR-040).
+    uv = u_CropOffset + u_CropSize * uv;
 
     vec4 color = texture(u_Texture, uv);
 

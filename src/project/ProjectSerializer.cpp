@@ -144,6 +144,14 @@ static nlohmann::json serializeTextureBinding(const TextureBinding& binding) {
     j["uvRotation"] = binding.uvRotation;
     j["flipH"] = binding.flipH;
     j["flipV"] = binding.flipV;
+    // ADR-040 crop: written only when non-identity so untouched quads (and all
+    // pre-crop files) stay byte-identical.
+    if (!binding.isCropIdentity()) {
+        j["crop"] = {
+            {"x", binding.cropRect.x}, {"y", binding.cropRect.y},
+            {"width", binding.cropRect.width}, {"height", binding.cropRect.height},
+        };
+    }
     return j;
 }
 
@@ -163,6 +171,13 @@ static void deserializeTextureBinding(const nlohmann::json& j, TextureBinding& b
     }
     if (j.contains("flipV")) {
         binding.flipV = j["flipV"].get<bool>();
+    }
+    if (j.contains("crop") && j["crop"].is_object()) {
+        const auto& c = j["crop"];
+        if (c.contains("x"))      binding.cropRect.x      = c["x"].get<float>();
+        if (c.contains("y"))      binding.cropRect.y      = c["y"].get<float>();
+        if (c.contains("width"))  binding.cropRect.width  = c["width"].get<float>();
+        if (c.contains("height")) binding.cropRect.height = c["height"].get<float>();
     }
 }
 

@@ -1,7 +1,7 @@
 # ADR-040: Shared media sources + per-quad crop (one video → many quads)
 
 **Date:** 2026-06-17
-**Status:** Proposed
+**Status:** Accepted
 **Deciders:** Jones
 
 ## Context

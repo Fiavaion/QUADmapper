@@ -16,16 +16,26 @@ struct TextureBinding {
     Vec2 uvOffset = Vec2(0.0f);      // Pan/offset texture
     Vec2 uvScale = Vec2(1.0f);       // Zoom/scale texture (centered around 0.5)
     float uvRotation = 0.0f;         // Rotation in radians (centered around 0.5)
-    std::optional<Rectangle> cropRegion;
+    // ADR-040: source sub-rectangle sampled into the quad (normalized [0,1];
+    // default {0,0,1,1} = full frame). Composes outside the UV transform, so
+    // identity crop renders byte-identically to no crop.
+    NormalizedRect cropRect;
     bool flipH = false;
     bool flipV = false;
 
-    // Reset UV transforms to defaults
+    // Reset UV transforms to defaults (crop is independent; see resetCrop()).
     void resetUV() {
         uvOffset = Vec2(0.0f);
         uvScale = Vec2(1.0f);
         uvRotation = 0.0f;
     }
+
+    // Crop is identity (full frame) when it samples the whole source.
+    bool isCropIdentity() const {
+        return cropRect.x == 0.0f && cropRect.y == 0.0f &&
+               cropRect.width == 1.0f && cropRect.height == 1.0f;
+    }
+    void resetCrop() { cropRect = NormalizedRect{}; }
 };
 
 // Per-quad color correction (ADR-036 / US-104). Identity defaults render
