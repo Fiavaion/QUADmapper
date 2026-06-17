@@ -165,6 +165,27 @@ void ViewportEditor::render(EditorContext& ctx) {
                 return snappedPos;
             };
 
+            // Grid-division insert tool (ADR-038 Tier 1 batch 3b): when armed, a
+            // fresh click inside the quad inserts a division at the clicked param
+            // position. Latched so one press inserts once; suppresses drag-starts.
+            if (es.gridInsert != EditorState::GridInsert::None) {
+                if (mouseDown && !es.gridInsertMouseLatch) {
+                    es.gridInsertMouseLatch = true;
+                    Vec2 uv = QuadGeometry::inverseBilinear(geometry.getCorners(), mouseNorm);
+                    if (uv.x > 0.001f && uv.x < 0.999f &&
+                        uv.y > 0.001f && uv.y < 0.999f) {
+                        if (es.gridInsert == EditorState::GridInsert::Column) {
+                            geometry.insertUDivision(uv.x);
+                        } else {
+                            geometry.insertVDivision(uv.y);
+                        }
+                        m_project->setModified(true);
+                    }
+                }
+                if (!mouseDown) es.gridInsertMouseLatch = false;
+            }
+            const bool insertArmed = (es.gridInsert != EditorState::GridInsert::None);
+
             if (mode == MeshMode::CORNERS_ONLY) {
                 // ===== CORNER PIN MODE (Default) =====
                 const auto& corners = geometry.getCorners();
@@ -198,8 +219,9 @@ void ViewportEditor::render(EditorContext& ctx) {
                         }
                     }
 
-                    // Start drag if mouse pressed on a corner
-                    if (mouseDown && cornerHoveredVertex >= 0) {
+                    // Start drag if mouse pressed on a corner (not while the
+                    // division-insert tool is armed).
+                    if (mouseDown && cornerHoveredVertex >= 0 && !insertArmed) {
                         cornerDraggedVertex = cornerHoveredVertex;
                         cornerSelectedVertex = cornerHoveredVertex;
                         cornerDragStartMousePos = mouseNorm;
@@ -292,7 +314,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                         }
                     }
 
-                    if (mouseDown && meshHoveredVertex >= 0) {
+                    if (mouseDown && meshHoveredVertex >= 0 && !insertArmed) {
                         meshDraggedVertex = meshHoveredVertex;
                         meshSelectedVertex = meshHoveredVertex;
                         meshDragStartMousePos = mouseNorm;

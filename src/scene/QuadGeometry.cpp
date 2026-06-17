@@ -230,6 +230,37 @@ void QuadGeometry::initializeMeshVertices() {
     meshVertices_.assign(static_cast<size_t>(getVertexCount()), Vec2(0.0f));
 }
 
+Vec2 QuadGeometry::inverseBilinear(const std::array<Vec2, 4>& c, const Vec2& p) {
+    auto cross2 = [](const Vec2& a, const Vec2& b) { return a.x * b.y - a.y * b.x; };
+    const Vec2 a = c[0], b = c[1], cc = c[2], d = c[3];  // TL, TR, BR, BL
+    const Vec2 e = b - a, f = d - a, g = a - b + cc - d, h = p - a;
+    const float k2 = cross2(g, f);
+    const float k1 = cross2(e, f) + cross2(h, g);
+    const float k0 = cross2(h, e);
+
+    float v;
+    if (std::fabs(k2) < 1e-7f) {                 // affine (parallelogram) case
+        if (std::fabs(k1) < 1e-9f) return Vec2(-1.0f);
+        v = -k0 / k1;
+    } else {
+        float disc = k1 * k1 - 4.0f * k0 * k2;
+        if (disc < 0.0f) return Vec2(-1.0f);
+        disc = std::sqrt(disc);
+        const float v1 = (-k1 - disc) / (2.0f * k2);
+        const float v2 = (-k1 + disc) / (2.0f * k2);
+        v = (v1 >= -0.001f && v1 <= 1.001f) ? v1 : v2;
+    }
+    // Recover u from whichever axis has the more stable denominator.
+    const float du = e.x + g.x * v;
+    const float dv = e.y + g.y * v;
+    if (std::fabs(du) >= std::fabs(dv)) {
+        if (std::fabs(du) < 1e-9f) return Vec2(-1.0f);
+        return Vec2((h.x - f.x * v) / du, v);
+    }
+    if (std::fabs(dv) < 1e-9f) return Vec2(-1.0f);
+    return Vec2((h.y - f.y * v) / dv, v);
+}
+
 Vec2 QuadGeometry::transformUVToPosition(const Vec2& uv) const {
     // Bilinear interpolation
     Vec2 top = glm::mix(corners_[0], corners_[1], uv.x);

@@ -91,6 +91,12 @@ public:
     // Calculate interpolated position for UV coordinate
     Vec2 transformUVToPosition(const Vec2& uv) const;
 
+    // Inverse of the corner bilinear map: the (u,v) parameters of point p inside
+    // the quad [TL,TR,BR,BL] (u runs TL->TR, v runs TL->BL). Returns (-1,-1) if p
+    // is outside / the solve is degenerate. Used by click-on-edge division insert
+    // (ADR-038). Static + corner-only so it is pure and unit-testable.
+    static Vec2 inverseBilinear(const std::array<Vec2, 4>& corners, const Vec2& p);
+
     // Generate control-grid vertex positions (corners + mesh offsets)
     std::vector<Vec2> generateMeshPositions() const;
 

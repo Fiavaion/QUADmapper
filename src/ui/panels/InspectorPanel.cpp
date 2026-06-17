@@ -356,6 +356,26 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 ctx.project->setModified(true);
             }
 
+            // Click-on-edge insert tool (ADR-038 Tier 1 batch 3b): arm, then click
+            // in the viewport to place a division where you click. Arming switches
+            // to mesh-edit so the grid is visible.
+            using GridInsert = EditorState::GridInsert;
+            const bool armCol = (ctx.es.gridInsert == GridInsert::Column);
+            const bool armRow = (ctx.es.gridInsert == GridInsert::Row);
+            if (ImGui::Button(armCol ? "Click-add Column [ON]" : "Click-add Column")) {
+                ctx.es.gridInsert = armCol ? GridInsert::None : GridInsert::Column;
+                if (!armCol) geometry.setMeshMode(MeshMode::MESH_EDIT);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(armRow ? "Click-add Row [ON]" : "Click-add Row")) {
+                ctx.es.gridInsert = armRow ? GridInsert::None : GridInsert::Row;
+                if (!armRow) geometry.setMeshMode(MeshMode::MESH_EDIT);
+            }
+            if (ctx.es.gridInsert != GridInsert::None) {
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                                   "Click in the viewport to add a line");
+            }
+
             // Mesh Edit Mode
             ImGui::Separator();
             ImGui::Text("Mesh Editing:");

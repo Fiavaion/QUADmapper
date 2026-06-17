@@ -100,6 +100,13 @@ struct EditorState {
 
     // Current selection
     SelectionType currentSelectionType = SelectionType::Quad;
+
+    // Grid-division insert tool (ADR-038 Tier 1 batch 3b). When armed, a click in
+    // the viewport inserts a U (Column) or V (Row) division at the clicked param
+    // position. gridInsertMouseLatch edge-detects so one click inserts once.
+    enum class GridInsert { None, Column, Row };
+    GridInsert gridInsert = GridInsert::None;
+    bool gridInsertMouseLatch = false;
 };
 
 }  // namespace quadmapper

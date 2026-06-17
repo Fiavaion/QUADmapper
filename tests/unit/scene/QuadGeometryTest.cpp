@@ -427,5 +427,38 @@ TEST(QuadGeometryControlGridTest, EndpointsAndDuplicatesRejected) {
     EXPECT_EQ(g.vertsPerRow(), before);
 }
 
+// --- Inverse bilinear (ADR-038 batch 3b: click-on-edge insert) --------------
+
+TEST(QuadGeometryControlGridTest, InverseBilinearRoundTripsOnWarpedQuad) {
+    // A deliberately non-rectangular (keystoned) quad: TL,TR,BR,BL.
+    std::array<Vec2, 4> corners = {
+        Vec2(0.20f, 0.25f),  // TL
+        Vec2(0.80f, 0.15f),  // TR
+        Vec2(0.90f, 0.85f),  // BR
+        Vec2(0.10f, 0.75f),  // BL
+    };
+    QuadGeometry g;
+    g.setCorners(corners);
+
+    // For several (u,v), forward-map to a point then invert; expect (u,v) back.
+    const float samples[] = {0.1f, 0.25f, 0.5f, 0.7f, 0.9f};
+    for (float u : samples) {
+        for (float v : samples) {
+            Vec2 p = g.transformUVToPosition(Vec2(u, v));
+            Vec2 uv = QuadGeometry::inverseBilinear(corners, p);
+            EXPECT_NEAR(uv.x, u, 1e-3f) << "u=" << u << " v=" << v;
+            EXPECT_NEAR(uv.y, v, 1e-3f) << "u=" << u << " v=" << v;
+        }
+    }
+}
+
+TEST(QuadGeometryControlGridTest, InverseBilinearWorksForUnitSquare) {
+    std::array<Vec2, 4> unit = {
+        Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)};
+    Vec2 uv = QuadGeometry::inverseBilinear(unit, Vec2(0.3f, 0.8f));
+    EXPECT_NEAR(uv.x, 0.3f, 1e-4f);
+    EXPECT_NEAR(uv.y, 0.8f, 1e-4f);
+}
+
 } // namespace test
 } // namespace quadmapper
