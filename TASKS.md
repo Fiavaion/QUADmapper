@@ -8,6 +8,37 @@ Last Updated: 2026-06-16 (Session 15)
 - Done: 66 — **AI wedge software-complete; v1.1 polish US-104/US-101 + UV grid #2; TD-10 resolved; Kantan grid Tier 1 (Linear parity)**
 - Blocked: 0
 
+## Session 16 (2026-06-17) — mapping-editor fixes + multi-scene output routing (ADR-039)
+
+**Mapping-editor UX fixes (committed):** on-canvas handle picking normalized by window
+size (DPI-correct); round aspect-corrected handles; mesh-grid wireframe in edit mode;
+clean 1×1 default grid (`MIN_MESH_RESOLUTION=1`); **drag-to-position** division insert
+(arm → press → drag → release commits + auto-disarms, Esc cancels); prominent
+"Reset Transform" button. 618/618 ctest.
+
+**Multi-scene + per-output routing — [ADR-039](docs/adr/0039-multi-scene-output-routing.md) (in progress).**
+Revives the multi-scene track retired in ADR-033 (was unwired dead code; revival was
+anticipated). A project holds multiple scenes, each a separate mapping assigned to **one**
+output; each output projects its assigned scene; default scene auto-assigns to the 2nd
+monitor; live per-output preview. `.qmap` → additive **v3** (still reads v1/v2). Phased:
+
+- **QM-063 (P1) DONE** — multi-scene runtime foundation: `EditorState` holds a scene list +
+  active-scene accessor (`activeScene()`/`quadManager()`), lazily guarantees one scene.
+  Behaviour-preserving (one scene today). Committed `af708c3`. 618/618 ctest.
+- **QM-064 (P2) TODO — NEXT** — output routing: `Scene::assignedOutputId`; `renderToOutputs`
+  renders each output's assigned scene (today it draws all quads to every output); default
+  scene → 2nd monitor. Verify with a forced 2-scene test.
+- **QM-065 (P3) TODO** — Scenes UI: list/add/delete/rename/switch active + assign output;
+  active-scene editing across viewport/QuadList/Inspector.
+- **QM-066 (P4) TODO** — live per-output preview (offscreen FBO → ImGui thumbnails; revive
+  `PreviewPanel` from `669a05c^`).
+- **QM-067 (P5) TODO** — `.qmap` v3 writer (scenes + outputs arrays) + v1/v2/v3 readers +
+  migration tests.
+
+Gate per phase: `cmake --build` + `ctest` green + success-metric warp intact.
+
+---
+
 ## Session 15 (2026-06-16) — v1.1 polish + QM-061 prep
 - **TD-10 RESOLVED** — async sidecar start (`startAsync()` worker thread); AI-enable no longer freezes the UI. See [TECHNICAL_DEBT.md](TECHNICAL_DEBT.md).
 - **US-104 DONE** — per-quad color correction (brightness/contrast/gamma/RGB), [ADR-036](docs/adr/0036-per-quad-color-correction.md). Shader + Inspector + additive `.qmap` field. Identity = render no-op.
@@ -870,5 +901,10 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-060 | One-Flash homography solve → push warp | DONE | Phase 9 |
 | QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |
 | QM-062 | Audience-perspective anamorphic warp | DONE | Phase 9 |
+| QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
+| QM-064 | Per-output scene routing + default→2nd monitor (P2) | TODO | ADR-039 |
+| QM-065 | Scenes UI: create/switch/assign output (P3) | TODO | ADR-039 |
+| QM-066 | Live per-output preview (P4) | TODO | ADR-039 |
+| QM-067 | .qmap v3 scenes+outputs persistence (P5) | TODO | ADR-039 |
 
 ---
