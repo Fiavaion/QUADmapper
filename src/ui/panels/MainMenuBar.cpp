@@ -35,18 +35,18 @@ void MainMenuBar::render(EditorContext& ctx) {
 
     if (ImGui::BeginMenu("Edit")) {
         if (ImGui::MenuItem("Select All", "Ctrl+A")) {
-            es.quadManager.selectAll();
+            es.quadManager().selectAll();
         }
         if (ImGui::MenuItem("Deselect All", "Escape")) {
-            es.quadManager.deselectAll();
+            es.quadManager().deselectAll();
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Delete Selected", "Delete", false, es.quadManager.hasSelection())) {
-            for (const UUID& id : es.quadManager.getSelectedIds()) {
+        if (ImGui::MenuItem("Delete Selected", "Delete", false, es.quadManager().hasSelection())) {
+            for (const UUID& id : es.quadManager().getSelectedIds()) {
                 es.quadTextures.erase(id);
                 es.quadTexturePaths.erase(id);
             }
-            es.quadManager.deleteSelectedQuads();
+            es.quadManager().deleteSelectedQuads();
         }
         ImGui::EndMenu();
     }

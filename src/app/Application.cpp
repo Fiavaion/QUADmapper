@@ -53,7 +53,7 @@ static void glfwErrorCallback(int error, const char* description) {
 }
 
 // ---- Editor scene <-> flat Project persistence sync (ADR-033) ----
-// The live scene of truth is es.quadManager; the flat Project is only the serialization DTO.
+// The live scene of truth is es.quadManager(); the flat Project is only the serialization DTO.
 // These two helpers are the single place that copies between them, replacing the save/load
 // blocks that were duplicated 3x/2x across render(). They copy the WHOLE geometry and texture
 // binding, fixing the latent bug where the hand-rolled copies dropped mesh-edit vertex offsets
@@ -61,7 +61,7 @@ static void glfwErrorCallback(int error, const char* description) {
 static void syncSceneToProject(EditorState& es, Project& project) {
     project.clearQuads();
     project.getTexturePaths().clear();
-    for (const auto& quadPtr : es.quadManager.getQuads()) {
+    for (const auto& quadPtr : es.quadManager().getQuads()) {
         project.addQuad(*quadPtr);
         auto pathIt = es.quadTexturePaths.find(quadPtr->getId());
         project.getTexturePaths().push_back(
@@ -70,14 +70,14 @@ static void syncSceneToProject(EditorState& es, Project& project) {
 }
 
 static void syncProjectToScene(EditorState& es, const Project& project) {
-    es.quadManager.clear();
+    es.quadManager().clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
 
     const auto& quads = project.getQuads();
     const auto& texPaths = project.getTexturePaths();
     for (size_t i = 0; i < quads.size(); ++i) {
-        Quad* newQuad = es.quadManager.createQuad(quads[i].getName());
+        Quad* newQuad = es.quadManager().createQuad(quads[i].getName());
         newQuad->setVisible(quads[i].isVisible());
         newQuad->setLocked(quads[i].isLocked());
         newQuad->setOpacity(quads[i].getOpacity());
@@ -97,9 +97,9 @@ static void syncProjectToScene(EditorState& es, const Project& project) {
     }
 
     // Select the first quad and sync the texture-path edit buffer.
-    if (es.quadManager.getQuadCount() > 0) {
-        es.quadManager.selectQuad(es.quadManager.getQuads()[0]->getId());
-        auto pathIt = es.quadTexturePaths.find(es.quadManager.getQuads()[0]->getId());
+    if (es.quadManager().getQuadCount() > 0) {
+        es.quadManager().selectQuad(es.quadManager().getQuads()[0]->getId());
+        auto pathIt = es.quadTexturePaths.find(es.quadManager().getQuads()[0]->getId());
         if (pathIt != es.quadTexturePaths.end()) {
             strncpy(es.currentTexturePath, pathIt->second.c_str(), sizeof(es.currentTexturePath) - 1);
             es.currentTexturePath[sizeof(es.currentTexturePath) - 1] = '\0';
@@ -491,8 +491,8 @@ int Application::run() {
 
 void Application::runAiSelfTest() {
     EditorState& es = *m_editorState;
-    if (!es.quadManager.getPrimarySelectedQuad() && !es.quadManager.getQuads().empty()) {
-        es.quadManager.selectQuad(es.quadManager.getQuads().front()->getId());
+    if (!es.quadManager().getPrimarySelectedQuad() && !es.quadManager().getQuads().empty()) {
+        es.quadManager().selectQuad(es.quadManager().getQuads().front()->getId());
     }
     if (m_sidecarClient) {
         m_sidecarClient->start();
@@ -547,7 +547,7 @@ void Application::render() {
     // Each field is aliased to a same-named local reference so the body below is unchanged.
     EditorState& es = *m_editorState;
     using SelectionType = EditorState::SelectionType;
-    auto& quadManager = es.quadManager;
+    auto& quadManager = es.quadManager();
     auto& quadTextures = es.quadTextures;
     auto& quadTexturePaths = es.quadTexturePaths;
     auto& projectPath = es.projectPath;
@@ -984,14 +984,14 @@ void Application::render() {
 void Application::newProject() {
     EditorState& es = *m_editorState;
 
-    es.quadManager.clear();
+    es.quadManager().clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
     es.currentTexturePath[0] = '\0';
 
-    es.quadManager.createQuad("Quad 1");
-    if (es.quadManager.getQuadCount() > 0) {
-        es.quadManager.selectQuad(es.quadManager.getQuads()[0]->getId());
+    es.quadManager().createQuad("Quad 1");
+    if (es.quadManager().getQuadCount() > 0) {
+        es.quadManager().selectQuad(es.quadManager().getQuads()[0]->getId());
     }
 
     m_project->setName("Untitled Project");
@@ -1050,7 +1050,7 @@ void Application::aiDetectSurface() {
         setStatus("AI: enable the sidecar first (AI > Enable AI Assist)");
         return;
     }
-    Quad* quad = es.quadManager.getPrimarySelectedQuad();
+    Quad* quad = es.quadManager().getPrimarySelectedQuad();
     if (!quad) {
         setStatus("AI: select a quad to warp first");
         return;
@@ -1234,7 +1234,7 @@ void Application::runOneFlash(const std::array<std::array<float, 2>, 4>* audienc
         setStatus("One-Flash: enable the sidecar first (AI > Enable AI Assist)");
         return;
     }
-    Quad* quad = es.quadManager.getPrimarySelectedQuad();
+    Quad* quad = es.quadManager().getPrimarySelectedQuad();
     if (!quad) {
         setStatus("One-Flash: select a quad to warp first");
         return;
@@ -1315,7 +1315,7 @@ void Application::renderToProjectorOutputs() {
         textures[es.videoAssignedQuadId] = &es.videoTexWrapper;
     }
 
-    m_outputManager->renderToOutputs(es.quadManager, textures);
+    m_outputManager->renderToOutputs(es.quadManager(), textures);
 }
 
 void Application::shutdown() {

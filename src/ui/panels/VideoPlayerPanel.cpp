@@ -109,7 +109,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
 
         // Assign to quad section
         ImGui::Text("Assign Video to Quad:");
-        Quad* selected = es.quadManager.getPrimarySelectedQuad();
+        Quad* selected = es.quadManager().getPrimarySelectedQuad();
         if (selected) {
             bool isAssigned = (es.videoAssignedQuadId == selected->getId());
             if (ImGui::Button(isAssigned ? "Remove from Quad" : "Assign to Selected Quad")) {

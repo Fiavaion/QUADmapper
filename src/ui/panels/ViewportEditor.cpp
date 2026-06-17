@@ -31,7 +31,7 @@ void ViewportEditor::render(EditorContext& ctx) {
     auto* m_window = ctx.window;
     auto* m_project = ctx.project;
 
-    auto& quadManager = es.quadManager;
+    auto& quadManager = es.quadManager();
     auto& quadTextures = es.quadTextures;
 
     auto& cornerHoveredVertex = es.cornerHoveredVertex;

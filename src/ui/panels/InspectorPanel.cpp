@@ -71,7 +71,7 @@ void InspectorPanel::render(EditorContext& ctx) {
 // ============================================================
 void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
     EditorState& es = ctx.es;
-    auto& quadManager        = es.quadManager;
+    auto& quadManager        = es.quadManager();
     auto& quadTextures       = es.quadTextures;
     auto& quadTexturePaths   = es.quadTexturePaths;
     auto& currentTexturePath = es.currentTexturePath;

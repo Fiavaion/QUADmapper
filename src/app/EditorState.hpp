@@ -34,9 +34,28 @@ struct EditorState {
     // Context-sensitive selection tracking
     enum class SelectionType { None, Quad, Output, Media };
 
-    // Scene + quad management
-    Scene scene;
-    QuadManager& quadManager = scene.getQuadManager();
+    // Scene + quad management (ADR-039 P1: multi-scene model).
+    // The project holds one or more scenes; the editor always edits the ACTIVE
+    // scene. activeScene()/quadManager() resolve it (and lazily guarantee one
+    // scene exists, so the app can never be sceneless). Persistence of the full
+    // scene list comes in a later phase; today one default scene is created.
+    std::vector<std::unique_ptr<Scene>> scenes;
+    UUID activeSceneId;
+
+    Scene& activeScene() {
+        if (scenes.empty()) {
+            scenes.push_back(std::make_unique<Scene>());
+            scenes.back()->setActive(true);
+            activeSceneId = scenes.back()->getId();
+        }
+        for (auto& s : scenes) {
+            if (s->getId() == activeSceneId) return *s;
+        }
+        activeSceneId = scenes.front()->getId();
+        return *scenes.front();
+    }
+    QuadManager& quadManager() { return activeScene().getQuadManager(); }
+
     std::unordered_map<UUID, std::unique_ptr<Texture>> quadTextures;
     std::unordered_map<UUID, std::string> quadTexturePaths;
     char currentTexturePath[512] = "";

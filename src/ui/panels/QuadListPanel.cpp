@@ -26,8 +26,8 @@ void QuadListPanel::render(EditorContext& ctx) {
 
     ImGuiIO& io = ImGui::GetIO();
 
-    auto& quadManager         = es.quadManager;
-    auto& scene               = es.scene;
+    auto& quadManager         = es.quadManager();
+    auto& scene               = es.activeScene();
     auto& quadTextures        = es.quadTextures;
     auto& quadTexturePaths    = es.quadTexturePaths;
     auto& currentTexturePath  = es.currentTexturePath;
