@@ -5,7 +5,7 @@ Last Updated: 2026-06-17 (Session 18)
 ## Quick Status
 - In Progress: 0 — **ADR-040 P1 (crop, QM-068) DONE; P2–P5 (QM-069–072) next**
 - Todo: 4 ADR-040 (QM-069–072) + 2 debt (TD-08/09; TD-07 RESOLVED) + 1 AI (🚩 QM-061 hardware gate)
-- Done: 71 — **mapping-editor fixes; multi-scene ADR-039 P1–P5; groups-on-load + TD-07 fixes (Session 18)**
+- Done: 72 — **multi-scene ADR-039 P1–P5; groups-on-load + TD-07 fixes; ADR-040 P1 per-quad crop (QM-068, GPU-verified)**
 - Blocked: 0
 
 ## Session 18 (2026-06-17) — ADR-040 scoping (shared media sources + per-quad crop)

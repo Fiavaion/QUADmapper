@@ -6,6 +6,53 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 18 - 2026-06-17 - follow-up fixes + ADR-040 (shared media + crop) scoped & P1 shipped
+
+**Focus:** Two cleanups the user requested (groups-on-load, the TD-07 build flake), then a
+hypothetical that became MVP work: wrap one video around a box's faces across two projectors.
+Scoped it as **[ADR-040](docs/adr/0040-shared-media-sources-and-per-quad-crop.md)** (Accepted) and
+shipped **P1 (per-quad crop)**, GPU-verified. 8 commits on `dev` (`4ca12c5`..`f2f253e`),
+**unpushed**; `master` untouched (`fb4c85b`). **630/630 ctest**; build green.
+
+**Completed this session:**
+- **Groups-on-load FIXED** (`d586da6`). Two breaks: `deserializeQuad`/`deserializeGroup` ignored
+  the persisted `id` (so loaded quads got fresh ids while group members kept saved ids — linkage
+  severed), and `syncProjectToEditor` never rebuilt groups. Fixed both: defensive id-preserving
+  parse (`parseIdOrNull`; malformed → fresh, older files still load) + a remapping group rebuild
+  on load (members + nested parents). Test `V3GroupMembershipRoundTrips`.
+- **TD-07 RESOLVED** (`4ca12c5`). `gtest_discover_tests DISCOVERY_TIMEOUT 60` ends the spurious
+  `cmake --build` non-zero exit; discovery mode unchanged so `ctest --test-dir` is unaffected.
+  (First tried `PRE_TEST` mode — reverted, it broke the standard no-`-C` ctest invocation.)
+- **ADR-040 scoped & Accepted** (`f41a317`). One decoded video → many quads, each cropped, from a
+  single decode → frame-sync is structural, decode cost is flat. Converges TD-09 (renderer reads
+  `SourceManager` via the dormant `TextureBinding::mediaId`). `.qmap` → additive v3.1. Phased
+  QM-068–072.
+- **QM-068 (ADR-040 P1) — per-quad crop DONE** (`f5c2920`, `b3912fc`). Normalized
+  `TextureBinding::cropRect`; `quad.frag` composes crop outside the UV transform (identity = no-op);
+  Renderer sets `u_CropOffset`/`u_CropSize`; collapsed Inspector "Crop (source region)" with
+  X/Width/Y/Height + vertical-quarter quick-sets (1/2/3/4/Full); `.qmap` writes `crop` only when
+  non-identity (pre-crop files byte-stable). **Verified at the GPU level:** new `test_render_gl`
+  target renders a 2×1 red|green source through the real shader into an FBO and reads back the
+  centre — left-half crop → red, right-half/right-quarter → green (skip-if-no-context).
+
+**Files changed:** 14 files, +602 / −28. New: `docs/adr/0040-*.md`, `tests/unit/renderer/
+CropRenderTest.cpp`. See
+[docs/sessions/2026-06-17-session18-fixes-and-adr040-crop.md](docs/sessions/2026-06-17-session18-fixes-and-adr040-crop.md).
+
+**Commits (dev, UNPUSHED):** `4ca12c5` TD-07 · `d586da6` groups · `f41a317` ADR-040 scope ·
+`f5c2920` P1 crop · `b3912fc` P1 GPU test · plus 3 docs commits (`17563fe`, `44dd898`, `f2f253e`).
+
+**Decisions:** crop is normalized (reuses the UV shader pipeline, identity is byte-clean) and
+written conditionally (no version bump, color/soft-edge precedent); the heavy media-model
+convergence is P2 (QM-069) and is success-metric-adjacent, so it's deferred to a fresh start with
+an advisor pass. Verification depth for P1 was the user's call → GPU readback test (the repo's
+first real-GL test), not just data round-trip.
+
+**Handoff:** resume at **ADR-040 P2 (QM-069)** — renderer resolves a quad's texture from
+`SourceManager` via `mediaId`, retire `quadTextures`, behavior-preserving first. `dev` is 8 commits
+ahead of `origin/dev` and **unpushed** (push when ready). Still holding the `dev`→`master` PR until
+🚩 QM-061 (hardware) per the user.
+
 ### Session 17 - 2026-06-17 - ADR-039 multi-scene: UI + preview + persistence (P3–P5) — COMPLETE
 
 **Focus:** Finish the multi-projector feature. Sessions 15–16 built the runtime foundation (P1)

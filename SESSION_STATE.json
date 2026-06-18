@@ -1,49 +1,48 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-17T18:00:00Z",
+  "lastUpdated": "2026-06-17T22:30:00Z",
   "sessionInfo": {
-    "sessionNumber": 17,
-    "startTime": "2026-06-17T14:00:00Z",
-    "endTime": "2026-06-17T18:00:00Z",
+    "sessionNumber": 18,
+    "startTime": "2026-06-17T19:00:00Z",
+    "endTime": "2026-06-17T22:30:00Z",
     "status": "completed"
   },
   "currentWork": {
     "activeTaskId": null,
-    "activeTaskTitle": "ADR-039 multi-scene output routing COMPLETE (P1-P5). No task in progress.",
-    "currentFile": "branch dev (Sessions 16+17; pushed to origin/dev @ e5c08fa). master = clean baseline fb4c85b.",
+    "activeTaskTitle": "ADR-040 P1 (per-quad crop, QM-068) DONE + GPU-verified. P2 (QM-069) is next. No task mid-edit.",
+    "currentFile": "branch dev (Session 18 @ f2f253e; 8 commits ahead of origin/dev, UNPUSHED). master = clean baseline fb4c85b.",
     "currentFunction": null,
-    "workInProgress": "Nothing mid-edit. Session 17 finished ADR-039 (the multi-projector feature): P3 Scenes UI (QM-065), P4 live per-output preview (QM-066), P5 .qmap v3 persistence (QM-067). 4 commits on dev, pushed. Working tree clean. 624/624 ctest. Every phase app-verified by running the real app via the synthetic-input smoke harness (tests/smoke/drive_scenes_smoke.ps1).",
+    "workInProgress": "Nothing mid-edit. Session 18 shipped: groups-on-load fix, TD-07 fix, ADR-040 scoped+Accepted, and ADR-040 P1 (per-quad crop, QM-068) implemented and GPU-verified. 8 commits on dev, working tree clean, 630/630 ctest.",
     "nextSteps": [
-      "QM-061 (BLOCKED on hardware): real-device AI test (projector + surface + phone). Runbook: docs/QM-061-hardware-test-runbook.md. On pass, open the dev->master PR.",
-      "Consider opening the dev -> master PR now: master is still at the pre-Session-16 baseline fb4c85b, while dev has all of Sessions 16 (mapping fixes + ADR-039 P1/P2) and 17 (ADR-039 P3/P4/P5). ADR-039 is complete and app-verified.",
-      "Optional follow-up: groups-on-load in syncProjectToEditor (groups round-trip in the .qmap file but the load bridge does not re-apply them to live scenes - a pre-existing gap, not a regression).",
-      "Optional debt: TD-07 (build exit-code flake), TD-08 (audio snapshot, LOW), TD-09 (dual media model + on-quad camera)."
+      "ADR-040 P2 (QM-069) — THE NEXT STEP, the risky convergence: make the renderer resolve a quad's texture from SourceManager via TextureBinding::mediaId (the TD-09 gap), dedupe sources by path, retire the EditorState::quadTextures map. Behavior-preserving FIRST; success-metric-adjacent. Start fresh; likely warrants an advisor pass on the convergence approach. Then P3 (shared/multi-quad video — retire singular videoPlayer/videoAssignedQuadId), P4 (cross-scene box-wrap proof), P5 (.qmap v3.1 sources+mediaId persistence).",
+      "Push dev to origin/dev (8 commits unpushed) when ready — push not done automatically.",
+      "dev -> master PR still gated on QM-061 (hardware) per the user; hold until it passes.",
+      "QM-061 (BLOCKED on hardware): real-device AI test. Runbook docs/QM-061-hardware-test-runbook.md.",
+      "Optional debt: TD-08 (audio snapshot, LOW). TD-09 now folds into ADR-040 P2."
     ]
   },
   "context": {
     "recentFiles": [
-      "src/ui/panels/ScenePanel.cpp",
-      "src/ui/panels/ScenePanel.hpp",
-      "src/ui/panels/OutputPreviewPanel.cpp",
-      "src/renderer/Framebuffer.cpp",
-      "src/renderer/Framebuffer.hpp",
-      "src/output/OutputManager.cpp",
-      "src/project/Project.hpp",
+      "src/scene/Quad.hpp",
+      "src/shaders/quad.frag",
+      "src/renderer/Renderer.cpp",
+      "src/ui/panels/InspectorPanel.cpp",
       "src/project/ProjectSerializer.cpp",
       "src/app/Application.cpp",
-      "src/app/EditorState.hpp",
+      "tests/unit/renderer/CropRenderTest.cpp",
       "tests/unit/project/ProjectSerializerTest.cpp",
-      "tests/smoke/drive_scenes_smoke.ps1"
+      "tests/CMakeLists.txt",
+      "tests/unit/CMakeLists.txt",
+      "docs/adr/0040-shared-media-sources-and-per-quad-crop.md"
     ],
     "keyDecisions": [
-      "P3 Scenes UI is wired as the ACTIVE-SCENE CONTROLLER over EditorState (NOT the retired SceneManager stub). Switching the active scene (setActiveScene) is enough for the viewport/QuadList/Inspector to follow, since they all read es.quadManager()/activeScene().",
-      "One-scene-per-output is enforced in the Scenes UI assignment dropdown AND on load remap, because OutputManager::sceneForOutput returns the FIRST scene matching an output (a shared output would be ambiguous).",
-      "P4 previews render in the MAIN GL context via a single shared Renderer (not the per-output contexts), into a 320x180 RAII Framebuffer per output; updatePreviews saves/restores the framebuffer binding + viewport. The per-output Renderers stay for real perform-mode output.",
-      "P4 did NOT revive the reference PreviewPanel from 669a05c^ - it was an interactive vector editor overlapping ViewportEditor. P4 ships a true FBO thumbnail of what each projector shows.",
-      ".qmap v3 (ADR-039): writer emits scenes[]+outputs[] only when the project carries scene DTOs; a flat-only Project still writes legacy v1.2 (byte-clean, keeps old files/tests compatible). Unified reader yields >=1 scene for v1 (flat->1 scene) / v2 (scenes->list) / v3 (+outputs). kMaxSupportedMajor 2->3.",
-      "EditorState owns live scenes (Scene/QuadManager) and OutputManager owns outputs; Project is the serialization DTO with new SceneData/OutputData structs. syncEditorToProject/syncProjectToEditor are the single save/load bridge; load rebuilds outputs (v3) and remaps each scene's assignedOutputId onto the freshly created live output ids.",
-      "UUID() default-constructs to NULL (0,0); use UUID::generate() for a fresh id. This bit the serializer first draft (scene/output ids stayed null) - fixed.",
-      "Smoke harness robustness: pin the QUADmapper window TOPMOST at (0,0) (the Claude desktop app kept stealing foreground and the window drifted run-to-run, breaking hardcoded click coords) + AttachThreadInput foreground-steal. Click coords are read from cropped screenshots; SetCursorPos uses PHYSICAL pixels (capture is 2560x1440 physical though Screen.Bounds reports 2048x1152 logical at 125%)."
+      "ADR-040 (Accepted): one decoded video -> many quads, each cropped, from a SINGLE decode. Frame-sync becomes structural (one clock/frame), decode cost flat in quad count. The mechanism is the TD-09 convergence: renderer resolves a quad's texture from SourceManager via the dormant TextureBinding::mediaId. Box-wrap MVP (panorama on a cuboid, 2 projectors / 2 scenes).",
+      "Crop is normalized (NormalizedRect cropRect, default full frame) and composes OUTSIDE the existing UV transform in quad.frag: uv = cropOffset + cropSize*uv. Identity is byte-for-byte the old formula (render no-op), so existing projects are visually unchanged.",
+      "Crop serialized inside textureBinding only when non-identity -> pre-crop .qmap files and untouched quads stay byte-identical; no version bump (matches the ADR-036/037 color/soft-edge conditional-write precedent). Missing crop loads as full frame.",
+      "Groups-on-load needed TWO fixes: (a) deserializeQuad/deserializeGroup now preserve the persisted id (defensive parseIdOrNull: malformed/short -> fresh, so older files still load) so member references re-link; (b) syncProjectToEditor rebuilds each scene's groups with member + nested-parent id remap (createQuad/createGroup mint fresh ids).",
+      "TD-07: fixed with DISCOVERY_TIMEOUT 60 (NOT DISCOVERY_MODE PRE_TEST — that was tried and reverted because it broke the standard `ctest --test-dir build/debug` which then required -C Debug).",
+      "P1 verification depth was the user's explicit choice: a real-GL GPU readback test (test_render_gl) — render through the actual shader to an FBO and glReadPixels — not just a data round-trip. It is the repo's first real-GL test; skip-if-no-context keeps it CI-safe.",
+      "P2 (the media-model convergence) is success-metric-adjacent and the highest-risk phase; deferred to a fresh start with an advisor pass rather than barrelled into at session end."
     ],
     "openQuestions": [],
     "blockers": [
@@ -51,7 +50,7 @@
     ]
   },
   "projectState": {
-    "currentPhase": "ADR-039 multi-scene output routing COMPLETE (P1-P5, all app-verified). Mapping-editor UX fixes shipped (Session 16). AI wedge (Phase 9) still gated on hardware QM-061.",
+    "currentPhase": "ADR-040 (shared media sources + per-quad crop) IN FLIGHT: P1 (crop, QM-068) DONE + GPU-verified; P2-P5 (QM-069-072) next. ADR-039 multi-scene routing COMPLETE. AI wedge (Phase 9) software-complete, gated on hardware QM-061.",
     "completedPhases": [
       "Phase 0: Infrastructure Setup",
       "Phase 1: Core Foundation",
@@ -65,33 +64,36 @@
       "Phase 9: AI Pre-Show Assist - software-complete; QM-061 hardware gate outstanding",
       "v1.1 polish: color correction + soft-edge + UV grid",
       "Kantan-style grid (ADR-038) Tier 1 (Linear parity)",
-      "Mapping-editor UX fixes (round handles, DPI picking, clean grid, drag-to-add divisions, Reset)",
-      "ADR-039 multi-scene routing: P1 (runtime) + P2 (per-output routing, hardware-verified) + P3 (Scenes UI) + P4 (live preview) + P5 (.qmap v3 persistence) - COMPLETE"
+      "Mapping-editor UX fixes",
+      "ADR-039 multi-scene routing P1-P5 - COMPLETE",
+      "Session 18 follow-ups: groups-on-load fix + TD-07 resolved",
+      "ADR-040 P1 (QM-068) per-quad crop - DONE + GPU-verified"
     ],
     "buildStatus": "success",
-    "lastSuccessfulBuild": "2026-06-17T17:50:00Z",
-    "note": "Session 17. ADR-039 COMPLETE (P3+P4+P5 this session). 4 commits on dev (pushed origin/dev @ e5c08fa); master clean at fb4c85b. 624/624 ctest (+5 serializer migration tests). Multi-projector is now fully user-operable: create/assign scenes (Scenes tab), see each projector live (Preview tab), and save/load the whole multi-scene+outputs setup (.qmap v3, backward-compatible). All app-verified. dev is well ahead of master (Sessions 16+17) - dev->master PR is a sensible next step, ideally after QM-061 hardware validation."
+    "lastSuccessfulBuild": "2026-06-17T22:15:00Z",
+    "note": "Session 18. Groups-on-load + TD-07 fixed; ADR-040 scoped/Accepted; ADR-040 P1 (per-quad crop, QM-068) shipped and GPU-verified via the new test_render_gl readback target. 8 commits on dev (4ca12c5..f2f253e), UNPUSHED; master clean at fb4c85b. 630/630 ctest; build green; working tree clean. Next: ADR-040 P2 (QM-069) renderer<-SourceManager convergence (risk phase, start fresh + advisor). dev->master PR still held for QM-061 hardware."
   },
   "statistics": {
-    "totalSessions": 17,
-    "tasksCompleted": 71,
+    "totalSessions": 18,
+    "tasksCompleted": 72,
     "tasksInProgress": 0,
-    "tasksTodo": 4
+    "tasksTodo": 5
   },
-  "session17Accomplishments": {
-    "shipped": "4 commits on dev (pushed origin/dev @ e5c08fa); master clean at fb4c85b. ADR-039 P3+P4+P5 - multi-projector feature complete.",
+  "session18Accomplishments": {
+    "shipped": "8 commits on dev (4ca12c5..f2f253e), UNPUSHED; master clean at fb4c85b. Groups-on-load + TD-07 fixes; ADR-040 scoped+Accepted; ADR-040 P1 crop (QM-068) done + GPU-verified.",
     "items": [
-      "QM-065 (P3) DONE: Scenes UI - ScenePanel tab (New/Delete/rename/switch-active + per-scene output dropdown, one-scene-per-output); EditorState scene mutators; panels follow active scene. Reviewer fix: deferred context-menu delete (UAF). App-verified.",
-      "QM-066 (P4) DONE: live per-output preview - RAII Framebuffer + OutputManager::updatePreviews (320x180 FBO per output in main context) + OutputPreviewPanel thumbnails (V-flipped, name->scene). App-verified.",
-      "QM-067 (P5) DONE: .qmap v3 persistence - Project SceneData/OutputData DTOs; serializer v3 write + v1/v2/v3 read (kMaxSupportedMajor 2->3); Application save/load bridge round-trips all scenes+outputs with assignedOutputId remap. 5 migration unit tests. App-verified end-to-end (save default->v3 file; load 2-scene v3->Scenes Alpha/Beta + Preview Beamer->Alpha).",
-      "Gate: 624/624 ctest; build green; all phases app-verified via tests/smoke/drive_scenes_smoke.ps1.",
-      "Docs: TASKS.md (QM-065/066/067 DONE, ADR-039 complete), PROJECT_HISTORY.md Session 17, docs/sessions/2026-06-17-session17-*.md."
+      "Groups-on-load FIXED (d586da6): preserve persisted quad/group ids on deserialize (defensive parseIdOrNull) + syncProjectToEditor rebuilds groups with member/parent remap. Test V3GroupMembershipRoundTrips.",
+      "TD-07 RESOLVED (4ca12c5): gtest_discover_tests DISCOVERY_TIMEOUT 60 ends the spurious cmake --build non-zero exit (PRE_TEST mode tried and reverted).",
+      "ADR-040 scoped & Accepted (f41a317): one video -> many cropped quads from one decode; converges TD-09 (renderer reads SourceManager via mediaId); .qmap additive v3.1; phased QM-068-072.",
+      "QM-068 (ADR-040 P1) DONE (f5c2920, b3912fc): normalized TextureBinding::cropRect; quad.frag crop compose (identity = no-op); Inspector crop control + vertical-quarter quick-sets; conditional .qmap write. Verified: data round-trip tests + GPU readback (test_render_gl: left crop->red, right/quarter->green through the real shader to an FBO).",
+      "Gate: 630/630 ctest; build green; success-metric path untouched (crop identity is a render no-op)."
     ],
     "lessons": [
-      "When reviving retired code as a reference (ADR's listed PreviewPanel/SceneManager from 669a05c^), CHECK WHAT IT ACTUALLY DID before wiring it - the reference PreviewPanel was an interactive vector editor (overlaps ViewportEditor), not the FBO thumbnail P4 needed. Shipped the right thing instead of blindly reviving.",
-      "Protected .qmap boundary: keep the writer emitting the OLD format for the OLD shape (flat-only Project -> v1.2) and only emit the new format for new data (scenes -> v3). This keeps every existing file + round-trip test byte-compatible while adding v3 - no migration of existing files needed.",
-      "UUID() is NULL, UUID::generate() is fresh - a subtle default-ctor trap that left serialized scene/output ids null until caught by the round-trip test asserting a non-null assignedOutputId.",
-      "Foreground-stealing apps (Claude desktop) + run-to-run window drift make hardcoded synthetic-click coords flaky. Pin the target window TOPMOST at a fixed origin (0,0) for deterministic coords; re-assert focus before every click."
+      "A 'crop the video into quarters' feature was already half-built in dormant scaffolding (TextureBinding::mediaId + cropRegion, SourceManager owning sources+textures) — audit for existing unused fields before designing; the real work was wiring, not inventing.",
+      "When restoring a feature that crosses serialize+load (groups), check the WHOLE chain: the linkage can be broken at the serializer (ids dropped) AND the bridge (not re-applied). Fixing only one leaves it broken.",
+      "Persisted-but-ignored id fields are a latent linkage bug (same shape as the TD-05 mesh-offset drop): writing an id you never read silently breaks any cross-reference that uses it.",
+      "CMake gtest DISCOVERY_MODE PRE_TEST defers discovery to ctest time but, on a multi-config (VS) generator, makes `ctest --test-dir` require -C <config>; a plain DISCOVERY_TIMEOUT bump fixes the build-exit flake without changing the developer's ctest invocation.",
+      "For a shader/visual feature, a data round-trip test is not 'seen working' — a real-GL FBO + glReadPixels test proves the pixels. It is cheap to stand up (hidden GLFW window + glad + the RAII Framebuffer) and worth it; skip-if-no-context keeps it CI-safe."
     ]
   }
 }
