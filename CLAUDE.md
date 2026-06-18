@@ -310,6 +310,12 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
 
 ## Dev & Bug-Fix Discipline
 
+- **Minimalism ladder — before writing code, walk it in order:** (1) does this need to exist?
+  — if not, skip it (YAGNI); (2) does the C++17 stdlib do it? (3) a feature of an
+  already-linked lib (GLM / GLFW / ImGui / FFmpeg / stb / miniaudio)? (4) only then a new
+  dependency — and that needs an **ADR + approval** (see Change Boundaries); (5) can it be a few
+  lines? (6) then the minimum that works. Never cut validation, error handling, RAII/GL cleanup,
+  or the success-metric UX to be "minimal."
 - **Build → test → commit, one change at a time.** One feature/fix per commit; no `wip`
   commits on `main`. Incremental, reversible steps.
 - **Reviewer mode before "done".** After writing code, re-read your own diff as a senior
