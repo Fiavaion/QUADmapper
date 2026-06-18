@@ -3,9 +3,9 @@
 Last Updated: 2026-06-17 (Session 18)
 
 ## Quick Status
-- In Progress: 0 — **ADR-040 P1 (crop, QM-068) DONE; P2–P5 (QM-069–072) next**
-- Todo: 4 ADR-040 (QM-069–072) + 2 debt (TD-08/09; TD-07 RESOLVED) + 1 AI (🚩 QM-061 hardware gate)
-- Done: 72 — **multi-scene ADR-039 P1–P5; groups-on-load + TD-07 fixes; ADR-040 P1 per-quad crop (QM-068, GPU-verified)**
+- In Progress: 0 — **ADR-040 COMPLETE (P1–P5, QM-068–072): one video → many cropped quads, box-wrap**
+- Todo: 1 debt (TD-08, LOW; TD-07 RESOLVED, TD-09 subsumed by ADR-040) + 1 AI (🚩 QM-061 hardware gate)
+- Done: 77 — **ADR-039 multi-scene; groups-on-load + TD-07 fixes; ADR-040 P1–P5 (crop + shared media sources, software-complete & verified)**
 - Blocked: 0
 
 ## Session 18 (2026-06-17) — ADR-040 scoping (shared media sources + per-quad crop)
@@ -36,13 +36,24 @@ per-quad `mediaId` + `crop`; old files migrate). Phased:
   rejected it) and `Texture::update` never regenerated mipmaps (minified CPU-source textures
   rendered black). **Verified on screen** (`drive_image_smoke.ps1`: a real PNG binds via `mediaId`
   and renders on the warped quad). 630/630 ctest.
-- **QM-070 (P3) TODO** — shared / multi-quad video: retire singular `videoPlayer`/
-  `videoAssignedQuadId`; video is a `VideoFileSource` in `SourceManager`; N quads → one decode.
-  Verify 2+ quads play the same file in sync.
-- **QM-071 (P4) TODO** — cross-scene / cross-output sharing: one source feeding quads in 2
-  scenes on 2 projectors, frame-synced (the box-wrap proof).
-- **QM-072 (P5) TODO** — persistence: `sources` + `mediaId` + `crop` round-trip in v3.1;
-  old-file migration tests; box-wrap project saves/reloads intact.
+- **QM-070 (P3) DONE** — shared / multi-quad video. Retired the singular `videoPlayer`/
+  `videoTextureId`/`videoAssignedQuadId` + the manual per-frame upload loop; video is a
+  `VideoFileSource` in `SourceManager`, updated by `updateAll()`. The Video Player panel drives
+  one active source and assigns it to a quad by `mediaId` — the **same video on N quads decodes
+  once**. Fixed a migration-surfaced crash (`createGPUTexture` provisioned RGBA but video frames
+  are RGB(3); `uploadFrameToTexture` now reallocs on a channel mismatch). **Verified:** new
+  deterministic GL test (`test_source_gl`) loads/plays/advances/uploads; GUI confirms panel +
+  load + per-quad assign.
+- **QM-071 (P4) DONE (software)** — cross-scene / cross-output sharing is emergent from P2's
+  global `buildQuadTextureMap` (iterates every scene) + P3's project-global source: one video
+  assigned to quads in 2 scenes resolves for both outputs (textures shared across the shared GL
+  context). No new code. The on-projector frame-synced proof is the 🚩 hardware test.
+- **QM-072 (P5) DONE** — persistence. Video assignment records the quad's path in the same
+  `texturePaths` carrier images use, so it serializes with the project (no schema change — reuses
+  P2's path + P1's crop). On load, `syncProjectToEditor` routes each path by media type
+  (`getOrCreateVideoSource` deduped / `getOrCreateImageSource`) and rebinds by `mediaId`; the
+  box-wrap reloads as one shared decode. Video/image dedupe-by-path tests; serializer already
+  round-trips `texturePaths`.
 
 Gate per phase: `cmake --build` + `ctest` green + success-metric warp intact.
 
@@ -972,8 +983,8 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-067 | .qmap v3 scenes+outputs persistence (P5) | DONE | ADR-039 |
 | QM-068 | Per-quad normalized crop rectangle (P1) | DONE | ADR-040 |
 | QM-069 | Renderer reads SourceManager via mediaId (P2, TD-09) | DONE | ADR-040 |
-| QM-070 | Shared / multi-quad video — one decode (P3) | TODO | ADR-040 |
-| QM-071 | Cross-scene / cross-output source sharing (P4) | TODO | ADR-040 |
-| QM-072 | .qmap v3.1 sources + mediaId + crop persistence (P5) | TODO | ADR-040 |
+| QM-070 | Shared / multi-quad video — one decode (P3) | DONE | ADR-040 |
+| QM-071 | Cross-scene / cross-output source sharing (P4) | DONE | ADR-040 |
+| QM-072 | Persist box-wrap (mediaId + crop + typed reload) (P5) | DONE | ADR-040 |
 
 ---

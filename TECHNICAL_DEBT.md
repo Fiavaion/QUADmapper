@@ -13,10 +13,16 @@ All are **refactor-in-place** items; severity-ordered, fixed per the ADR sequenc
 | ID | Item | Est. cost to fix | Impact | Critical path? |
 |----|------|------------------|--------|----------------|
 | ~~TD-10~~ | **RESOLVED (Session 15).** AI sidecar `start()` no longer blocks the UI: `SidecarClient::startAsync()` runs the attach/launch/health-poll on a worker thread (state is now `std::atomic`, with a new `Starting` state; worker joined in `stop()`/destructor — no orphan, no leak). The AI-enable menu calls `startAsync()` and shows "connecting…"; the run loop watches `state()` and posts the connect outcome. Unit test `StartAsyncResolvesToFailedWithoutBlocking`; full smoke green. | — | Done | — |
-| TD-09 | **Two media models (half-finished source migration).** `MediaBinPanel` uses `SourceManager`/`TextureSource`/`MediaItem`; quad texture/video *assignment* in `render()` uses the legacy `quadTextures` map + `EditorState::videoPlayer`. ADR-034 decomposes over the legacy model and defers convergence onto the source architecture here. Touches the texture/video assignment path + on-canvas editing → **success-metric regression risk; do as a deliberate feature, not debt cleanup.** **Now also blocks QM-055's on-quad camera display** (`CameraSource` lives in `SourceManager`, which the renderer doesn't read) — converging here lets camera + all sources display on quads in one stroke. | ~2 sessions | Architecture coherence + camera-on-quad (QM-055) | No |
+| ~~TD-09~~ | **RESOLVED (ADR-040 P2/P3).** The renderer now reads `SourceManager` via `TextureBinding::mediaId` (shared `buildQuadTextureMap`); image **and** video assignments go through it (deduped by path), and the legacy `quadTextures`-as-primary + singular `videoPlayer`/`videoTextureId`/`videoAssignedQuadId` are retired (`quadTextures` survives only as the UV-grid fallback). One media model, the dual-track gone. **Camera-on-quad (QM-055) is now unblocked** — `CameraSource` resolves via `mediaId` like any source; it only needs a small UI affordance to assign a camera source to a quad (follow-up). | — | Done | — |
 | TD-08 | **Audio snapshot reclamation** (residual of TD-03, LOW) — the lock-free source-list snapshot is a `shared_ptr`; when the source list changes mid-playback, the old snapshot's last ref can be released on the audio thread (one `free`, only at assign/remove-audio moments, never steady state). Proper fix: defer reclamation to the control thread (retire list). | 0.5 d | One possible glitch when audio is (re)assigned | No |
 
 Remaining minor TODO: [PreferencesDialog.cpp:174](src/ui/dialogs/PreferencesDialog.cpp#L174) — "Open folder browser dialog" (minor UX, not critical path).
+
+ADR-040 small follow-ups (none critical-path):
+- **UV test grid** still binds through the legacy `quadTextures` fallback (it's an in-memory texture, not a file source). Converting it to a `SourceManager` source would let `quadTextures` be deleted entirely.
+- **Per-frame mipmap regen for video.** `Texture::update` now regenerates the mip chain on every full update; for a playing video that's per-frame `glGenerateMipmap` on a 1080p texture. Fine for the box-wrap test; consider a non-mipmapped path for dynamic sources if profiling flags it.
+- **Camera-on-quad UI** (QM-055) — the resolver now supports it; needs an "assign camera source to quad" affordance.
+- **Video playback state** isn't persisted (P5 saves the path + assignment, not play position / playing state).
 
 ## Deferral decision (fill in BEFORE accepting any deferral)
 
