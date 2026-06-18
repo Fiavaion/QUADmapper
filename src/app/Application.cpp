@@ -1,6 +1,7 @@
 #include "Application.hpp"
 #include "EditorContext.hpp"
 #include "EditorState.hpp"
+#include "TextureResolve.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
 #include "../project/Project.hpp"
@@ -820,6 +821,12 @@ void Application::render() {
         }
     }
 
+    // Update all media sources (ADR-040 P2) and upload any new frames to GPU —
+    // main thread / main GL context, once per frame, before any quad is drawn.
+    if (m_sourceManager) {
+        m_sourceManager->updateAll(static_cast<double>(deltaTime));
+    }
+
     // On-canvas viewport: render every quad to the main GL framebuffer + the
     // corner-pin / mesh-edit warp interaction. Runs BEFORE ImGui::NewFrame() so it
     // owns the fullscreen GL surface and captures the mouse/keyboard ahead of any
@@ -835,16 +842,7 @@ void Application::render() {
     // so the Resources > Preview tab shows a live view of every projector. Runs in
     // the main GL context; saves/restores the framebuffer + viewport itself.
     if (m_outputManager && m_renderer) {
-        std::unordered_map<UUID, Texture*> previewTextures;
-        previewTextures.reserve(es.quadTextures.size() + 1);
-        for (const auto& [id, texPtr] : es.quadTextures) {
-            previewTextures[id] = texPtr.get();
-        }
-        if (!es.videoAssignedQuadId.isNull() && es.videoTextureId != 0) {
-            es.videoTexWrapper.setGLTextureId(es.videoTextureId, es.videoTextureWidth,
-                                              es.videoTextureHeight);
-            previewTextures[es.videoAssignedQuadId] = &es.videoTexWrapper;
-        }
+        auto previewTextures = buildQuadTextureMap(es, m_sourceManager.get());
         m_outputManager->updatePreviews(es.scenes, previewTextures, *m_renderer);
     }
 
@@ -1480,16 +1478,9 @@ void Application::renderToProjectorOutputs() {
         return;
     }
 
-    // Mirror the texture-map construction from render(): static image textures
-    // plus the video wrapper for the video-assigned quad.
-    std::unordered_map<UUID, Texture*> textures;
-    textures.reserve(es.quadTextures.size() + 1);
-    for (const auto& [id, texPtr] : es.quadTextures) {
-        textures[id] = texPtr.get();
-    }
-    if (!es.videoAssignedQuadId.isNull() && es.videoTextureId != 0) {
-        textures[es.videoAssignedQuadId] = &es.videoTexWrapper;
-    }
+    // Resolve every quad's texture (image via SourceManager/mediaId, video via the
+    // legacy wrapper) through the shared builder — same map the editor/preview use.
+    auto textures = buildQuadTextureMap(es, m_sourceManager.get());
 
     m_outputManager->renderToOutputs(es.scenes, textures);
 }

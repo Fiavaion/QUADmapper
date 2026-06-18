@@ -2,6 +2,7 @@
 
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
+#include "app/TextureResolve.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGeometry.hpp"
@@ -32,7 +33,6 @@ void ViewportEditor::render(EditorContext& ctx) {
     auto* m_project = ctx.project;
 
     auto& quadManager = es.quadManager();
-    auto& quadTextures = es.quadTextures;
 
     auto& cornerHoveredVertex = es.cornerHoveredVertex;
     auto& cornerDraggedVertex = es.cornerDraggedVertex;
@@ -49,11 +49,6 @@ void ViewportEditor::render(EditorContext& ctx) {
     auto& snapTargetPos = es.snapTargetPos;
     auto& meshDragStartOffset = es.meshDragStartOffset;
 
-    auto& videoTextureId = es.videoTextureId;
-    auto& videoTextureWidth = es.videoTextureWidth;
-    auto& videoTextureHeight = es.videoTextureHeight;
-    auto& videoAssignedQuadId = es.videoAssignedQuadId;
-
     // Disable depth test for 2D rendering
     glDisable(GL_DEPTH_TEST);
 
@@ -61,19 +56,10 @@ void ViewportEditor::render(EditorContext& ctx) {
     if (m_renderer) {
         m_renderer->beginFrame();
 
-        // Build texture pointer map for rendering
-        std::unordered_map<UUID, Texture*> texturePtrs;
-        for (const auto& [id, texPtr] : quadTextures) {
-            texturePtrs[id] = texPtr.get();
-        }
-
-        // Handle video texture rendering for assigned quad
-        auto& videoTexWrapper = es.videoTexWrapper;  // Owned by EditorState (see ADR-031 TD-02)
-        if (!videoAssignedQuadId.isNull() && videoTextureId != 0) {
-            // Use raw OpenGL texture binding for video
-            videoTexWrapper.setGLTextureId(videoTextureId, videoTextureWidth, videoTextureHeight);
-            texturePtrs[videoAssignedQuadId] = &videoTexWrapper;
-        }
+        // Resolve every quad's texture through the shared builder: image via
+        // TextureBinding::mediaId -> SourceManager, video via the legacy wrapper
+        // (ADR-040 P2). Same map the per-output render and preview FBOs use.
+        auto texturePtrs = buildQuadTextureMap(es, ctx.sourceManager);
 
         m_renderer->renderQuads(quadManager, texturePtrs);
 
