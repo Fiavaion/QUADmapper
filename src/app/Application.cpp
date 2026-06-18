@@ -172,7 +172,15 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                 // carrier (P5 serializes mediaId/sources directly).
                 es.quadTexturePaths[nq->getId()] = sd.texturePaths[i];
                 if (sm) {
-                    UUID sid = sm->getOrCreateImageSource(sd.texturePaths[i]);
+                    const std::filesystem::path mediaPath = sd.texturePaths[i];
+                    const std::string ext = mediaPath.extension().string();
+                    UUID sid;
+                    if (MediaLibrary::getTypeFromExtension(ext) == MediaType::VIDEO) {
+                        sid = sm->getOrCreateVideoSource(mediaPath);
+                        if (!sid.isNull()) es.activeVideoSourceId = sid;  // panel controls it
+                    } else {
+                        sid = sm->getOrCreateImageSource(mediaPath);
+                    }
                     if (!sid.isNull()) nq->getTexture().mediaId = sid;
                 }
             }

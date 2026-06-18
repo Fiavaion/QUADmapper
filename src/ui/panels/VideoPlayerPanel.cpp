@@ -108,7 +108,16 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         if (selected) {
             bool isAssigned = (selected->getTexture().mediaId == es.activeVideoSourceId);
             if (ImGui::Button(isAssigned ? "Remove from Quad" : "Assign to Selected Quad")) {
-                selected->getTexture().mediaId = isAssigned ? UUID() : es.activeVideoSourceId;
+                if (isAssigned) {
+                    selected->getTexture().mediaId = UUID();
+                    es.quadTexturePaths.erase(selected->getId());
+                } else {
+                    selected->getTexture().mediaId = es.activeVideoSourceId;
+                    // Record the path so the assignment persists in the .qmap
+                    // (P5: same texturePaths carrier images use; load re-creates
+                    // the video source and re-binds by mediaId).
+                    es.quadTexturePaths[selected->getId()] = video->getPath().string();
+                }
                 ctx.project->setModified(true);
             }
             if (isAssigned) {

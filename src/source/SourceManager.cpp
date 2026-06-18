@@ -45,6 +45,24 @@ UUID SourceManager::getOrCreateImageSource(const std::filesystem::path& path) {
     return createImageSource(path);
 }
 
+UUID SourceManager::findVideoSourceByPath(const std::filesystem::path& path) const {
+    for (const auto& [id, entry] : sources_) {
+        const auto* vid = dynamic_cast<const VideoFileSource*>(entry.source.get());
+        if (vid && vid->getPath() == path) {
+            return id;
+        }
+    }
+    return UUID();
+}
+
+UUID SourceManager::getOrCreateVideoSource(const std::filesystem::path& path) {
+    UUID existing = findVideoSourceByPath(path);
+    if (!existing.isNull()) {
+        return existing;  // dedupe: one decode shared across quads
+    }
+    return createVideoSource(path);
+}
+
 UUID SourceManager::createVideoSource(const std::filesystem::path& path) {
     auto source = std::make_unique<VideoFileSource>(path);
     UUID id = source->getId();

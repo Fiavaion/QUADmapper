@@ -95,3 +95,20 @@ TEST(VideoSourcePipeline, ImageSourceDedupedByPath) {
     EXPECT_EQ(a, b);                       // same path -> same source, one decode
     EXPECT_EQ(sm.getSourceCount(), 1u);
 }
+
+// P5 relies on video dedupe so a saved box-wrap (same video on N quads) reloads
+// as one shared decode.
+TEST(VideoSourcePipeline, VideoSourceDedupedByPath) {
+    namespace fs = std::filesystem;
+    const fs::path video = "D:/testing Videos/greenCrystals_15Sec_4x3.mp4";
+    if (!fs::exists(video)) GTEST_SKIP() << "test video not present";
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";
+
+    SourceManager sm;
+    UUID a = sm.getOrCreateVideoSource(video);
+    UUID b = sm.getOrCreateVideoSource(video);
+    ASSERT_FALSE(a.isNull());
+    EXPECT_EQ(a, b);
+    EXPECT_EQ(sm.getSourceCount(), 1u);
+}

@@ -73,6 +73,20 @@ public:
     UUID getOrCreateImageSource(const std::filesystem::path& path);
 
     /**
+     * @brief Find an existing video source already loaded from `path`
+     * @return Its UUID, or null UUID if none
+     */
+    UUID findVideoSourceByPath(const std::filesystem::path& path) const;
+
+    /**
+     * @brief Reuse the existing video source for `path`, else create one (ADR-040).
+     *
+     * Dedupe by path so one video shared across many quads decodes once — the
+     * basis for wrapping a single video around a box's faces.
+     */
+    UUID getOrCreateVideoSource(const std::filesystem::path& path);
+
+    /**
      * @brief Create a video file source
      * @param path Path to video file
      * @return UUID of created source, or null UUID on failure
