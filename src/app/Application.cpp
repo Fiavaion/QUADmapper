@@ -116,10 +116,12 @@ static void applyQuadData(const Quad& src, Quad* dst) {
     dst->setSoftEdge(src.getSoftEdge());                // ADR-037
 }
 
-static void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project) {
+static void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
+                                SourceManager* sm) {
     es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
+    if (sm) sm->clear();  // drop the previous project's media sources (ADR-040 P2)
 
     // Rebuild outputs from the file (v3) so scene assignments remap onto the freshly
     // created output ids. v1/v2 files carry no outputs — keep the existing ones (e.g.
@@ -164,10 +166,14 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             quadRemap[sd.quads[i].getId()] = nq->getId();
             applyQuadData(sd.quads[i], nq);
             if (i < sd.texturePaths.size() && !sd.texturePaths[i].empty()) {
+                // ADR-040 P2: route the media through SourceManager (deduped by
+                // path, so the same file on many quads decodes once) and bind the
+                // quad by mediaId. quadTexturePaths is kept as the P2 persistence
+                // carrier (P5 serializes mediaId/sources directly).
                 es.quadTexturePaths[nq->getId()] = sd.texturePaths[i];
-                auto texture = std::make_unique<Texture>();
-                if (texture->loadFromFile(sd.texturePaths[i])) {
-                    es.quadTextures[nq->getId()] = std::move(texture);
+                if (sm) {
+                    UUID sid = sm->getOrCreateImageSource(sd.texturePaths[i]);
+                    if (!sid.isNull()) nq->getTexture().mediaId = sid;
                 }
             }
         }
@@ -1201,7 +1207,7 @@ void Application::loadProject() {
     auto result = ProjectSerializer::load(es.projectPath);
     if (result) {
         *m_project = std::move(result.value());
-        syncProjectToEditor(es, m_outputManager.get(), *m_project);
+        syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
         snprintf(es.statusMessage, sizeof(es.statusMessage), "Project loaded: %s", es.projectPath);
     } else {
         snprintf(es.statusMessage, sizeof(es.statusMessage), "Load failed: %s", result.error().message.c_str());

@@ -54,7 +54,7 @@ public:
     const std::filesystem::path& getPath() const { return path_; }
 
 private:
-    UUID id_;
+    UUID id_ = UUID::generate();  // fresh id; null would make SourceManager reject it
     std::string name_;
     std::filesystem::path path_;
     FrameData frame_;

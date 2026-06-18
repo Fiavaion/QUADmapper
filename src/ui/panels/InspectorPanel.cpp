@@ -102,10 +102,14 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         ImGui::SameLine();
         if (ImGui::Button("Load")) {
             if (strlen(currentTexturePath) > 0) {
-                auto texture = std::make_unique<Texture>();
-                if (texture->loadFromFile(currentTexturePath)) {
-                    quadTextures[selectedQuad->getId()] = std::move(texture);
+                // ADR-040 P2: bind via a (deduped) SourceManager source + mediaId
+                // instead of loading a per-quad Texture into quadTextures.
+                UUID sid = ctx.sourceManager
+                    ? ctx.sourceManager->getOrCreateImageSource(currentTexturePath) : UUID();
+                if (!sid.isNull()) {
+                    selectedQuad->getTexture().mediaId = sid;
                     quadTexturePaths[selectedQuad->getId()] = currentTexturePath;
+                    quadTextures.erase(selectedQuad->getId());  // drop any legacy texture
                     Logger::info("Loaded texture for quad '{}': {}",
                                  selectedQuad->getName(), currentTexturePath);
                     snprintf(statusMessage, sizeof(statusMessage),
@@ -125,11 +129,20 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             }
         }
 
-        auto texIt = quadTextures.find(selectedQuad->getId());
-        if (texIt != quadTextures.end() && texIt->second) {
-            ImGui::Text("Size: %dx%d",
-                        texIt->second->getWidth(), texIt->second->getHeight());
+        // Show the bound texture's size: image via mediaId -> SourceManager, with
+        // a fallback to any legacy quadTextures entry (e.g. the UV test grid).
+        Texture* boundTex = nullptr;
+        if (ctx.sourceManager && !selectedQuad->getTexture().mediaId.isNull()) {
+            boundTex = ctx.sourceManager->getTexture(selectedQuad->getTexture().mediaId);
+        }
+        if (!boundTex) {
+            auto texIt = quadTextures.find(selectedQuad->getId());
+            if (texIt != quadTextures.end()) boundTex = texIt->second.get();
+        }
+        if (boundTex) {
+            ImGui::Text("Size: %dx%d", boundTex->getWidth(), boundTex->getHeight());
             if (ImGui::Button("Clear Texture")) {
+                selectedQuad->getTexture().mediaId = UUID();
                 quadTextures.erase(selectedQuad->getId());
                 quadTexturePaths.erase(selectedQuad->getId());
                 currentTexturePath[0] = '\0';
@@ -160,11 +173,14 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 UUID mediaId = *(const UUID*)payload->Data;
                 MediaItem* item = ctx.mediaLibrary->getItem(mediaId);
                 if (item && item->getType() != MediaType::PROCEDURAL) {
-                    auto texture = std::make_unique<Texture>();
-                    if (texture->loadFromFile(item->getPath().string())) {
-                        quadTextures[selectedQuad->getId()] = std::move(texture);
+                    // ADR-040 P2: bind via a (deduped) SourceManager source + mediaId.
+                    UUID sid = ctx.sourceManager
+                        ? ctx.sourceManager->getOrCreateImageSource(item->getPath()) : UUID();
+                    if (!sid.isNull()) {
+                        selectedQuad->getTexture().mediaId = sid;
                         quadTexturePaths[selectedQuad->getId()] =
                             item->getPath().string();
+                        quadTextures.erase(selectedQuad->getId());
                         strncpy(currentTexturePath, item->getPath().string().c_str(),
                                 sizeof(currentTexturePath) - 1);
                         currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';

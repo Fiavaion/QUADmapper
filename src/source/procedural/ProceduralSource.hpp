@@ -162,7 +162,7 @@ protected:
      */
     void destroyOutputTexture();
 
-    UUID id_;
+    UUID id_ = UUID::generate();  // fresh id; null would make SourceManager reject it
     std::string name_;
     int width_ = 1920;
     int height_ = 1080;

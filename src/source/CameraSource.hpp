@@ -65,7 +65,7 @@ public:
 private:
     void convertFrame(const VideoFrame& vf);
 
-    UUID id_;
+    UUID id_ = UUID::generate();  // fresh id; null would make SourceManager reject it
     std::string name_;
     std::string deviceName_;
     int reqWidth_ = 0;

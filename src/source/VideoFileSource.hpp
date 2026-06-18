@@ -84,7 +84,7 @@ public:
 private:
     void convertVideoFrame(const VideoFrame& videoFrame);
 
-    UUID id_;
+    UUID id_ = UUID::generate();  // fresh id; null would make SourceManager reject it
     std::string name_;
     std::filesystem::path path_;
     std::unique_ptr<VideoPlayer> player_;

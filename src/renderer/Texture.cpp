@@ -136,6 +136,10 @@ void Texture::update(const unsigned char* data) {
 
     glBindTexture(GL_TEXTURE_2D, textureId_);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, format, GL_UNSIGNED_BYTE, data);
+    // create() built the texture with a mipmap min-filter; a full-texture update
+    // must refresh the mip chain, else minified sampling reads the stale (empty)
+    // levels and the quad renders black.
+    glGenerateMipmap(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
