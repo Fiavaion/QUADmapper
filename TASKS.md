@@ -27,9 +27,15 @@ per-quad `mediaId` + `crop`; old files migrate). Phased:
   real-GL `test_render_gl` readback** (left-half crop renders red, right-half/right-quarter
   render green through the actual shader → FBO → glReadPixels). 630/630 ctest. Commits
   `f5c2920` + `b3912fc`.
-- **QM-069 (P2) TODO** — renderer resolves a quad's texture via `mediaId` → `SourceManager`
-  (TD-09 convergence, behavior-preserving); dedupe sources by path; retire the `quadTextures`
-  map. Success metric re-verified unchanged. **Risk phase.**
+- **QM-069 (P2) DONE** — renderer resolves a quad's texture via `mediaId` → `SourceManager`
+  through the shared `buildQuadTextureMap()` (editor/preview/output); `SourceManager::updateAll()`
+  runs per frame. Image Load/drag-drop/`.qmap`-load create-or-dedupe an image source by path
+  (`getOrCreateImageSource`) and set the quad's `mediaId`. UV grid + legacy single video stay on
+  the `quadTextures`/wrapper fallback (full retirement → P3 + a grid-source follow-up). Surfaced
+  + fixed two dormant latent bugs: every `TextureSource::id_` was default-null (so `registerSource`
+  rejected it) and `Texture::update` never regenerated mipmaps (minified CPU-source textures
+  rendered black). **Verified on screen** (`drive_image_smoke.ps1`: a real PNG binds via `mediaId`
+  and renders on the warped quad). 630/630 ctest.
 - **QM-070 (P3) TODO** — shared / multi-quad video: retire singular `videoPlayer`/
   `videoAssignedQuadId`; video is a `VideoFileSource` in `SourceManager`; N quads → one decode.
   Verify 2+ quads play the same file in sync.
@@ -965,7 +971,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-066 | Live per-output preview (P4) | DONE | ADR-039 |
 | QM-067 | .qmap v3 scenes+outputs persistence (P5) | DONE | ADR-039 |
 | QM-068 | Per-quad normalized crop rectangle (P1) | DONE | ADR-040 |
-| QM-069 | Renderer reads SourceManager via mediaId (P2, TD-09) | TODO | ADR-040 |
+| QM-069 | Renderer reads SourceManager via mediaId (P2, TD-09) | DONE | ADR-040 |
 | QM-070 | Shared / multi-quad video — one decode (P3) | TODO | ADR-040 |
 | QM-071 | Cross-scene / cross-output source sharing (P4) | TODO | ADR-040 |
 | QM-072 | .qmap v3.1 sources + mediaId + crop persistence (P5) | TODO | ADR-040 |
