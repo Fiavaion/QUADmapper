@@ -1,12 +1,13 @@
 # Current Status
 
-**Last updated:** 2026-06-17 (end of Session 17)
-**Phase / focus:** **Multi-projector mapping — DONE.** [ADR-039](docs/adr/0039-multi-scene-output-routing.md)
-multi-scene output routing is **complete (P1–P5) and app-verified end-to-end**. The AI wedge
+**Last updated:** 2026-06-17 (Session 18 checkpoint)
+**Phase / focus:** **[ADR-040](docs/adr/0040-shared-media-sources-and-per-quad-crop.md) — one video
+→ many cropped quads (box-wrap MVP).** **P1 (per-quad crop, QM-068) DONE + GPU-verified;** P2–P5
+(QM-069–072) next. ADR-039 multi-scene routing is complete (P1–P5, app-verified). The AI wedge
 (Phase 9) stays software-complete, gated on 🚩 QM-061 (hardware).
-**Branch:** `dev` (Sessions 16+17, pushed to `origin/dev` @ `e5c08fa`). **`master` = clean
-baseline `fb4c85b`** (pre-Session-16 — `dev` is well ahead).
-**Build:** ✅ app builds & launches   **Tests:** ✅ 625/625 ctest
+**Branch:** `dev` (local @ `44dd898`; **unpushed Session-18 commits ahead of `origin/dev`**).
+**`master` = clean baseline `fb4c85b`** — `dev` is well ahead. Working tree clean.
+**Build:** ✅ app builds & launches   **Tests:** ✅ 630/630 ctest
 
 ## What shipped this session (grounded, app-verified)
 - **QM-065 (P3) — Scenes UI.** "Scenes" tab ([ScenePanel](../src/ui/panels/ScenePanel.cpp)):
@@ -25,13 +26,18 @@ baseline `fb4c85b`** (pre-Session-16 — `dev` is well ahead).
   `assignedOutputId`** onto the live output ids on load. 5 migration unit tests.
 
 ## NEXT TASK — resume here
-**No ADR-039 work remains.** Pick from independent items:
-1. **Open the `dev` → `master` PR.** `master` is still at `fb4c85b` (pre-Session-16); `dev` has
-   the mapping-editor fixes + the *entire* ADR-039 feature (P1–P5), all verified. Ideally land it
-   after the QM-061 hardware test, but a PR could go up now since everything is software-verified.
-2. 🚩 **QM-061** — real-device AI test (projector + surface + phone). Hardware-only. Runbook
+**In flight: [ADR-040](docs/adr/0040-shared-media-sources-and-per-quad-crop.md) (Accepted) — one
+video → many cropped quads, the box-wrap MVP.** **P1 (crop, QM-068) is DONE + GPU-verified.**
+1. **ADR-040 P2 (QM-069) — the next step, the risky one.** Make the renderer resolve a quad's
+   texture from `SourceManager` via `TextureBinding::mediaId` (the TD-09 convergence), dedupe
+   sources by path, retire the `quadTextures` map. **Behavior-preserving first**, success-metric-
+   adjacent — start fresh, likely wants an advisor pass on the convergence approach. Then P3
+   (shared/multi-quad video), P4 (cross-scene box-wrap proof), P5 (v3.1 persistence).
+2. **Open the `dev` → `master` PR** — still gated on 🚩 QM-061 per the user (hold until it passes).
+   `master` = `fb4c85b`; `dev` now also carries ADR-039, the groups/TD-07 fixes, and ADR-040 P1.
+3. 🚩 **QM-061** — real-device AI test (projector + surface + phone). Hardware-only. Runbook
    @docs/QM-061-hardware-test-runbook.md. On pass, this is the trigger to merge `dev`→`master`.
-3. **Optional debt:** TD-08 (audio snapshot, LOW), TD-09 (dual media model + on-quad camera).
+4. **Optional debt:** TD-08 (audio snapshot, LOW), TD-09 (folds into ADR-040 P2).
    *(groups-on-load and TD-07 were closed 2026-06-17 — see below.)*
 
 ## How to use multi-projector today (now fully operable)
