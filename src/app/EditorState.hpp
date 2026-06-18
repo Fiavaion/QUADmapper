@@ -165,14 +165,12 @@ struct EditorState {
     Vec2 snapTargetPos{0.0f};
     Vec2 meshDragStartOffset{0.0f};
 
-    // Video player state
-    VideoPlayer videoPlayer;
+    // Video player state (ADR-040 P3): video is a SourceManager VideoFileSource.
+    // The Video Player panel drives this active source; quads bind it by mediaId,
+    // so one decode can feed many quads (the box-wrap). No per-quad video texture
+    // and no single videoAssignedQuadId anymore.
     char videoPath[512] = "";
-    GLuint videoTextureId = 0;
-    int videoTextureWidth = 0;
-    int videoTextureHeight = 0;
-    UUID videoAssignedQuadId;  // Which quad has video assigned
-    Texture videoTexWrapper;   // Wrapper for the raw video GL texture
+    UUID activeVideoSourceId;
 
     // Panels
     InspectorPanel inspectorPanel;

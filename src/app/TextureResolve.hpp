@@ -42,12 +42,6 @@ buildQuadTextureMap(EditorState& es, SourceManager* sm) {
             if (tex) map[qid] = tex;
         }
     }
-    // Legacy single-video override (P3 folds this into a SourceManager source).
-    if (!es.videoAssignedQuadId.isNull() && es.videoTextureId != 0) {
-        es.videoTexWrapper.setGLTextureId(es.videoTextureId, es.videoTextureWidth,
-                                          es.videoTextureHeight);
-        map[es.videoAssignedQuadId] = &es.videoTexWrapper;
-    }
     return map;
 }
 

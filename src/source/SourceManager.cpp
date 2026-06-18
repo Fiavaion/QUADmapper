@@ -277,9 +277,12 @@ void SourceManager::uploadFrameToTexture(SourceEntry& entry) {
         return;
     }
 
-    // Check if texture needs resize
+    // Reallocate if the texture doesn't match the frame — including a CHANNEL
+    // mismatch: createGPUTexture provisions RGBA, but video frames are RGB(3),
+    // and uploading 3-channel data as RGBA over-reads the buffer (crash).
     if (entry.texture->getWidth() != frame->width ||
-        entry.texture->getHeight() != frame->height) {
+        entry.texture->getHeight() != frame->height ||
+        entry.texture->getChannels() != frame->channels) {
         entry.texture->createEmpty(frame->width, frame->height, frame->channels);
     }
 

@@ -703,13 +703,9 @@ void Application::render() {
     auto& statusTimer = es.statusTimer;
     auto& initialized = es.initialized;
 
-    // Corner/mesh/snap editing state + videoAssignedQuadId now live in ViewportEditor
-    // (the pre-NewFrame warp surface); their aliases moved there with the block (ADR-0034).
-
-    auto& videoPlayer = es.videoPlayer;
-    auto& videoTextureId = es.videoTextureId;
-    auto& videoTextureWidth = es.videoTextureWidth;
-    auto& videoTextureHeight = es.videoTextureHeight;
+    // Corner/mesh/snap editing state moved into ViewportEditor (ADR-0034). Video is
+    // now a SourceManager source updated by updateAll() below (ADR-040 P3) — no manual
+    // decode/upload here.
 
     auto& mediaBinPanel = es.mediaBinPanel;
     auto& mediaBinInitialized = es.mediaBinInitialized;
@@ -789,43 +785,7 @@ void Application::render() {
         es.mainMenuBarInitialized = true;
     }
 
-    // Update video player
     float deltaTime = ImGui::GetIO().DeltaTime;
-    if (videoPlayer.isLoaded()) {
-        bool hasNewFrame = videoPlayer.update(static_cast<double>(deltaTime));
-
-        if (hasNewFrame && videoPlayer.hasNewFrame()) {
-            const VideoFrame& frame = videoPlayer.getCurrentFrame();
-            if (frame.isValid()) {
-                // Create texture if needed
-                if (videoTextureId == 0) {
-                    glGenTextures(1, &videoTextureId);
-                }
-
-                // Check if size changed
-                if (videoTextureWidth != frame.width || videoTextureHeight != frame.height) {
-                    videoTextureWidth = frame.width;
-                    videoTextureHeight = frame.height;
-
-                    glBindTexture(GL_TEXTURE_2D, videoTextureId);
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame.width, frame.height,
-                                 0, GL_RGB, GL_UNSIGNED_BYTE, frame.data.data());
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                } else {
-                    // Just update texture data
-                    glBindTexture(GL_TEXTURE_2D, videoTextureId);
-                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame.width, frame.height,
-                                   GL_RGB, GL_UNSIGNED_BYTE, frame.data.data());
-                }
-                glBindTexture(GL_TEXTURE_2D, 0);
-
-                videoPlayer.consumeFrame();
-            }
-        }
-    }
 
     // Update all media sources (ADR-040 P2) and upload any new frames to GPU —
     // main thread / main GL context, once per frame, before any quad is drawn.

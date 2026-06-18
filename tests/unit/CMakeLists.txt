@@ -67,6 +67,14 @@ add_quadmapper_test(test_source
 )
 target_link_libraries(test_source PRIVATE quadmapper_source quadmapper_core)
 
+# Source GL pipeline tests — real GL 3.3 context (skip-if-absent). Proves a video
+# file decodes/uploads through SourceManager (ADR-040 P3). Separate target so the
+# context-free test_source stays light. Links glfw for the hidden-window context.
+add_quadmapper_test(test_source_gl
+    source/VideoSourcePipelineTest.cpp
+)
+target_link_libraries(test_source_gl PRIVATE quadmapper_source quadmapper_core glfw glad)
+
 # Renderer module tests (pure helpers only — no GL context needed)
 add_quadmapper_test(test_renderer
     renderer/UvTestGridTest.cpp
