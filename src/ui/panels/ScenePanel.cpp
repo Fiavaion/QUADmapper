@@ -3,6 +3,8 @@
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
 #include "scene/Scene.hpp"
+#include "scene/Quad.hpp"
+#include "scene/QuadManager.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "project/Project.hpp"
@@ -22,7 +24,14 @@ void ScenePanel::renderActionButtons(EditorContext& ctx) {
     EditorState& es = ctx.es;
 
     if (ImGui::Button("New")) {
-        es.addScene(es.generateUniqueSceneName());
+        // addScene creates the scene and makes it active. A brand-new scene is empty,
+        // which blanks the canvas/Quad List and reads as "nothing happened"; seed a
+        // starter quad so the new scene is immediately usable (like the first scene).
+        if (Scene* s = es.addScene(es.generateUniqueSceneName())) {
+            if (Quad* q = s->getQuadManager().createQuad("Quad 1")) {
+                s->getQuadManager().selectQuad(q->getId());
+            }
+        }
         if (ctx.project) ctx.project->setModified(true);
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create a new scene and make it active");

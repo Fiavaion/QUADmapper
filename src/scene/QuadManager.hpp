@@ -39,6 +39,10 @@ public:
     const std::vector<std::unique_ptr<Quad>>& getQuads() const { return quads_; }
     std::vector<Quad*> getQuadsByZOrder() const;
 
+    // Topmost VISIBLE quad whose area contains the canvas-space point p (0..1), or
+    // nullptr if none. Used for click-to-select and drop-onto-quad in the viewport.
+    Quad* quadAtPoint(const Vec2& p) const;
+
     // Selection - single select
     void selectQuad(const UUID& id);
     void deselectQuad(const UUID& id);

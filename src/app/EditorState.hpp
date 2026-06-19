@@ -12,12 +12,14 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <array>
 #include <algorithm>
 
 #include <glad/glad.h>  // GLuint
 
 #include "../core/Types.hpp"   // Vec2
 #include "../core/UUID.hpp"
+#include "../core/CommandHistory.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../renderer/Texture.hpp"
@@ -37,6 +39,13 @@ namespace quadmapper {
 struct EditorState {
     // Context-sensitive selection tracking
     enum class SelectionType { None, Quad, Output, Media };
+
+    // UI complexity mode (ADR-042). Simple = curated, friendly subset for new
+    // users / students; Advanced = the full control set (today's UI). Panels read
+    // this each frame to decide what to show. Default Simple; the startup value is
+    // loaded from preferences in Application and persisted on toggle.
+    enum class UiMode { Simple, Advanced };
+    UiMode uiMode = UiMode::Simple;
 
     // Scene + quad management (ADR-039 P1: multi-scene model).
     // The project holds one or more scenes; the editor always edits the ACTIVE
@@ -165,6 +174,12 @@ struct EditorState {
     Vec2 snapTargetPos{0.0f};
     Vec2 meshDragStartOffset{0.0f};
 
+    // Bezier edge-handle editing (ADR-043). Indices 0..7 = control(edge,which);
+    // bezierDragBefore snapshots all offsets at press for one-step undo on release.
+    int bezierHovered = -1;
+    int bezierDragged = -1;
+    std::array<Vec2, 8> bezierDragBefore{};
+
     // Video player state (ADR-040 P3): video is a SourceManager VideoFileSource.
     // The Video Player panel drives this active source; quads bind it by mediaId,
     // so one decode can feed many quads (the box-wrap). No per-quad video texture
@@ -202,6 +217,37 @@ struct EditorState {
     GridInsert gridInsert = GridInsert::None;
     bool gridInsertMouseLatch = false;
     int gridInsertDragIndex = -1;  // index of the just-inserted division being dragged
+
+    // Grid snapshot captured at the press that begins a click-to-insert gesture, so
+    // the whole insert+drag commits as ONE undo step on release (ADR-043).
+    std::vector<float> gridInsertBeforeU;
+    std::vector<float> gridInsertBeforeV;
+    std::vector<Vec2> gridInsertBeforeOffsets;
+
+    // ---- Viewport view transform (ADR-041, session-only) ------------------
+    // The editor canvas is drawn into the dockspace central node with the
+    // projector's aspect, scaled by canvasZoom and translated by canvasPan.
+    // canvasRegion* is that node's rect in LOGICAL window coords (ImGui/GLFW
+    // screen space, matching glfwGetCursorPos), captured the previous frame in
+    // Application::render() after the DockSpace is laid out. lastView* are the
+    // (scale, offset) ViewportEditor computed last frame in viewport-normalized
+    // [0,1] space; the post-NewFrame zoom/pan input reuses them for cursor-
+    // anchored zoom. Nothing here is persisted to .qmap.
+    float canvasZoom = 1.0f;
+    Vec2 canvasPan{0.0f, 0.0f};
+    Vec2 canvasRegionPos{0.0f, 0.0f};
+    Vec2 canvasRegionSize{0.0f, 0.0f};
+    Vec2 lastViewScale{1.0f, 1.0f};
+    Vec2 lastViewOffset{0.0f, 0.0f};
+
+    // Left-button state last frame, for click-to-select edge detection in the
+    // viewport (ADR-042). Distinct from the corner/mesh drag latches.
+    bool canvasMouseDownPrev = false;
+
+    // Undo/redo for geometry + rename edits. Holds raw quad pointers, so Application
+    // CLEARS it whenever a quad is deleted or the active scene changes (see the
+    // structural guard in render()) — that keeps every queued command's quad alive.
+    CommandHistory commandHistory;
 };
 
 }  // namespace quadmapper

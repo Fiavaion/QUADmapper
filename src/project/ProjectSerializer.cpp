@@ -93,6 +93,17 @@ static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
         j["meshOffsets"] = meshOffsetsJson;
     }
 
+    // Bezier edges (ADR-043): persist only when enabled, so pre-bezier files and
+    // straight-edge quads stay byte-clean and old readers ignore the extra keys.
+    if (geometry.isBezierEnabled()) {
+        j["bezierEnabled"] = true;
+        nlohmann::json bez = nlohmann::json::array();
+        for (const auto& o : geometry.getBezierOffsets()) {
+            bez.push_back(serializeVec2(o));
+        }
+        j["bezierOffsets"] = bez;
+    }
+
     return j;
 }
 
@@ -132,6 +143,19 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
                 offsets.push_back(deserializeVec2(offsetJson));
             }
             geometry.setMeshVertices(offsets);
+        }
+    }
+
+    // Bezier edges (ADR-043). Absent in pre-bezier files -> stays disabled.
+    if (j.contains("bezierEnabled") && j["bezierEnabled"].get<bool>()) {
+        geometry.setBezierEnabled(true);
+        if (j.contains("bezierOffsets") && j["bezierOffsets"].is_array() &&
+            j["bezierOffsets"].size() == 8) {
+            std::array<Vec2, 8> offs;
+            for (int i = 0; i < 8; ++i) {
+                offs[i] = deserializeVec2(j["bezierOffsets"][i]);
+            }
+            geometry.setBezierOffsets(offs);
         }
     }
 }

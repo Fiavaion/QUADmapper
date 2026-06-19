@@ -4,6 +4,7 @@
 #include "Texture.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
+#include <glm/glm.hpp>
 #include <memory>
 #include <cstdint>
 #include <unordered_map>
@@ -58,6 +59,22 @@ public:
     // Render snap indicator at the given position (shows when vertex is snapping to another)
     void renderSnapIndicator(const Vec2& position);
 
+    // Render the 8 bezier edge-control handles (+ tangent lines to the corners) for a
+    // bezier-enabled quad. hovered/dragged are control indices (0..7) or -1 (ADR-043).
+    void renderBezierHandles(const Quad& quad, int hovered = -1, int dragged = -1);
+
+    // Render the canvas-frame border (the [0,1] projector rectangle) so the user can
+    // see the bounds of the output frame in the editor. Uses the active view transform.
+    void renderCanvasBorder(const glm::vec4& color, float lineWidth = 1.0f);
+
+    // Editor view transform (ADR-041). The on-canvas editor sets this so [0,1] canvas
+    // space is letterboxed (by canvasAspect) and zoom/pan'd into the viewport region;
+    // it must reset to identity afterward so the per-output windows and preview FBOs
+    // (which never call this) render the full frame unchanged. canvasAspect > 0 also
+    // drives the round-handle correction; <= 0 falls back to the GL viewport aspect.
+    void setViewTransform(const glm::vec2& scale, const glm::vec2& offset, float canvasAspect);
+    void resetViewTransform();
+
     // Create a default white texture for quads without texture
     Texture* getDefaultTexture() { return &defaultTexture_; }
 
@@ -68,6 +85,9 @@ private:
     void updateQuadBuffers(const Quad& quad);
     void updateOutlineBuffers(const Quad& quad);
     void createDefaultTexture();
+
+    // Push the current view transform into a bound shader (u_ViewScale/u_ViewOffset).
+    void applyViewUniforms(ShaderProgram& shader);
 
     ShaderProgram quadShader_;
     ShaderProgram outlineShader_;
@@ -98,6 +118,12 @@ private:
 
     // Buffers for outline
     std::vector<float> outlineVertices_;
+
+    // Editor view transform state (ADR-041). Identity by default so any render path
+    // that does not set it (outputs, previews) draws the full frame unchanged.
+    glm::vec2 viewScale_{1.0f, 1.0f};
+    glm::vec2 viewOffset_{0.0f, 0.0f};
+    float canvasAspect_ = 0.0f;  // <= 0: derive handle aspect from the GL viewport
 
     bool initialized_ = false;
 };

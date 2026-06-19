@@ -2,9 +2,12 @@
 
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
+#include "app/MediaAssign.hpp"
+#include "app/GridUndo.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGeometry.hpp"
+#include "scene/Commands.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/UvTestGrid.hpp"
 #include "media/MediaLibrary.hpp"
@@ -80,6 +83,14 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
     Quad* selectedQuad = quadManager.getPrimarySelectedQuad();
 
+    // Simple mode (ADR-042): a curated panel — Flip U/V, Rotate, Crop, Reset Quad —
+    // so a non-technical user isn't faced with the full control set.
+    if (es.uiMode == EditorState::UiMode::Simple) {
+        if (selectedQuad) renderSimpleQuadProperties(ctx, *selectedQuad);
+        else ImGui::TextDisabled("Select a quad to edit it");
+        return;
+    }
+
     if (selectedQuad) {
         // Editable name
         strncpy(quadName_, selectedQuad->getName().c_str(), sizeof(quadName_) - 1);
@@ -87,7 +98,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
         if (ImGui::InputText("Name", quadName_, sizeof(quadName_),
                              ImGuiInputTextFlags_EnterReturnsTrue)) {
-            selectedQuad->setName(quadName_);
+            ctx.es.commandHistory.execute(
+                std::make_unique<RenameQuadCommand>(selectedQuad, quadName_));
             ctx.project->setModified(true);
         }
 
@@ -107,15 +119,13 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 UUID sid = ctx.sourceManager
                     ? ctx.sourceManager->getOrCreateImageSource(currentTexturePath) : UUID();
                 if (!sid.isNull()) {
-                    selectedQuad->getTexture().mediaId = sid;
-                    quadTexturePaths[selectedQuad->getId()] = currentTexturePath;
-                    quadTextures.erase(selectedQuad->getId());  // drop any legacy texture
+                    bindSourceToQuad(ctx.es, ctx.project, *selectedQuad, sid,
+                                     currentTexturePath, /*isVideo=*/false);
                     Logger::info("Loaded texture for quad '{}': {}",
                                  selectedQuad->getName(), currentTexturePath);
                     snprintf(statusMessage, sizeof(statusMessage),
                              "Loaded texture: %s", currentTexturePath);
                     statusTimer = 3.0f;
-                    ctx.project->setModified(true);
                 } else {
                     Logger::error("Failed to load texture: {}", currentTexturePath);
                     snprintf(statusMessage, sizeof(statusMessage),
@@ -155,6 +165,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         if (ImGui::Button("Apply UV Test Grid")) {
             assignUvTestGrid(quadTextures, quadTexturePaths,
                              selectedQuad->getId(), 1024, 8);
+            // Override any assigned source (renderer resolves mediaId first).
+            selectedQuad->getTexture().mediaId = UUID();
             currentTexturePath[0] = '\0';
             snprintf(statusMessage, sizeof(statusMessage), "Applied UV test grid");
             statusTimer = 3.0f;
@@ -172,15 +184,11 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                     ImGui::AcceptDragDropPayload("MEDIA_ITEM_ID")) {
                 UUID mediaId = *(const UUID*)payload->Data;
                 MediaItem* item = ctx.mediaLibrary->getItem(mediaId);
-                if (item && item->getType() != MediaType::PROCEDURAL) {
-                    // ADR-040 P2: bind via a (deduped) SourceManager source + mediaId.
-                    UUID sid = ctx.sourceManager
-                        ? ctx.sourceManager->getOrCreateImageSource(item->getPath()) : UUID();
+                if (item) {
+                    // Centralized bind (ADR-042 P2): resolves image vs video correctly.
+                    UUID sid = assignMediaToQuad(ctx.es, ctx.sourceManager, ctx.project,
+                                                 *selectedQuad, *item);
                     if (!sid.isNull()) {
-                        selectedQuad->getTexture().mediaId = sid;
-                        quadTexturePaths[selectedQuad->getId()] =
-                            item->getPath().string();
-                        quadTextures.erase(selectedQuad->getId());
                         strncpy(currentTexturePath, item->getPath().string().c_str(),
                                 sizeof(currentTexturePath) - 1);
                         currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
@@ -189,7 +197,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                         snprintf(statusMessage, sizeof(statusMessage),
                                  "Assigned: %s", item->getName().c_str());
                         statusTimer = 3.0f;
-                        ctx.project->setModified(true);
                     }
                 }
             }
@@ -321,43 +328,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             // fill the quad. Collapsed by default to keep the inspector tidy.
             ImGui::Spacing();
             if (ImGui::TreeNode("Crop (source region)")) {
-                NormalizedRect& crop = texBinding.cropRect;
-                ImGui::TextDisabled("Sample only part of the source (0-1)");
-                ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::DragFloat("X##crop", &crop.x, 0.005f, 0.0f, 1.0f, "%.3f")) {
-                    ctx.project->setModified(true);
-                }
-                ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::DragFloat("Width##crop", &crop.width, 0.005f, 0.0f, 1.0f, "%.3f")) {
-                    ctx.project->setModified(true);
-                }
-                ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::DragFloat("Y##crop", &crop.y, 0.005f, 0.0f, 1.0f, "%.3f")) {
-                    ctx.project->setModified(true);
-                }
-                ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::DragFloat("Height##crop", &crop.height, 0.005f, 0.0f, 1.0f, "%.3f")) {
-                    ctx.project->setModified(true);
-                }
-
-                // Quick-set vertical quarter-strips (the box-wrap helper): each
-                // button selects one 25%-wide full-height column of the source.
-                ImGui::TextDisabled("Vertical quarters:");
-                auto column = [&](const char* label, float x) {
-                    if (ImGui::Button(label)) {
-                        crop.x = x; crop.width = 0.25f;
-                        crop.y = 0.0f; crop.height = 1.0f;
-                        ctx.project->setModified(true);
-                    }
-                };
-                column("1##cq", 0.0f);  ImGui::SameLine();
-                column("2##cq", 0.25f); ImGui::SameLine();
-                column("3##cq", 0.5f);  ImGui::SameLine();
-                column("4##cq", 0.75f); ImGui::SameLine();
-                if (ImGui::Button("Full##cq")) {
-                    texBinding.resetCrop();
-                    ctx.project->setModified(true);
-                }
+                renderCropControls(ctx, texBinding);
                 ImGui::TreePop();
             }
         }
@@ -389,11 +360,34 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 ctx.project->setModified(true);
             }
 
+            // Curved (bezier) edges — drag the amber handles on the canvas to bow the
+            // four edges. Only meaningful in corner-pin (CORNERS_ONLY) mode.
+            {
+                bool bez = geometry.isBezierEnabled();
+                if (ImGui::Checkbox("Curved edges (bezier)", &bez)) {
+                    geometry.setBezierEnabled(bez);
+                    ctx.project->setModified(true);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Drag the amber edge handles on the canvas to curve the edges");
+                }
+                if (bez) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Reset Curves")) {
+                        geometry.resetBezier();
+                        ctx.project->setModified(true);
+                    }
+                }
+            }
+
             ImGui::Separator();
             // Even grid (uniform N×N) — the convenience action; resets divisions.
             int meshRes = geometry.getMeshResolution();
             if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64)) {
+                GridSnapshot before = captureGrid(geometry);
                 geometry.setUniformGrid(meshRes);
+                pushGridChange(ctx.es.commandHistory, selectedQuad, "Even Grid",
+                               before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
 
@@ -405,22 +399,34 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::SetNextItemWidth(160.0f);
             ImGui::SliderFloat("Insert pos", &gridInsertPos_, 0.02f, 0.98f, "%.2f");
             if (ImGui::Button("Add Column")) {
+                GridSnapshot before = captureGrid(geometry);
                 geometry.insertUDivision(gridInsertPos_);
+                pushGridChange(ctx.es.commandHistory, selectedQuad, "Add Column",
+                               before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("Add Row")) {
+                GridSnapshot before = captureGrid(geometry);
                 geometry.insertVDivision(gridInsertPos_);
+                pushGridChange(ctx.es.commandHistory, selectedQuad, "Add Row",
+                               before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("Del Column") && geometry.getColumns() > MIN_MESH_RESOLUTION) {
+                GridSnapshot before = captureGrid(geometry);
                 geometry.removeUDivision(geometry.getColumns() - 1);
+                pushGridChange(ctx.es.commandHistory, selectedQuad, "Delete Column",
+                               before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("Del Row") && geometry.getRows() > MIN_MESH_RESOLUTION) {
+                GridSnapshot before = captureGrid(geometry);
                 geometry.removeVDivision(geometry.getRows() - 1);
+                pushGridChange(ctx.es.commandHistory, selectedQuad, "Delete Row",
+                               before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
 
@@ -586,6 +592,137 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         ImGui::TextDisabled("No quad selected");
         ImGui::TextDisabled("Select a quad from the Quad List");
     }
+}
+
+// Crop controls (Left/Right/Top/Bottom edge insets). Shared by the Advanced crop
+// tree and the Simple-mode panel so the two never drift (ADR-042). The stored model
+// stays {x,y,w,h}; this is a pure UI re-parameterization (left=x, right=1-(x+w), ...).
+void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texBinding) {
+    NormalizedRect& crop = texBinding.cropRect;
+    auto clamp01 = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+    float left   = clamp01(crop.x);
+    float right  = clamp01(1.0f - (crop.x + crop.width));
+    float top    = clamp01(crop.y);
+    float bottom = clamp01(1.0f - (crop.y + crop.height));
+
+    ImGui::TextDisabled("Crop in from each edge (%% of source)");
+    bool changed = false;
+    auto edgeDrag = [&](const char* label, float& edge, float opposite) {
+        float pct = edge * 100.0f;
+        ImGui::SetNextItemWidth(200.0f);
+        if (ImGui::DragFloat(label, &pct, 0.5f, 0.0f, 100.0f, "%.1f%%")) {
+            edge = clamp01(pct / 100.0f);
+            float maxEdge = 1.0f - opposite - 0.01f;
+            if (maxEdge < 0.0f) maxEdge = 0.0f;
+            if (edge > maxEdge) edge = maxEdge;
+            changed = true;
+        }
+    };
+    edgeDrag("Crop Left##crop",   left,   right);
+    edgeDrag("Crop Right##crop",  right,  left);
+    edgeDrag("Crop Top##crop",    top,    bottom);
+    edgeDrag("Crop Bottom##crop", bottom, top);
+
+    if (changed) {
+        crop.x = left;  crop.width  = 1.0f - left - right;
+        crop.y = top;   crop.height = 1.0f - top - bottom;
+        ctx.project->setModified(true);
+    }
+
+    auto setCrop = [&](float x, float y, float w, float h) {
+        crop = NormalizedRect{x, y, w, h};
+        ctx.project->setModified(true);
+    };
+    ImGui::TextDisabled("Halves (two-face split):");
+    if (ImGui::Button("Left 1/2"))   setCrop(0.0f, 0.0f, 0.5f, 1.0f); ImGui::SameLine();
+    if (ImGui::Button("Right 1/2"))  setCrop(0.5f, 0.0f, 0.5f, 1.0f); ImGui::SameLine();
+    if (ImGui::Button("Top 1/2"))    setCrop(0.0f, 0.0f, 1.0f, 0.5f); ImGui::SameLine();
+    if (ImGui::Button("Bottom 1/2")) setCrop(0.0f, 0.5f, 1.0f, 0.5f);
+
+    ImGui::TextDisabled("Vertical quarters (box-wrap):");
+    auto column = [&](const char* label, float x) {
+        if (ImGui::Button(label)) setCrop(x, 0.0f, 0.25f, 1.0f);
+    };
+    column("1##cq", 0.0f);  ImGui::SameLine();
+    column("2##cq", 0.25f); ImGui::SameLine();
+    column("3##cq", 0.5f);  ImGui::SameLine();
+    column("4##cq", 0.75f); ImGui::SameLine();
+    if (ImGui::Button("Full##cq")) {
+        texBinding.resetCrop();
+        ctx.project->setModified(true);
+    }
+}
+
+// Simple-mode quad panel (ADR-042): only the handful of controls a basic projection
+// mapping needs — flip, rotate, crop, and a one-click full reset. On-canvas corner
+// warping (Tab/arrows/drag) stays available in both modes via the ViewportEditor.
+void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) {
+    constexpr float kPi = 3.14159265f;
+    TextureBinding& texBinding = quad.getTexture();
+
+    // Editable name (rename works in Simple mode too).
+    strncpy(quadName_, quad.getName().c_str(), sizeof(quadName_) - 1);
+    quadName_[sizeof(quadName_) - 1] = '\0';
+    if (ImGui::InputText("Name", quadName_, sizeof(quadName_),
+                         ImGuiInputTextFlags_EnterReturnsTrue)) {
+        ctx.es.commandHistory.execute(std::make_unique<RenameQuadCommand>(&quad, quadName_));
+        ctx.project->setModified(true);
+    }
+    ImGui::Separator();
+
+    // Flip
+    if (ImGui::Button(texBinding.flipH ? "Flip U [ON]" : "Flip U")) {
+        texBinding.flipH = !texBinding.flipH; ctx.project->setModified(true);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(texBinding.flipV ? "Flip V [ON]" : "Flip V")) {
+        texBinding.flipV = !texBinding.flipV; ctx.project->setModified(true);
+    }
+
+    // Rotation
+    float deg = texBinding.uvRotation * 180.0f / kPi;
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::DragFloat("Rotation", &deg, 1.0f, -360.0f, 360.0f, "%.0f deg")) {
+        texBinding.uvRotation = deg * kPi / 180.0f; ctx.project->setModified(true);
+    }
+    auto rotBtn = [&](const char* label, float d) {
+        if (ImGui::Button(label)) { texBinding.uvRotation = d * kPi / 180.0f; ctx.project->setModified(true); }
+    };
+    rotBtn("0##r",   0.0f);   ImGui::SameLine();
+    rotBtn("90##r",  90.0f);  ImGui::SameLine();
+    rotBtn("180##r", 180.0f); ImGui::SameLine();
+    rotBtn("270##r", 270.0f);
+
+    // Curved (bezier) edges — drag the amber handles on the canvas to bow the edges.
+    bool bez = quad.getGeometry().isBezierEnabled();
+    if (ImGui::Checkbox("Curved edges (bezier)", &bez)) {
+        quad.getGeometry().setBezierEnabled(bez);
+        ctx.project->setModified(true);
+    }
+    if (bez) {
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Curves")) {
+            quad.getGeometry().resetBezier();
+            ctx.project->setModified(true);
+        }
+    }
+
+    // Crop
+    ImGui::Separator();
+    renderCropControls(ctx, texBinding);
+
+    // Reset Quad — full reset, keeps the assigned media (confirmed UX).
+    ImGui::Separator();
+    if (ImGui::Button("Reset Quad")) {
+        texBinding.resetUV();
+        texBinding.flipH = false;
+        texBinding.flipV = false;
+        texBinding.resetCrop();
+        quad.getGeometry().resetCorners();
+        quad.getGeometry().resetBezier();
+        ctx.project->setModified(true);
+    }
+    ImGui::SetItemTooltip("Reset warp, flip, rotation and crop (keeps the assigned media)");
 }
 
 // ============================================================

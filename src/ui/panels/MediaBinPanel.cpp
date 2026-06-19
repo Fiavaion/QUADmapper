@@ -4,7 +4,11 @@
 #include "media/ThumbnailCache.hpp"
 #include "source/SourceManager.hpp"
 #include "source/procedural/ProceduralFactory.hpp"
+#include "renderer/Texture.hpp"
+#include "video/VideoDecoder.hpp"
+#include "source/VideoFileSource.hpp"
 #include <imgui.h>
+#include <vector>
 #include <algorithm>
 #include <glad/glad.h>
 
@@ -13,6 +17,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <shlobj.h>   // SHBrowseForFolder (Load Folder)
 #endif
 
 namespace quadmapper {
@@ -36,6 +41,39 @@ MediaBinPanel::MediaBinPanel() : Panel("Media Bin") {
     contextMenuItemId_ = UUID::null();
 }
 
+// Defined here (not in the header) so unique_ptr<Texture> sees the complete type.
+MediaBinPanel::~MediaBinPanel() = default;
+
+Texture* MediaBinPanel::getVideoThumbnail(const std::filesystem::path& path) {
+    const std::string key = path.string();
+    auto it = videoThumbs_.find(key);
+    if (it != videoThumbs_.end()) return it->second.get();
+
+    // Cache a null entry first so a file that fails to decode isn't retried each frame.
+    videoThumbs_[key] = nullptr;
+
+    VideoDecoder decoder;
+    if (!decoder.open(path)) return nullptr;
+    VideoFrame frame = decoder.decodeNextFrame();  // first frame; no background thread
+    decoder.close();
+    if (!frame.isValid()) return nullptr;
+
+    // RGB24 -> RGBA so the GL upload is alignment-safe for any width.
+    const int w = frame.width, h = frame.height;
+    std::vector<uint8_t> rgba(static_cast<size_t>(w) * h * 4);
+    for (int i = 0; i < w * h; ++i) {
+        rgba[i * 4 + 0] = frame.data[i * 3 + 0];
+        rgba[i * 4 + 1] = frame.data[i * 3 + 1];
+        rgba[i * 4 + 2] = frame.data[i * 3 + 2];
+        rgba[i * 4 + 3] = 255;
+    }
+    auto tex = std::make_unique<Texture>();
+    if (!tex->create(w, h, 4, rgba.data())) return nullptr;
+    Texture* raw = tex.get();
+    videoThumbs_[key] = std::move(tex);
+    return raw;
+}
+
 void MediaBinPanel::render() {
     if (!visible_) return;
 
@@ -56,12 +94,23 @@ void MediaBinPanel::renderContent() {
 }
 
 void MediaBinPanel::renderControls() {
-    // Import button
-    if (ImGui::Button("Import...")) {
+    // Load files into the bin (images, videos). Renamed from "Import..." so the
+    // primary load action reads plainly for new users (ADR-042 P3).
+    if (ImGui::Button("Load Files...")) {
         handleImport();
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Import media files (images, videos)");
+        ImGui::SetTooltip("Browse for media files (images, videos)");
+    }
+
+    ImGui::SameLine();
+
+    // Load every supported file in a folder (and its subfolders).
+    if (ImGui::Button("Load Folder...")) {
+        handleImportFolder();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Add all media in a folder (and subfolders)");
     }
 
     ImGui::SameLine();
@@ -122,8 +171,8 @@ void MediaBinPanel::renderThumbnailGrid() {
     const auto& items = mediaLibrary_->getItems();
     if (items.empty()) {
         ImGui::TextDisabled("No media imported.");
-        ImGui::TextDisabled("Click 'Import...' to add media.");
-        ImGui::TextDisabled("Drag files here to import.");
+        ImGui::TextDisabled("Click 'Load Files...' or 'Load Folder...' to add media.");
+        ImGui::TextDisabled("Or drag files here from Explorer.");
         return;
     }
 
@@ -173,6 +222,9 @@ void MediaBinPanel::renderThumbnailGrid() {
 
     ImGui::BeginChild("MediaGrid", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
 
+    // Collect which video (if any) is hovered this pass; reconciled after the loop.
+    hoveredVideoThisFrame_.clear();
+
     int index = 0;
     for (MediaItem* item : filteredItems) {
         // Start new row if needed
@@ -185,6 +237,33 @@ void MediaBinPanel::renderThumbnailGrid() {
     }
 
     ImGui::EndChild();
+
+    updateHoverPreview();
+}
+
+void MediaBinPanel::updateHoverPreview() {
+    if (!sourceManager_) return;
+    // Only act when the hovered video changes (avoid per-frame decoder churn).
+    if (hoveredVideoThisFrame_ == hoverPreviewPath_) return;
+
+    // Tear down the previous preview decoder.
+    if (!hoverPreviewId_.isNull()) {
+        sourceManager_->removeSource(hoverPreviewId_);
+        hoverPreviewId_ = UUID();
+        hoverPreviewPath_.clear();
+    }
+
+    // Spin up a dedicated decoder for the newly-hovered video and play it. This is a
+    // SEPARATE source (createVideoSource, not getOrCreate) so it never touches the
+    // playback of a video already bound to a quad.
+    if (!hoveredVideoThisFrame_.empty()) {
+        UUID sid = sourceManager_->createVideoSource(hoveredVideoThisFrame_);
+        if (!sid.isNull()) {
+            hoverPreviewId_ = sid;
+            hoverPreviewPath_ = hoveredVideoThisFrame_;
+            if (auto* v = sourceManager_->getSourceAs<VideoFileSource>(sid)) v->play();
+        }
+    }
 }
 
 void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
@@ -267,6 +346,52 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
                 ImVec2(1, 1),  // UV max
                 IM_COL32(255, 255, 255, 255)
             );
+            thumbnailDrawn = true;
+        }
+    }
+
+    // Procedural sources are GPU-native with a live texture — draw it directly so the
+    // bin shows the actual generated pattern instead of a [GEN] placeholder (ADR-042).
+    if (!thumbnailDrawn && sourceManager_ &&
+        item->getType() == MediaType::PROCEDURAL && item->hasSource()) {
+        if (Texture* tex = sourceManager_->getTexture(item->getSourceId())) {
+            if (tex->isValid()) {
+                ImVec2 thumbPos(cursorPos.x + 2.0f, cursorPos.y + 2.0f);
+                ImVec2 thumbSize(size.x - 4.0f, size.y - 20.0f);
+                ImGui::GetWindowDrawList()->AddImage(
+                    (ImTextureID)(uintptr_t)tex->getId(),
+                    thumbPos,
+                    ImVec2(thumbPos.x + thumbSize.x, thumbPos.y + thumbSize.y),
+                    ImVec2(0, 0), ImVec2(1, 1),
+                    IM_COL32(255, 255, 255, 255));
+                thumbnailDrawn = true;
+            }
+        }
+    }
+
+    // Video: show the first frame (lazily extracted + cached). On hover, play it —
+    // record the hover so updateHoverPreview() spins up the dedicated decoder, and
+    // draw that live texture instead of the static first frame.
+    if (!thumbnailDrawn && item->getType() == MediaType::VIDEO) {
+        const std::string path = item->getPath().string();
+        if (ImGui::IsItemHovered()) hoveredVideoThisFrame_ = path;
+
+        Texture* drawTex = nullptr;
+        if (path == hoverPreviewPath_ && sourceManager_ && !hoverPreviewId_.isNull()) {
+            drawTex = sourceManager_->getTexture(hoverPreviewId_);  // live preview
+        }
+        if (!drawTex || !drawTex->isValid()) {
+            drawTex = getVideoThumbnail(item->getPath());           // static first frame
+        }
+        if (drawTex && drawTex->isValid()) {
+            ImVec2 thumbPos(cursorPos.x + 2.0f, cursorPos.y + 2.0f);
+            ImVec2 thumbSize(size.x - 4.0f, size.y - 20.0f);
+            ImGui::GetWindowDrawList()->AddImage(
+                (ImTextureID)(uintptr_t)drawTex->getId(),
+                thumbPos,
+                ImVec2(thumbPos.x + thumbSize.x, thumbPos.y + thumbSize.y),
+                ImVec2(0, 0), ImVec2(1, 1),
+                IM_COL32(255, 255, 255, 255));
             thumbnailDrawn = true;
         }
     }
@@ -434,6 +559,25 @@ void MediaBinPanel::handleImport() {
     // On non-Windows platforms, show a message
     // A cross-platform file dialog would require additional library (e.g., nfd)
     ImGui::OpenPopup("ImportNotSupported");
+#endif
+}
+
+void MediaBinPanel::handleImportFolder() {
+#ifdef _WIN32
+    // Native folder picker (shell32 — already linked via ShellExecute). Recursively
+    // scans every supported media file into the library (reuses MediaLibrary::scanFolder).
+    BROWSEINFOA bi = {};
+    bi.lpszTitle = "Select a folder to load all media from";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+
+    LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
+    if (pidl) {
+        char path[MAX_PATH] = "";
+        if (SHGetPathFromIDListA(pidl, path) && path[0] != '\0') {
+            mediaLibrary_->scanFolder(std::filesystem::path(path), /*recursive=*/true);
+        }
+        CoTaskMemFree(pidl);
+    }
 #endif
 }
 

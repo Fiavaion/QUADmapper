@@ -36,6 +36,9 @@ struct GeneralPreferences {
 
     // Theme
     int themeIndex = 0;  // 0 = Dark, 1 = Light
+
+    // UI complexity mode (ADR-042): 0 = Simple, 1 = Advanced. Default Simple.
+    int uiMode = 0;
 };
 
 /**

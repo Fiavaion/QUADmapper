@@ -3,6 +3,8 @@
 namespace quadmapper {
 
 struct EditorContext;
+struct TextureBinding;
+class Quad;
 
 // Renders the context-sensitive "Properties" dockable window.
 // When ctx.es.showProperties is false, render() returns immediately.
@@ -24,6 +26,8 @@ public:
 
 private:
     void renderQuadProperties(EditorContext& ctx);
+    void renderSimpleQuadProperties(EditorContext& ctx, Quad& quad);  // ADR-042 simple mode
+    void renderCropControls(EditorContext& ctx, TextureBinding& texBinding);
     void renderOutputProperties(EditorContext& ctx);
     void renderMediaProperties(EditorContext& ctx);
 

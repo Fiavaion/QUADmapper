@@ -204,6 +204,13 @@ public:
      */
     void updateAll(double deltaTime);
 
+    /**
+     * @brief Reset every playable source (videos, etc.) to time 0.
+     * Drives the "restart all" / reset-playheads button (ADR-042). Video sources
+     * carry their own audio, so this also restarts audio-from-video in sync.
+     */
+    void seekAllToStart();
+
     // --- Callbacks ---
 
     using SourceAddedCallback = std::function<void(const UUID& id)>;

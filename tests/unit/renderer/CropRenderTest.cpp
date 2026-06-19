@@ -102,6 +102,11 @@ RGB renderCropCentre(float cropX, float cropW) {
     prog.setFloat("u_EdgeGamma", 1.0f);
     prog.setVec2("u_CropOffset", glm::vec2(cropX, 0.0f));
     prog.setVec2("u_CropSize", glm::vec2(cropW, 1.0f));
+    // Editor view transform (ADR-041); identity = full-frame, as the Renderer uses
+    // for output/preview. Must be set explicitly here since this drives the shader
+    // directly (unset GLSL uniforms default to 0, collapsing the quad to a point).
+    prog.setVec2("u_ViewScale", glm::vec2(1.0f, 1.0f));
+    prog.setVec2("u_ViewOffset", glm::vec2(0.0f, 0.0f));
 
     Framebuffer fbo;
     fbo.resize(16, 16);

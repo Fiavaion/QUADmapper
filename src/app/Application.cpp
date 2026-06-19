@@ -2,6 +2,7 @@
 #include "EditorContext.hpp"
 #include "EditorState.hpp"
 #include "TextureResolve.hpp"
+#include "MediaAssign.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
 #include "../project/Project.hpp"
@@ -503,6 +504,10 @@ bool Application::initializeComponents() {
         prefsDialog.loadPreferences();
         const auto& prefs = prefsDialog.getPreferences();
 
+        // UI complexity mode (ADR-042): default Simple; persisted choice wins.
+        m_editorState->uiMode = (prefs.general.uiMode == 1)
+            ? EditorState::UiMode::Advanced : EditorState::UiMode::Simple;
+
         if (prefs.general.autoLoadMediaOnStartup &&
             !prefs.general.defaultMediaFolder.empty()) {
             std::filesystem::path mediaFolder(prefs.general.defaultMediaFolder);
@@ -884,6 +889,16 @@ void Application::render() {
         ImGui::DockBuilderFinish(dockspaceId);
     }
 
+    // Capture the central node rect (the transparent canvas region between panels)
+    // for next frame's ViewportEditor view transform (ADR-041). Convert from ImGui
+    // screen space to window-local coords so it matches glfwGetCursorPos.
+    if (ImGuiDockNode* centralNode = ImGui::DockBuilderGetCentralNode(dockspaceId)) {
+        const ImVec2 vpPos = viewport->Pos;
+        es.canvasRegionPos = Vec2(centralNode->Pos.x - vpPos.x,
+                                  centralNode->Pos.y - vpPos.y);
+        es.canvasRegionSize = Vec2(centralNode->Size.x, centralNode->Size.y);
+    }
+
     ImGui::End();
 
     ImGuiIO& io = ImGui::GetIO();
@@ -896,9 +911,135 @@ void Application::render() {
         es.mainMenuBar.render(ctx);
     }
 
+    // Persist a UI-mode change to preferences (ADR-042). Static cache avoids a disk
+    // write every frame; mode toggles are rare. Initialized to the startup mode so
+    // the first frame never re-saves.
+    {
+        static int s_lastUiMode = static_cast<int>(es.uiMode);
+        const int cur = static_cast<int>(es.uiMode);
+        if (cur != s_lastUiMode) {
+            PreferencesDialog d;
+            d.loadPreferences();
+            d.getPreferences().general.uiMode = cur;
+            d.savePreferences();
+            s_lastUiMode = cur;
+        }
+    }
+
+    // Viewport zoom/pan overlay + input (ADR-041). The central node is a passthrough
+    // hole, so the mouse is over the canvas (not a panel) exactly when it is in the
+    // region and no ImGui window has capture. Mutates canvasZoom/canvasPan, which the
+    // next frame's ViewportEditor consumes; anchored zoom reuses last frame's view.
+    if (es.canvasRegionSize.x > 1.0f && es.canvasRegionSize.y > 1.0f) {
+        const ImVec2 vpPos = ImGui::GetMainViewport()->Pos;
+        const ImVec2 regionAbs(es.canvasRegionPos.x + vpPos.x,
+                               es.canvasRegionPos.y + vpPos.y);
+        const ImVec2 regionSz(es.canvasRegionSize.x, es.canvasRegionSize.y);
+        const ImVec2 mouse = ImGui::GetMousePos();
+        const bool overRegion =
+            mouse.x >= regionAbs.x && mouse.x <= regionAbs.x + regionSz.x &&
+            mouse.y >= regionAbs.y && mouse.y <= regionAbs.y + regionSz.y;
+
+        // Scroll-wheel zoom, anchored on the cursor (uses last frame's transform).
+        if (overRegion && !io.WantCaptureMouse && io.MouseWheel != 0.0f &&
+            es.lastViewScale.x != 0.0f && es.lastViewScale.y != 0.0f) {
+            const float oldZoom = es.canvasZoom;
+            float newZoom = oldZoom * (1.0f + 0.12f * io.MouseWheel);
+            newZoom = std::min(12.0f, std::max(0.1f, newZoom));
+            const float cx = (mouse.x - regionAbs.x) / regionSz.x;
+            const float cy = (mouse.y - regionAbs.y) / regionSz.y;
+            const float px = (cx - es.lastViewOffset.x) / es.lastViewScale.x;
+            const float py = (cy - es.lastViewOffset.y) / es.lastViewScale.y;
+            const float nsx = es.lastViewScale.x * (newZoom / oldZoom);
+            const float nsy = es.lastViewScale.y * (newZoom / oldZoom);
+            es.canvasPan.x = (cx - px * nsx) - (1.0f - nsx) * 0.5f;
+            es.canvasPan.y = (cy - py * nsy) - (1.0f - nsy) * 0.5f;
+            es.canvasZoom = newZoom;
+        }
+
+        // Middle-drag pan (per-frame delta in region-normalized units).
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+            const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Middle);
+            ImGui::ResetMouseDragDelta(ImGuiMouseButton_Middle);
+            es.canvasPan.x += d.x / regionSz.x;
+            es.canvasPan.y += d.y / regionSz.y;
+        }
+
+        // Compact controls overlay in the top-left corner of the canvas region.
+        ImGui::SetNextWindowPos(ImVec2(regionAbs.x + 8.0f, regionAbs.y + 8.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.55f);
+        const ImGuiWindowFlags overlayFlags =
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking |
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+        if (ImGui::Begin("##ViewportZoom", nullptr, overlayFlags)) {
+            if (ImGui::SmallButton("Fit")) { es.canvasZoom = 1.0f; es.canvasPan = Vec2(0.0f, 0.0f); }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("-")) es.canvasZoom = std::max(0.1f, es.canvasZoom / 1.12f);
+            ImGui::SameLine();
+            ImGui::Text("%3.0f%%", es.canvasZoom * 100.0f);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("+")) es.canvasZoom = std::min(12.0f, es.canvasZoom * 1.12f);
+        }
+        ImGui::End();
+
+        // Drop media onto the quad under the cursor (ADR-042). A custom ImGui drop
+        // target can't register over the passthrough central node (no window is hovered
+        // there), so detect the drop manually: while a MEDIA_ITEM_ID drag is active,
+        // on left-release over the canvas, assign to the topmost quad under the cursor.
+        const ImGuiPayload* drag = ImGui::GetDragDropPayload();
+        if (drag && drag->IsDataType("MEDIA_ITEM_ID") &&
+            ImGui::IsMouseReleased(ImGuiMouseButton_Left) && overRegion &&
+            es.lastViewScale.x != 0.0f && es.lastViewScale.y != 0.0f) {
+            UUID mediaId = *(const UUID*)drag->Data;
+            MediaItem* item = m_mediaLibrary ? m_mediaLibrary->getItem(mediaId) : nullptr;
+            if (item) {
+                const float cx = (mouse.x - regionAbs.x) / regionSz.x;
+                const float cy = (mouse.y - regionAbs.y) / regionSz.y;
+                const Vec2 canvasPt((cx - es.lastViewOffset.x) / es.lastViewScale.x,
+                                    (cy - es.lastViewOffset.y) / es.lastViewScale.y);
+                if (Quad* target = es.quadManager().quadAtPoint(canvasPt)) {
+                    UUID sid = assignMediaToQuad(es, m_sourceManager.get(),
+                                                 m_project.get(), *target, *item);
+                    if (!sid.isNull()) {
+                        es.quadManager().selectQuad(target->getId());
+                        snprintf(es.statusMessage, sizeof(es.statusMessage),
+                                 "Assigned '%s' to %s", item->getName().c_str(),
+                                 target->getName().c_str());
+                        es.statusTimer = 3.0f;
+                    }
+                }
+            }
+        }
+    }
+
+    // Undo-history safety guard (ADR-042 follow-up): the command stack holds raw quad
+    // pointers, so invalidate it whenever a quad is DELETED (count drops) or the active
+    // scene changes. Creating a quad (count rises) is safe and keeps the history.
+    {
+        static UUID s_histScene;
+        static size_t s_histCount = 0;
+        static bool s_histInit = false;
+        const size_t count = quadManager.getQuadCount();
+        if (!s_histInit) { s_histScene = es.activeSceneId; s_histCount = count; s_histInit = true; }
+        if (es.activeSceneId != s_histScene || count < s_histCount) {
+            es.commandHistory.clear();
+        }
+        s_histScene = es.activeSceneId;
+        s_histCount = count;
+    }
+
     // Handle keyboard shortcuts
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         saveProject();
+    }
+
+    // Undo / Redo (not while typing in a text field).
+    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+        es.commandHistory.undo();
+    }
+    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+        es.commandHistory.redo();
     }
 
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
@@ -1018,8 +1159,12 @@ void Application::render() {
     ImGui::Begin("Resources");
 
     if (ImGui::BeginTabBar("ResourcesTabs")) {
+        // Simple mode (ADR-042) shows only the Media bin; Project/Scenes/Preview/
+        // Outputs are Advanced-only (single-projector output is auto + the F11 button).
+        const bool advanced = (es.uiMode == EditorState::UiMode::Advanced);
+
         // -------- Project Tab --------
-        if (ImGui::BeginTabItem("Project")) {
+        if (advanced && ImGui::BeginTabItem("Project")) {
             ImGui::Text("Project: %s", m_project->getName().c_str());
             if (m_project->isModified()) {
                 ImGui::SameLine();
@@ -1062,7 +1207,7 @@ void Application::render() {
         }
 
         // -------- Scenes Tab --------
-        if (ImGui::BeginTabItem("Scenes")) {
+        if (advanced && ImGui::BeginTabItem("Scenes")) {
             EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                               m_sourceManager.get(), m_outputManager.get(),
                               m_renderer.get(), m_window};
@@ -1071,7 +1216,7 @@ void Application::render() {
         }
 
         // -------- Preview Tab --------
-        if (ImGui::BeginTabItem("Preview")) {
+        if (advanced && ImGui::BeginTabItem("Preview")) {
             EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                               m_sourceManager.get(), m_outputManager.get(),
                               m_renderer.get(), m_window};
@@ -1080,7 +1225,7 @@ void Application::render() {
         }
 
         // -------- Outputs Tab --------
-        if (ImGui::BeginTabItem("Outputs")) {
+        if (advanced && ImGui::BeginTabItem("Outputs")) {
             UUID prevOutputSelection = outputPanel.getSelectedOutputId();
             outputPanel.renderContent();
             // Switch to Output properties if an output was just selected

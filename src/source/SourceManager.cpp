@@ -249,6 +249,14 @@ void SourceManager::updateAll(double deltaTime) {
     }
 }
 
+void SourceManager::seekAllToStart() {
+    for (auto& [id, entry] : sources_) {
+        if (auto* playable = dynamic_cast<PlayableSource*>(entry.source.get())) {
+            playable->seek(0.0);
+        }
+    }
+}
+
 void SourceManager::setSourceAddedCallback(SourceAddedCallback callback) {
     sourceAddedCallback_ = std::move(callback);
 }

@@ -2,11 +2,15 @@
 
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
+#include "app/MediaAssign.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGroup.hpp"
+#include "scene/Commands.hpp"
 #include "scene/Scene.hpp"
 #include "renderer/Texture.hpp"
+#include "media/MediaLibrary.hpp"
+#include "media/MediaItem.hpp"
 #include "core/UUID.hpp"
 #include "project/Project.hpp"
 
@@ -14,6 +18,8 @@
 #include <unordered_set>
 #include <string>
 #include <memory>
+#include <cstring>
+#include <cfloat>
 
 namespace quadmapper {
 
@@ -174,19 +180,75 @@ void QuadListPanel::render(EditorContext& ctx) {
         }
         ImGui::SameLine();
 
-        // Selectable quad name
+        // Quad name — inline editable when renaming this quad, else a selectable.
+        const bool renamingThis = quadRenaming_ && quadRenameId_ == quad->getId();
+        if (renamingThis) {
+            ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText("##quadrename", quadNameBuf_, sizeof(quadNameBuf_),
+                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
+                if (Quad* mq = quadManager.getQuad(quad->getId())) {
+                    es.commandHistory.execute(std::make_unique<RenameQuadCommand>(mq, quadNameBuf_));
+                }
+                ctx.project->setModified(true);
+                quadRenaming_ = false;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) quadRenaming_ = false;
+        } else {
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if (isSelected) {
             flags |= ImGuiTreeNodeFlags_Selected;
         }
         ImGui::TreeNodeEx(quad->getName().c_str(), flags);
 
-        // Drag source for moving quads between groups
+        // Double-click the name to rename inline.
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            quadRenaming_ = true;
+            quadRenameId_ = quad->getId();
+            std::strncpy(quadNameBuf_, quad->getName().c_str(), sizeof(quadNameBuf_) - 1);
+            quadNameBuf_[sizeof(quadNameBuf_) - 1] = '\0';
+        }
+        }
+
+        // Row interaction (drag/drop/select) — skipped while inline-renaming so it
+        // doesn't bind to the rename InputText.
+        if (!renamingThis) {
+        // Drag source for moving quads between groups / reordering layers
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
             dragDropQuadId = quad->getId();
             ImGui::SetDragDropPayload("QUAD_DND", &dragDropQuadId, sizeof(UUID));
             ImGui::Text("Move: %s", quad->getName().c_str());
             ImGui::EndDragDropSource();
+        }
+
+        // Drop target on this row: media from the bin -> assign to THIS quad (ADR-042
+        // P4); another quad -> reorder layer order to this quad's slot (ADR-042 P5).
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* mp = ImGui::AcceptDragDropPayload("MEDIA_ITEM_ID")) {
+                UUID mid = *(const UUID*)mp->Data;
+                Quad* mutableQuad = quadManager.getQuad(quad->getId());
+                MediaItem* item = ctx.mediaLibrary ? ctx.mediaLibrary->getItem(mid) : nullptr;
+                if (mutableQuad && item) {
+                    assignMediaToQuad(es, ctx.sourceManager, ctx.project, *mutableQuad, *item);
+                }
+            }
+            if (const ImGuiPayload* qp = ImGui::AcceptDragDropPayload("QUAD_DND")) {
+                UUID draggedId = *(const UUID*)qp->Data;
+                Quad* dragged = quadManager.getQuad(draggedId);
+                if (dragged && draggedId != quad->getId()) {
+                    // Step the dragged quad's z-order to the target's slot. (moveQuadDown
+                    // raises z toward the front; moveQuadUp lowers it — see the ^/v buttons.)
+                    const int target = quad->getZOrder();
+                    int guard = static_cast<int>(quadManager.getQuadCount()) + 1;
+                    while (dragged->getZOrder() < target && guard-- > 0)
+                        quadManager.moveQuadDown(draggedId);
+                    guard = static_cast<int>(quadManager.getQuadCount()) + 1;
+                    while (dragged->getZOrder() > target && guard-- > 0)
+                        quadManager.moveQuadUp(draggedId);
+                    ctx.project->setModified(true);
+                }
+            }
+            ImGui::EndDragDropTarget();
         }
 
         if (ImGui::IsItemClicked()) {
@@ -211,9 +273,17 @@ void QuadListPanel::render(EditorContext& ctx) {
                 currentTexturePath[0] = '\0';
             }
         }
+        }  // end if (!renamingThis)
 
         // Context menu for z-order and groups
         if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Rename")) {
+                quadRenaming_ = true;
+                quadRenameId_ = quad->getId();
+                std::strncpy(quadNameBuf_, quad->getName().c_str(), sizeof(quadNameBuf_) - 1);
+                quadNameBuf_[sizeof(quadNameBuf_) - 1] = '\0';
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Bring to Front", "Ctrl+Shift+]")) {
                 quadManager.moveQuadToBottom(quad->getId());
                 ctx.project->setModified(true);

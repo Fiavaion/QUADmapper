@@ -794,6 +794,9 @@ Result<void, Error> PreferencesDialog::loadFromFile(const std::string& path) {
             if (gen.contains("themeIndex")) {
                 preferences_.general.themeIndex = gen["themeIndex"];
             }
+            if (gen.contains("uiMode")) {
+                preferences_.general.uiMode = gen["uiMode"];
+            }
             // Media Library settings
             if (gen.contains("defaultMediaFolder")) {
                 preferences_.general.defaultMediaFolder = gen["defaultMediaFolder"];
@@ -880,6 +883,7 @@ Result<void, Error> PreferencesDialog::saveToFile(const std::string& path) const
     gen["confirmOnExit"] = preferences_.general.confirmOnExit;
     gen["rememberWindowLayout"] = preferences_.general.rememberWindowLayout;
     gen["themeIndex"] = preferences_.general.themeIndex;
+    gen["uiMode"] = preferences_.general.uiMode;
     // Media Library settings
     gen["defaultMediaFolder"] = preferences_.general.defaultMediaFolder;
     gen["autoLoadMediaOnStartup"] = preferences_.general.autoLoadMediaOnStartup;

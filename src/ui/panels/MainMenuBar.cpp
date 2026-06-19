@@ -2,9 +2,31 @@
 
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
+#include "scene/Quad.hpp"
+#include "scene/QuadManager.hpp"
+#include "renderer/UvTestGrid.hpp"
+#include "output/OutputManager.hpp"
+#include "source/SourceManager.hpp"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
+namespace {
+// Open a URL in the user's default browser (Win32; no-op elsewhere).
+void openUrl(const char* url) {
+#ifdef _WIN32
+    ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    (void)url;
+#endif
+}
+}  // namespace
 
 namespace quadmapper {
 
@@ -34,6 +56,13 @@ void MainMenuBar::render(EditorContext& ctx) {
     }
 
     if (ImGui::BeginMenu("Edit")) {
+        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, es.commandHistory.canUndo())) {
+            es.commandHistory.undo();
+        }
+        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, es.commandHistory.canRedo())) {
+            es.commandHistory.redo();
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Select All", "Ctrl+A")) {
             es.quadManager().selectAll();
         }
@@ -102,6 +131,53 @@ void MainMenuBar::render(EditorContext& ctx) {
         }
         ImGui::EndMenu();
     }
+
+    // ---- Mode toolbar (ADR-042) -------------------------------------------
+    // Always-visible Simple/Advanced toggle, plus the two most common Simple-mode
+    // actions surfaced as buttons so a new user never has to hunt through menus.
+    ImGui::Separator();
+    ImGui::TextDisabled("Mode:");
+    const bool simple = (es.uiMode == EditorState::UiMode::Simple);
+    auto modeBtn = [&](const char* label, bool active) {
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button,
+                                          ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        const bool clicked = ImGui::Button(label);
+        if (active) ImGui::PopStyleColor();
+        return clicked;
+    };
+    if (modeBtn("Simple", simple))    es.uiMode = EditorState::UiMode::Simple;
+    if (modeBtn("Advanced", !simple)) es.uiMode = EditorState::UiMode::Advanced;
+
+    if (simple) {
+        ImGui::Separator();
+        if (ImGui::Button("Apply Test Grid")) {
+            if (Quad* q = es.quadManager().getPrimarySelectedQuad()) {
+                assignUvTestGrid(es.quadTextures, es.quadTexturePaths, q->getId(), 1024, 8);
+                // Override any assigned video/image: the renderer resolves mediaId
+                // first, so the grid (a legacy quadTextures entry) would be hidden
+                // behind a bound source unless we clear it.
+                q->getTexture().mediaId = UUID();
+            }
+        }
+        ImGui::SetItemTooltip("Put a calibration grid on the selected quad");
+        if (ImGui::Button("Send to Projector (F11)")) {
+            if (ctx.outputManager) ctx.outputManager->handleF11Key();
+        }
+        ImGui::SetItemTooltip("Toggle fullscreen output on the projector");
+    }
+
+    // Reset all playheads (available in both modes) — restart every video (and its
+    // synced audio) from the top with one click.
+    ImGui::Separator();
+    if (ImGui::Button("Reset Playheads")) {
+        if (ctx.sourceManager) ctx.sourceManager->seekAllToStart();
+    }
+    ImGui::SetItemTooltip("Restart all videos/audio from the beginning");
+
+    if (ImGui::Button("Report Bug")) {
+        openUrl("https://github.com/Fiavaion/Quadmapper/issues/new?template=bug_report.md");
+    }
+    ImGui::SetItemTooltip("Open a new bug report on the QUADmapper GitHub");
 
     ImGui::EndMainMenuBar();
 }

@@ -7,6 +7,8 @@
 #include <vector>
 #include <unordered_map>
 #include <functional>
+#include <memory>
+#include <filesystem>
 
 namespace quadmapper {
 
@@ -14,6 +16,7 @@ class MediaLibrary;
 class MediaItem;
 class SourceManager;
 class ThumbnailCache;
+class Texture;
 
 /**
  * MediaBinPanel displays imported media items in a thumbnail grid.
@@ -23,6 +26,7 @@ class ThumbnailCache;
 class MediaBinPanel : public Panel {
 public:
     MediaBinPanel();
+    ~MediaBinPanel();  // defined in .cpp (owns unique_ptr<Texture> video thumbnails)
 
     /**
      * Set the media library to display.
@@ -96,6 +100,9 @@ private:
     // Handle import button click
     void handleImport();
 
+    // Handle "Load Folder" — pick a folder and scan all media in it (ADR-042 P3)
+    void handleImportFolder();
+
     // Handle procedural creation
     void createProcedural(ProceduralType type);
 
@@ -104,6 +111,14 @@ private:
 
     // Get display icon for media type
     const char* getMediaTypeIcon(MediaType type) const;
+
+    // Lazily extract + cache a video's first frame as a standalone thumbnail texture
+    // (one-shot decode, no persistent decoder). Returns nullptr on failure.
+    Texture* getVideoThumbnail(const std::filesystem::path& path);
+
+    // Hover-to-play: after each grid pass, switch/teardown the single dedicated
+    // preview decoder so the video under the cursor plays (and reverts when you leave).
+    void updateHoverPreview();
 
     MediaLibrary* mediaLibrary_ = nullptr;
     SourceManager* sourceManager_ = nullptr;
@@ -126,6 +141,17 @@ private:
     // Search and filter state
     char searchFilter_[256] = "";
     int typeFilterIndex_ = 0;  // 0 = All, 1 = Images, 2 = Videos, 3 = Procedural
+
+    // Cached video first-frame thumbnails, keyed by file path (RAII textures).
+    std::unordered_map<std::string, std::unique_ptr<Texture>> videoThumbs_;
+
+    // Hover-to-play preview: ONE dedicated decoder for the video under the cursor.
+    // Kept separate (createVideoSource, not getOrCreate) so it never disturbs a video
+    // already assigned to a quad. hoveredVideoThisFrame_ is collected during the grid
+    // pass, then reconciled in updateHoverPreview().
+    UUID hoverPreviewId_;
+    std::string hoverPreviewPath_;
+    std::string hoveredVideoThisFrame_;
 };
 
 } // namespace quadmapper

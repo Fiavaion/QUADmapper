@@ -10,6 +10,7 @@ QuadGeometry::QuadGeometry()
     uCoords_ = evenCoords(DEFAULT_MESH_RESOLUTION);
     vCoords_ = evenCoords(DEFAULT_MESH_RESOLUTION);
     initializeMeshVertices();
+    bezierOffsets_.fill(Vec2(0.0f));  // glm leaves members uninitialized otherwise
 }
 
 void QuadGeometry::setCorner(int index, const Vec2& pos) {
@@ -287,6 +288,64 @@ Vec2 QuadGeometry::transformUVToPosition(const Vec2& uv) const {
     Vec2 top = glm::mix(corners_[0], corners_[1], uv.x);
     Vec2 bottom = glm::mix(corners_[3], corners_[2], uv.x);
     return glm::mix(top, bottom, uv.y);
+}
+
+Vec2 QuadGeometry::bezierEdgePoint(int edge, float t) const {
+    const Vec2 p0 = corners_[edge];
+    const Vec2 p3 = corners_[(edge + 1) % 4];
+    const Vec2 c1 = getBezierControl(edge, 0);
+    const Vec2 c2 = getBezierControl(edge, 1);
+    const float mt = 1.0f - t;
+    return mt * mt * mt * p0 + 3.0f * mt * mt * t * c1
+         + 3.0f * mt * t * t * c2 + t * t * t * p3;
+}
+
+Vec2 QuadGeometry::getBezierControl(int edge, int which) const {
+    const Vec2& a = corners_[edge];
+    const Vec2& b = corners_[(edge + 1) % 4];
+    const float f = (which == 0) ? (1.0f / 3.0f) : (2.0f / 3.0f);
+    return glm::mix(a, b, f) + bezierOffsets_[edge * 2 + which];
+}
+
+void QuadGeometry::setBezierControl(int edge, int which, const Vec2& pos) {
+    const Vec2& a = corners_[edge];
+    const Vec2& b = corners_[(edge + 1) % 4];
+    const float f = (which == 0) ? (1.0f / 3.0f) : (2.0f / 3.0f);
+    bezierOffsets_[edge * 2 + which] = pos - glm::mix(a, b, f);
+}
+
+void QuadGeometry::resetBezier() {
+    bezierOffsets_.fill(Vec2(0.0f));
+    bezierEnabled_ = false;
+}
+
+bool QuadGeometry::hasBezierEdges() const {
+    if (!bezierEnabled_) return false;
+    for (const Vec2& o : bezierOffsets_) {
+        if (o.x != 0.0f || o.y != 0.0f) return true;
+    }
+    return false;
+}
+
+Vec2 QuadGeometry::surfacePoint(float u, float v) const {
+    if (!bezierEnabled_) {
+        return transformUVToPosition(Vec2(u, v));  // straight-edge bilinear patch
+    }
+    // Bilinearly-blended Coons patch from the four cubic-bezier boundary curves.
+    // Boundary params: top S(u,0)=TL->TR, bottom S(u,1)=BL->BR, left S(0,v)=TL->BL,
+    // right S(1,v)=TR->BR. Edges 2 (BR->BL) and 3 (BL->TL) are reversed to match.
+    const Vec2 cTop    = bezierEdgePoint(0, u);
+    const Vec2 cBottom = bezierEdgePoint(2, 1.0f - u);
+    const Vec2 cLeft   = bezierEdgePoint(3, 1.0f - v);
+    const Vec2 cRight  = bezierEdgePoint(1, v);
+    const Vec2 ruledV = (1.0f - v) * cTop + v * cBottom;
+    const Vec2 ruledU = (1.0f - u) * cLeft + u * cRight;
+    const Vec2 bilinear =
+          (1.0f - u) * (1.0f - v) * corners_[0]   // TL
+        + u * (1.0f - v) * corners_[1]            // TR
+        + (1.0f - u) * v * corners_[3]            // BL
+        + u * v * corners_[2];                    // BR
+    return ruledV + ruledU - bilinear;
 }
 
 std::vector<Vec2> QuadGeometry::generateMeshPositions() const {

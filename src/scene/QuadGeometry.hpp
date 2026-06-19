@@ -83,6 +83,23 @@ public:
     MeshMode getMeshMode() const { return meshMode_; }
     void setMeshMode(MeshMode mode) { meshMode_ = mode; }
 
+    // --- Bezier edges (ADR-043) --------------------------------------------
+    // Optional cubic-bezier edges on the 4 corners. Each of the 4 edges has 2 control
+    // points, stored as OFFSETS from the straight-line 1/3 and 2/3 points — so zero
+    // offsets == straight edges and the controls track corner moves. When enabled,
+    // surfacePoint() blends the four edge curves into a Coons patch; the renderer
+    // tessellates that finely, so edges can bow smoothly.
+    bool isBezierEnabled() const { return bezierEnabled_; }
+    void setBezierEnabled(bool on) { bezierEnabled_ = on; }
+    // edge: 0=TL->TR (top), 1=TR->BR (right), 2=BR->BL (bottom), 3=BL->TL (left).
+    // which: 0 = the 1/3 control point, 1 = the 2/3 control point.
+    Vec2 getBezierControl(int edge, int which) const;          // effective position
+    void setBezierControl(int edge, int which, const Vec2& pos); // stores offset
+    const std::array<Vec2, 8>& getBezierOffsets() const { return bezierOffsets_; }
+    void setBezierOffsets(const std::array<Vec2, 8>& o) { bezierOffsets_ = o; }
+    void resetBezier();              // zero all offsets (straight) and disable
+    bool hasBezierEdges() const;     // enabled AND at least one non-zero offset
+
     // Mesh vertices (offsets from bilinear positions; only used in MESH_EDIT mode)
     const std::vector<Vec2>& getMeshVertices() const { return meshVertices_; }
     void setMeshVertices(const std::vector<Vec2>& vertices);
@@ -100,6 +117,13 @@ public:
 
     // Calculate interpolated position for UV coordinate
     Vec2 transformUVToPosition(const Vec2& uv) const;
+
+    // Smooth render sampler (ADR-043): the surface position at parametric (u,v) in
+    // [0,1]. For straight edges this is the bilinear corner patch; with bezier edges
+    // enabled it is the cubic Coons patch of the four edge curves. The renderer
+    // tessellates CORNERS_ONLY quads via this so extreme warps stay smooth (the
+    // render density is decoupled from the control grid).
+    Vec2 surfacePoint(float u, float v) const;
 
     // Inverse of the corner bilinear map: the (u,v) parameters of point p inside
     // the quad [TL,TR,BR,BL] (u runs TL->TR, v runs TL->BL). Returns (-1,-1) if p
@@ -119,6 +143,12 @@ private:
     std::vector<float> vCoords_;   // V division lines, sorted, [0..1] inclusive
     MeshMode meshMode_;
     std::vector<Vec2> meshVertices_;  // Offsets from bilinear positions (row-major)
+
+    bool bezierEnabled_ = false;
+    std::array<Vec2, 8> bezierOffsets_;  // 2 per edge; offset from 1/3 & 2/3 points
+
+    // Cubic-bezier point on edge e at parameter t (uses corners + control offsets).
+    Vec2 bezierEdgePoint(int edge, float t) const;
 
     static std::vector<float> evenCoords(int n);
     void initializeMeshVertices();

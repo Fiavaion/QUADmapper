@@ -2,6 +2,7 @@
 
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
+#include "app/MediaAssign.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "source/SourceManager.hpp"
@@ -14,7 +15,52 @@
 #include <cstring>
 #include <cstdio>
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#include <commdlg.h>
+#endif
+
 namespace quadmapper {
+
+namespace {
+
+// Native "open video file" dialog (Win32 comdlg32 — no new dependency). Returns
+// true and writes the chosen path into out on success; false if cancelled or
+// unsupported. initial seeds the starting file/folder so it reopens where you were.
+bool pickVideoFile(char* out, size_t outSize, const char* initial) {
+#ifdef _WIN32
+    char filename[MAX_PATH] = "";
+    if (initial && initial[0] != '\0') {
+        strncpy(filename, initial, sizeof(filename) - 1);
+    }
+    // Filter blocks are NUL-delimited and the whole thing is NUL-terminated.
+    static const char filter[] =
+        "Video Files\0*.mp4;*.mov;*.avi;*.mkv;*.webm;*.m4v;*.wmv;*.flv\0"
+        "All Files\0*.*\0";
+
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = NULL;
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = filename;
+    ofn.nMaxFile = sizeof(filename);
+    ofn.lpstrTitle = "Load Video";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+
+    if (GetOpenFileNameA(&ofn)) {
+        strncpy(out, filename, outSize - 1);
+        out[outSize - 1] = '\0';
+        return true;
+    }
+    return false;
+#else
+    (void)out; (void)outSize; (void)initial;
+    return false;
+#endif
+}
+
+}  // namespace
 
 // ADR-040 P3: the Video Player drives one active VideoFileSource owned by the
 // SourceManager. "Load" creates the source; controls drive it through the
@@ -28,10 +74,68 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
 
     ImGui::Begin("Video Player");
 
-    ImGui::Text("Video File:");
-    ImGui::InputText("##videopath", es.videoPath, sizeof(es.videoPath));
-    ImGui::SameLine();
-    if (ImGui::Button("Load Video")) {
+    // Simple mode (ADR-042): Load Video... (browses + assigns to the selected quad),
+    // then just Play/Pause, Loop and Speed — nothing else.
+    if (es.uiMode == EditorState::UiMode::Simple) {
+        Quad* selected = es.quadManager().getPrimarySelectedQuad();
+        ImGui::TextDisabled(selected ? "Loads onto the selected quad"
+                                     : "Select a quad first, then load");
+
+        if (ImGui::Button("Load Video...")) {
+            char picked[sizeof(es.videoPath)] = "";
+            if (pickVideoFile(picked, sizeof(picked), es.videoPath) && ctx.sourceManager) {
+                strncpy(es.videoPath, picked, sizeof(es.videoPath) - 1);
+                es.videoPath[sizeof(es.videoPath) - 1] = '\0';
+                UUID sid = ctx.sourceManager->getOrCreateVideoSource(es.videoPath);
+                if (!sid.isNull()) {
+                    es.activeVideoSourceId = sid;
+                    if (selected) {
+                        bindSourceToQuad(es, ctx.project, *selected, sid,
+                                         es.videoPath, /*isVideo=*/true);
+                    }
+                    // Auto-play so the video is visible at once (a paused video uploads
+                    // no frames, leaving the quad black).
+                    if (auto* vs = ctx.sourceManager->getSourceAs<VideoFileSource>(sid)) {
+                        vs->play();
+                    }
+                    snprintf(es.statusMessage, sizeof(es.statusMessage), "Loaded video");
+                    es.statusTimer = 3.0f;
+                }
+            }
+        }
+        ImGui::SetItemTooltip("Browse for a video and apply it to the selected quad");
+
+        VideoFileSource* v = ctx.sourceManager
+            ? ctx.sourceManager->getSourceAs<VideoFileSource>(es.activeVideoSourceId)
+            : nullptr;
+        if (v) {
+            ImGui::Separator();
+            const bool playing = v->getPlaybackState() == PlaybackState::PLAYING;
+            if (ImGui::Button(playing ? "Pause" : "Play")) {
+                if (playing) v->pause(); else v->play();
+            }
+            bool loop = v->getLoopMode() == LoopMode::LOOP;
+            if (ImGui::Checkbox("Loop", &loop)) {
+                v->setLoopMode(loop ? LoopMode::LOOP : LoopMode::ONCE);
+            }
+            float speed = v->getSpeed();
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderFloat("Speed", &speed, 0.1f, 4.0f, "%.1fx")) {
+                v->setSpeed(speed);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("1x")) v->setSpeed(1.0f);
+        } else {
+            ImGui::TextDisabled("No video loaded");
+        }
+
+        ImGui::End();
+        return;
+    }
+
+    // Load a video from es.videoPath through the SourceManager (shared by the
+    // file-picker and the typed-path fallback).
+    auto loadFromPath = [&]() {
         if (strlen(es.videoPath) > 0 && ctx.sourceManager) {
             UUID sid = ctx.sourceManager->createVideoSource(es.videoPath);
             if (!sid.isNull()) {
@@ -44,6 +148,28 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
             }
             es.statusTimer = 3.0f;
         }
+    };
+
+    // Primary path: "Load Video" opens a native file explorer; picking a file sets
+    // the path field and loads it immediately. The text field still shows the path
+    // (and a typed/pasted path can be loaded with the small "Use Path" fallback).
+    ImGui::Text("Video File:");
+    if (ImGui::Button("Load Video...")) {
+        char picked[sizeof(es.videoPath)] = "";
+        if (pickVideoFile(picked, sizeof(picked), es.videoPath)) {
+            strncpy(es.videoPath, picked, sizeof(es.videoPath) - 1);
+            es.videoPath[sizeof(es.videoPath) - 1] = '\0';
+            loadFromPath();
+        }
+    }
+    ImGui::SetItemTooltip("Browse the hard drive for a video file");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-70.0f);
+    const bool pathEntered = ImGui::InputText("##videopath", es.videoPath, sizeof(es.videoPath),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if (ImGui::Button("Use Path") || pathEntered) {
+        loadFromPath();
     }
 
     VideoFileSource* video = ctx.sourceManager
@@ -111,14 +237,13 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
                 if (isAssigned) {
                     selected->getTexture().mediaId = UUID();
                     es.quadTexturePaths.erase(selected->getId());
+                    ctx.project->setModified(true);
                 } else {
-                    selected->getTexture().mediaId = es.activeVideoSourceId;
-                    // Record the path so the assignment persists in the .qmap
-                    // (P5: same texturePaths carrier images use; load re-creates
-                    // the video source and re-binds by mediaId).
-                    es.quadTexturePaths[selected->getId()] = video->getPath().string();
+                    // Centralized bind (ADR-042 P2): records the path so the assignment
+                    // persists in the .qmap; load re-creates the source and re-binds.
+                    bindSourceToQuad(es, ctx.project, *selected, es.activeVideoSourceId,
+                                     video->getPath().string(), /*isVideo=*/true);
                 }
-                ctx.project->setModified(true);
             }
             if (isAssigned) {
                 ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f),
@@ -136,7 +261,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         }
     } else {
         ImGui::TextDisabled("No video loaded");
-        ImGui::TextDisabled("Enter a video file path and click Load");
+        ImGui::TextDisabled("Click \"Load Video...\" to browse for a file");
     }
 
     ImGui::End();

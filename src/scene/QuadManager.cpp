@@ -1,4 +1,6 @@
 #include "QuadManager.hpp"
+#include "Quad.hpp"
+#include "QuadGeometry.hpp"
 #include "core/Logger.hpp"
 #include <algorithm>
 #include <sstream>
@@ -98,6 +100,21 @@ std::vector<Quad*> QuadManager::getQuadsByZOrder() const {
     std::sort(sorted.begin(), sorted.end(),
         [](const Quad* a, const Quad* b) { return a->getZOrder() < b->getZOrder(); });
     return sorted;
+}
+
+Quad* QuadManager::quadAtPoint(const Vec2& p) const {
+    // getQuadsByZOrder is back -> front; iterate front-most first so the topmost
+    // quad wins. inverseBilinear returns (u,v) in [0,1] inside, (-1,-1) outside.
+    auto byZ = getQuadsByZOrder();
+    for (auto it = byZ.rbegin(); it != byZ.rend(); ++it) {
+        Quad* q = *it;
+        if (!q || !q->isVisible()) continue;
+        Vec2 uv = QuadGeometry::inverseBilinear(q->getGeometry().getCorners(), p);
+        if (uv.x >= 0.0f && uv.x <= 1.0f && uv.y >= 0.0f && uv.y <= 1.0f) {
+            return q;
+        }
+    }
+    return nullptr;
 }
 
 void QuadManager::selectQuad(const UUID& id) {

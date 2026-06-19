@@ -110,6 +110,23 @@ void Renderer::endFrame() {
     // Frame cleanup if needed
 }
 
+void Renderer::setViewTransform(const glm::vec2& scale, const glm::vec2& offset, float canvasAspect) {
+    viewScale_ = scale;
+    viewOffset_ = offset;
+    canvasAspect_ = canvasAspect;
+}
+
+void Renderer::resetViewTransform() {
+    viewScale_ = glm::vec2(1.0f, 1.0f);
+    viewOffset_ = glm::vec2(0.0f, 0.0f);
+    canvasAspect_ = 0.0f;
+}
+
+void Renderer::applyViewUniforms(ShaderProgram& shader) {
+    shader.setVec2("u_ViewScale", viewScale_);
+    shader.setVec2("u_ViewOffset", viewOffset_);
+}
+
 void Renderer::createQuadBuffers() {
     // Create VAO
     glGenVertexArrays(1, &quadVAO_);
@@ -169,6 +186,46 @@ void Renderer::createOutlineBuffers() {
 
 void Renderer::updateQuadBuffers(const Quad& quad) {
     const QuadGeometry& geometry = quad.getGeometry();
+
+    // Smooth path (ADR-043): a CORNERS_ONLY quad is a bilinear (or bezier) corner
+    // patch — its surface is fully defined by the corners, so render it as a fine
+    // N×N tessellation sampled from surfacePoint(). This decouples render density
+    // from the 1×1 control grid and removes the diagonal "fold" on extreme warps.
+    if (geometry.getMeshMode() == MeshMode::CORNERS_ONLY) {
+        constexpr int N = 32;  // sub-divisions per axis (33×33 verts; within buffers)
+        const int line = N + 1;
+        vertices_.resize(static_cast<size_t>(line) * line);
+        for (int r = 0; r < line; ++r) {
+            for (int c = 0; c < line; ++c) {
+                const float u = static_cast<float>(c) / N;
+                const float v = static_cast<float>(r) / N;
+                Vec2 p = geometry.surfacePoint(u, v);
+                const int index = r * line + c;
+                vertices_[index].position[0] = p.x;
+                vertices_[index].position[1] = p.y;
+                vertices_[index].texCoord[0] = u;
+                vertices_[index].texCoord[1] = v;
+            }
+        }
+        indices_.resize(static_cast<size_t>(N) * N * 6);
+        int o = 0;
+        for (int r = 0; r < N; ++r) {
+            for (int c = 0; c < N; ++c) {
+                uint32_t tl = static_cast<uint32_t>(r * line + c);
+                uint32_t tr = tl + 1;
+                uint32_t bl = static_cast<uint32_t>((r + 1) * line + c);
+                uint32_t br = bl + 1;
+                indices_[o++] = tl; indices_[o++] = bl; indices_[o++] = tr;
+                indices_[o++] = tr; indices_[o++] = bl; indices_[o++] = br;
+            }
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, quadVBO_);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, vertices_.size() * sizeof(QuadVertex), vertices_.data());
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO_);
+        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, indices_.size() * sizeof(uint32_t), indices_.data());
+        return;
+    }
+
     // Control grid may be non-uniform (ADR-038): iterate per-axis using the
     // actual division coordinates for tex coords, and index the vpr-wide grid.
     const int vpr = geometry.vertsPerRow();
@@ -260,6 +317,7 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
 
     // Bind shader
     quadShader_.bind();
+    applyViewUniforms(quadShader_);
 
     // Set uniforms
     const TextureBinding& texBinding = quad.getTexture();
@@ -346,6 +404,7 @@ void Renderer::renderQuadOutline(const Quad& quad, const glm::vec4& color, float
     updateOutlineBuffers(quad);
 
     outlineShader_.bind();
+    applyViewUniforms(outlineShader_);
     outlineShader_.setVec4("u_OutlineColor", color);
 
     glLineWidth(lineWidth);
@@ -387,10 +446,37 @@ void Renderer::renderMeshGrid(const Quad& quad, const glm::vec4& color, float li
     glBufferSubData(GL_ARRAY_BUFFER, 0, gridVertices_.size() * sizeof(float), gridVertices_.data());
 
     outlineShader_.bind();
+    applyViewUniforms(outlineShader_);
     outlineShader_.setVec4("u_OutlineColor", color);
     glLineWidth(lineWidth);
     glBindVertexArray(gridVAO_);
     glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridVertices_.size() / 2));
+    glBindVertexArray(0);
+    ShaderProgram::unbind();
+    glLineWidth(1.0f);
+}
+
+void Renderer::renderCanvasBorder(const glm::vec4& color, float lineWidth) {
+    if (!initialized_) {
+        return;
+    }
+
+    // Reuse the outline buffer (5 floats-pairs capacity): the [0,1] canvas frame as
+    // a closed line loop. The active view transform places it at the projector-frame
+    // bounds so the user can see the edges of the output even past the content.
+    outlineVertices_.resize(10);
+    const float pts[10] = {0.f, 0.f,  1.f, 0.f,  1.f, 1.f,  0.f, 1.f,  0.f, 0.f};
+    for (int i = 0; i < 10; ++i) outlineVertices_[i] = pts[i];
+
+    glBindBuffer(GL_ARRAY_BUFFER, outlineVBO_);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, outlineVertices_.size() * sizeof(float), outlineVertices_.data());
+
+    outlineShader_.bind();
+    applyViewUniforms(outlineShader_);
+    outlineShader_.setVec4("u_OutlineColor", color);
+    glLineWidth(lineWidth);
+    glBindVertexArray(outlineVAO_);
+    glDrawArrays(GL_LINE_STRIP, 0, 5);
     glBindVertexArray(0);
     ShaderProgram::unbind();
     glLineWidth(1.0f);
@@ -430,12 +516,19 @@ void Renderer::createHandleBuffers() {
 }
 
 namespace {
-// Set the handle shader's aspect uniform from the current GL viewport so the
-// unit-circle handles render round instead of stretched by the window aspect.
-void setHandleAspect(ShaderProgram& shader) {
-    GLint vp[4] = {0, 0, 1, 1};
-    glGetIntegerv(GL_VIEWPORT, vp);
-    shader.setFloat("u_Aspect", (vp[3] > 0) ? static_cast<float>(vp[2]) / vp[3] : 1.0f);
+// Set the handle shader's aspect uniform so the unit-circle handles render round.
+// With a canvas view transform (ADR-041) the handles live in canvas space, so the
+// canvas pixel aspect keeps them round; without one, fall back to the GL viewport.
+void setHandleAspect(ShaderProgram& shader, float canvasAspect) {
+    float aspect;
+    if (canvasAspect > 0.0f) {
+        aspect = canvasAspect;
+    } else {
+        GLint vp[4] = {0, 0, 1, 1};
+        glGetIntegerv(GL_VIEWPORT, vp);
+        aspect = (vp[3] > 0) ? static_cast<float>(vp[2]) / vp[3] : 1.0f;
+    }
+    shader.setFloat("u_Aspect", aspect);
 }
 }  // namespace
 
@@ -453,7 +546,8 @@ void Renderer::renderCornerHandles(const Quad& quad, int hoveredIndex, int dragg
 
     handleShader_.bind();
 
-    setHandleAspect(handleShader_);
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
 
     // Draw each corner handle
     constexpr int SEGMENTS = 16;
@@ -515,7 +609,8 @@ void Renderer::renderMeshHandles(const Quad& quad, int hoveredIndex, int dragged
 
     handleShader_.bind();
 
-    setHandleAspect(handleShader_);
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
 
     // Draw each handle
     constexpr int SEGMENTS = 16;
@@ -568,7 +663,8 @@ void Renderer::renderSnapIndicator(const Vec2& position) {
 
     handleShader_.bind();
 
-    setHandleAspect(handleShader_);
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
 
     // Set handle center
     handleShader_.setVec2("u_HandleCenter", position);
@@ -582,6 +678,58 @@ void Renderer::renderSnapIndicator(const Vec2& position) {
     glBindVertexArray(handleVAO_);
     glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
 
+    glBindVertexArray(0);
+    ShaderProgram::unbind();
+}
+
+void Renderer::renderBezierHandles(const Quad& quad, int hovered, int dragged) {
+    if (!initialized_) {
+        return;
+    }
+    const QuadGeometry& g = quad.getGeometry();
+    if (!g.isBezierEnabled()) {
+        return;
+    }
+    const auto& corners = g.getCorners();
+
+    // Tangent lines (corner -> its control point), drawn via the grid-line buffer.
+    gridVertices_.clear();
+    auto seg = [&](const Vec2& a, const Vec2& b) {
+        gridVertices_.push_back(a.x); gridVertices_.push_back(a.y);
+        gridVertices_.push_back(b.x); gridVertices_.push_back(b.y);
+    };
+    for (int e = 0; e < 4; ++e) {
+        seg(corners[e], g.getBezierControl(e, 0));
+        seg(corners[(e + 1) % 4], g.getBezierControl(e, 1));
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, gridVBO_);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, gridVertices_.size() * sizeof(float), gridVertices_.data());
+    outlineShader_.bind();
+    applyViewUniforms(outlineShader_);
+    outlineShader_.setVec4("u_OutlineColor", glm::vec4(0.7f, 0.6f, 0.2f, 0.7f));
+    glLineWidth(1.0f);
+    glBindVertexArray(gridVAO_);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridVertices_.size() / 2));
+    glBindVertexArray(0);
+    ShaderProgram::unbind();
+
+    // Control points as round amber handles.
+    handleShader_.bind();
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
+    constexpr int SEGMENTS = 16;
+    for (int i = 0; i < 8; ++i) {
+        Vec2 cp = g.getBezierControl(i / 2, i % 2);
+        handleShader_.setVec2("u_HandleCenter", cp);
+        glm::vec4 color = (i == dragged) ? glm::vec4(1.0f, 1.0f, 0.0f, 1.0f)
+                        : (i == hovered) ? glm::vec4(0.0f, 1.0f, 1.0f, 1.0f)
+                        :                  glm::vec4(1.0f, 0.8f, 0.2f, 0.95f);
+        float size = (i == dragged || i == hovered) ? 0.011f : 0.008f;
+        handleShader_.setFloat("u_HandleSize", size);
+        handleShader_.setVec4("u_HandleColor", color);
+        glBindVertexArray(handleVAO_);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
+    }
     glBindVertexArray(0);
     ShaderProgram::unbind();
 }

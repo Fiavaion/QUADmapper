@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/UUID.hpp"
+
 namespace quadmapper {
 
 struct EditorContext;
@@ -22,6 +24,11 @@ public:
 private:
     // Inline rename buffer for group context-menu (replaces function-static).
     char groupNameBuf_[128] = "";
+
+    // Inline quad rename (double-click a quad name, or context-menu > Rename).
+    bool quadRenaming_ = false;
+    UUID quadRenameId_;
+    char quadNameBuf_[128] = "";
 };
 
 }  // namespace quadmapper
