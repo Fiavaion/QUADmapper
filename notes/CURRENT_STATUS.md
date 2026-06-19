@@ -5,29 +5,14 @@
 media-bin thumbnails, undo/redo, smooth distortion, bezier corner edges. ADR-040 (one video →
 many cropped quads) is COMPLETE (P1–P5, from Session 19). AI wedge (Phase 9) stays
 software-complete, gated on 🚩 QM-061 (hardware).
-**Branch:** `dev` (committed HEAD `1554216`). **⚠️ ALL Session-20 work below is UNCOMMITTED** —
-34 changed files in the working tree (29 modified, 5 new). **Build:** ✅ app builds & launches.
-**Tests:** ✅ 633/633 ctest.
+**Branch:** `dev` — **committed + pushed** to `origin/dev` (in sync @ `83deff2`). Session-20 work is
+`721b61a` (feature code, 29 files) + `83deff2` (ADRs + tracking). Only `imgui.ini` / `project.qmap`
+(layout/scratch) remain uncommitted by design. **Build:** ✅ app builds & launches. **Tests:** ✅ 633/633 ctest.
 
-## ⚠️ FIRST THING NEXT SESSION: commit the Session-20 stack
-Nothing this session is committed. Recommend committing in logical chunks (one feature each),
-NOT one giant commit. Suggested order (ADR + code per chunk):
-1. **QM-073** viewport zoom/pan + aspect canvas (ADR-041) — shaders `quad/outline/handle.vert`,
-   `Renderer.*`, `ViewportEditor.cpp`, `EditorState.hpp`, `Application.cpp`.
-2. **QM-074** video file picker + crop L/R/T/B insets — `VideoPlayerPanel.cpp`, `InspectorPanel.cpp`.
-3. **QM-075** Simple/Advanced modes (ADR-042) + auto-play + canvas drag-drop + click-to-select +
-   Scenes-New seed quad — `MainMenuBar.*`, `PreferencesDialog.*`, `MediaAssign.hpp` (new),
-   `MediaBinPanel.*`, `QuadListPanel.*`, `ScenePanel.cpp`, `QuadManager.*`, `Application.cpp`,
-   `EditorState.hpp`, `InspectorPanel.cpp`, `VideoPlayerPanel.cpp`.
-4. **QM-076** media-bin video thumbnails + hover-to-play — `MediaBinPanel.*`.
-5. **QM-077** undo/redo (geometry + rename + grid edits) — `EditorState.hpp` (CommandHistory),
-   `GridUndo.hpp` (new), `Application.cpp`, `MainMenuBar.cpp`, `ViewportEditor.cpp`,
-   `InspectorPanel.cpp`, `QuadListPanel.cpp`.
-6. **QM-078** Report Bug button + smooth corner-pin tessellation + bezier corner edges (ADR-043) —
-   `QuadGeometry.*`, `Renderer.*`, `ViewportEditor.cpp`, `InspectorPanel.cpp`, `ProjectSerializer.cpp`,
-   `MainMenuBar.cpp`.
-> Exclude incidental churn: `imgui.ini` and `project.qmap` (layout/scratch) — don't commit as feature work.
-> `CropRenderTest.cpp` change belongs with QM-073 (shaders gained `u_ViewScale/u_ViewOffset`; the test sets them).
+## Session-20 stack is committed + pushed
+QM-073..078 landed as two compiling commits (code + docs) rather than per-feature — the core files
+each span several features and per-feature splits would need interactive `git add -p` (and wouldn't
+compile in isolation). The `721b61a` body enumerates QM-073..078 for traceability.
 
 ## What shipped this session (built + ctest-green; ⚠️ user-visual-verify the interactive bits)
 - **QM-073 — Viewport zoom/pan + aspect canvas (ADR-041).** Canvas renders into the dockspace
@@ -51,15 +36,14 @@ NOT one giant commit. Suggested order (ADR + code per chunk):
   Inspector (Simple **and** Advanced), `.qmap`-persisted (additive), undoable.
 
 ## NEXT TASK — resume here
-1. **Commit the stack** (see above) — do this first.
-2. **🚩 User visual-verify** (couldn't auto-drive the UI reliably — shared desktop): smooth
+1. **🚩 User visual-verify** (couldn't auto-drive the UI reliably — shared desktop): smooth
    distortion (extreme corner-pin), bezier handles (toggle Curved edges → drag amber handles),
    hover-to-play, undo/redo, scene-New, canvas drag-drop, click-select.
-3. **QM-079 — bezier on grid division lines (DEFERRED).** Corner bezier is done; curving interior
+2. **QM-079 — bezier on grid division lines (DEFERRED).** Corner bezier is done; curving interior
    division lines is a larger surface-model change. The user explicitly wants it next.
-4. **Revert test pref:** `preferences.json` `defaultMediaFolder` was set to `D:\testing Videos`
+3. **Revert test pref:** `preferences.json` `defaultMediaFolder` was set to `D:\testing Videos`
    for verification (auto-loads 17 clips each launch). Clear it if unwanted.
-5. ADR-040 dev→master PR still gated on 🚩 QM-061 (hardware). dev unpushed.
+4. ADR-040 dev→master PR still gated on 🚩 QM-061 (hardware). `dev` is pushed; `master` untouched.
 
 ## Verification gate (non-negotiable)
 `cmake --build build/debug` → `ctest --test-dir build/debug` (633/633) → success-metric warp

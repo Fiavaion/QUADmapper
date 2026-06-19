@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-19T16:10:00Z",
+  "lastUpdated": "2026-06-19T16:35:00Z",
   "sessionInfo": {
     "sessionNumber": 20,
     "startTime": "2026-06-19T11:45:00Z",
@@ -9,16 +9,15 @@
   },
   "currentWork": {
     "activeTaskId": null,
-    "activeTaskTitle": "Session-20 mapping-editor UX overhaul: 6 feature areas implemented, built, 633/633 ctest. ALL UNCOMMITTED.",
-    "currentFile": "branch dev @ committed HEAD 1554216; working tree has 34 uncommitted changes (29 modified, 5 new incl. ADR-041/042/043, GridUndo.hpp, MediaAssign.hpp).",
+    "activeTaskTitle": "Session-20 mapping-editor UX overhaul: 6 feature areas implemented, built, 633/633 ctest. COMMITTED + PUSHED to origin/dev.",
+    "currentFile": "branch dev in sync with origin/dev @ 83deff2. Session-20 = 721b61a (feature code, 29 files) + 83deff2 (ADRs + tracking). Only imgui.ini/project.qmap remain uncommitted (scratch).",
     "currentFunction": null,
-    "workInProgress": "Nothing mid-edit. Final build is clean + 633/633. The entire Session-20 stack is UNCOMMITTED on dev. NEXT SESSION must commit it (in logical chunks) and the user must visually verify the interactive features (couldn't auto-drive the UI reliably under desktop-sharing).",
+    "workInProgress": "Nothing mid-edit. Build clean + 633/633. Session-20 stack is COMMITTED and PUSHED to origin/dev. Remaining: user must visually verify the interactive features (couldn't auto-drive the UI under desktop-sharing).",
     "nextSteps": [
-      "COMMIT the Session-20 stack first, in logical chunks (QM-073..QM-078) — see notes/CURRENT_STATUS.md for the per-chunk file lists. Exclude imgui.ini and project.qmap (incidental).",
       "User visual-verify: smooth corner-pin distortion, bezier corner handles (toggle Curved edges -> drag amber handles), hover-to-play thumbnails, undo/redo, Scenes New, canvas drag-drop, click-to-select.",
       "QM-079 (DEFERRED, user wants it next): bezier handles on the GRID DIVISION LINES (corner bezier is done; interior division curves need a richer surface model).",
       "Revert preferences.json defaultMediaFolder (set to D:\\testing Videos for verification) if unwanted.",
-      "ADR-040 dev->master PR still gated on QM-061 (hardware). dev unpushed."
+      "ADR-040 dev->master PR still gated on QM-061 (hardware). dev is pushed; master untouched."
     ]
   },
   "context": {
@@ -65,7 +64,7 @@
     ],
     "buildStatus": "success",
     "lastSuccessfulBuild": "2026-06-19T16:05:00Z",
-    "note": "Session 20. Large mapping-editor UX overhaul (ADR-041/042/043 + thumbnails + undo/redo), build green, 633/633 ctest. ENTIRE STACK UNCOMMITTED (34 working-tree changes) on dev (HEAD 1554216). Next: commit in chunks (QM-073..078), user visual-verify, then QM-079 grid-line bezier."
+    "note": "Session 20. Large mapping-editor UX overhaul (ADR-041/042/043 + thumbnails + undo/redo), build green, 633/633 ctest. COMMITTED + PUSHED to origin/dev: 721b61a (code) + 83deff2 (docs). Next: user visual-verify, then QM-079 grid-line bezier."
   },
   "statistics": {
     "totalSessions": 20,

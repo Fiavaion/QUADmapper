@@ -3,14 +3,14 @@
 Last Updated: 2026-06-19 (Session 20)
 
 ## Quick Status
-- In Progress: 0 — **Session-20 mapping-editor UX overhaul DONE but ⚠️ UNCOMMITTED on `dev`**
+- In Progress: 0 — **Session-20 mapping-editor UX overhaul DONE, committed + pushed to `origin/dev` (721b61a + 83deff2)**
 - Todo: QM-079 (bezier on grid division lines, user wants next) + TD-08 (LOW) + 🚩 QM-061 (hardware)
 - Done: 78 — Session 20 added QM-073..078 (zoom/pan, video picker+crop, Simple/Advanced UI, bin
   thumbnails+hover, undo/redo, bug button + smooth distortion + bezier corners)
 - Blocked: 0
 
-## Session 20 (2026-06-19) — Mapping-editor UX overhaul ⚠️ UNCOMMITTED
-All built + 633/633 ctest, NONE committed (commit in chunks next session — see notes/CURRENT_STATUS.md).
+## Session 20 (2026-06-19) — Mapping-editor UX overhaul (committed + pushed)
+All built + 633/633 ctest; committed + pushed to `origin/dev` (`721b61a` code + `83deff2` docs).
 - **QM-073 DONE** — viewport zoom/pan + aspect-correct canvas (ADR-041): central-node render,
   `u_ViewScale`/`u_ViewOffset` shaders, Fit/wheel/middle-drag, portrait auto, hit-test inverts transform.
 - **QM-074 DONE** — native "Load Video…" dialog + crop reworked to Left/Right/Top/Bottom % insets.

@@ -6,14 +6,15 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
-### Session 20 - 2026-06-19 - Mapping-editor UX overhaul (zoom/pan, Simple/Advanced, thumbnails, undo/redo, bezier) ⚠️ UNCOMMITTED
+### Session 20 - 2026-06-19 - Mapping-editor UX overhaul (zoom/pan, Simple/Advanced, thumbnails, undo/redo, bezier)
 
 **Focus:** A long interactive session driven by hands-on testing with a real projector. Reworked
-the editor UX in six areas. Everything **builds + 633/633 ctest**, but the **entire stack is
-UNCOMMITTED** on `dev` (HEAD `1554216`; 34 working-tree changes). ADR-040 (one video → many
+the editor UX in six areas. Everything **builds + 633/633 ctest**, and the stack is **committed +
+pushed to `origin/dev`** (`721b61a` feature code + `83deff2` ADRs/tracking; two compiling commits
+rather than per-feature because the core files span multiple features). ADR-040 (one video → many
 cropped quads) had already completed (P1–P5) in Session 19.
 
-**Completed this session (all uncommitted — commit in chunks next session):**
+**Completed this session:**
 - **QM-073 — Viewport zoom/pan + aspect canvas ([ADR-041](docs/adr/0041-viewport-zoom-pan-and-canvas-aspect.md)).**
   Canvas renders into the dockspace central node with a view transform (`u_ViewScale`/`u_ViewOffset`
   added to `quad`/`outline`/`handle` vertex shaders; identity default → output/preview unchanged).
