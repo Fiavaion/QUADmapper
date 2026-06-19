@@ -338,6 +338,9 @@ bool Application::initialize(int argc, char* argv[]) {
         } else if (std::strncmp(arg, "--capture=", 10) == 0) {
             if (!m_stressConfig) m_stressConfig = StressConfig{};
             m_stressConfig->capture = arg + 10;
+        } else if (std::strncmp(arg, "--media=", 8) == 0) {
+            if (!m_stressConfig) m_stressConfig = StressConfig{};
+            m_stressConfig->media = arg + 8;
         }
     }
 
@@ -1703,12 +1706,15 @@ static SIZE_T stressWorkingSetBytes() {
 }
 
 int Application::runStress(const StressConfig& cfg) {
-    Logger::info("[STRESS] QM-081 H3 — cycles={} outputs={} frames={} "
-                 "fullscreen={} hidden={} ws-bound-mb={} cycle-timeout-ms={}",
+    Logger::info("[STRESS] QM-081 H4 — cycles={} outputs={} frames={} "
+                 "source={} media={} fullscreen={} hidden={} ws-bound-mb={} "
+                 "cycle-timeout-ms={} pause-after={}",
                  cfg.cycles, cfg.outputs, cfg.framesPerCycle,
+                 cfg.source, cfg.media.empty() ? "(none)" : cfg.media,
                  cfg.fullscreen ? "true" : "false",
                  cfg.hidden     ? "true" : "false",
-                 cfg.workingSetBoundMB, cfg.cycleTimeoutMs);
+                 cfg.workingSetBoundMB, cfg.cycleTimeoutMs,
+                 cfg.pauseAfter);
 
     // ---- 1. Build outputs ---------------------------------------------------
     // The default output was already created by initializeComponents() for
@@ -1729,7 +1735,7 @@ int Application::runStress(const StressConfig& cfg) {
         glfwHideWindow(m_window);
     }
 
-    // ---- 2. Build one scene with one quad + procedural source ---------------
+    // ---- 2. Build one scene with one quad + source --------------------------
     EditorState& es = *m_editorState;
 
     // Guarantee at least one scene and one quad.
@@ -1740,12 +1746,40 @@ int Application::runStress(const StressConfig& cfg) {
     }
     Quad* quad = qm.getQuads().front().get();
 
-    // Create a TestPattern source (no file, no network dependency).
-    UUID sourceId = m_sourceManager->createProceduralSource(ProceduralType::TEST_PATTERN,
-                                                            320, 180);
-    if (sourceId.isNull()) {
-        Logger::error("[STRESS] Failed to create TestPattern source");
-        return 2;
+    // H4: route source creation by --source type.
+    // For "video" and "hap", createVideoSource auto-routes to HapFileSource
+    // when the container is a HAP .mov (via isHapContainer).
+    // "procedural" (default) needs no file.
+    UUID sourceId;
+    PlayableSource* playable = nullptr;  // non-null when source supports play/pause
+
+    const bool needsMedia = (cfg.source == "video" || cfg.source == "hap");
+    if (needsMedia) {
+        if (cfg.media.empty()) {
+            Logger::error("[STRESS] --source={} requires --media=PATH; no path provided.",
+                          cfg.source);
+            return 2;
+        }
+        sourceId = m_sourceManager->createVideoSource(cfg.media);
+        if (sourceId.isNull()) {
+            Logger::error("[STRESS] Failed to create video/HAP source from '{}'", cfg.media);
+            return 2;
+        }
+        playable = m_sourceManager->getSourceAs<PlayableSource>(sourceId);
+        if (!playable) {
+            Logger::error("[STRESS] Source created from '{}' is not a PlayableSource", cfg.media);
+            return 2;
+        }
+        playable->play();
+        Logger::info("[STRESS] Video/HAP source created from '{}'", cfg.media);
+    } else {
+        // Default: procedural TestPattern (no file, no network dependency).
+        sourceId = m_sourceManager->createProceduralSource(ProceduralType::TEST_PATTERN,
+                                                           320, 180);
+        if (sourceId.isNull()) {
+            Logger::error("[STRESS] Failed to create TestPattern source");
+            return 2;
+        }
     }
     quad->getTexture().mediaId = sourceId;
 
@@ -1755,8 +1789,10 @@ int Application::runStress(const StressConfig& cfg) {
         es.assignSceneToOutput(scene.getId(), outputs.front()->getId());
     }
 
-    // ---- Helper: one full cycle with wedge watchdog (H3 §3) -----------------
-    // Returns false if the cycle exceeded cfg.cycleTimeoutMs.
+    // ---- Helper: one full cycle with wedge watchdog + pause/resume (H3/H4) --
+    // Returns false if the cycle exceeded cfg.cycleTimeoutMs or the pause/resume
+    // recovery check fails (LESSON-BUG-006 repro).
+    bool pauseResumeWedge = false;
     auto runCycle = [&]() -> bool {
         const double cycleStart = glfwGetTime();
         const double budgetSec  = cfg.cycleTimeoutMs / 1000.0;
@@ -1781,6 +1817,14 @@ int Application::runStress(const StressConfig& cfg) {
             m_outputManager->enterPerformMode(cfg.fullscreen);
         }
 
+        // H4 pause/resume state for this cycle.
+        // pausedAt: frame index when we called pause(); -1 = not yet paused.
+        // resumedAt: frame index when we called play(); -1 = not yet resumed.
+        int pausedAt   = -1;
+        int resumedAt  = -1;
+        // Time just before the pause (for reporting if recovery check runs).
+        double timeAtPause = 0.0;
+
         double t = glfwGetTime();
         for (int f = 0; f < cfg.framesPerCycle; ++f) {
             // Wedge check: abort if we've been in this cycle too long.
@@ -1790,6 +1834,51 @@ int Application::runStress(const StressConfig& cfg) {
             }
 
             glfwPollEvents();
+
+            // H4: pause/resume logic — triggered only when pauseAfter > 0 and
+            // the source is playable.
+            if (playable && cfg.pauseAfter > 0) {
+                if (pausedAt < 0 && f == cfg.pauseAfter) {
+                    // Pause: the decode thread is now idle with frames potentially held.
+                    timeAtPause = playable->getCurrentTime();
+                    playable->pause();
+                    pausedAt = f;
+                    Logger::info("[STRESS] pause() at frame {} (t={}s)", f, timeAtPause);
+                } else if (pausedAt >= 0 && resumedAt < 0
+                           && (f - pausedAt) >= 5) {
+                    // Hold paused for 5 frames, then resume.
+                    // 5 frames is enough for the decode thread to drain its prefetch
+                    // and sit idle, exercising the pool-hold condition.
+                    playable->play();
+                    resumedAt = f;
+                    Logger::info("[STRESS] play() (resume) at frame {}", f);
+                } else if (resumedAt >= 0 && (f - resumedAt) == 8) {
+                    // Recovery check: 8 frames after resume the source must have
+                    // advanced beyond the time it was at when we paused.
+                    // (8 frames at any realistic FPS is well over 80ms — enough
+                    // for the decode thread to wake and produce a new frame even
+                    // under load.  Using == not >= so the check fires exactly once.
+                    // With pauseAfter=15 and framesPerCycle=30: resume@20, check@28.
+                    // If it hasn't advanced, the thread wedged.)
+                    double timeAfterResume = playable->getCurrentTime();
+                    PlaybackState state    = playable->getPlaybackState();
+                    bool recovered = (state == PlaybackState::PLAYING)
+                                  && (timeAfterResume > timeAtPause);
+                    if (!recovered) {
+                        Logger::error("[STRESS] STRESS FAIL (pause-resume wedge) — "
+                                      "source did not recover after resume: "
+                                      "state={} t_before={}s t_after={}s",
+                                      static_cast<int>(state),
+                                      timeAtPause, timeAfterResume);
+                        pauseResumeWedge = true;
+                        m_outputManager->exitPerformMode();
+                        return false;
+                    }
+                    Logger::info("[STRESS] pause/resume recovered OK "
+                                 "(t_before={}s t_after={}s)",
+                                 timeAtPause, timeAfterResume);
+                }
+            }
 
             double now = glfwGetTime();
             double dt  = now - t;
@@ -1807,8 +1896,12 @@ int Application::runStress(const StressConfig& cfg) {
     // ---- 3. Warm-up cycle ---------------------------------------------------
     Logger::info("[STRESS] Warm-up cycle...");
     if (!runCycle()) {
-        Logger::error("[STRESS] STRESS FAIL (wedge) — warm-up cycle exceeded {}ms budget.",
-                      cfg.cycleTimeoutMs);
+        if (pauseResumeWedge) {
+            Logger::error("[STRESS] STRESS FAIL (pause-resume wedge) — warm-up cycle failed.");
+        } else {
+            Logger::error("[STRESS] STRESS FAIL (wedge) — warm-up cycle exceeded {}ms budget.",
+                          cfg.cycleTimeoutMs);
+        }
         return 1;
     }
 
@@ -1828,9 +1921,14 @@ int Application::runStress(const StressConfig& cfg) {
 
     for (int c = 0; c < cfg.cycles; ++c) {
         if (!runCycle()) {
-            Logger::error("[STRESS] STRESS FAIL (wedge) — cycle {} exceeded {}ms budget.",
-                          c + 1, cfg.cycleTimeoutMs);
-            anyWedge = true;
+            // runCycle returns false for two reasons:
+            // (a) wall-clock budget exceeded (anyWedge), OR
+            // (b) pause-resume recovery check failed (pauseResumeWedge, already logged).
+            if (!pauseResumeWedge) {
+                Logger::error("[STRESS] STRESS FAIL (wedge) — cycle {} exceeded {}ms budget.",
+                              c + 1, cfg.cycleTimeoutMs);
+                anyWedge = true;
+            }
             break;
         }
 
@@ -1896,13 +1994,18 @@ int Application::runStress(const StressConfig& cfg) {
         Logger::error("[STRESS] STRESS FAIL (working-set) — peak growth exceeded {} MB bound.",
                       cfg.workingSetBoundMB);
     }
+    if (pauseResumeWedge) {
+        Logger::error("[STRESS] STRESS FAIL (pause-resume wedge) — source did not recover "
+                      "after pause/resume (LESSON-BUG-006 repro).");
+    }
 
-    if (anyLeak || anyWedge || wsExceeded) {
+    if (anyLeak || anyWedge || wsExceeded || pauseResumeWedge) {
         return 1;
     }
 
-    Logger::info("[STRESS] STRESS PASS — {} cycles, GL flat, WS delta {} MB (bound {} MB).",
-                 cfg.cycles, finalGrowthMB, cfg.workingSetBoundMB);
+    Logger::info("[STRESS] STRESS PASS — {} cycles, GL flat, WS delta {} MB (bound {} MB){}.",
+                 cfg.cycles, finalGrowthMB, cfg.workingSetBoundMB,
+                 (cfg.pauseAfter > 0 && playable) ? ", pause/resume OK" : "");
     return 0;
 }
 

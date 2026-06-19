@@ -12,11 +12,13 @@ Last Updated: 2026-06-19 (Session 20)
 ## Session 21 (2026-06-19) — MultiMon cross-pollination (built + verified, uncommitted)
 Cross-pollinated from the MultiMon project (`D:\AIprojects\MultiMon`). Model-switched build
 (Opus design/verify + spot-checks, Sonnet impl). Harness-first then HAP. **654/654 ctest, clean build.**
-- **QM-081 DONE (H0–H3)** — perform-mode stress/leak harness. Headless `--stress` EnterPerform/
-  ExitPerform cycle runner: `core/GlObjectStats` GL-object live-count gate + working-set backstop +
-  wedge watchdog + `--hidden` + `stress_smoke` ctest. Proved the app is leak-clean across perform
-  cycles (counts flat, ~8 MB WS/5 cyc). Spec: `docs/perform-stress-harness-spec.md`.
-  **H4 TODO** — PNG-capture visual gate + pause/re-perform asserts + `--source=hap` flag.
+- **QM-081 DONE (H0–H3, + H4 hap subset)** — perform-mode stress/leak harness. Headless `--stress`
+  EnterPerform/ExitPerform cycle runner: `core/GlObjectStats` GL-object live-count gate + working-set
+  backstop + wedge watchdog + `--hidden` + `stress_smoke` ctest. Proved the app leak-clean across
+  perform cycles. **H4 hap subset DONE** — `--source=hap`/`--media=PATH` + `--pause-after` pause/resume
+  recovery assert; stressed the HAP path 10 cycles: GL flat, WS delta 0 MB, pause/resume recovers
+  every cycle (no LESSON-BUG-006 freeze). Spec: `docs/perform-stress-harness-spec.md`.
+  **H4 TODO (remainder)** — PNG-capture visual gate.
 - **QM-080 DONE + VERIFIED** — HAP / HapQ codec playback (ADR-044). FFmpeg-demux (no FFmpeg HAP
   decoder) + vendored decode-only Snappy + `hap::parseHapFrame` (16 tests, bounds-validated) +
   capability-gated BCn upload (`glCompressedTex*`, s3tc/bptc gate) + HapQ YCoCg→RGB shader.

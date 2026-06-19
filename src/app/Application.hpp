@@ -19,7 +19,10 @@ struct StressConfig {
     int  outputs        = 1;
     int  framesPerCycle = 120;
     bool fullscreen     = false;
-    std::string source  = "procedural";  // "procedural" | "image" | "video"
+    std::string source  = "procedural";  // "procedural" | "image" | "video" | "hap"
+    // H4: path to a media file when --source=video or --source=hap.
+    // Required for those source types; empty = error.
+    std::string media   = "";
     // H3: hidden mode — exercise the resource lifecycle (per-output Renderer
     // create/destroy + renderToOutputs) without taking over the screen.
     // Windows stay hidden; no borderless-fullscreen transition.
@@ -30,8 +33,9 @@ struct StressConfig {
     // H3: per-cycle wall-clock budget (ms). A cycle that hangs longer than this
     // is flagged as a wedge and aborts the run.
     int  cycleTimeoutMs = 5000;
-    // H4 stubs (parsed but ignored until those phases land)
-    int  pauseAfter     = 0;   // 0 = disabled
+    // H4: pause mid-cycle then resume to exercise the decode-thread / ring-buffer
+    // on resume (MultiMon LESSON-BUG-006 repro). 0 = disabled.
+    int  pauseAfter     = 0;
     std::string capture = "";  // "" = disabled
 };
 
