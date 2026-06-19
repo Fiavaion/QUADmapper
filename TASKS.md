@@ -1,12 +1,28 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-06-17 (Session 18)
+Last Updated: 2026-06-19 (Session 20)
 
 ## Quick Status
-- In Progress: 0 — **ADR-040 COMPLETE (P1–P5, QM-068–072): one video → many cropped quads, box-wrap**
-- Todo: 1 debt (TD-08, LOW; TD-07 RESOLVED, TD-09 subsumed by ADR-040) + 1 AI (🚩 QM-061 hardware gate)
-- Done: 77 — **ADR-039 multi-scene; groups-on-load + TD-07 fixes; ADR-040 P1–P5 (crop + shared media sources, software-complete & verified)**
+- In Progress: 0 — **Session-20 mapping-editor UX overhaul DONE but ⚠️ UNCOMMITTED on `dev`**
+- Todo: QM-079 (bezier on grid division lines, user wants next) + TD-08 (LOW) + 🚩 QM-061 (hardware)
+- Done: 78 — Session 20 added QM-073..078 (zoom/pan, video picker+crop, Simple/Advanced UI, bin
+  thumbnails+hover, undo/redo, bug button + smooth distortion + bezier corners)
 - Blocked: 0
+
+## Session 20 (2026-06-19) — Mapping-editor UX overhaul ⚠️ UNCOMMITTED
+All built + 633/633 ctest, NONE committed (commit in chunks next session — see notes/CURRENT_STATUS.md).
+- **QM-073 DONE** — viewport zoom/pan + aspect-correct canvas (ADR-041): central-node render,
+  `u_ViewScale`/`u_ViewOffset` shaders, Fit/wheel/middle-drag, portrait auto, hit-test inverts transform.
+- **QM-074 DONE** — native "Load Video…" dialog + crop reworked to Left/Right/Top/Bottom % insets.
+- **QM-075 DONE** — Simple/Advanced UI modes (ADR-042): persisted toolbar toggle; curated Simple
+  panels; video auto-play on assign; canvas drag-drop (manual release); click-to-select quad;
+  centralized `assignMediaToQuad` (fixed video-as-image bug); Scenes "New" seeds a quad.
+- **QM-076 DONE** — media-bin video first-frame thumbnails + procedural thumbnails + hover-to-play.
+- **QM-077 DONE** — Undo/Redo (Ctrl+Z/Y + Edit menu) for corner/mesh drag+nudge, rename, grid
+  edits; crash-safe via history-clear on delete/scene-switch. (Create/delete undo deferred.)
+- **QM-078 DONE** — Report Bug button; smooth 32×32 corner-pin tessellation (no fold); bezier
+  edges on the 4 corners (ADR-043): Coons patch, amber handles, toggle+reset, .qmap, undo.
+- **QM-079 TODO** — bezier handles on grid division lines (the deferred half of the bezier ask).
 
 ## Session 18 (2026-06-17) — ADR-040 scoping (shared media sources + per-quad crop)
 

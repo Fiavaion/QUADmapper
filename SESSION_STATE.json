@@ -1,99 +1,93 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-17T22:30:00Z",
+  "lastUpdated": "2026-06-19T16:10:00Z",
   "sessionInfo": {
-    "sessionNumber": 18,
-    "startTime": "2026-06-17T19:00:00Z",
-    "endTime": "2026-06-17T22:30:00Z",
+    "sessionNumber": 20,
+    "startTime": "2026-06-19T11:45:00Z",
+    "endTime": "2026-06-19T16:10:00Z",
     "status": "completed"
   },
   "currentWork": {
     "activeTaskId": null,
-    "activeTaskTitle": "ADR-040 P1 (per-quad crop, QM-068) DONE + GPU-verified. P2 (QM-069) is next. No task mid-edit.",
-    "currentFile": "branch dev (Session 18 @ f2f253e; 8 commits ahead of origin/dev, UNPUSHED). master = clean baseline fb4c85b.",
+    "activeTaskTitle": "Session-20 mapping-editor UX overhaul: 6 feature areas implemented, built, 633/633 ctest. ALL UNCOMMITTED.",
+    "currentFile": "branch dev @ committed HEAD 1554216; working tree has 34 uncommitted changes (29 modified, 5 new incl. ADR-041/042/043, GridUndo.hpp, MediaAssign.hpp).",
     "currentFunction": null,
-    "workInProgress": "Nothing mid-edit. Session 18 shipped: groups-on-load fix, TD-07 fix, ADR-040 scoped+Accepted, and ADR-040 P1 (per-quad crop, QM-068) implemented and GPU-verified. 8 commits on dev, working tree clean, 630/630 ctest.",
+    "workInProgress": "Nothing mid-edit. Final build is clean + 633/633. The entire Session-20 stack is UNCOMMITTED on dev. NEXT SESSION must commit it (in logical chunks) and the user must visually verify the interactive features (couldn't auto-drive the UI reliably under desktop-sharing).",
     "nextSteps": [
-      "ADR-040 P2 (QM-069) — THE NEXT STEP, the risky convergence: make the renderer resolve a quad's texture from SourceManager via TextureBinding::mediaId (the TD-09 gap), dedupe sources by path, retire the EditorState::quadTextures map. Behavior-preserving FIRST; success-metric-adjacent. Start fresh; likely warrants an advisor pass on the convergence approach. Then P3 (shared/multi-quad video — retire singular videoPlayer/videoAssignedQuadId), P4 (cross-scene box-wrap proof), P5 (.qmap v3.1 sources+mediaId persistence).",
-      "Push dev to origin/dev (8 commits unpushed) when ready — push not done automatically.",
-      "dev -> master PR still gated on QM-061 (hardware) per the user; hold until it passes.",
-      "QM-061 (BLOCKED on hardware): real-device AI test. Runbook docs/QM-061-hardware-test-runbook.md.",
-      "Optional debt: TD-08 (audio snapshot, LOW). TD-09 now folds into ADR-040 P2."
+      "COMMIT the Session-20 stack first, in logical chunks (QM-073..QM-078) — see notes/CURRENT_STATUS.md for the per-chunk file lists. Exclude imgui.ini and project.qmap (incidental).",
+      "User visual-verify: smooth corner-pin distortion, bezier corner handles (toggle Curved edges -> drag amber handles), hover-to-play thumbnails, undo/redo, Scenes New, canvas drag-drop, click-to-select.",
+      "QM-079 (DEFERRED, user wants it next): bezier handles on the GRID DIVISION LINES (corner bezier is done; interior division curves need a richer surface model).",
+      "Revert preferences.json defaultMediaFolder (set to D:\\testing Videos for verification) if unwanted.",
+      "ADR-040 dev->master PR still gated on QM-061 (hardware). dev unpushed."
     ]
   },
   "context": {
     "recentFiles": [
-      "src/scene/Quad.hpp",
-      "src/shaders/quad.frag",
+      "src/scene/QuadGeometry.cpp",
+      "src/scene/QuadGeometry.hpp",
       "src/renderer/Renderer.cpp",
+      "src/ui/panels/ViewportEditor.cpp",
       "src/ui/panels/InspectorPanel.cpp",
-      "src/project/ProjectSerializer.cpp",
+      "src/ui/panels/MediaBinPanel.cpp",
+      "src/ui/panels/MainMenuBar.cpp",
+      "src/app/EditorState.hpp",
       "src/app/Application.cpp",
-      "tests/unit/renderer/CropRenderTest.cpp",
-      "tests/unit/project/ProjectSerializerTest.cpp",
-      "tests/CMakeLists.txt",
-      "tests/unit/CMakeLists.txt",
-      "docs/adr/0040-shared-media-sources-and-per-quad-crop.md"
+      "src/app/GridUndo.hpp",
+      "src/app/MediaAssign.hpp",
+      "src/project/ProjectSerializer.cpp",
+      "docs/adr/0041-viewport-zoom-pan-and-canvas-aspect.md",
+      "docs/adr/0042-simple-advanced-ui-modes.md",
+      "docs/adr/0043-smooth-tessellation-and-bezier-edges.md"
     ],
     "keyDecisions": [
-      "ADR-040 (Accepted): one decoded video -> many quads, each cropped, from a SINGLE decode. Frame-sync becomes structural (one clock/frame), decode cost flat in quad count. The mechanism is the TD-09 convergence: renderer resolves a quad's texture from SourceManager via the dormant TextureBinding::mediaId. Box-wrap MVP (panorama on a cuboid, 2 projectors / 2 scenes).",
-      "Crop is normalized (NormalizedRect cropRect, default full frame) and composes OUTSIDE the existing UV transform in quad.frag: uv = cropOffset + cropSize*uv. Identity is byte-for-byte the old formula (render no-op), so existing projects are visually unchanged.",
-      "Crop serialized inside textureBinding only when non-identity -> pre-crop .qmap files and untouched quads stay byte-identical; no version bump (matches the ADR-036/037 color/soft-edge conditional-write precedent). Missing crop loads as full frame.",
-      "Groups-on-load needed TWO fixes: (a) deserializeQuad/deserializeGroup now preserve the persisted id (defensive parseIdOrNull: malformed/short -> fresh, so older files still load) so member references re-link; (b) syncProjectToEditor rebuilds each scene's groups with member + nested-parent id remap (createQuad/createGroup mint fresh ids).",
-      "TD-07: fixed with DISCOVERY_TIMEOUT 60 (NOT DISCOVERY_MODE PRE_TEST — that was tried and reverted because it broke the standard `ctest --test-dir build/debug` which then required -C Debug).",
-      "P1 verification depth was the user's explicit choice: a real-GL GPU readback test (test_render_gl) — render through the actual shader to an FBO and glReadPixels — not just a data round-trip. It is the repo's first real-GL test; skip-if-no-context keeps it CI-safe.",
-      "P2 (the media-model convergence) is success-metric-adjacent and the highest-risk phase; deferred to a fresh start with an advisor pass rather than barrelled into at session end."
+      "ADR-041: editor canvas renders into the dockspace central node with a view transform (u_ViewScale/u_ViewOffset added to quad/outline/handle vertex shaders; identity default keeps output/preview byte-identical). Aspect from the assigned output's effective resolution (portrait auto). Zoom/pan session-only (no .qmap change). Hit-test inverts the same transform so the success-metric warp is preserved.",
+      "ADR-042: Simple/Advanced UI mode (EditorState::UiMode, persisted in prefs, default Simple). Per-panel gating, Advanced branch unchanged. Centralized assignMediaToQuad/bindSourceToQuad (fixed a latent bug: dropped videos were created as image sources). Canvas drag-drop uses manual GetDragDropPayload + IsMouseReleased because BeginDragDropTargetCustom can't register over a PassthruCentralNode.",
+      "ADR-043: surfacePoint(u,v) is the single render sampler; CORNERS_ONLY quads tessellate 32x32 (kills the diagonal fold). Bezier edges = 8 control-point offsets from the 1/3 & 2/3 points (zero = straight), blended as a Coons patch; amber drag handles; additive .qmap persistence; corner bezier done, grid-line bezier deferred (QM-079).",
+      "Undo/redo: reused the dormant CommandHistory + command classes AS-IS (raw Quad* pointers). Made it crash-safe by CLEARING history on quad delete / scene switch (a count/scene guard in Application::render), instead of rewriting commands to be UUID-based. Covers geometry+rename+grid edits. Undoable create/delete deferred (needs Quad::setId + identity-preserving commands).",
+      "Video thumbnails: one-shot VideoDecoder.open+decodeNextFrame -> RGBA -> cached RAII Texture (no persistent decoder). Hover-to-play uses ONE dedicated createVideoSource (not getOrCreate) so it never disturbs a quad's assigned video."
     ],
     "openQuestions": [],
     "blockers": [
-      "QM-061 (AI real-device validation) still needs physical projector + surface + phone (unchanged)."
+      "QM-061 (AI real-device validation) still needs physical projector + surface + phone (unchanged).",
+      "Interactive UI features built but NOT visually verified by the assistant (shared-desktop blocks reliable synthetic UI driving) — user verification pending."
     ]
   },
   "projectState": {
-    "currentPhase": "ADR-040 (shared media sources + per-quad crop) IN FLIGHT: P1 (crop, QM-068) DONE + GPU-verified; P2-P5 (QM-069-072) next. ADR-039 multi-scene routing COMPLETE. AI wedge (Phase 9) software-complete, gated on hardware QM-061.",
+    "currentPhase": "Mapping-editor UX overhaul (Session 20): zoom/pan, Simple/Advanced UI, bin thumbnails+hover, undo/redo, smooth distortion, bezier corner edges. ALL UNCOMMITTED on dev. ADR-040 (shared sources + per-quad crop) COMPLETE (P1-P5, Session 19).",
     "completedPhases": [
-      "Phase 0: Infrastructure Setup",
-      "Phase 1: Core Foundation",
-      "Phase 2: Mesh & Multi-Quad",
-      "Phase 3: Video Playback",
-      "Phase 4: Multi-Output",
-      "Phase 5: Scene System",
-      "Phase 6: Audio System",
-      "Phase 7: Polish",
+      "Phase 0-7: Foundation through Polish",
       "Phase 8: ADR-031 Refactor (merged to master)",
       "Phase 9: AI Pre-Show Assist - software-complete; QM-061 hardware gate outstanding",
-      "v1.1 polish: color correction + soft-edge + UV grid",
-      "Kantan-style grid (ADR-038) Tier 1 (Linear parity)",
-      "Mapping-editor UX fixes",
+      "Kantan-style grid (ADR-038) Tier 1",
       "ADR-039 multi-scene routing P1-P5 - COMPLETE",
-      "Session 18 follow-ups: groups-on-load fix + TD-07 resolved",
-      "ADR-040 P1 (QM-068) per-quad crop - DONE + GPU-verified"
+      "ADR-040 shared media sources + per-quad crop P1-P5 - COMPLETE (Session 19)",
+      "Session 20: ADR-041 viewport zoom/pan, ADR-042 Simple/Advanced UI, bin thumbnails+hover-play, undo/redo, ADR-043 smooth tessellation + bezier corners - IMPLEMENTED, UNCOMMITTED"
     ],
     "buildStatus": "success",
-    "lastSuccessfulBuild": "2026-06-17T22:15:00Z",
-    "note": "Session 18. Groups-on-load + TD-07 fixed; ADR-040 scoped/Accepted; ADR-040 P1 (per-quad crop, QM-068) shipped and GPU-verified via the new test_render_gl readback target. 8 commits on dev (4ca12c5..f2f253e), UNPUSHED; master clean at fb4c85b. 630/630 ctest; build green; working tree clean. Next: ADR-040 P2 (QM-069) renderer<-SourceManager convergence (risk phase, start fresh + advisor). dev->master PR still held for QM-061 hardware."
+    "lastSuccessfulBuild": "2026-06-19T16:05:00Z",
+    "note": "Session 20. Large mapping-editor UX overhaul (ADR-041/042/043 + thumbnails + undo/redo), build green, 633/633 ctest. ENTIRE STACK UNCOMMITTED (34 working-tree changes) on dev (HEAD 1554216). Next: commit in chunks (QM-073..078), user visual-verify, then QM-079 grid-line bezier."
   },
   "statistics": {
-    "totalSessions": 18,
-    "tasksCompleted": 72,
+    "totalSessions": 20,
+    "tasksCompleted": 78,
     "tasksInProgress": 0,
-    "tasksTodo": 5
+    "tasksTodo": 3
   },
-  "session18Accomplishments": {
-    "shipped": "8 commits on dev (4ca12c5..f2f253e), UNPUSHED; master clean at fb4c85b. Groups-on-load + TD-07 fixes; ADR-040 scoped+Accepted; ADR-040 P1 crop (QM-068) done + GPU-verified.",
+  "session20Accomplishments": {
+    "shipped": "6 feature areas implemented + built + 633/633 ctest, ALL UNCOMMITTED on dev. ADRs 041/042/043 written.",
     "items": [
-      "Groups-on-load FIXED (d586da6): preserve persisted quad/group ids on deserialize (defensive parseIdOrNull) + syncProjectToEditor rebuilds groups with member/parent remap. Test V3GroupMembershipRoundTrips.",
-      "TD-07 RESOLVED (4ca12c5): gtest_discover_tests DISCOVERY_TIMEOUT 60 ends the spurious cmake --build non-zero exit (PRE_TEST mode tried and reverted).",
-      "ADR-040 scoped & Accepted (f41a317): one video -> many cropped quads from one decode; converges TD-09 (renderer reads SourceManager via mediaId); .qmap additive v3.1; phased QM-068-072.",
-      "QM-068 (ADR-040 P1) DONE (f5c2920, b3912fc): normalized TextureBinding::cropRect; quad.frag crop compose (identity = no-op); Inspector crop control + vertical-quarter quick-sets; conditional .qmap write. Verified: data round-trip tests + GPU readback (test_render_gl: left crop->red, right/quarter->green through the real shader to an FBO).",
-      "Gate: 630/630 ctest; build green; success-metric path untouched (crop identity is a render no-op)."
+      "QM-073 viewport zoom/pan + aspect canvas (ADR-041): central-node render + view-transform shaders; Fit/wheel/middle-drag; portrait auto; hit-test inverts transform.",
+      "QM-074 native Load Video dialog + crop Left/Right/Top/Bottom % insets.",
+      "QM-075 Simple/Advanced UI (ADR-042): toolbar toggle (persisted); curated Simple panels; video auto-play on assign; canvas drag-drop (manual release detection); click-to-select quad; centralized assignMediaToQuad; Scenes New seeds a quad.",
+      "QM-076 media-bin thumbnails: video first-frame + procedural live texture + hover-to-play (dedicated preview decoder).",
+      "QM-077 undo/redo: CommandHistory + Ctrl+Z/Y + Edit menu; corner/mesh drag+nudge, rename, grid edits; crash-safe via clear-on-delete/scene-switch guard.",
+      "QM-078 Report Bug button + smooth 32x32 corner-pin tessellation + bezier corner edges (ADR-043, Coons patch, amber handles, additive persistence, undoable)."
     ],
     "lessons": [
-      "A 'crop the video into quarters' feature was already half-built in dormant scaffolding (TextureBinding::mediaId + cropRegion, SourceManager owning sources+textures) — audit for existing unused fields before designing; the real work was wiring, not inventing.",
-      "When restoring a feature that crosses serialize+load (groups), check the WHOLE chain: the linkage can be broken at the serializer (ids dropped) AND the bridge (not re-applied). Fixing only one leaves it broken.",
-      "Persisted-but-ignored id fields are a latent linkage bug (same shape as the TD-05 mesh-offset drop): writing an id you never read silently breaks any cross-reference that uses it.",
-      "CMake gtest DISCOVERY_MODE PRE_TEST defers discovery to ctest time but, on a multi-config (VS) generator, makes `ctest --test-dir` require -C <config>; a plain DISCOVERY_TIMEOUT bump fixes the build-exit flake without changing the developer's ctest invocation.",
-      "For a shader/visual feature, a data round-trip test is not 'seen working' — a real-GL FBO + glReadPixels test proves the pixels. It is cheap to stand up (hidden GLFW window + glad + the RAII Framebuffer) and worth it; skip-if-no-context keeps it CI-safe."
+      "ImGui BeginDragDropTargetCustom cannot register over a PassthruCentralNode (no window is hovered there) — for canvas drops, detect manually via GetDragDropPayload() + IsMouseReleased() over the region rect.",
+      "The dormant CommandHistory holds raw Quad* and recreates quads with NEW ids on undo, so undoable delete would dangle/crash. Shipping a SAFE subset (geometry+rename+grid, history cleared on structural change) beats a full-but-crashing undo; full create/delete undo needs Quad::setId + UUID-based commands.",
+      "A corner-pin quad is a 1x1 control cell -> 2 triangles -> diagonal fold; decoupling render tessellation from the control grid (sample surfacePoint at 32x32) is the fix, and the same sampler cleanly hosts the bezier Coons patch.",
+      "Under desktop-sharing the assistant can't reliably synthetic-drive the app window (VS Code steals foreground); interactive features must be handed to the user for visual verification rather than claimed."
     ]
   }
 }

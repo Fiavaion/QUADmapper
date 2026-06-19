@@ -6,6 +6,51 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 20 - 2026-06-19 - Mapping-editor UX overhaul (zoom/pan, Simple/Advanced, thumbnails, undo/redo, bezier) ⚠️ UNCOMMITTED
+
+**Focus:** A long interactive session driven by hands-on testing with a real projector. Reworked
+the editor UX in six areas. Everything **builds + 633/633 ctest**, but the **entire stack is
+UNCOMMITTED** on `dev` (HEAD `1554216`; 34 working-tree changes). ADR-040 (one video → many
+cropped quads) had already completed (P1–P5) in Session 19.
+
+**Completed this session (all uncommitted — commit in chunks next session):**
+- **QM-073 — Viewport zoom/pan + aspect canvas ([ADR-041](docs/adr/0041-viewport-zoom-pan-and-canvas-aspect.md)).**
+  Canvas renders into the dockspace central node with a view transform (`u_ViewScale`/`u_ViewOffset`
+  added to `quad`/`outline`/`handle` vertex shaders; identity default → output/preview unchanged).
+  Letterboxed to the assigned output's effective resolution (portrait auto). Fit / wheel-zoom /
+  middle-drag pan. The success-metric hit-test inverts the same transform. Fixed `CropRenderTest`
+  to set the new uniforms.
+- **QM-074 — Video picker + crop insets.** Native "Load Video…" file dialog; crop UI reworked to
+  Left/Right/Top/Bottom % insets (storage stays `{x,y,w,h}`); two-face split presets.
+- **QM-075 — Simple/Advanced UI ([ADR-042](docs/adr/0042-simple-advanced-ui-modes.md)).** Persisted
+  toolbar toggle (default Simple); curated Simple Inspector/Video-Player + Media-only Resources +
+  toolbar Apply-Test-Grid / Send-to-Projector. Video auto-plays on assign. Drag a clip from the bin
+  onto a canvas quad (manual `GetDragDropPayload`+release — a custom target can't sit over the
+  passthrough central node). Click a quad to select it (`QuadManager::quadAtPoint`). Centralized
+  `assignMediaToQuad`/`bindSourceToQuad` (fixed a bug where dropped videos became image sources).
+  Scenes "New" seeds a starter quad.
+- **QM-076 — Media-bin thumbnails.** Video first-frame thumbnails (one-shot decode → cached RAII
+  texture), procedural live-texture thumbnails, and hover-to-play (one dedicated preview decoder).
+- **QM-077 — Undo/Redo.** Reused the dormant `CommandHistory` + command classes; `EditorState`
+  owns the stack; Ctrl+Z/Y + Edit menu. Routes corner/mesh drag+nudge, rename, and grid edits
+  (add/del col/row, even-grid, click-insert). Crash-safe via a guard that clears history on quad
+  delete / scene switch (commands hold raw pointers). Undoable create/delete deferred.
+- **QM-078 — Report Bug + smooth distortion + bezier corners ([ADR-043](docs/adr/0043-smooth-tessellation-and-bezier-edges.md)).**
+  Toolbar "Report Bug" opens the GitHub bug template. Corner-pin quads tessellate 32×32 via
+  `surfacePoint` (no diagonal fold). Bezier edges on the 4 corners: Coons patch, amber drag
+  handles, toggle + Reset in both Inspectors, additive `.qmap` persistence, undoable.
+
+**Decisions:** see ADR-041/042/043 and SESSION_STATE.json `keyDecisions`.
+
+**Handoff:** (1) COMMIT the stack in chunks (QM-073..078) — per-chunk file lists in
+notes/CURRENT_STATUS.md; exclude `imgui.ini`/`project.qmap`. (2) User must visually verify the
+interactive features (assistant couldn't reliably synthetic-drive the UI under desktop-sharing).
+(3) **QM-079** bezier on grid division lines is the deferred half the user wants next. (4)
+`preferences.json` `defaultMediaFolder` was pointed at `D:\testing Videos` for verification — clear
+if unwanted. (5) `dev` unpushed; dev→master still gated on 🚩 QM-061 (hardware).
+
+---
+
 ### Session 18 - 2026-06-17 - follow-up fixes + ADR-040 (shared media + crop) scoped & P1 shipped
 
 **Focus:** Two cleanups the user requested (groups-on-load, the TD-07 build flake), then a
