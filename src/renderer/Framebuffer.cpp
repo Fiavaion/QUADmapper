@@ -1,4 +1,5 @@
 #include "Framebuffer.hpp"
+#include "core/GlObjectStats.hpp"
 
 namespace quadmapper {
 
@@ -19,6 +20,7 @@ bool Framebuffer::resize(int width, int height) {
     height_ = height;
 
     glGenTextures(1, &color_);
+    GlObjectStats::onTextureCreated();
     glBindTexture(GL_TEXTURE_2D, color_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, nullptr);
@@ -28,6 +30,7 @@ bool Framebuffer::resize(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glGenFramebuffers(1, &fbo_);
+    GlObjectStats::onFramebufferCreated();
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                            color_, 0);
@@ -55,10 +58,12 @@ void Framebuffer::unbind() {
 void Framebuffer::destroy() {
     if (fbo_ != 0) {
         glDeleteFramebuffers(1, &fbo_);
+        GlObjectStats::onFramebufferDestroyed();
         fbo_ = 0;
     }
     if (color_ != 0) {
         glDeleteTextures(1, &color_);
+        GlObjectStats::onTextureDestroyed();
         color_ = 0;
     }
     width_ = 0;

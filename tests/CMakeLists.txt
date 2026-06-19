@@ -41,3 +41,22 @@ add_subdirectory(unit)
 
 # Integration tests
 add_subdirectory(integration)
+
+# ---------------------------------------------------------------------------
+# stress_smoke — QM-081 H3: fast CI gate for the perform-mode stress harness.
+# Runs 5 cycles, 1 output, 20 frames/cycle in --hidden mode (no screen grab).
+# PASS = exit code 0 (GL flat, no wedge, working-set within default 64 MB bound).
+# The full 50-cycle release gate is a manual / /release-time check only.
+# ---------------------------------------------------------------------------
+add_test(
+    NAME stress_smoke
+    COMMAND $<TARGET_FILE:QUADmapper>
+        --stress
+        --cycles=5
+        --outputs=1
+        --frames-per-cycle=20
+        --hidden
+)
+set_tests_properties(stress_smoke PROPERTIES
+    TIMEOUT 60   # generous wall-clock limit; each cycle budget is 5 s × 5 = 25 s
+)

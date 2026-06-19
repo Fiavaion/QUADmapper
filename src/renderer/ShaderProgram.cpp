@@ -1,4 +1,5 @@
 #include "ShaderProgram.hpp"
+#include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
 #include <glad/glad.h>
 #include <glm/gtc/type_ptr.hpp>
@@ -40,6 +41,7 @@ bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource)
 
     // Create and link program
     programId_ = glCreateProgram();
+    GlObjectStats::onShaderProgramCreated();
     glAttachShader(programId_, vertexShader);
     glAttachShader(programId_, fragmentShader);
     glLinkProgram(programId_);
@@ -47,6 +49,7 @@ bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource)
     // Check for link errors
     if (!checkProgramLinkError(programId_)) {
         glDeleteProgram(programId_);
+        GlObjectStats::onShaderProgramDestroyed();
         programId_ = 0;
         glDeleteShader(vertexShader);
         glDeleteShader(fragmentShader);
@@ -64,6 +67,7 @@ bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource)
 void ShaderProgram::destroy() {
     if (programId_ != 0) {
         glDeleteProgram(programId_);
+        GlObjectStats::onShaderProgramDestroyed();
         programId_ = 0;
     }
 }

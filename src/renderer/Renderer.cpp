@@ -1,4 +1,5 @@
 #include "Renderer.hpp"
+#include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
 #include "ShaderSources.hpp"
 #include <glad/glad.h>
@@ -63,38 +64,47 @@ void Renderer::shutdown() {
 
     if (quadVAO_ != 0) {
         glDeleteVertexArrays(1, &quadVAO_);
+        GlObjectStats::onVertexArrayDestroyed();
         quadVAO_ = 0;
     }
     if (quadVBO_ != 0) {
         glDeleteBuffers(1, &quadVBO_);
+        GlObjectStats::onVertexBufferDestroyed();
         quadVBO_ = 0;
     }
     if (quadEBO_ != 0) {
         glDeleteBuffers(1, &quadEBO_);
+        GlObjectStats::onVertexBufferDestroyed();
         quadEBO_ = 0;
     }
     if (outlineVAO_ != 0) {
         glDeleteVertexArrays(1, &outlineVAO_);
+        GlObjectStats::onVertexArrayDestroyed();
         outlineVAO_ = 0;
     }
     if (outlineVBO_ != 0) {
         glDeleteBuffers(1, &outlineVBO_);
+        GlObjectStats::onVertexBufferDestroyed();
         outlineVBO_ = 0;
     }
     if (gridVAO_ != 0) {
         glDeleteVertexArrays(1, &gridVAO_);
+        GlObjectStats::onVertexArrayDestroyed();
         gridVAO_ = 0;
     }
     if (gridVBO_ != 0) {
         glDeleteBuffers(1, &gridVBO_);
+        GlObjectStats::onVertexBufferDestroyed();
         gridVBO_ = 0;
     }
     if (handleVAO_ != 0) {
         glDeleteVertexArrays(1, &handleVAO_);
+        GlObjectStats::onVertexArrayDestroyed();
         handleVAO_ = 0;
     }
     if (handleVBO_ != 0) {
         glDeleteBuffers(1, &handleVBO_);
+        GlObjectStats::onVertexBufferDestroyed();
         handleVBO_ = 0;
     }
 
@@ -130,8 +140,11 @@ void Renderer::applyViewUniforms(ShaderProgram& shader) {
 void Renderer::createQuadBuffers() {
     // Create VAO
     glGenVertexArrays(1, &quadVAO_);
+    GlObjectStats::onVertexArrayCreated();
     glGenBuffers(1, &quadVBO_);
+    GlObjectStats::onVertexBufferCreated();
     glGenBuffers(1, &quadEBO_);
+    GlObjectStats::onVertexBufferCreated();
 
     glBindVertexArray(quadVAO_);
 
@@ -158,7 +171,9 @@ void Renderer::createQuadBuffers() {
 
 void Renderer::createOutlineBuffers() {
     glGenVertexArrays(1, &outlineVAO_);
+    GlObjectStats::onVertexArrayCreated();
     glGenBuffers(1, &outlineVBO_);
+    GlObjectStats::onVertexBufferCreated();
 
     glBindVertexArray(outlineVAO_);
 
@@ -175,7 +190,9 @@ void Renderer::createOutlineBuffers() {
     // Mesh-grid wireframe buffer (dynamic; reuses the outline shader). Sized for the
     // worst-case 64x64 control grid: 2 axes * 65 lines * 64 segments * 2 endpoints.
     glGenVertexArrays(1, &gridVAO_);
+    GlObjectStats::onVertexArrayCreated();
     glGenBuffers(1, &gridVBO_);
+    GlObjectStats::onVertexBufferCreated();
     glBindVertexArray(gridVAO_);
     glBindBuffer(GL_ARRAY_BUFFER, gridVBO_);
     glBufferData(GL_ARRAY_BUFFER, 2 * 65 * 64 * 2 * 2 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
@@ -349,6 +366,15 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
     quadShader_.setFloat("u_EdgeBottom", se.bottom);
     quadShader_.setFloat("u_EdgeGamma", se.gamma);
 
+    // Colorspace uniform (ADR-044, A4): 1 = YCoCg decode for Hap Q, 0 = RGB passthrough.
+    // Sourced from the texture's colorSpace() so every draw path (canvas, per-output
+    // renderer, preview FBO) picks it up automatically through this single call site.
+    {
+        int cs = (texture && texture->isValid() &&
+                  texture->colorSpace() == TextureColorSpace::YCoCg) ? 1 : 0;
+        quadShader_.setInt("u_ColorSpace", cs);
+    }
+
     // Bind texture
     if (texture && texture->isValid()) {
         texture->bind(0);
@@ -501,7 +527,9 @@ void Renderer::createHandleBuffers() {
     }
 
     glGenVertexArrays(1, &handleVAO_);
+    GlObjectStats::onVertexArrayCreated();
     glGenBuffers(1, &handleVBO_);
+    GlObjectStats::onVertexBufferCreated();
 
     glBindVertexArray(handleVAO_);
 

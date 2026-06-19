@@ -32,6 +32,10 @@ if(WIN32)
         WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>
     )
 
+    # H3 stress harness: working-set query via GetProcessMemoryInfo (psapi).
+    # Psapi is a Windows system library — no vcpkg dependency.
+    target_link_libraries(QUADmapper PRIVATE Psapi)
+
     # Copy resources to build directory
     add_custom_command(TARGET QUADmapper POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory

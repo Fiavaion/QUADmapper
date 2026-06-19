@@ -2,11 +2,38 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 
 struct GLFWwindow;
 
 namespace quadmapper {
+
+// ---------------------------------------------------------------------------
+// StressConfig — CLI-driven perform-mode stress harness (QM-081 H2).
+// Fields mirror the --stress sub-flags. H3/H4 fields (pauseAfter, capture)
+// are stubbed here so the struct is stable; only H2 fields are consumed now.
+// ---------------------------------------------------------------------------
+struct StressConfig {
+    int  cycles         = 50;
+    int  outputs        = 1;
+    int  framesPerCycle = 120;
+    bool fullscreen     = false;
+    std::string source  = "procedural";  // "procedural" | "image" | "video"
+    // H3: hidden mode — exercise the resource lifecycle (per-output Renderer
+    // create/destroy + renderToOutputs) without taking over the screen.
+    // Windows stay hidden; no borderless-fullscreen transition.
+    bool hidden         = false;
+    // H3: working-set bound — FAIL if post-warm-up working set grows more than
+    // this many MB across all cycles.
+    long workingSetBoundMB = 64;
+    // H3: per-cycle wall-clock budget (ms). A cycle that hangs longer than this
+    // is flagged as a wedge and aborts the run.
+    int  cycleTimeoutMs = 5000;
+    // H4 stubs (parsed but ignored until those phases land)
+    int  pauseAfter     = 0;   // 0 = disabled
+    std::string capture = "";  // "" = disabled
+};
 
 class Renderer;
 class MediaLibrary;
@@ -107,6 +134,11 @@ private:
     // frame's render()+ImGui+swap so it never runs mid-ImGui-frame.
     void renderToProjectorOutputs();
 
+    // Headless perform-mode stress harness (QM-081 H2). Driven by --stress CLI
+    // flags; runs in place of the interactive loop. Returns 0 on clean (flat GL
+    // object counts), non-zero on any detected leak.
+    int runStress(const StressConfig& cfg);
+
     // Window
     GLFWwindow* m_window = nullptr;
     int m_windowWidth = 1920;
@@ -143,6 +175,10 @@ private:
     // QM-058 self-test hook (QM_AI_SELFTEST). Off in normal runs.
     bool m_aiSelfTestPending = false;
     int m_frameCount = 0;
+
+    // Perform-mode stress harness config (QM-081 H2). Set by --stress CLI flags;
+    // absent in normal (interactive) runs.
+    std::optional<StressConfig> m_stressConfig;
 
     // One-Flash calibration pattern state (QM-059). When m_emitPattern is set,
     // the projector outputs show m_calibQuad (identity, fullscreen) instead of the
