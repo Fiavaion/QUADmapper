@@ -15,11 +15,22 @@ add_library(quadmapper_source STATIC
     VideoFileSource.hpp
     VideoFileSource.cpp
 
+    # HAP video file source — demux-only, stages BCn frames (QM-080 A1)
+    HapFileSource.hpp
+    HapFileSource.cpp
+
     # Live camera / capture-device source (QM-055)
     CameraDevices.hpp
     CameraDevices.cpp
     CameraSource.hpp
     CameraSource.cpp
+
+    # HAP frame decoder (QM-080 A2) — no GL, no FFmpeg
+    hap/HapFormat.hpp
+    hap/HapFrameParser.hpp
+    hap/HapFrameParser.cpp
+    hap/snappy/SnappyDecoder.hpp
+    hap/snappy/SnappyDecoder.cpp
 
     # Procedural sources
     procedural/ProceduralSource.hpp
@@ -55,6 +66,24 @@ target_link_libraries(quadmapper_source
         glad
         glm::glm
 )
+
+# HapFileSource + the HAP codec probe in SourceManager demux with FFmpeg directly
+# (no FFmpeg decoder — ADR-044). Mirror quadmapper_video's PRIVATE FFmpeg wiring so
+# the libav* headers and QUADMAPPER_HAS_FFMPEG are visible to this lib's .cpp files.
+find_path(AVCODEC_INCLUDE_DIR libavcodec/avcodec.h)
+find_library(AVCODEC_LIBRARY avcodec)
+find_library(AVFORMAT_LIBRARY avformat)
+find_library(AVUTIL_LIBRARY avutil)
+if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
+    target_include_directories(quadmapper_source PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(quadmapper_source
+        PRIVATE
+            ${AVCODEC_LIBRARY}
+            ${AVFORMAT_LIBRARY}
+            ${AVUTIL_LIBRARY}
+    )
+    target_compile_definitions(quadmapper_source PRIVATE QUADMAPPER_HAS_FFMPEG=1)
+endif()
 
 set_target_properties(quadmapper_source PROPERTIES
     FOLDER "Libraries"

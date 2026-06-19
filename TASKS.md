@@ -3,11 +3,27 @@
 Last Updated: 2026-06-19 (Session 20)
 
 ## Quick Status
-- In Progress: 0 — **Session-20 mapping-editor UX overhaul DONE, committed + pushed to `origin/dev` (721b61a + 83deff2)**
-- Todo: QM-079 (bezier on grid division lines, user wants next) + TD-08 (LOW) + 🚩 QM-061 (hardware)
-- Done: 78 — Session 20 added QM-073..078 (zoom/pan, video picker+crop, Simple/Advanced UI, bin
-  thumbnails+hover, undo/redo, bug button + smooth distortion + bezier corners)
+- In Progress: 0 — Session-21 work built + verified, **uncommitted** (awaiting review)
+- Todo: QM-081 H4 (capture gate + pause/re-perform asserts + hap-source flag) + QM-082
+  (Convert-to-HAP, follow-up) + QM-079 (bezier on grid division lines) + TD-08 (LOW) + 🚩 QM-061 (hardware)
+- Done: 80 — Session 21 added QM-080 (HAP playback, verified) + QM-081 H0–H3 (stress harness, CI-gated)
 - Blocked: 0
+
+## Session 21 (2026-06-19) — MultiMon cross-pollination (built + verified, uncommitted)
+Cross-pollinated from the MultiMon project (`D:\AIprojects\MultiMon`). Model-switched build
+(Opus design/verify + spot-checks, Sonnet impl). Harness-first then HAP. **654/654 ctest, clean build.**
+- **QM-081 DONE (H0–H3)** — perform-mode stress/leak harness. Headless `--stress` EnterPerform/
+  ExitPerform cycle runner: `core/GlObjectStats` GL-object live-count gate + working-set backstop +
+  wedge watchdog + `--hidden` + `stress_smoke` ctest. Proved the app is leak-clean across perform
+  cycles (counts flat, ~8 MB WS/5 cyc). Spec: `docs/perform-stress-harness-spec.md`.
+  **H4 TODO** — PNG-capture visual gate + pause/re-perform asserts + `--source=hap` flag.
+- **QM-080 DONE + VERIFIED** — HAP / HapQ codec playback (ADR-044). FFmpeg-demux (no FFmpeg HAP
+  decoder) + vendored decode-only Snappy + `hap::parseHapFrame` (16 tests, bounds-validated) +
+  capability-gated BCn upload (`glCompressedTex*`, s3tc/bptc gate) + HapQ YCoCg→RGB shader.
+  End-to-end verified: real `D:\testing Videos\Hap\5sec_hap.mov` (1920×1080 Hap Q) renders
+  correct-colored through the real pipeline (capture: `c:\tmp\a5_hapq_shader.png` vs `_raw.png`).
+  ADR: `docs/adr/0044-hap-codec-playback.md`. `SourceType` unchanged; `.qmap` unaffected.
+- **QM-082 TODO (follow-up)** — Convert-to-HAP via the linked FFmpeg (`-c:v hap -format hap_q`).
 
 ## Session 20 (2026-06-19) — Mapping-editor UX overhaul (committed + pushed)
 All built + 633/633 ctest; committed + pushed to `origin/dev` (`721b61a` code + `83deff2` docs).

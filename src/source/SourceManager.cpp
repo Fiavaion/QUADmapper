@@ -1,12 +1,55 @@
 #include "SourceManager.hpp"
 #include "StaticImageSource.hpp"
 #include "VideoFileSource.hpp"
+#include "HapFileSource.hpp"
 #include "CameraSource.hpp"
 #include "procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
+#include "renderer/GpuCapabilities.hpp"
 #include "core/Logger.hpp"
 
+#ifdef QUADMAPPER_HAS_FFMPEG
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+}
+#endif
+
 namespace quadmapper {
+
+namespace {
+
+// Cheap codec probe: open the container, check whether its video stream is HAP,
+// close. FFmpeg stays behind this .cpp (ADR-011); routes HAP clips to the
+// demux-only HapFileSource instead of the FFmpeg-decode VideoFileSource (ADR-044).
+bool isHapContainer(const std::filesystem::path& path) {
+#ifdef QUADMAPPER_HAS_FFMPEG
+    AVFormatContext* ctx = nullptr;
+    std::string pathStr = path.string();
+    if (avformat_open_input(&ctx, pathStr.c_str(), nullptr, nullptr) < 0) {
+        return false;
+    }
+
+    bool isHap = false;
+    if (avformat_find_stream_info(ctx, nullptr) >= 0) {
+        for (unsigned int i = 0; i < ctx->nb_streams; ++i) {
+            AVCodecParameters* cp = ctx->streams[i]->codecpar;
+            if (cp->codec_type == AVMEDIA_TYPE_VIDEO && cp->codec_id == AV_CODEC_ID_HAP) {
+                isHap = true;
+                break;
+            }
+        }
+    }
+
+    avformat_close_input(&ctx);
+    return isHap;
+#else
+    (void)path;
+    return false;
+#endif
+}
+
+} // namespace
 
 SourceManager::SourceManager() = default;
 
@@ -47,9 +90,12 @@ UUID SourceManager::getOrCreateImageSource(const std::filesystem::path& path) {
 
 UUID SourceManager::findVideoSourceByPath(const std::filesystem::path& path) const {
     for (const auto& [id, entry] : sources_) {
-        const auto* vid = dynamic_cast<const VideoFileSource*>(entry.source.get());
-        if (vid && vid->getPath() == path) {
-            return id;
+        // Both video back-ends report SourceType::VIDEO_FILE and store their path;
+        // match either so HAP and H.264 clips dedupe the same way (ADR-044).
+        if (const auto* vid = dynamic_cast<const VideoFileSource*>(entry.source.get())) {
+            if (vid->getPath() == path) return id;
+        } else if (const auto* hap = dynamic_cast<const HapFileSource*>(entry.source.get())) {
+            if (hap->getPath() == path) return id;
         }
     }
     return UUID();
@@ -64,7 +110,16 @@ UUID SourceManager::getOrCreateVideoSource(const std::filesystem::path& path) {
 }
 
 UUID SourceManager::createVideoSource(const std::filesystem::path& path) {
-    auto source = std::make_unique<VideoFileSource>(path);
+    // Probe the container: HAP clips route to the demux-only HapFileSource so the
+    // GPU-compressed frame is preserved; everything else uses the FFmpeg-decode
+    // VideoFileSource (ADR-044). Both report SourceType::VIDEO_FILE.
+    std::unique_ptr<TextureSource> source;
+    if (isHapContainer(path)) {
+        source = std::make_unique<HapFileSource>(path);
+        Logger::debug("SourceManager: '{}' is HAP — using HapFileSource", path.filename().string());
+    } else {
+        source = std::make_unique<VideoFileSource>(path);
+    }
     UUID id = source->getId();
 
     if (!registerSource(std::move(source)).isNull()) {
@@ -300,6 +355,41 @@ void SourceManager::uploadFrameToTexture(SourceEntry& entry) {
 
     const FrameData* frame = entry.source->getCurrentFrame();
     if (!frame || !frame->isValid()) {
+        return;
+    }
+
+    // GPU-compressed (HAP/BCn) path (ADR-044). The frame already holds BCn block
+    // bytes; we upload them directly and let the shader sample the compressed
+    // texture. Capability-gated: an unsupported format is skipped (texture stays
+    // black) and logged once — never a crash (ADR-044 §4 + deviation note).
+    if (frame->isCompressed()) {
+        if (!GpuCapabilities::get().supports(frame->compressedFormat)) {
+            if (!entry.compressedUnsupportedLogged) {
+                Logger::warning("SourceManager: GPU lacks the texture-compression "
+                                "extension for this HAP clip — skipping upload "
+                                "(texture stays black). See ADR-044.");
+                entry.compressedUnsupportedLogged = true;
+            }
+            entry.source->markFrameConsumed();
+            return;
+        }
+
+        // (Re)create when the texture is missing, was an ordinary RGB(A) texture
+        // (e.g. createGPUTexture pre-provisioned RGBA), or its dimensions/format
+        // changed. Otherwise re-upload the level in place.
+        if (entry.texture->getId() == 0 ||
+            !entry.texture->isCompressed() ||
+            entry.texture->compressedFormat() != frame->compressedFormat ||
+            entry.texture->getWidth() != frame->width ||
+            entry.texture->getHeight() != frame->height) {
+            entry.texture->createCompressed(frame->width, frame->height,
+                                            frame->compressedFormat,
+                                            frame->pixels.data(), frame->pixels.size());
+        } else {
+            entry.texture->updateCompressed(frame->pixels.data(), frame->pixels.size());
+        }
+
+        entry.source->markFrameConsumed();
         return;
     }
 

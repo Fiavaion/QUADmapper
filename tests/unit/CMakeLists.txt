@@ -67,6 +67,12 @@ add_quadmapper_test(test_source
 )
 target_link_libraries(test_source PRIVATE quadmapper_source quadmapper_core)
 
+# HAP frame parser tests (QM-080 A2) — pure CPU, no GL context required
+add_quadmapper_test(test_hap
+    source/HapFrameParserTest.cpp
+)
+target_link_libraries(test_hap PRIVATE quadmapper_source quadmapper_core)
+
 # Source GL pipeline tests — real GL 3.3 context (skip-if-absent). Proves a video
 # file decodes/uploads through SourceManager (ADR-040 P3). Separate target so the
 # context-free test_source stays light. Links glfw for the hidden-window context.
@@ -86,8 +92,9 @@ target_link_libraries(test_renderer PRIVATE quadmapper_renderer quadmapper_core)
 # the hidden-window context (ADR-040 P1 crop readback).
 add_quadmapper_test(test_render_gl
     renderer/CropRenderTest.cpp
+    renderer/HapUploadTest.cpp
 )
-target_link_libraries(test_render_gl PRIVATE quadmapper_renderer quadmapper_core glfw glad)
+target_link_libraries(test_render_gl PRIVATE quadmapper_renderer quadmapper_source quadmapper_core glfw glad)
 
 # AI sidecar tests (QM-056). Live round-trip launches the real Python sidecar;
 # script path passed in so the test can find it. Skip-if-absent keeps it CI-safe.

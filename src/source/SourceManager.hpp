@@ -225,6 +225,7 @@ private:
         std::unique_ptr<Texture> texture;       // GPU texture (owned for CPU sources)
         bool needsTextureUpdate = true;         // True if frame data changed
         uint64_t lastFrameNumber = 0;           // For detecting new frames
+        bool compressedUnsupportedLogged = false; // Rate-limit the BCn-unsupported skip log (ADR-044)
     };
 
     std::unordered_map<UUID, SourceEntry> sources_;

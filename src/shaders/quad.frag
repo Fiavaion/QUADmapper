@@ -31,6 +31,12 @@ uniform float u_EdgeTop;
 uniform float u_EdgeBottom;
 uniform float u_EdgeGamma;
 
+// Colorspace selector (ADR-044, A4). 0 = RGB passthrough (default for all ordinary
+// and BCn-RGB content); 1 = scaled-YCoCg decode for Hap Q (BC3_YCoCg).
+// Channel layout from BC3 sampler: x=Co, y=Cg, z=scale, w=Y.
+// Reference: ofxHapPlayer (Vidvox / bangnoise) — identical formula.
+uniform int u_ColorSpace;
+
 void main() {
     // Start with base texture coordinates
     vec2 baseUV = v_TexCoord;
@@ -61,6 +67,18 @@ void main() {
     uv = u_CropOffset + u_CropSize * uv;
 
     vec4 color = texture(u_Texture, uv);
+
+    // Hap Q YCoCg->RGB decode (ADR-044, A4). Only active when u_ColorSpace==1;
+    // u_ColorSpace==0 is the identity path for all non-YCoCg content.
+    // BC3 channel layout: r=Co, g=Cg, b=scale, a=Y.
+    // Offset constant: 128/255 = 0.50196078... matches ofxHapPlayer reference.
+    if (u_ColorSpace == 1) {
+        float scale = (color.b * (255.0 / 8.0)) + 1.0;
+        float Co = (color.r - (0.5 * 256.0 / 255.0)) / scale;
+        float Cg = (color.g - (0.5 * 256.0 / 255.0)) / scale;
+        float Y  = color.a;
+        color = vec4(Y + Co - Cg, Y + Cg, Y - Co - Cg, 1.0);
+    }
 
     // Color correction, applied in order: RGB gain -> brightness -> contrast ->
     // gamma. Identity uniforms make every step a no-op (ADR-036).
