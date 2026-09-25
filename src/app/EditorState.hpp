@@ -143,7 +143,20 @@ struct EditorState {
     std::unordered_map<UUID, std::unique_ptr<Texture>> quadTextures;
     std::unordered_map<UUID, std::string> quadTexturePaths;
     char currentTexturePath[512] = "";
-    char projectPath[512] = "project.qmap";
+    char projectPath[512] = "";  // empty = untitled: Save asks for a path (ADR-046)
+
+    // ---- Show-safe file actions (ADR-046 §4) --------------------------------
+    // The File menu, Ctrl+S, the Project tab and the window close button only REQUEST
+    // an action; Application runs it at the next frame boundary, before render()
+    // takes any scene/QuadManager references. New/Open/Load/Exit first pass the
+    // unsaved-changes check, which may raise the Save / Don't Save / Cancel modal.
+    enum class FileAction { None, New, Open, Load, Save, SaveAs, Exit, RestoreRecovery, DiscardRecovery };
+    FileAction pendingFileAction = FileAction::None;
+    FileAction unsavedPromptFor = FileAction::None;  // != None: unsaved-changes modal is up
+    bool saveBeforeAction = false;   // modal answered "Save"
+    bool discardConfirmed = false;   // modal answered "Don't Save"
+    std::string recoveryFilePath;    // != "": "recover unsaved work" modal is up
+    std::string recoveryProjectPath; // project that recovery file belongs to ("" = untitled)
 
     // UV test-grid toggle (#2): when on, newly-created quads get a colored UV
     // reference grid texture. seenQuadIds tracks which quads have already been

@@ -26,7 +26,7 @@ struct GeneralPreferences {
 
     // Auto-save settings
     bool autoSaveEnabled = true;
-    int autoSaveIntervalMinutes = 5;
+    int autoSaveIntervalMinutes = 1;          // ADR-046: a crash costs at most ~1 minute
     bool createBackupOnSave = true;
 
     // UI preferences

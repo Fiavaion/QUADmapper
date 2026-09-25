@@ -1,6 +1,8 @@
 #include "Application.hpp"
 #include "../core/Logger.hpp"
 
+#include <exception>
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -13,15 +15,25 @@ int main(int argc, char* argv[]) {
     // Create and run application
     quadmapper::Application app;
 
-    if (!app.initialize(argc, argv)) {
-        quadmapper::Logger::error("Application initialization failed");
-        return 1;
+    // Crash guard (ADR-046): an escaping C++ exception gets a best-effort emergency
+    // save to <project>.crash.qmap (never the real file) before the process exits.
+    try {
+        if (!app.initialize(argc, argv)) {
+            quadmapper::Logger::error("Application initialization failed");
+            return 1;
+        }
+
+        int result = app.run();
+
+        quadmapper::Logger::info("QUADmapper exiting with code {}", result);
+        return result;
+    } catch (const std::exception& e) {
+        quadmapper::Logger::error("Fatal: unhandled exception: {}", e.what());
+    } catch (...) {
+        quadmapper::Logger::error("Fatal: unhandled exception of unknown type");
     }
-
-    int result = app.run();
-
-    quadmapper::Logger::info("QUADmapper exiting with code {}", result);
-    return result;
+    app.emergencySave();
+    return 2;
 }
 
 #ifdef _WIN32
