@@ -61,6 +61,13 @@ add_quadmapper_test(test_input
 )
 target_link_libraries(test_input PRIVATE quadmapper_input quadmapper_core)
 
+# Video module tests (QM-088) - pure frame pacing / decode backoff, no FFmpeg file I/O
+add_quadmapper_test(test_video
+    video/FrameSelectionTest.cpp
+    video/DecodeBackoffTest.cpp
+)
+target_link_libraries(test_video PRIVATE quadmapper_video quadmapper_core)
+
 # Media module tests
 add_quadmapper_test(test_media
     media/MediaLibraryTest.cpp

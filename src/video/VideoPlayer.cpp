@@ -1,6 +1,8 @@
 #include "VideoPlayer.hpp"
+#include "FrameSelection.hpp"
 #include "core/Logger.hpp"
 #include <algorithm>
+#include <limits>
 
 namespace quadmapper {
 
@@ -30,6 +32,7 @@ bool VideoPlayer::load(const std::filesystem::path& path) {
     state_.state = PlaybackState::STOPPED;
     state_.position = 0.0;
     state_.currentFrame = 0;
+    refreshPending_ = true;
 
     // Start background decoding
     decoder_->startBackgroundDecoding(8);
@@ -48,6 +51,7 @@ void VideoPlayer::unload() {
     currentFrame_ = VideoFrame{};
     path_.clear();
     hasNewFrame_ = false;
+    refreshPending_ = false;
     needsSeek_ = false;
 }
 
@@ -108,6 +112,7 @@ void VideoPlayer::seek(double timeSeconds) {
         // Restart background decoding after seek
         decoder_->startBackgroundDecoding(8);
         hasNewFrame_ = false;
+        refreshPending_ = true;
     }
 
     needsSeek_ = false;
@@ -135,7 +140,9 @@ float VideoPlayer::getSpeed() const {
 }
 
 void VideoPlayer::setLoopMode(LoopMode mode) {
-    state_.loopMode = mode;
+    // Ping-pong needs reverse playback, which a forward-only decoder cannot do; it was
+    // only ever a forward loop, so files that saved it keep looping (QM-088).
+    state_.loopMode = mode == LoopMode::PING_PONG ? LoopMode::LOOP : mode;
 }
 
 LoopMode VideoPlayer::getLoopMode() const {
@@ -155,49 +162,50 @@ const std::filesystem::path& VideoPlayer::getPath() const {
     return path_;
 }
 
+std::string VideoPlayer::getErrorMessage() const {
+    return decoder_ ? decoder_->getLastError() : std::string();
+}
+
 bool VideoPlayer::update(double deltaTime) {
     if (!isLoaded()) return false;
 
-    // Only advance time when playing
-    if (!state_.isPlaying()) {
-        return false;
+    // The clock only runs while playing; paused or stopped it holds, but frames up to
+    // the playhead are still taken, so a clip loaded or seeked while paused shows the
+    // frame at the playhead instead of black or a stale picture.
+    const bool playing = state_.isPlaying();
+    if (playing) {
+        updatePlaybackPosition(deltaTime);
     }
 
-    // Calculate target PTS based on playback position
-    updatePlaybackPosition(deltaTime);
-
-    // Check if we need a new frame
-    double targetPts = state_.position;
-
-    // Get frames from decoder until we have one at or past target PTS
-    while (decoder_->hasBufferedFrames()) {
-        VideoFrame frame = decoder_->getBufferedFrame();
-        if (!frame.isValid()) {
-            break;
-        }
-
-        // Store this frame
-        currentFrame_ = std::move(frame);
-        hasNewFrame_ = true;
-
-        // If frame PTS is at or past target, we're done
-        if (currentFrame_.pts >= targetPts) {
-            break;
-        }
-
-        // For fast playback, skip ahead to catch up
-        if (state_.speed > 1.5f) {
-            // Keep skipping frames
-            continue;
-        }
+    // At the clip's end the clock is clamped to the duration; take whatever is left
+    // so a last frame stamped past the container duration still drains and loops.
+    const bool clockAtEnd = playing && state_.duration > 0.0 && state_.position >= state_.duration;
+    const double targetPts = clockAtEnd ? std::numeric_limits<double>::infinity()
+                                        : state_.position;
+    // After a load or seek the shown frame is stale: take the next one even if early.
+    const bool haveFrame = currentFrame_.isValid() && !refreshPending_;
+    if (takeDueFrames(targetPts, haveFrame) > 0) {
+        refreshPending_ = false;
     }
 
-    // Check for end of video
-    if (decoder_->isAtEnd() && !decoder_->hasBufferedFrames()) {
+    if (playing && decoder_->isAtEnd() && !decoder_->hasBufferedFrames()) {
         handleEndOfVideo();
     }
 
     return hasNewFrame_;
+}
+
+size_t VideoPlayer::takeDueFrames(double targetPts, bool haveFrame) {
+    return popDueFrames(
+        targetPts, haveFrame,
+        [this](double& pts) { return decoder_->peekBufferedPts(pts); },
+        [this]() {
+            VideoFrame frame = decoder_->getBufferedFrame();
+            if (frame.isValid()) {
+                currentFrame_ = std::move(frame);
+                hasNewFrame_ = true;
+            }
+        });
 }
 
 void VideoPlayer::updatePlaybackPosition(double deltaTime) {
@@ -211,35 +219,23 @@ void VideoPlayer::updatePlaybackPosition(double deltaTime) {
         state_.currentFrame = static_cast<int64_t>(state_.position * info.frameRate);
     }
 
-    // Clamp to duration
-    if (state_.position >= state_.duration) {
+    // Clamp to duration (unknown duration = 0: the decoder's end-of-file ends the clip)
+    if (state_.duration > 0.0 && state_.position >= state_.duration) {
         state_.position = state_.duration;
     }
 }
 
 void VideoPlayer::handleEndOfVideo() {
-    switch (state_.loopMode) {
-        case LoopMode::ONCE:
-            state_.state = PlaybackState::FINISHED;
-            if (endCallback_) {
-                endCallback_();
-            }
-            break;
-
-        case LoopMode::LOOP:
-            seek(0.0);
-            play();
-            state_.isLooping = true;
-            break;
-
-        case LoopMode::PING_PONG:
-            // For ping-pong, we'd need to play backward
-            // For now, just loop normally
-            seek(0.0);
-            play();
-            state_.isLooping = true;
-            break;
+    if (state_.loopMode == LoopMode::ONCE) {
+        state_.state = PlaybackState::FINISHED;
+        if (endCallback_) {
+            endCallback_();
+        }
+        return;
     }
+    seek(0.0);
+    play();
+    state_.isLooping = true;
 }
 
 const VideoFrame& VideoPlayer::getCurrentFrame() const {

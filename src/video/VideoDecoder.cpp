@@ -1,4 +1,5 @@
 #include "VideoDecoder.hpp"
+#include "DecodeBackoff.hpp"
 #include "core/Logger.hpp"
 
 #ifdef QUADMAPPER_HAS_FFMPEG
@@ -206,6 +207,9 @@ public:
         }
 
         timeBase_ = av_q2d(videoStream->time_base);
+        // Frame times are reported relative to the stream start, so pts 0 is the
+        // first frame even in containers whose timestamps begin elsewhere (MPEG-TS).
+        startPts_ = videoStream->start_time != AV_NOPTS_VALUE ? videoStream->start_time : 0;
         isOpen_ = true;
         currentFrame_ = 0;
         currentTime_ = 0.0;
@@ -260,7 +264,7 @@ public:
     bool seek(double timeSeconds) {
         if (!isOpen_) return false;
 
-        int64_t timestamp = static_cast<int64_t>(timeSeconds / timeBase_);
+        int64_t timestamp = static_cast<int64_t>(timeSeconds / timeBase_) + startPts_;
 
         if (av_seek_frame(formatCtx_, videoStreamIndex_, timestamp, AVSEEK_FLAG_BACKWARD) < 0) {
             LOG_WARNING("Seek failed");
@@ -303,6 +307,8 @@ public:
             if (readResult < 0) {
                 if (readResult == AVERROR_EOF) {
                     atEnd_ = true;
+                } else {
+                    lastReadError_ = readResult;
                 }
                 av_packet_free(&packet);
                 return VideoFrame{};
@@ -324,7 +330,7 @@ public:
 
                         // Calculate PTS
                         if (frame_->pts != AV_NOPTS_VALUE) {
-                            result.pts = static_cast<double>(frame_->pts) * timeBase_;
+                            result.pts = static_cast<double>(frame_->pts - startPts_) * timeBase_;
                             currentTime_ = result.pts;
                         } else {
                             result.pts = currentTime_;
@@ -366,7 +372,13 @@ public:
     void stopBackgroundDecoding() {
         if (!backgroundThread_.joinable()) return;
 
-        stopDecoding_ = true;
+        // Set the flag under the mutex the decode thread waits on: set outside it,
+        // the notify can land between the thread's predicate check and its wait,
+        // and join() then hangs on a thread that never wakes.
+        {
+            std::lock_guard<std::mutex> lock(bufferMutex_);
+            stopDecoding_ = true;
+        }
         bufferCondition_.notify_all();
         backgroundThread_.join();
 
@@ -374,6 +386,7 @@ public:
         std::lock_guard<std::mutex> lock(bufferMutex_);
         std::queue<VideoFrame> empty;
         std::swap(frameBuffer_, empty);
+        lastError_.clear();
     }
 
     VideoFrame getBufferedFrame() {
@@ -388,6 +401,13 @@ public:
         return frame;
     }
 
+    bool peekBufferedPts(double& pts) const {
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        if (frameBuffer_.empty()) return false;
+        pts = frameBuffer_.front().pts;
+        return true;
+    }
+
     bool hasBufferedFrames() const {
         std::lock_guard<std::mutex> lock(bufferMutex_);
         return !frameBuffer_.empty();
@@ -398,8 +418,14 @@ public:
         return frameBuffer_.size();
     }
 
+    std::string getLastError() const {
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        return lastError_;
+    }
+
 private:
     void backgroundDecodingLoop() {
+        DecodeBackoff backoff;
         while (!stopDecoding_) {
             {
                 std::unique_lock<std::mutex> lock(bufferMutex_);
@@ -412,18 +438,35 @@ private:
 
             VideoFrame frame = decodeNextFrame();
             if (!frame.isValid()) {
-                if (atEnd_) {
-                    // Signal end of stream
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::chrono::milliseconds delay{10};  // at end of stream: idle until seek/stop
+                if (!atEnd_) {
+                    delay = backoff.onFailure();
+                    if (backoff.failing()) recordFailure();
                 }
+                std::unique_lock<std::mutex> lock(bufferMutex_);
+                bufferCondition_.wait_for(lock, delay, [this]() { return stopDecoding_.load(); });
                 continue;
             }
 
+            backoff.onSuccess();
             {
                 std::lock_guard<std::mutex> lock(bufferMutex_);
+                lastError_.clear();
                 frameBuffer_.push(std::move(frame));
             }
         }
+    }
+
+    void recordFailure() {
+        std::string message = "Video decoding failed";
+        if (lastReadError_ < 0) {
+            char err[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(lastReadError_, err, sizeof(err));
+            message += std::string(": ") + err;
+        }
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        if (lastError_.empty()) LOG_ERROR("{} (retrying with backoff)", message);
+        lastError_ = std::move(message);
     }
 
     // FFmpeg objects
@@ -441,6 +484,8 @@ private:
     // State
     VideoInfo info_;
     double timeBase_ = 0.0;
+    int64_t startPts_ = 0;      // stream start_time, in time_base units
+    int lastReadError_ = 0;     // last non-EOF av_read_frame error (decode thread only)
     bool isOpen_ = false;
     bool isLive_ = false;   // live capture device (no seek/duration)
     // Written by the background decode thread, read on the main thread (via the getters /
@@ -455,6 +500,7 @@ private:
     mutable std::mutex bufferMutex_;
     std::condition_variable bufferCondition_;
     std::queue<VideoFrame> frameBuffer_;
+    std::string lastError_;     // guarded by bufferMutex_
     std::atomic<bool> stopDecoding_{false};
     size_t maxBufferSize_ = 8;
 };
@@ -481,8 +527,10 @@ public:
     void startBackgroundDecoding(size_t) {}
     void stopBackgroundDecoding() {}
     VideoFrame getBufferedFrame() { return VideoFrame{}; }
+    bool peekBufferedPts(double&) const { return false; }
     bool hasBufferedFrames() const { return false; }
     size_t getBufferedFrameCount() const { return 0; }
+    std::string getLastError() const { return {}; }
 private:
     VideoInfo info_;
 };
@@ -512,7 +560,9 @@ bool VideoDecoder::isAtEnd() const { return impl_->isAtEnd(); }
 void VideoDecoder::startBackgroundDecoding(size_t bufferSize) { impl_->startBackgroundDecoding(bufferSize); }
 void VideoDecoder::stopBackgroundDecoding() { impl_->stopBackgroundDecoding(); }
 VideoFrame VideoDecoder::getBufferedFrame() { return impl_->getBufferedFrame(); }
+bool VideoDecoder::peekBufferedPts(double& pts) const { return impl_->peekBufferedPts(pts); }
 bool VideoDecoder::hasBufferedFrames() const { return impl_->hasBufferedFrames(); }
 size_t VideoDecoder::getBufferedFrameCount() const { return impl_->getBufferedFrameCount(); }
+std::string VideoDecoder::getLastError() const { return impl_->getLastError(); }
 
 } // namespace quadmapper

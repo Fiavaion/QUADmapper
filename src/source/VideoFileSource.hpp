@@ -77,6 +77,9 @@ public:
     void setLoopMode(LoopMode mode) override;
     LoopMode getLoopMode() const override;
 
+    // --- PlayableSource: Health ---
+    std::string getErrorMessage() const override;
+
     // --- Video-specific ---
     const std::filesystem::path& getPath() const { return path_; }
     const VideoInfo& getVideoInfo() const;
