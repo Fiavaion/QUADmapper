@@ -75,6 +75,12 @@ public:
     void setViewTransform(const glm::vec2& scale, const glm::vec2& offset, float canvasAspect);
     void resetViewTransform();
 
+    // Output rotation (QM-087): turn the whole rendered frame clockwise so content
+    // laid out on the editor canvas (whose aspect is the output's rotated, effective
+    // resolution) appears upright on a projector mounted on its side. Applies to
+    // renderQuad only; editor overlays are never drawn to outputs. Default R0.
+    void setOutputRotation(Rotation rotation) { outputRotation_ = rotation; }
+
     // Create a default white texture for quads without texture
     Texture* getDefaultTexture() { return &defaultTexture_; }
 
@@ -124,6 +130,7 @@ private:
     glm::vec2 viewScale_{1.0f, 1.0f};
     glm::vec2 viewOffset_{0.0f, 0.0f};
     float canvasAspect_ = 0.0f;  // <= 0: derive handle aspect from the GL viewport
+    Rotation outputRotation_ = Rotation::R0;
 
     bool initialized_ = false;
 };

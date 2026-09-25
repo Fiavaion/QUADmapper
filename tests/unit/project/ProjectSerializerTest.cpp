@@ -431,6 +431,8 @@ TEST(ProjectSerializerV3Test, V3RoundTripScenesAndOutputs) {
     out.id = outputId;
     out.name = "Projector 1";
     out.monitor = 1;
+    out.monitorName = "EPSON PJ";
+    out.monitorPosition = IVec2(-1920, 0);
     out.resolution = IVec2(1280, 720);
     out.rotationDegrees = 90;
     out.enabled = true;
@@ -475,6 +477,8 @@ TEST(ProjectSerializerV3Test, V3RoundTripScenesAndOutputs) {
     EXPECT_EQ(loaded.getOutputs()[0].id, outputId);
     EXPECT_EQ(loaded.getOutputs()[0].name, "Projector 1");
     EXPECT_EQ(loaded.getOutputs()[0].monitor, 1);
+    EXPECT_EQ(loaded.getOutputs()[0].monitorName, "EPSON PJ");
+    EXPECT_EQ(loaded.getOutputs()[0].monitorPosition, IVec2(-1920, 0));
     EXPECT_EQ(loaded.getOutputs()[0].resolution.x, 1280);
     EXPECT_EQ(loaded.getOutputs()[0].resolution.y, 720);
     EXPECT_EQ(loaded.getOutputs()[0].rotationDegrees, 90);

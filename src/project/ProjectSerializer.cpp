@@ -552,6 +552,11 @@ static nlohmann::json serializeOutput(const Project::OutputData& output) {
     j["id"] = output.id.toString();
     j["name"] = output.name;
     j["monitor"] = output.monitor;
+    if (!output.monitorName.empty()) {
+        j["monitorName"] = output.monitorName;
+        j["monitorPosition"] = nlohmann::json::array({output.monitorPosition.x,
+                                                      output.monitorPosition.y});
+    }
     j["resolution"] = nlohmann::json::array({output.resolution.x, output.resolution.y});
     j["rotation"] = output.rotationDegrees;
     j["enabled"] = output.enabled;
@@ -568,6 +573,16 @@ static Project::OutputData deserializeOutput(const nlohmann::json& j) {
     // Clamp hardware settings to sane ranges (ADR-046 §3): -1 = no monitor chosen.
     if (j.contains("monitor")) {
         output.monitor = std::clamp(j["monitor"].get<int>(), -1, kMaxMonitorIndex);
+    }
+    // Monitor identity (QM-087, additive): a malformed name is ignored rather than
+    // failing the load, since the index is still a usable fallback.
+    if (j.contains("monitorName") && j["monitorName"].is_string()) {
+        output.monitorName = j["monitorName"].get<std::string>();
+        if (j.contains("monitorPosition")) {
+            const auto& p = checkedArray(j["monitorPosition"], 2);
+            // Only ever compared for equality, so any integer is safe.
+            output.monitorPosition = IVec2(p[0].get<int>(), p[1].get<int>());
+        }
     }
     if (j.contains("resolution")) {
         const auto& r = checkedArray(j["resolution"], 2);

@@ -47,6 +47,12 @@ bool Renderer::initialize() {
     // Create default texture
     createDefaultTexture();
 
+    // Blend state is per GL context. Every Renderer lives in its own context (the
+    // editor, or one per output window), so each sets it here; otherwise opacity
+    // and soft edge would only composite in the editor.
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
     initialized_ = true;
     Logger::info("Renderer initialized successfully");
     return true;
@@ -338,6 +344,7 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
     // Bind shader
     quadShader_.bind();
     applyViewUniforms(quadShader_);
+    quadShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
 
     // Set uniforms
     const TextureBinding& texBinding = quad.getTexture();

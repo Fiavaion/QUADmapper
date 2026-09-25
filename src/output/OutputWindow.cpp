@@ -27,6 +27,7 @@ OutputWindow::OutputWindow(OutputWindow&& other) noexcept
     , assignedScenes_(std::move(other.assignedScenes_))
     , window_(other.window_)
     , shareContext_(other.shareContext_)
+    , swapInterval_(other.swapInterval_)
     , position_(other.position_)
     , savedWindowedPos_(other.savedWindowedPos_)
     , savedWindowedSize_(other.savedWindowedSize_)
@@ -53,6 +54,7 @@ OutputWindow& OutputWindow::operator=(OutputWindow&& other) noexcept {
         assignedScenes_ = std::move(other.assignedScenes_);
         window_ = other.window_;
         shareContext_ = other.shareContext_;
+        swapInterval_ = other.swapInterval_;
         position_ = other.position_;
         savedWindowedPos_ = other.savedWindowedPos_;
         savedWindowedSize_ = other.savedWindowedSize_;
@@ -96,10 +98,15 @@ Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
     glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);  // Window decorations
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);  // Allow resize
     glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);   // Don't steal focus on creation
+    // Keyboard focus stays with the editor in perform mode (vertex nudging), so
+    // showing the output must not activate it, and a fullscreen output must not
+    // iconify when it loses focus back to the editor.
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
 
-    // OpenGL context hints (should match main window)
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    // OpenGL context hints (must match the main window: GL 3.3 core)
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 
@@ -111,6 +118,11 @@ Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
         nullptr,       // No monitor (windowed mode)
         shareContext   // Share context for texture sharing
     );
+
+    // The window hints above are global GLFW state; restore the ones that would
+    // otherwise leak into windows created later (e.g. by ImGui).
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_TRUE);
+    glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_TRUE);
 
     if (!window_) {
         LOG_ERROR("Failed to create GLFW window for OutputWindow '{}'", name_);
@@ -136,6 +148,7 @@ void OutputWindow::destroy() {
         glfwDestroyWindow(window_);
         window_ = nullptr;
         shareContext_ = nullptr;
+        swapInterval_ = -1;
     }
 }
 
@@ -169,6 +182,13 @@ void OutputWindow::makeContextCurrent() {
 void OutputWindow::swapBuffers() {
     if (window_ != nullptr) {
         glfwSwapBuffers(window_);
+    }
+}
+
+void OutputWindow::setSwapInterval(int interval) {
+    if (window_ != nullptr && interval != swapInterval_) {
+        glfwSwapInterval(interval);
+        swapInterval_ = interval;
     }
 }
 

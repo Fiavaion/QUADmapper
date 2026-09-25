@@ -215,6 +215,10 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
             od.id = outPtr->getId();
             od.name = outPtr->getName();
             od.monitor = outPtr->getMonitor();
+            if (const MonitorInfo* m = om->getMonitor(od.monitor)) {  // QM-087
+                od.monitorName = m->name;
+                od.monitorPosition = m->position;
+            }
             od.resolution = outPtr->getResolution();
             od.rotationDegrees = outPtr->getRotationDegrees();
             od.enabled = outPtr->isEnabled();
@@ -258,7 +262,8 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             OutputWindow* ow = om->createOutput(od.name);
             if (!ow) continue;
             ow->setName(od.name);
-            ow->setMonitor(od.monitor);
+            ow->setMonitor(OutputManager::resolveMonitor(om->getMonitors(), od.monitor,
+                                                         od.monitorName, od.monitorPosition));
             ow->setResolution(od.resolution);
             ow->setRotationDegrees(od.rotationDegrees);
             ow->setEnabled(od.enabled);
@@ -2227,8 +2232,9 @@ void Application::renderToProjectorOutputs() {
 //   What it still exercises (the leak-relevant part):
 //     - Per-output Renderer lifecycle (created in enterPerformMode, destroyed in
 //       exitPerformMode) — the most common resource-leak site.
-//     - renderToOutputs: context-switch, GL clear, quad render, swapBuffers.
 //     - All RAII wrapper create/destroy paths tracked by GlObjectStats.
+//   Since QM-087 renderToOutputs skips hidden outputs, so --hidden no longer
+//   draws or swaps them; run without --hidden to exercise (and time) that path.
 // ---------------------------------------------------------------------------
 
 // Helper: query process working set in bytes via psapi (H3 §2).
@@ -2330,6 +2336,11 @@ int Application::runStress(const StressConfig& cfg) {
     // Returns false if the cycle exceeded cfg.cycleTimeoutMs or the pause/resume
     // recovery check fails (LESSON-BUG-006 repro).
     bool pauseResumeWedge = false;
+    // QM-087 frame pacing: wall-clock time of the steady frame loop (enter/exit
+    // transitions excluded), accumulated over the measured cycles only.
+    bool measurePacing = false;
+    double pacingSeconds = 0.0;
+    long pacingFrames = 0;
     auto runCycle = [&]() -> bool {
         const double cycleStart = glfwGetTime();
         const double budgetSec  = cfg.cycleTimeoutMs / 1000.0;
@@ -2363,6 +2374,7 @@ int Application::runStress(const StressConfig& cfg) {
         double timeAtPause = 0.0;
 
         double t = glfwGetTime();
+        const double loopStart = t;
         for (int f = 0; f < cfg.framesPerCycle; ++f) {
             // Wedge check: abort if we've been in this cycle too long.
             if ((glfwGetTime() - cycleStart) > budgetSec) {
@@ -2422,8 +2434,17 @@ int Application::runStress(const StressConfig& cfg) {
             t = now;
             m_sourceManager->updateAll(dt);
 
+            // Mirror run(): present the (vsync'd) editor window, then the outputs,
+            // so the measured frame time includes the real swap chain.
+            if (!cfg.hidden) {
+                glfwSwapBuffers(m_window);
+            }
             auto textures = buildQuadTextureMap(es, m_sourceManager.get());
             m_outputManager->renderToOutputs(es.scenes, textures);
+        }
+        if (measurePacing) {
+            pacingSeconds += glfwGetTime() - loopStart;
+            pacingFrames += cfg.framesPerCycle;
         }
 
         m_outputManager->exitPerformMode();
@@ -2448,6 +2469,7 @@ int Application::runStress(const StressConfig& cfg) {
 
     Logger::info("[STRESS] Baseline captured after warm-up.  Working set: {} MB",
                  wsBaseline / (1024 * 1024));
+    measurePacing = true;
 
     // ---- 4. Stress loop (with wedge watchdog + working-set tracking) --------
     GlObjectStats::Snapshot worst = baseline;
@@ -2510,6 +2532,15 @@ int Application::runStress(const StressConfig& cfg) {
                  wsMax      / (1024 * 1024),
                  finalGrowthMB,
                  cfg.workingSetBoundMB);
+    if (pacingFrames > 0) {
+        const double frameMs = pacingSeconds * 1000.0 / pacingFrames;
+        Logger::info("[STRESS] Frame pacing: {} outputs, {} frames, avg {} ms/frame "
+                     "({} fps){}",
+                     cfg.outputs, pacingFrames,
+                     static_cast<long>(frameMs * 100.0 + 0.5) / 100.0,
+                     static_cast<long>(10000.0 / frameMs + 0.5) / 10.0,
+                     cfg.hidden ? " [hidden: outputs not presented]" : "");
+    }
 
     // H3: optional GPU memory report via GL_NVX_gpu_memory_info.
     // The extension is trivially detected at runtime; silently skip on AMD /
