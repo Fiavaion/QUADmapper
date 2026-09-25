@@ -4,10 +4,13 @@
 #include "Texture.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
+#include "scene/MeshObject.hpp"
+#include "scene/ProjectorCamera.hpp"
 #include <glm/glm.hpp>
 #include <memory>
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 namespace quadmapper {
 
@@ -16,6 +19,8 @@ struct QuadVertex {
     float position[2];
     float texCoord[3];  // (u*q, v*q, q); quad.frag divides by q for projective mapping
 };
+
+struct GpuMesh;  // a MeshObject's cached VAO/VBO/EBO (Renderer.cpp)
 
 class Renderer {
 public:
@@ -37,6 +42,23 @@ public:
     // Render all quads from a QuadManager with selection highlighting
     void renderQuads(const QuadManager& quadManager,
                      const std::unordered_map<UUID, Texture*>& textures);
+
+    // Draw one 3D object as `camera` sees it (ADR-052), textured through the mesh's
+    // UVs (planar from its XY bounds when it has none) by quad.frag, so crop and
+    // opacity behave as for quads. The view transform and output rotation apply as
+    // for quads. nearZ/farZ must be shared by every object in a pass, or depth does
+    // not compare between them. Depth state is the caller's (renderMeshObjects sets
+    // it). The GPU mesh is cached per object and re-uploaded only when its MeshData
+    // is replaced.
+    void renderMeshObject(const MeshObject& object, const ProjectorCamera& camera,
+                          const Texture* texture, float nearZ, float farZ);
+
+    // Draw every visible object through `camera` with the depth test on (off again
+    // afterwards) and culling off; textures come from `textures` by object id. Call
+    // before the quads, after clearing the depth buffer for the frame.
+    void renderMeshObjects(const std::vector<std::unique_ptr<MeshObject>>& objects,
+                           const ProjectorCamera& camera,
+                           const std::unordered_map<UUID, Texture*>& textures);
 
     // Render selection outline for a quad
     void renderQuadOutline(const Quad& quad, const glm::vec4& color, float lineWidth = 2.0f);
@@ -78,7 +100,8 @@ public:
     // Output rotation (QM-087): turn the whole rendered frame clockwise so content
     // laid out on the editor canvas (whose aspect is the output's rotated, effective
     // resolution) appears upright on a projector mounted on its side. Applies to
-    // renderQuad only; editor overlays are never drawn to outputs. Default R0.
+    // renderQuad and renderMeshObject only; editor overlays are never drawn to
+    // outputs. Default R0.
     void setOutputRotation(Rotation rotation) { outputRotation_ = rotation; }
 
     // Create a default white texture for quads without texture
@@ -95,7 +118,18 @@ private:
     // Push the current view transform into a bound shader (u_ViewScale/u_ViewOffset).
     void applyViewUniforms(ShaderProgram& shader);
 
+    // Set quad.frag's uniforms (UV transform, crop, colour, soft edge, opacity,
+    // colour space) on a bound program and bind the texture to unit 0.
+    void applySurfaceUniforms(ShaderProgram& shader, const TextureBinding& binding,
+                              float opacity, const ColorCorrection& color,
+                              const SoftEdge& edge, const Texture* texture);
+
+    // The object's GPU mesh, uploaded on first use or when its MeshData was
+    // replaced; nullptr when the mesh is empty or has out-of-range indices.
+    const GpuMesh* meshBuffersFor(const MeshObject& object);
+
     ShaderProgram quadShader_;
+    ShaderProgram mesh3dShader_;  // mesh3d.vert + quad.frag (ADR-052)
     ShaderProgram outlineShader_;
     ShaderProgram handleShader_;
     Texture defaultTexture_;
@@ -124,6 +158,13 @@ private:
 
     // Buffers for outline
     std::vector<float> outlineVertices_;
+
+    // 3D objects' GPU meshes by object id. VAOs are per context, like this Renderer.
+    // An entry unused for kMeshCacheIdlePasses renderMeshObjects calls is dropped,
+    // so a deleted object does not keep its buffers.
+    std::unordered_map<UUID, std::unique_ptr<GpuMesh>> meshCache_;
+    uint64_t meshPass_ = 0;
+    static constexpr uint64_t kMeshCacheIdlePasses = 600;
 
     // Editor view transform state (ADR-041). Identity by default so any render path
     // that does not set it (outputs, previews) draws the full frame unchanged.

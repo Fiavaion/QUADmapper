@@ -591,6 +591,29 @@ const Scene* OutputManager::sceneForOutput(
     return nullptr;
 }
 
+namespace {
+
+// What a projector shows of its scene: the 3D objects from this output's projector
+// camera (ADR-052), then the quads on top in z-order. renderQuad(...false) keeps it
+// clean (no selection outlines / editor handles). The depth buffer must be clear.
+void drawOutputScene(const Scene& scene, const OutputWindow& output, Renderer& renderer,
+                     const std::unordered_map<UUID, Texture*>& textures) {
+    renderer.renderMeshObjects(scene.getObjects(), output.getProjector(), textures);
+    for (const Quad* quad : scene.getQuadsByZOrder()) {
+        if (!quad || !quad->isVisible()) {
+            continue;
+        }
+        const Texture* tex = nullptr;
+        auto it = textures.find(quad->getId());
+        if (it != textures.end()) {
+            tex = it->second;
+        }
+        renderer.renderQuad(*quad, tex, /*selected=*/false);
+    }
+}
+
+}  // namespace
+
 void OutputManager::renderToOutputs(const std::vector<std::unique_ptr<Scene>>& scenes,
                                      const std::unordered_map<UUID, Texture*>& textures) {
     if (!mainWindow_) {
@@ -598,23 +621,10 @@ void OutputManager::renderToOutputs(const std::vector<std::unique_ptr<Scene>>& s
     }
 
     // Render only the scene assigned to THIS output (ADR-039 routing). An output
-    // with no assigned scene stays black. renderQuad(...false) keeps it clean
-    // (no selection outlines / editor handles).
+    // with no assigned scene stays black.
     presentToOutputs([&](const OutputWindow& output, Renderer& renderer) {
-        const Scene* scene = sceneForOutput(scenes, output.getId());
-        if (!scene) {
-            return;
-        }
-        for (const Quad* quad : scene->getQuadsByZOrder()) {
-            if (!quad || !quad->isVisible()) {
-                continue;
-            }
-            const Texture* tex = nullptr;
-            auto it = textures.find(quad->getId());
-            if (it != textures.end()) {
-                tex = it->second;
-            }
-            renderer.renderQuad(*quad, tex, /*selected=*/false);
+        if (const Scene* scene = sceneForOutput(scenes, output.getId())) {
+            drawOutputScene(*scene, output, renderer, textures);
         }
     });
 }
@@ -653,24 +663,13 @@ void OutputManager::updatePreviews(const std::vector<std::unique_ptr<Scene>>& sc
         target->bind();  // also sets the viewport to the thumbnail size
         glDisable(GL_DEPTH_TEST);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         // Same routing + clean-render + rotation rules as renderToOutputs, but
         // into the FBO, so the thumbnail shows what the projector shows.
         renderer.setOutputRotation(output->getRotation());
-        const Scene* scene = sceneForOutput(scenes, output->getId());
-        if (scene) {
-            for (const Quad* quad : scene->getQuadsByZOrder()) {
-                if (!quad || !quad->isVisible()) {
-                    continue;
-                }
-                const Texture* tex = nullptr;
-                auto texIt = textures.find(quad->getId());
-                if (texIt != textures.end()) {
-                    tex = texIt->second;
-                }
-                renderer.renderQuad(*quad, tex, /*selected=*/false);
-            }
+        if (const Scene* scene = sceneForOutput(scenes, output->getId())) {
+            drawOutputScene(*scene, *output, renderer, textures);
         }
     }
 
@@ -738,7 +737,7 @@ void OutputManager::presentToOutputs(
 
         glDisable(GL_DEPTH_TEST);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         renderer->setOutputRotation(output->getRotation());
         draw(*output, *renderer);

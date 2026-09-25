@@ -66,11 +66,16 @@ void ViewportEditor::render(EditorContext& ctx) {
 
     // Canvas aspect from the active scene's assigned output (getEffectiveResolution
     // already swaps W/H for 90/270 rotation, so portrait is automatic). 16:9 default.
+    // That output's projector also draws the scene's 3D objects (ADR-052); with no
+    // output the default camera stands in, as it would for a fresh output.
     float canvasAspect = 16.0f / 9.0f;
+    const ProjectorCamera defaultProjector;
+    const ProjectorCamera* canvasProjector = &defaultProjector;
     if (m_outputManager) {
         const UUID outId = es.activeScene().getAssignedOutputId();
         if (!outId.isNull()) {
             if (const OutputWindow* ow = m_outputManager->getOutput(outId)) {
+                canvasProjector = &ow->getProjector();
                 IVec2 res = ow->getEffectiveResolution();
                 if (res.x > 0 && res.y > 0) {
                     canvasAspect = static_cast<float>(res.x) / static_cast<float>(res.y);
@@ -142,6 +147,12 @@ void ViewportEditor::render(EditorContext& ctx) {
         // TextureBinding::mediaId -> SourceManager, video via the legacy wrapper
         // (ADR-040 P2). Same map the per-output render and preview FBOs use.
         auto texturePtrs = buildQuadTextureMap(es, ctx.sourceManager);
+
+        // 3D objects as the canvas's projector sees them (WYSIWYG with the output),
+        // under the quads. The scissor limits the depth clear to the canvas region.
+        glClear(GL_DEPTH_BUFFER_BIT);
+        m_renderer->renderMeshObjects(es.activeScene().getObjects(), *canvasProjector,
+                                      texturePtrs);
 
         m_renderer->renderQuads(quadManager, texturePtrs);
 

@@ -4,7 +4,9 @@
 #include "ShaderSources.hpp"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace quadmapper {
 
@@ -24,6 +26,12 @@ bool Renderer::initialize() {
     // Create quad shader
     if (!quadShader_.create(shaders::QUAD_VERT, shaders::QUAD_FRAG)) {
         Logger::error("Failed to create quad shader");
+        return false;
+    }
+
+    // 3D objects share quad.frag so every surface option behaves the same (ADR-052).
+    if (!mesh3dShader_.create(shaders::MESH3D_VERT, shaders::QUAD_FRAG)) {
+        Logger::error("Failed to create 3D mesh shader");
         return false;
     }
 
@@ -63,7 +71,9 @@ void Renderer::shutdown() {
         return;
     }
 
+    meshCache_.clear();
     quadShader_.destroy();
+    mesh3dShader_.destroy();
     outlineShader_.destroy();
     handleShader_.destroy();
     defaultTexture_.destroy();
@@ -346,51 +356,8 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
     applyViewUniforms(quadShader_);
     quadShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
 
-    // Set uniforms
-    const TextureBinding& texBinding = quad.getTexture();
-    quadShader_.setFloat("u_Opacity", quad.getOpacity());
-    quadShader_.setVec2("u_UVOffset", texBinding.uvOffset);
-    quadShader_.setVec2("u_UVScale", texBinding.uvScale);
-    quadShader_.setFloat("u_UVRotation", texBinding.uvRotation);
-    quadShader_.setInt("u_FlipH", texBinding.flipH ? 1 : 0);
-    quadShader_.setInt("u_FlipV", texBinding.flipV ? 1 : 0);
-    quadShader_.setInt("u_Texture", 0);
-
-    // Per-quad crop (ADR-040). Identity {0,0,1,1} is a render no-op.
-    const NormalizedRect& crop = texBinding.cropRect;
-    quadShader_.setVec2("u_CropOffset", glm::vec2(crop.x, crop.y));
-    quadShader_.setVec2("u_CropSize", glm::vec2(crop.width, crop.height));
-
-    // Per-quad color correction (ADR-036). Identity values are a render no-op.
-    const ColorCorrection& cc = quad.getColorCorrection();
-    quadShader_.setVec3("u_ColorRGBGain", cc.rgbGain);
-    quadShader_.setFloat("u_ColorBrightness", cc.brightness);
-    quadShader_.setFloat("u_ColorContrast", cc.contrast);
-    quadShader_.setFloat("u_ColorGamma", cc.gamma);
-
-    // Per-quad soft-edge blending (ADR-037). Identity widths (0) are a no-op.
-    const SoftEdge& se = quad.getSoftEdge();
-    quadShader_.setFloat("u_EdgeLeft", se.left);
-    quadShader_.setFloat("u_EdgeRight", se.right);
-    quadShader_.setFloat("u_EdgeTop", se.top);
-    quadShader_.setFloat("u_EdgeBottom", se.bottom);
-    quadShader_.setFloat("u_EdgeGamma", se.gamma);
-
-    // Colorspace uniform (ADR-044, A4): 1 = YCoCg decode for Hap Q, 0 = RGB passthrough.
-    // Sourced from the texture's colorSpace() so every draw path (canvas, per-output
-    // renderer, preview FBO) picks it up automatically through this single call site.
-    {
-        int cs = (texture && texture->isValid() &&
-                  texture->colorSpace() == TextureColorSpace::YCoCg) ? 1 : 0;
-        quadShader_.setInt("u_ColorSpace", cs);
-    }
-
-    // Bind texture
-    if (texture && texture->isValid()) {
-        texture->bind(0);
-    } else {
-        defaultTexture_.bind(0);
-    }
+    applySurfaceUniforms(quadShader_, quad.getTexture(), quad.getOpacity(),
+                         quad.getColorCorrection(), quad.getSoftEdge(), texture);
 
     // Draw
     glBindVertexArray(quadVAO_);
@@ -404,6 +371,261 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
     if (selected) {
         renderQuadOutline(quad, glm::vec4(0.0f, 0.7f, 1.0f, 1.0f), 2.0f);
     }
+}
+
+void Renderer::applySurfaceUniforms(ShaderProgram& shader, const TextureBinding& binding,
+                                    float opacity, const ColorCorrection& color,
+                                    const SoftEdge& edge, const Texture* texture) {
+    shader.setFloat("u_Opacity", opacity);
+    shader.setVec2("u_UVOffset", binding.uvOffset);
+    shader.setVec2("u_UVScale", binding.uvScale);
+    shader.setFloat("u_UVRotation", binding.uvRotation);
+    shader.setInt("u_FlipH", binding.flipH ? 1 : 0);
+    shader.setInt("u_FlipV", binding.flipV ? 1 : 0);
+    shader.setInt("u_Texture", 0);
+
+    // Crop (ADR-040). Identity {0,0,1,1} is a render no-op.
+    const NormalizedRect& crop = binding.cropRect;
+    shader.setVec2("u_CropOffset", glm::vec2(crop.x, crop.y));
+    shader.setVec2("u_CropSize", glm::vec2(crop.width, crop.height));
+
+    // Color correction (ADR-036). Identity values are a render no-op.
+    shader.setVec3("u_ColorRGBGain", color.rgbGain);
+    shader.setFloat("u_ColorBrightness", color.brightness);
+    shader.setFloat("u_ColorContrast", color.contrast);
+    shader.setFloat("u_ColorGamma", color.gamma);
+
+    // Soft-edge blending (ADR-037). Identity widths (0) are a no-op.
+    shader.setFloat("u_EdgeLeft", edge.left);
+    shader.setFloat("u_EdgeRight", edge.right);
+    shader.setFloat("u_EdgeTop", edge.top);
+    shader.setFloat("u_EdgeBottom", edge.bottom);
+    shader.setFloat("u_EdgeGamma", edge.gamma);
+
+    // Colorspace uniform (ADR-044, A4): 1 = YCoCg decode for Hap Q, 0 = RGB passthrough.
+    // Sourced from the texture's colorSpace() so every draw path (canvas, per-output
+    // renderer, preview FBO) picks it up automatically through this single call site.
+    const bool valid = texture && texture->isValid();
+    shader.setInt("u_ColorSpace",
+                  (valid && texture->colorSpace() == TextureColorSpace::YCoCg) ? 1 : 0);
+
+    if (valid) {
+        texture->bind(0);
+    } else {
+        defaultTexture_.bind(0);
+    }
+}
+
+// A MeshObject's vertex data on the GPU (ADR-052): interleaved position + uv, and
+// indices, owned RAII. Built once per MeshData; the recorded storage lets the
+// Renderer tell when the object's mesh was replaced and must be uploaded again.
+struct GpuMesh {
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLuint ebo = 0;
+    GLsizei indexCount = 0;  // 0 = nothing drawable (empty or invalid indices)
+    Vec3 boundsMin{0.0f};    // model space
+    Vec3 boundsMax{0.0f};
+    uint64_t lastPass = 0;
+
+    explicit GpuMesh(const MeshData& mesh) : source_(signature(mesh)) { upload(mesh); }
+    ~GpuMesh() {
+        if (vao != 0) { glDeleteVertexArrays(1, &vao); GlObjectStats::onVertexArrayDestroyed(); }
+        if (vbo != 0) { glDeleteBuffers(1, &vbo); GlObjectStats::onVertexBufferDestroyed(); }
+        if (ebo != 0) { glDeleteBuffers(1, &ebo); GlObjectStats::onVertexBufferDestroyed(); }
+    }
+    GpuMesh(const GpuMesh&) = delete;
+    GpuMesh& operator=(const GpuMesh&) = delete;
+
+    bool builtFrom(const MeshData& mesh) const { return signature(mesh) == source_; }
+
+private:
+    // Storage identity plus the end vertices: constant-time, and it changes whenever
+    // the MeshData is replaced (a reload or a different mesh).
+    struct Signature {
+        const void* positions = nullptr;
+        const void* uvs = nullptr;
+        const void* indices = nullptr;
+        size_t positionCount = 0, uvCount = 0, indexCount = 0;
+        Vec3 first{0.0f}, last{0.0f};
+        bool operator==(const Signature& o) const {
+            return positions == o.positions && uvs == o.uvs && indices == o.indices &&
+                   positionCount == o.positionCount && uvCount == o.uvCount &&
+                   indexCount == o.indexCount && first == o.first && last == o.last;
+        }
+    };
+    static Signature signature(const MeshData& m) {
+        Signature s;
+        s.positions = m.positions.data();
+        s.uvs = m.uvs.data();
+        s.indices = m.indices.data();
+        s.positionCount = m.positions.size();
+        s.uvCount = m.uvs.size();
+        s.indexCount = m.indices.size();
+        if (!m.positions.empty()) {
+            s.first = m.positions.front();
+            s.last = m.positions.back();
+        }
+        return s;
+    }
+
+    void upload(const MeshData& mesh) {
+        const size_t vertexCount = mesh.positions.size();
+        const size_t indexTotal = mesh.triangleCount() * 3;
+        for (size_t i = 0; i < indexTotal; ++i) {
+            if (mesh.indices[i] >= vertexCount) {
+                Logger::warning("Mesh index {} out of range ({} vertices); object not drawn",
+                                mesh.indices[i], vertexCount);
+                return;
+            }
+        }
+        if (indexTotal == 0) return;
+
+        boundsMin = Vec3(std::numeric_limits<float>::max());
+        boundsMax = Vec3(std::numeric_limits<float>::lowest());
+        for (const Vec3& p : mesh.positions) {
+            boundsMin = glm::min(boundsMin, p);
+            boundsMax = glm::max(boundsMax, p);
+        }
+
+        // Without UVs, map the XY bounds onto the texture: +X right, +Y up, so the
+        // image stands upright seen from the front (v = 0 is the image's top row).
+        const bool hasUvs = mesh.uvs.size() == vertexCount;
+        const Vec2 extent = glm::max(Vec2(boundsMax - boundsMin), Vec2(1e-6f));
+        std::vector<float> interleaved;
+        interleaved.reserve(vertexCount * 5);
+        for (size_t i = 0; i < vertexCount; ++i) {
+            const Vec3& p = mesh.positions[i];
+            const Vec2 uv = hasUvs ? mesh.uvs[i]
+                                   : Vec2((p.x - boundsMin.x) / extent.x,
+                                          (boundsMax.y - p.y) / extent.y);
+            interleaved.insert(interleaved.end(), {p.x, p.y, p.z, uv.x, uv.y});
+        }
+
+        glGenVertexArrays(1, &vao);
+        GlObjectStats::onVertexArrayCreated();
+        glGenBuffers(1, &vbo);
+        GlObjectStats::onVertexBufferCreated();
+        glGenBuffers(1, &ebo);
+        GlObjectStats::onVertexBufferCreated();
+
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
+                     interleaved.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indexTotal * sizeof(uint32_t)),
+                     mesh.indices.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glBindVertexArray(0);  // before any other EBO bind, which would rebind ours
+
+        indexCount = static_cast<GLsizei>(indexTotal);
+    }
+
+    Signature source_;
+};
+
+const GpuMesh* Renderer::meshBuffersFor(const MeshObject& object) {
+    const MeshData& mesh = object.getMesh();
+    if (mesh.empty()) {
+        meshCache_.erase(object.getId());
+        return nullptr;
+    }
+    std::unique_ptr<GpuMesh>& slot = meshCache_[object.getId()];
+    if (!slot || !slot->builtFrom(mesh)) {
+        slot.reset();  // free the old buffers before allocating the new ones
+        slot = std::make_unique<GpuMesh>(mesh);
+    }
+    slot->lastPass = meshPass_;
+    return slot->indexCount > 0 ? slot.get() : nullptr;
+}
+
+void Renderer::renderMeshObject(const MeshObject& object, const ProjectorCamera& camera,
+                                const Texture* texture, float nearZ, float farZ) {
+    if (!initialized_ || !object.isVisible() || !(nearZ > 0.0f) || !(farZ > nearZ)) {
+        return;
+    }
+    const GpuMesh* gpu = meshBuffersFor(object);
+    if (!gpu) {
+        return;
+    }
+
+    const glm::mat4 mvp =
+        camera.projectionMatrix(nearZ, farZ) * camera.viewMatrix() * object.getTransform();
+
+    mesh3dShader_.bind();
+    mesh3dShader_.setMat4("u_MVP", mvp);
+    applyViewUniforms(mesh3dShader_);
+    mesh3dShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
+    // Objects carry no colour correction or soft edge of their own: identity.
+    applySurfaceUniforms(mesh3dShader_, object.getTexture(), object.getOpacity(),
+                         ColorCorrection{}, SoftEdge{}, texture);
+
+    glBindVertexArray(gpu->vao);
+    glDrawElements(GL_TRIANGLES, gpu->indexCount, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+
+    Texture::unbind();
+    ShaderProgram::unbind();
+}
+
+void Renderer::renderMeshObjects(const std::vector<std::unique_ptr<MeshObject>>& objects,
+                                 const ProjectorCamera& camera,
+                                 const std::unordered_map<UUID, Texture*>& textures) {
+    if (!initialized_) {
+        return;
+    }
+    ++meshPass_;
+    for (auto it = meshCache_.begin(); it != meshCache_.end();) {
+        if (meshPass_ - it->second->lastPass > kMeshCacheIdlePasses) {
+            it = meshCache_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // One depth range for the whole pass, spanning every object's bounding box in
+    // the projector's eye space, so depth compares correctly between objects.
+    const glm::mat4 view = camera.viewMatrix();
+    float nearest = std::numeric_limits<float>::max();
+    float farthest = 0.0f;
+    for (const auto& object : objects) {
+        if (!object || !object->isVisible()) continue;
+        const GpuMesh* gpu = meshBuffersFor(*object);
+        if (!gpu) continue;
+        const glm::mat4 modelView = view * object->getTransform();
+        for (int corner = 0; corner < 8; ++corner) {
+            const Vec3 p((corner & 1) ? gpu->boundsMax.x : gpu->boundsMin.x,
+                         (corner & 2) ? gpu->boundsMax.y : gpu->boundsMin.y,
+                         (corner & 4) ? gpu->boundsMax.z : gpu->boundsMin.z);
+            const float depth = -(modelView * glm::vec4(p, 1.0f)).z;  // GL eye looks down -z
+            nearest = std::min(nearest, depth);
+            farthest = std::max(farthest, depth);
+        }
+    }
+    if (farthest <= 0.0f) {
+        return;  // nothing in front of the projector
+    }
+    const float farZ = farthest * 1.01f;
+    const float nearZ = std::max(nearest * 0.99f, farZ * 1e-4f);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_CULL_FACE);
+    for (const auto& object : objects) {
+        if (!object || !object->isVisible()) continue;
+        const Texture* texture = nullptr;
+        auto it = textures.find(object->getId());
+        if (it != textures.end()) {
+            texture = it->second;
+        }
+        renderMeshObject(*object, camera, texture, nearZ, farZ);
+    }
+    glDisable(GL_DEPTH_TEST);
 }
 
 void Renderer::renderQuads(const QuadManager& quadManager,

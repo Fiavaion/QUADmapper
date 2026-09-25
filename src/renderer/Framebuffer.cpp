@@ -29,11 +29,17 @@ bool Framebuffer::resize(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    glGenRenderbuffers(1, &depth_);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width_, height_);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
     glGenFramebuffers(1, &fbo_);
     GlObjectStats::onFramebufferCreated();
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                            color_, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
 
     bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -60,6 +66,10 @@ void Framebuffer::destroy() {
         glDeleteFramebuffers(1, &fbo_);
         GlObjectStats::onFramebufferDestroyed();
         fbo_ = 0;
+    }
+    if (depth_ != 0) {
+        glDeleteRenderbuffers(1, &depth_);
+        depth_ = 0;
     }
     if (color_ != 0) {
         glDeleteTextures(1, &color_);

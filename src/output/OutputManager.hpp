@@ -316,9 +316,10 @@ public:
      * assignedOutputId is this output's id; outputs with no assigned scene clear
      * to black. Each output uses its own context-local Renderer; shared textures
      * bind across contexts. The output's rotation is applied (QM-087). Selection
-     * highlighting and editor handles are suppressed — output is clean.
+     * highlighting and editor handles are suppressed — output is clean. The scene's
+     * 3D objects are drawn first, through the output's projector camera (ADR-052).
      * @param scenes    The project's scenes (read-only); each may target one output
-     * @param textures  Map of quad UUID → Texture* (pointers owned by EditorState)
+     * @param textures  Map of quad/object UUID → Texture* (pointers owned by EditorState)
      */
     void renderToOutputs(const std::vector<std::unique_ptr<Scene>>& scenes,
                          const std::unordered_map<UUID, Texture*>& textures);
@@ -346,7 +347,7 @@ public:
      * binding + viewport. Outputs with no assigned scene get a cleared (black)
      * thumbnail. Cheap (a few small FBOs); safe to call every frame.
      * @param scenes    The project's scenes (read-only)
-     * @param textures  Map of quad UUID → Texture* (owned by EditorState)
+     * @param textures  Map of quad/object UUID → Texture* (owned by EditorState)
      * @param renderer  A Renderer valid in the current (main) GL context
      */
     void updatePreviews(const std::vector<std::unique_ptr<Scene>>& scenes,

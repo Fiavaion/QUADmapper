@@ -6,8 +6,8 @@ namespace quadmapper {
 
 // RAII offscreen render target: an RGBA8 color texture backed by an FBO, used
 // for rendering a scene to a texture instead of the screen (e.g. the per-output
-// live previews, ADR-039 P4). Color-only — 2D quad rendering is painter-ordered
-// and needs no depth buffer.
+// live previews, ADR-039 P4). A 24-bit depth renderbuffer lets 3D objects
+// (ADR-052) occlude correctly; 2D quads are painter-ordered and ignore it.
 //
 // Create and destroy with the GL context that owns it current. The color texture
 // is filled bottom-up (GL origin bottom-left), so when sampling for display flip
@@ -43,6 +43,7 @@ public:
 private:
     GLuint fbo_ = 0;
     GLuint color_ = 0;
+    GLuint depth_ = 0;  // renderbuffer; lives and dies with fbo_, so the FBO count covers it
     int width_ = 0;
     int height_ = 0;
 };

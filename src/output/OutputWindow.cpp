@@ -111,6 +111,7 @@ Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+    glfwWindowHint(GLFW_DEPTH_BITS, 24);  // 3D objects depth-test (ADR-052); GLFW's default, made explicit
 
     // Create the window with shared context
     window_ = glfwCreateWindow(

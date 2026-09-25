@@ -121,6 +121,7 @@ target_link_libraries(test_renderer PRIVATE quadmapper_renderer quadmapper_core)
 add_quadmapper_test(test_render_gl
     renderer/CropRenderTest.cpp
     renderer/HapUploadTest.cpp
+    renderer/MeshObjectRenderTest.cpp
     renderer/OutputCompositeRenderTest.cpp
     renderer/TextureUploadTest.cpp
 )

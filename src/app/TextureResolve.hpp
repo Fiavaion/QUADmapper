@@ -19,7 +19,7 @@ namespace quadmapper {
 // not-yet-migrated assignment). The single legacy video is overlaid onto its
 // assigned quad (folded into a SourceManager source in P3).
 //
-// Every scene's quads are included (the map is keyed by globally-unique quad id),
+// Every scene's quads and 3D objects are included (the map is keyed by globally-unique id),
 // so the editor viewport, the per-output render, and the preview FBOs can all
 // share one builder and resolve inactive scenes too.
 inline std::unordered_map<UUID, Texture*>
@@ -40,6 +40,14 @@ buildQuadTextureMap(EditorState& es, SourceManager* sm) {
                 if (it != es.quadTextures.end()) tex = it->second.get();
             }
             if (tex) map[qid] = tex;
+        }
+        // 3D objects (ADR-052) resolve through the same media model, keyed by object id.
+        if (!sm) continue;
+        for (const auto& objectPtr : scenePtr->getObjects()) {
+            if (!objectPtr || objectPtr->getTexture().mediaId.isNull()) continue;
+            if (Texture* tex = sm->getTexture(objectPtr->getTexture().mediaId)) {
+                map[objectPtr->getId()] = tex;
+            }
         }
     }
     return map;
