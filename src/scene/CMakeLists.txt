@@ -17,6 +17,9 @@ add_library(quadmapper_scene STATIC
     Commands.cpp
     ProjectorCamera.hpp
     ProjectorCamera.cpp
+    ProjectorCalibration.hpp
+    ProjectorCalibration.cpp
+    SmallLinAlg.hpp
     MeshObject.hpp
     ObjLoader.hpp
     ObjLoader.cpp
