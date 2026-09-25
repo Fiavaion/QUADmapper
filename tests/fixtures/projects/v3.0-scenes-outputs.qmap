@@ -1,0 +1,52 @@
+{
+  "$schema": "quadmapper/project/1.0",
+  "version": "3.0.0",
+  "name": "Show v3.0",
+  "scenes": [
+    {
+      "id": "3a1b2c3d-0000-4000-8000-0000000000c1",
+      "name": "Scene 1",
+      "assignedOutputId": "3a1b2c3d-0000-4000-8000-0000000000e1",
+      "view": {
+        "pan": [0.0, 0.0],
+        "zoom": 1.0,
+        "gridVisible": true,
+        "snapToGrid": false
+      },
+      "quads": [
+        {
+          "id": "3a1b2c3d-0000-4000-8000-000000000001",
+          "name": "Quad 1",
+          "zOrder": 0,
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "geometry": {
+            "corners": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+            "meshResolution": 1,
+            "meshMode": 0
+          },
+          "textureBinding": {
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": false,
+            "flipV": false,
+            "crop": {"x": 0.0, "y": 0.0, "width": 0.5, "height": 1.0}
+          },
+          "texturePath": "C:/Shows/media/backdrop.png"
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "id": "3a1b2c3d-0000-4000-8000-0000000000e1",
+      "name": "Projector 1",
+      "monitor": 1,
+      "resolution": [1920, 1080],
+      "rotation": 0,
+      "enabled": true
+    }
+  ]
+}

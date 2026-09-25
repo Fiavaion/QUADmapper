@@ -454,7 +454,7 @@ TEST(ProjectSerializerV3Test, V3RoundTripScenesAndOutputs) {
     original.getScenes().push_back(std::move(s2));
 
     std::string json = serializer.serialize(original);
-    EXPECT_NE(json.find("\"version\": \"3.0.0\""), std::string::npos);
+    EXPECT_NE(json.find("\"version\": \"3.1.0\""), std::string::npos);
     EXPECT_NE(json.find("scenes"), std::string::npos);
     EXPECT_NE(json.find("outputs"), std::string::npos);
 

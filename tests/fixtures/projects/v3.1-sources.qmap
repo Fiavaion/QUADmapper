@@ -1,0 +1,88 @@
+{
+  "$schema": "quadmapper/project/1.0",
+  "version": "3.1.0",
+  "name": "Show v3.1",
+  "sources": [
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000f1",
+      "kind": "procedural",
+      "proceduralType": "Plasma",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000f2",
+      "kind": "video",
+      "path": "media/not-shipped.mp4",
+      "transport": {"playing": true, "loopMode": "loop", "speed": 1.0}
+    }
+  ],
+  "scenes": [
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000c1",
+      "name": "Scene 1",
+      "assignedOutputId": "4a1b2c3d-0000-4000-8000-0000000000e1",
+      "view": {
+        "pan": [0.0, 0.0],
+        "zoom": 1.0,
+        "gridVisible": true,
+        "snapToGrid": false
+      },
+      "quads": [
+        {
+          "id": "4a1b2c3d-0000-4000-8000-000000000001",
+          "name": "Procedural",
+          "zOrder": 0,
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "geometry": {
+            "corners": [[0.1, 0.1], [0.5, 0.1], [0.5, 0.9], [0.1, 0.9]],
+            "meshResolution": 1,
+            "meshMode": 0
+          },
+          "textureBinding": {
+            "mediaId": "4a1b2c3d-0000-4000-8000-0000000000f1",
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": false,
+            "flipV": false
+          }
+        },
+        {
+          "id": "4a1b2c3d-0000-4000-8000-000000000002",
+          "name": "Video",
+          "zOrder": 1,
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "geometry": {
+            "corners": [[0.5, 0.1], [0.9, 0.1], [0.9, 0.9], [0.5, 0.9]],
+            "meshResolution": 1,
+            "meshMode": 0
+          },
+          "textureBinding": {
+            "mediaId": "4a1b2c3d-0000-4000-8000-0000000000f2",
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": false,
+            "flipV": false
+          },
+          "texturePath": "C:/Shows/media/not-shipped.mp4"
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000e1",
+      "name": "Projector 1",
+      "monitor": 1,
+      "resolution": [1920, 1080],
+      "rotation": 0,
+      "enabled": true
+    }
+  ]
+}
