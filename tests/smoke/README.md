@@ -20,7 +20,13 @@ and never assigns media):
   "low confidence … tap the surface", no apply (AC2). Output in `out_ai/`. The `QM_AI_SELFTEST` /
   `QM_AI_TEST_IMAGE` env vars are off in normal runs (verification seams).
 
-Both maximize the window (`SW_MAXIMIZE`) and paste the media path via the clipboard
+- **`qa_lib.ps1`** — helpers for step-by-step agent/manual QA: dot-source it in each shell call
+  (`. tests/smoke/qa_lib.ps1`), then `Start-Qa`, `Click`, `Drag`, `Tap`, `Chord`, `Paste`, `Cap`
+  (`-Virtual` for all monitors) against the running app; output in `out_qa/`.
+
+The harnesses place the editor window at 0,0 2560x1360 on the primary monitor (a maximized
+window covers the taskbar area here, hiding the bottom of the dock panels); all click points
+are physical pixels for that placement. Older notes below mention maximizing. Both (`SW_MAXIMIZE`) and paste the media path via the clipboard
 (`Ctrl+V` into the ImGui `InputText`); their deeper-panel click points (Assign/Play, Texture
 row) are tunable params — read the early `*_loaded`/`*_typed` capture to retune if the docked
 layout or screen size changes.

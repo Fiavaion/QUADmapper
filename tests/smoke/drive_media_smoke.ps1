@@ -17,11 +17,16 @@
 param(
     [string]$ExePath   = "$PSScriptRoot/../../build/debug/src/app/Debug/QUADmapper.exe",
     [string]$OutDir    = "$PSScriptRoot/out_media",
-    [string]$VideoPath = "D:\testing Videos\greenCrystals_15Sec_4x3.mp4",
+    [string]$VideoPath = "D:\testing Videos\Media\testy.mp4",   # 30 fps, 20 s
     [int]$FrameMs      = 50,
-    # Tunable click points (primary-screen-relative). Adjust after reading 03_loaded.png.
-    [int]$AssignX = 110, [int]$AssignY = 470,
-    [int]$PlayX   = 40,  [int]$PlayY   = 250
+    # Tunable click points (physical px; the window is placed at 0,0 2560x1360 on the
+    # primary monitor). Adjust after reading 02_path_typed.png / 03_loaded.png.
+    [int]$PathX    = 228, [int]$PathY    = 170,
+    [int]$UsePathX = 360, [int]$UsePathY = 170,
+    [int]$AssignX  = 123, [int]$AssignY  = 553,
+    [int]$PlayX    = 50,  [int]$PlayY    = 315,
+    # Video Player "Time: x / y s" readout, captured twice ~5 s apart (QM-088 real-speed check).
+    [int[]]$TimeRect = @(0, 370, 400, 30)
 )
 
 Set-StrictMode -Version Latest
@@ -42,6 +47,8 @@ public static class Win32Native {
     [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint uCode, uint uMapType);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int w, int h, bool repaint);
 }
 "@
 }
@@ -56,9 +63,19 @@ Write-Host "[media] exe   : $ExePath"
 Write-Host "[media] video : $VideoPath"
 Write-Host "[media] outdir: $OutDir"
 
+# The editor's GLFW window: a Debug build also owns a console window, which
+# Process.MainWindowHandle sometimes returns instead.
+function Get-EditorWindow { [Win32Native]::FindWindow('GLFW30', 'QUADmapper') }
+function Place-App {
+    # A fixed rect clear of the taskbar: a maximized window here covers the whole
+    # monitor, and the taskbar hides the bottom of the dock panels.
+    $h = Get-EditorWindow
+    [Win32Native]::ShowWindow($h, 9) | Out-Null   # SW_RESTORE
+    [Win32Native]::MoveWindow($h, 0, 0, 2560, 1360, $true) | Out-Null
+    Start-Sleep -Milliseconds 500
+}
 function Focus-App($proc) {
-    [Win32Native]::ShowWindow($proc.MainWindowHandle, 3) | Out-Null   # SW_MAXIMIZE
-    [Win32Native]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+    [Win32Native]::SetForegroundWindow((Get-EditorWindow)) | Out-Null
     Start-Sleep -Milliseconds 200
 }
 function Capture([string]$name, [System.Drawing.Rectangle]$bounds) {
@@ -95,6 +112,7 @@ try {
     while (($proc.MainWindowHandle -eq 0) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 200; $proc.Refresh() }
     if ($proc.MainWindowHandle -eq 0) { throw "App window never appeared." }
     Start-Sleep -Seconds 2
+    Place-App
     Focus-App $proc
     $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
     $px = { param($x) $screen.X + $x }
@@ -103,13 +121,13 @@ try {
     Capture "01_initial.png" $screen
 
     # 1) Focus the video path field and paste the path (Ctrl+V into ImGui InputText).
-    Click (& $px 145) (& $py 131)
+    Click (& $px $PathX) (& $py $PathY)
     Chord $VK.CTRL $VK.V
     Start-Sleep -Milliseconds $FrameMs
     Capture "02_path_typed.png" $screen
 
-    # 2) Click "Load Video" (right of the input field).
-    Click (& $px 327) (& $py 131)
+    # 2) Click "Use Path" (right of the input field).
+    Click (& $px $UsePathX) (& $py $UsePathY)
     Start-Sleep -Seconds 3   # let FFmpeg open + first decode
     Focus-App $proc
     Capture "03_loaded.png" $screen   # reveals true Play/Assign positions for tuning
@@ -122,8 +140,15 @@ try {
     Focus-App $proc
     Capture "04_assigned_playing.png" $screen   # quad should show the video frame
 
+    # Real-speed check: the time readout must advance ~5 s over ~5 s of wall clock.
+    $timeBounds = New-Object System.Drawing.Rectangle($TimeRect[0], $TimeRect[1], $TimeRect[2], $TimeRect[3])
+    $t1 = Get-Date; Capture "04a_time_t0.png" $timeBounds
+    Start-Sleep -Seconds 5
+    $t2 = Get-Date; Capture "04b_time_t5.png" $timeBounds
+    Write-Host ("[media] wall clock between time captures: {0:N2} s" -f ($t2 - $t1).TotalSeconds)
+
     # 4) Warp a corner so it's unmistakably the mapped quad, then send to projector.
-    Click (& $px 960) (& $py 170)   # clear ImGui nav focus on empty canvas
+    # No canvas click first: with a quad selected the canvas owns Tab/arrows (QM-089).
     Focus-App $proc
     Tap $VK.TAB
     Chord $VK.SHIFT $VK.RIGHT 15
