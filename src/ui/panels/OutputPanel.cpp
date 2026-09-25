@@ -379,7 +379,7 @@ void OutputPanel::renderRotationControls(OutputWindow* output) {
     }
 
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Rotate the output content");
+        ImGui::SetTooltip("Rotate the output content clockwise (projector mounted on its side)");
     }
 
     // Show effective resolution after rotation

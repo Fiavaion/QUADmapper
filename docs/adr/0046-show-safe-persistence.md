@@ -76,3 +76,8 @@ A malformed file returns `Err` and never crashes the app.
 2. **Store sources implicitly, by writing the procedural type into the quad's texture object.** Rejected: that duplicates source state per quad, breaks the one-source-many-quads model (ADR-040), and gives future live inputs (NDI, Spout) nowhere to live.
 3. **`ReplaceFileW` instead of `MoveFileExW`.** Rejected: it fails when the target doesn't exist yet (the first save) and needs a separate code path. Copy-to-`.bak` plus `MoveFileExW` covers both cases.
 4. **Autosave into the real project file.** Rejected: it silently commits experimental edits, and technicians expect "Save" to mean something.
+
+## Amendment (QM-087): monitor identity
+- Each output in `outputs` gains two optional, additive fields next to `monitor`: `monitorName` (the GLFW monitor name, a string) and `monitorPosition` (`[x, y]`, the monitor's origin on the virtual desktop). They are written only when the output has a connected monitor chosen. No version bump: older builds ignore them under the ADR-032 policy, and files without them load as before.
+- On load, the saved monitor is resolved against the connected displays by `OutputManager::resolveMonitor`, in this order: name + position, then name (preferring the saved index when several displays share a name, as identical projectors do), then the saved `monitor` index. If none matches, the output goes to monitor 0 and a warning is logged. An output that never had a monitor (`monitor` -1, no name) stays unassigned.
+- `monitor` is still written, so a build without this amendment still finds its screen by index.

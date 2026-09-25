@@ -455,5 +455,62 @@ TEST(OutputManagerTest, EnterPerformModeIdempotent) {
     EXPECT_FALSE(manager.isInPerformMode());
 }
 
+// ---- Saved monitor identity (QM-087) -----------------------------------------
+
+namespace {
+MonitorInfo monitorAt(int index, const std::string& name, IVec2 position) {
+    MonitorInfo info;
+    info.index = index;
+    info.name = name;
+    info.position = position;
+    return info;
+}
+}  // namespace
+
+TEST(ResolveMonitorTest, NameAndPositionWinOverStaleIndex) {
+    // Displays re-enumerated: the projector moved from index 1 to index 0.
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Epson", IVec2(2560, 0)),
+                                         monitorAt(1, "Dell", IVec2(0, 0))};
+    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 1, "Epson", IVec2(2560, 0)), 0);
+}
+
+TEST(ResolveMonitorTest, PositionDisambiguatesIdenticalNames) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Generic PnP", IVec2(0, 0)),
+                                         monitorAt(1, "Generic PnP", IVec2(1920, 0)),
+                                         monitorAt(2, "Generic PnP", IVec2(3840, 0))};
+    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 0, "Generic PnP", IVec2(3840, 0)), 2);
+}
+
+TEST(ResolveMonitorTest, NameOnlyWhenPositionChanged) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                         monitorAt(1, "Epson", IVec2(1920, 0))};
+    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 0, "Epson", IVec2(2560, 0)), 1);
+}
+
+TEST(ResolveMonitorTest, NameOnlyPrefersSavedIndexAmongSameNames) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Generic PnP", IVec2(0, 0)),
+                                         monitorAt(1, "Generic PnP", IVec2(1920, 0))};
+    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 1, "Generic PnP", IVec2(-500, 0)), 1);
+}
+
+TEST(ResolveMonitorTest, IndexWhenNameUnknownOrMissing) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                         monitorAt(1, "Epson", IVec2(1920, 0))};
+    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 1, "Barco", IVec2(0, 0)), 1);
+    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 1, "", IVec2(0, 0)), 1);  // pre-QM-087 file
+}
+
+TEST(ResolveMonitorTest, FallsBackToMonitorZero) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0))};
+    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 3, "Epson", IVec2(1920, 0)), 0);
+    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 3, "", IVec2(0, 0)), 0);
+    EXPECT_EQ(OutputManager::resolveMonitor({}, 1, "Epson", IVec2(0, 0)), 0);
+}
+
+TEST(ResolveMonitorTest, UnassignedStaysUnassigned) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0))};
+    EXPECT_EQ(OutputManager::resolveMonitor(monitors, -1, "", IVec2(0, 0)), -1);
+}
+
 } // namespace test
 } // namespace quadmapper

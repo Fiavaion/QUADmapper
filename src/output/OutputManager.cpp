@@ -272,6 +272,40 @@ std::vector<VideoModeInfo> OutputManager::getMonitorVideoModes(int monitorIndex)
     return modes;
 }
 
+int OutputManager::resolveMonitor(const std::vector<MonitorInfo>& monitors, int savedIndex,
+                                  const std::string& savedName, IVec2 savedPosition) {
+    const int count = static_cast<int>(monitors.size());
+    const bool indexValid = savedIndex >= 0 && savedIndex < count;
+
+    if (!savedName.empty()) {
+        for (int i = 0; i < count; ++i) {
+            if (monitors[i].name == savedName && monitors[i].position == savedPosition) {
+                return i;
+            }
+        }
+        // Identical projectors often share a name; the saved index breaks the tie.
+        if (indexValid && monitors[savedIndex].name == savedName) {
+            return savedIndex;
+        }
+        for (int i = 0; i < count; ++i) {
+            if (monitors[i].name == savedName) {
+                return i;
+            }
+        }
+    }
+
+    if (indexValid) {
+        return savedIndex;
+    }
+    if (savedIndex < 0 && savedName.empty()) {
+        return -1;  // no monitor was ever chosen
+    }
+
+    LOG_WARNING("Saved output monitor '{}' (index {}) is not connected; using monitor 0",
+                savedName, savedIndex);
+    return 0;
+}
+
 Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
     if (performMode_) {
         return Ok();  // Already in perform mode
@@ -342,6 +376,10 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
     // Setup key callbacks for Escape to exit
     setupPerformModeKeyCallbacks();
 
+    // Outputs are shown without activation (GLFW_FOCUS_ON_SHOW off); make sure
+    // no window manager quirk left one holding the keyboard.
+    returnFocusToEditor();
+
     LOG_INFO("Perform mode active");
 
     return Ok();
@@ -374,6 +412,9 @@ Result<void, Error> OutputManager::exitPerformMode() {
     }
 
     performMode_ = false;
+
+    // No output paces the loop any more; the editor is vsync'd again.
+    setEditorSwapInterval(1);
     LOG_INFO("Perform mode exited");
 
     return Ok();
@@ -406,55 +447,26 @@ void OutputManager::renderToOutputs(const std::vector<std::unique_ptr<Scene>>& s
         return;
     }
 
-    GLFWwindow* previousContext = glfwGetCurrentContext();
-
-    for (auto& output : outputs_) {
-        if (!output->isEnabled() || !output->isCreated()) {
-            continue;
+    // Render only the scene assigned to THIS output (ADR-039 routing). An output
+    // with no assigned scene stays black. renderQuad(...false) keeps it clean
+    // (no selection outlines / editor handles).
+    presentToOutputs([&](const OutputWindow& output, Renderer& renderer) {
+        const Scene* scene = sceneForOutput(scenes, output.getId());
+        if (!scene) {
+            return;
         }
-
-        auto rendererIt = outputRenderers_.find(output->getId());
-        if (rendererIt == outputRenderers_.end()) {
-            continue;
-        }
-        Renderer* renderer = rendererIt->second.get();
-
-        output->makeContextCurrent();
-
-        int width, height;
-        glfwGetFramebufferSize(output->getGLFWwindow(), &width, &height);
-        glViewport(0, 0, width, height);
-
-        glDisable(GL_DEPTH_TEST);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-
-        // Render only the scene assigned to THIS output (ADR-039 routing). An output
-        // with no assigned scene stays black. renderQuad(...false) keeps it clean
-        // (no selection outlines / editor handles).
-        const Scene* scene = sceneForOutput(scenes, output->getId());
-        if (scene) {
-            for (const Quad* quad : scene->getQuadsByZOrder()) {
-                if (!quad || !quad->isVisible()) {
-                    continue;
-                }
-                const Texture* tex = nullptr;
-                auto it = textures.find(quad->getId());
-                if (it != textures.end()) {
-                    tex = it->second;
-                }
-                renderer->renderQuad(*quad, tex, /*selected=*/false);
+        for (const Quad* quad : scene->getQuadsByZOrder()) {
+            if (!quad || !quad->isVisible()) {
+                continue;
             }
+            const Texture* tex = nullptr;
+            auto it = textures.find(quad->getId());
+            if (it != textures.end()) {
+                tex = it->second;
+            }
+            renderer.renderQuad(*quad, tex, /*selected=*/false);
         }
-
-        glEnable(GL_DEPTH_TEST);
-
-        output->swapBuffers();
-    }
-
-    if (previousContext != nullptr) {
-        glfwMakeContextCurrent(previousContext);
-    }
+    });
 }
 
 void OutputManager::updatePreviews(const std::vector<std::unique_ptr<Scene>>& scenes,
@@ -493,7 +505,9 @@ void OutputManager::updatePreviews(const std::vector<std::unique_ptr<Scene>>& sc
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // Same routing + clean-render rules as renderToOutputs, but into the FBO.
+        // Same routing + clean-render + rotation rules as renderToOutputs, but
+        // into the FBO, so the thumbnail shows what the projector shows.
+        renderer.setOutputRotation(output->getRotation());
         const Scene* scene = sceneForOutput(scenes, output->getId());
         if (scene) {
             for (const Quad* quad : scene->getQuadsByZOrder()) {
@@ -509,6 +523,9 @@ void OutputManager::updatePreviews(const std::vector<std::unique_ptr<Scene>>& sc
             }
         }
     }
+
+    // The editor canvas shares this Renderer and is never rotated.
+    renderer.setOutputRotation(Rotation::R0);
 
     // Restore the previous framebuffer + viewport for the rest of the frame.
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
@@ -529,10 +546,23 @@ void OutputManager::renderPatternToOutputs(const Quad& patternQuad,
         return;
     }
 
+    // One fullscreen identity quad carrying the calibration texture.
+    presentToOutputs([&](const OutputWindow&, Renderer& renderer) {
+        renderer.renderQuad(patternQuad, texture, /*selected=*/false);
+    });
+}
+
+void OutputManager::presentToOutputs(
+        const std::function<void(const OutputWindow&, Renderer&)>& draw) {
+    returnFocusToEditor();
+
     GLFWwindow* previousContext = glfwGetCurrentContext();
+    bool vsyncTaken = false;
 
     for (auto& output : outputs_) {
-        if (!output->isEnabled() || !output->isCreated()) {
+        // Hidden outputs (not in perform mode, or hidden by the user) are neither
+        // drawn nor swapped: nobody sees them, and each swap costs frame time.
+        if (!output->isEnabled() || !output->isCreated() || !output->isVisible()) {
             continue;
         }
 
@@ -543,6 +573,8 @@ void OutputManager::renderPatternToOutputs(const Quad& patternQuad,
         Renderer* renderer = rendererIt->second.get();
 
         output->makeContextCurrent();
+        output->setSwapInterval(vsyncTaken ? 0 : 1);
+        vsyncTaken = true;
 
         int width, height;
         glfwGetFramebufferSize(output->getGLFWwindow(), &width, &height);
@@ -552,8 +584,8 @@ void OutputManager::renderPatternToOutputs(const Quad& patternQuad,
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // One fullscreen identity quad carrying the calibration texture.
-        renderer->renderQuad(patternQuad, texture, /*selected=*/false);
+        renderer->setOutputRotation(output->getRotation());
+        draw(*output, *renderer);
 
         glEnable(GL_DEPTH_TEST);
 
@@ -562,6 +594,36 @@ void OutputManager::renderPatternToOutputs(const Quad& patternQuad,
 
     if (previousContext != nullptr) {
         glfwMakeContextCurrent(previousContext);
+    }
+
+    // The projector paces the loop while one is presented; the editor swaps
+    // without waiting. Otherwise the editor is vsync'd as before.
+    setEditorSwapInterval(vsyncTaken ? 0 : 1);
+}
+
+void OutputManager::setEditorSwapInterval(int interval) {
+    if (mainWindow_ == nullptr || interval == editorSwapInterval_) {
+        return;
+    }
+    GLFWwindow* previousContext = glfwGetCurrentContext();
+    glfwMakeContextCurrent(mainWindow_);
+    glfwSwapInterval(interval);
+    glfwMakeContextCurrent(previousContext);
+    editorSwapInterval_ = interval;
+}
+
+void OutputManager::returnFocusToEditor() {
+    if (!performMode_) {
+        return;
+    }
+    for (const auto& output : outputs_) {
+        GLFWwindow* window = output->getGLFWwindow();
+        if (window != nullptr && glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE) {
+            LOG_DEBUG("Output '{}' took keyboard focus; returning it to the editor",
+                      output->getName());
+            glfwFocusWindow(mainWindow_);
+            return;
+        }
     }
 }
 

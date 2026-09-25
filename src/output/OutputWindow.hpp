@@ -135,6 +135,12 @@ public:
      */
     void swapBuffers();
 
+    /**
+     * Set this window's swap interval (0 = don't wait for vblank, 1 = vsync).
+     * Call with this window's context current; a no-op when unchanged.
+     */
+    void setSwapInterval(int interval);
+
     // Fullscreen control
     /**
      * Switch to fullscreen mode on the specified monitor.
@@ -206,6 +212,7 @@ private:
     // GLFW window
     GLFWwindow* window_ = nullptr;
     GLFWwindow* shareContext_ = nullptr;
+    int swapInterval_ = -1;  // -1 = never set (driver default)
 
     // Window position (saved for fullscreen toggle)
     IVec2 position_ = IVec2(100, 100);

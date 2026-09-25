@@ -42,6 +42,11 @@ public:
         UUID id;
         std::string name;
         int monitor = -1;
+        // Monitor identity (QM-087): name + virtual-desktop position of `monitor`
+        // when saved, so a re-enumerated display still finds its projector.
+        // Empty name = unknown (older files, or no monitor chosen).
+        std::string monitorName;
+        IVec2 monitorPosition = IVec2(0, 0);
         IVec2 resolution = IVec2(1920, 1080);
         int rotationDegrees = 0;
         bool enabled = true;

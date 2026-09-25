@@ -165,6 +165,16 @@ public:
      */
     std::vector<VideoModeInfo> getMonitorVideoModes(int monitorIndex) const;
 
+    /**
+     * Resolve a saved monitor identity against the connected monitors (QM-087).
+     * Match order: name + position, then name (preferring the saved index when
+     * several monitors share the name), then the saved index; otherwise monitor 0
+     * with a logged warning. A saved index < 0 with no name means "no monitor
+     * chosen" and resolves to -1. Pure: no GLFW calls, so it is unit-testable.
+     */
+    static int resolveMonitor(const std::vector<MonitorInfo>& monitors, int savedIndex,
+                              const std::string& savedName, IVec2 savedPosition);
+
     // Monitor change callback
     using MonitorChangeCallback = std::function<void()>;
 
@@ -232,11 +242,12 @@ public:
 
     // Rendering
     /**
-     * Render each enabled output's ASSIGNED scene to that output window (ADR-039
-     * per-output routing). An output shows the one scene whose assignedOutputId is
-     * this output's id; outputs with no assigned scene clear to black. Each output
-     * uses its own context-local Renderer; shared textures bind across contexts.
-     * Selection highlighting and editor handles are suppressed — output is clean.
+     * Render each enabled, visible output's ASSIGNED scene to that output window
+     * (ADR-039 per-output routing). An output shows the one scene whose
+     * assignedOutputId is this output's id; outputs with no assigned scene clear
+     * to black. Each output uses its own context-local Renderer; shared textures
+     * bind across contexts. The output's rotation is applied (QM-087). Selection
+     * highlighting and editor handles are suppressed — output is clean.
      * @param scenes    The project's scenes (read-only); each may target one output
      * @param textures  Map of quad UUID → Texture* (pointers owned by EditorState)
      */
@@ -297,8 +308,25 @@ private:
     // Remove key callbacks from output windows
     void clearPerformModeKeyCallbacks();
 
+    // Render every enabled, created, VISIBLE output with its own Renderer and
+    // present it. `draw` issues the content draws after the black clear. Applies
+    // the output rotation and the swap policy: only the first presented output
+    // waits for vblank, the rest (and then the editor) swap with interval 0, so
+    // N outputs never divide the frame rate. With no output presented the editor
+    // is the vsync'd window again.
+    void presentToOutputs(const std::function<void(const OutputWindow&, Renderer&)>& draw);
+
+    // Set the editor (main) window's swap interval; a no-op when unchanged.
+    void setEditorSwapInterval(int interval);
+
+    // Perform mode keeps keyboard focus in the editor so Tab/arrow nudging works
+    // while watching the projector. If an output took focus anyway (the user
+    // clicked it), give focus back to the editor.
+    void returnFocusToEditor();
+
     // Main window for context sharing
     GLFWwindow* mainWindow_ = nullptr;
+    int editorSwapInterval_ = 1;  // Application enables vsync on the editor at startup
 
     // Output windows
     std::vector<std::unique_ptr<OutputWindow>> outputs_;

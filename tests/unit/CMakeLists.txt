@@ -99,6 +99,7 @@ target_link_libraries(test_renderer PRIVATE quadmapper_renderer quadmapper_core)
 add_quadmapper_test(test_render_gl
     renderer/CropRenderTest.cpp
     renderer/HapUploadTest.cpp
+    renderer/OutputCompositeRenderTest.cpp
 )
 target_link_libraries(test_render_gl PRIVATE quadmapper_renderer quadmapper_source quadmapper_core glfw glad)
 
