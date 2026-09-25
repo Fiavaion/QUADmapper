@@ -3,6 +3,7 @@
 #include "SmallLinAlg.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <limits>
 
@@ -478,8 +479,11 @@ double refine(const std::vector<Pair>& pairs, Lens& lens, Pose& pose, bool solve
 // pairs from that start with a Cauchy loss: the good pairs fit as if the bad one were
 // absent, and it keeps its own large error for the user to see. No pair is dropped, and
 // clean data never reaches the refit. Returns true when lens/pose were replaced.
+// Pairs left after removing one suspect must still over-determine the solve.
+size_t minPairsToLocateOutlier(bool solveLens) { return (solveLens ? 8 : 5) + 1; }
+
 bool reweightSingleOutlier(const std::vector<Pair>& pairs, Lens& lens, Pose& pose, bool solveLens) {
-    const size_t minRest = solveLens ? 8 : 5;
+    const size_t minRest = minPairsToLocateOutlier(solveLens) - 1;
     const std::vector<double> distances = residualDistances(pairs, lens, pose);
     if (*std::max_element(distances.begin(), distances.end()) <= OUTLIER_MIN_PX ||
         pairs.size() - 1 < minRest)
@@ -617,8 +621,8 @@ Result<CalibrationResult, Error> calibrateProjector(const std::vector<Calibratio
                 "paired with the right pixel");
         return Err<CalibrationResult>(DEGENERATE_MESSAGE);
     }
-    if (reweightSingleOutlier(pairs, lens, pose, solveLens))
-        method += ", Cauchy-weighted (one pair looks mismatched)";
+    const bool reweighted = reweightSingleOutlier(pairs, lens, pose, solveLens);
+    if (reweighted) method += ", Cauchy-weighted (one pair looks mismatched)";
     if (!finite(lens, pose) || !(lens.fx > 0.0) || !(lens.fy > 0.0))
         return Err<CalibrationResult>(DEGENERATE_MESSAGE);
 
@@ -651,6 +655,26 @@ Result<CalibrationResult, Error> calibrateProjector(const std::vector<Calibratio
         result.perPointError.push_back(error);
     }
     result.rmsError = static_cast<float>(std::sqrt(sumSq / static_cast<double>(pairs.size())));
+
+    float worst = 0.0f;
+    for (size_t i = 0; i < points.size(); ++i) {
+        if (points[i].enabled) worst = std::max(worst, result.perPointError[i]);
+    }
+    if (!reweighted && worst > OUTLIER_MIN_PX) {
+        char text[256];
+        if (pairs.size() < minPairsToLocateOutlier(solveLens)) {
+            std::snprintf(text, sizeof(text),
+                          "Poor fit (worst pair %.1f px). With fewer than %zu points the wrong "
+                          "pair cannot be singled out: re-check each pair, or add points.",
+                          worst, minPairsToLocateOutlier(solveLens));
+        } else {
+            std::snprintf(text, sizeof(text),
+                          "Poor fit (worst pair %.1f px) and no single pair explains it: "
+                          "several pairs may be mismatched. Re-check them.",
+                          worst);
+        }
+        result.warning = text;
+    }
     return Ok(std::move(result));
 }
 

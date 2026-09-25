@@ -514,6 +514,9 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
             if (ImGui::Selectable(label.c_str(), selected)) {
                 es.selectedObjectId = object.getId();
                 es.currentSelectionType = EditorState::SelectionType::Object;
+                // A quad left selected behind the object's properties would still take
+                // Delete and the arrow keys.
+                scene.getQuadManager().deselectAll();
                 es.mediaBinPanel.clearSelection();
                 es.outputPanel.clearSelection();
             }
@@ -529,8 +532,30 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
         ImGui::PopID();
     }
 
+    // Deleting an object loses its placement and cannot be undone yet: confirm first.
+    if (!deleteId.isNull()) {
+        objectConfirmDeleteId_ = deleteId;
+        ImGui::OpenPopup("Delete Object?");
+    }
+    deleteId = UUID();
+    if (ImGui::BeginPopupModal("Delete Object?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const MeshObject* target = scene.getObject(objectConfirmDeleteId_);
+        ImGui::Text("Delete '%s'? This cannot be undone.",
+                    target ? target->getName().c_str() : "object");
+        if (ImGui::Button("Delete")) {
+            deleteId = objectConfirmDeleteId_;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     if (!deleteId.isNull()) {
         scene.deleteObject(deleteId);
+        objectConfirmDeleteId_ = UUID();
         if (es.selectedObjectId == deleteId) es.selectedObjectId = UUID();
         if (objectRenameId_ == deleteId) objectRenaming_ = false;
         ctx.project->setModified(true);

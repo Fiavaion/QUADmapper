@@ -36,6 +36,7 @@ private:
     // Inline object rename (double-click, or context-menu > Rename).
     bool objectRenaming_ = false;
     UUID objectRenameId_;
+    UUID objectConfirmDeleteId_;  // object awaiting the delete confirmation
     char objectNameBuf_[128] = "";
 };
 

@@ -45,7 +45,7 @@ Build the foundation in four slices (Phase 3D-A). Use no new third-party depende
 
 ### 5. Persistence (`.qmap` v3.2, additive per ADR-032/046)
 - Each scene gets `"objects": [{id, name, path (relative like sources), transform[16], texture:{…same as quads}, visible, opacity}]`.
-- Each output gets `"projector": {intrinsics:{fx,fy,cx,cy,w,h}, pose:{r[9],t[3]}, calibrated, points:[{world[3], pixel[2], enabled}]}`.
+- Each output gets `"projector": {intrinsics:{fx,fy,cx,cy,width,height}, pose:{rotation[9],translation[3]}, calibrated, points:[{world[3], pixel[2], enabled}]}`.
 - Older builds ignore both fields. A missing mesh file keeps the object with a warning and draws it as empty.
 
 ### 6. The calibration UX (slice D, after the above)

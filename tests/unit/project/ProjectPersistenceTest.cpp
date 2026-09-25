@@ -557,7 +557,10 @@ TEST(ProjectFixtureTest, V32FixtureKeepsObjectAndProjector) {
     const Project::OutputData& out = p.getOutputs()[0];
     EXPECT_TRUE(out.projector.calibrated);
     EXPECT_FLOAT_EQ(out.projector.intrinsics.cy, 600.0f);
-    EXPECT_FLOAT_EQ(out.projector.pose.rotation[1][1], -1.0f);
+    // On disk the rotation is row-major (OpenCV); glm is [column][row]. The fixture's
+    // rotation is not symmetric, so a transposed reader fails here.
+    EXPECT_FLOAT_EQ(out.projector.pose.rotation[1][0], -1.0f);  // row 0, column 1
+    EXPECT_FLOAT_EQ(out.projector.pose.rotation[0][1], 1.0f);   // row 1, column 0
     EXPECT_FLOAT_EQ(out.projector.pose.translation.z, 5.0f);
     ASSERT_EQ(out.calibrationPoints.size(), 2u);
     EXPECT_FALSE(out.calibrationPoints[1].enabled);

@@ -1645,6 +1645,7 @@ void importObjectFile(EditorState& es, OutputManager* om, Project* project,
     }
 
     es.selectedObjectId = object->getId();
+    scene.getQuadManager().deselectAll();  // Delete/arrows must not reach a hidden quad
     es.currentSelectionType = EditorState::SelectionType::Object;
     es.mediaBinPanel.clearSelection();
     es.outputPanel.clearSelection();

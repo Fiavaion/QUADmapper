@@ -423,6 +423,38 @@ TEST(ProjectorCalibrationTest, GrossOutlierIsTheLargestPerPointError) {
     }
 }
 
+TEST(ProjectorCalibrationTest, TooFewPointsToLocateAMisclickWarnInstead) {
+    // Below 9 pairs (solving the lens) the largest error is often an innocent pair, so the
+    // result must warn rather than let the UI point at one pair.
+    for (size_t n : {size_t(7), size_t(8)}) {
+        for (unsigned seed = 1200; seed < 1206; ++seed) {
+            std::mt19937 rng(seed);
+            const ProjectorCamera truth = randomCamera(rng);
+            auto pts = pairsFor(rng, truth, visiblePoints(rng, truth, n, false), 0.3);
+            pts[seed % n].pixel += Vec2(60.0f, -45.0f);
+            auto result = calibrateProjector(pts, truth.intrinsics, CalibrationMode::Full);
+            if (!result.isSuccess()) continue;  // a hard Err is also a safe outcome
+            EXPECT_FALSE(result.value().warning.empty()) << "n=" << n << " seed " << seed;
+            EXPECT_NE(result.value().warning.find("cannot be singled out"), std::string::npos);
+        }
+    }
+}
+
+TEST(ProjectorCalibrationTest, CleanOrLocatedMisclickHasNoWarning) {
+    std::mt19937 rng(1300);
+    const ProjectorCamera truth = randomCamera(rng);
+    auto pts = pairsFor(rng, truth, visiblePoints(rng, truth, 10, false), 0.3);
+    auto clean = calibrateProjector(pts, truth.intrinsics, CalibrationMode::Full);
+    ASSERT_TRUE(clean.isSuccess());
+    EXPECT_TRUE(clean.value().warning.empty());
+
+    pts[3].pixel += Vec2(60.0f, -45.0f);  // 10 pairs: the robust path locates it
+    auto located = calibrateProjector(pts, truth.intrinsics, CalibrationMode::Full);
+    ASSERT_TRUE(located.isSuccess());
+    EXPECT_TRUE(located.value().warning.empty()) << located.value().warning;
+    EXPECT_NE(located.value().method.find("Cauchy"), std::string::npos);
+}
+
 TEST(ProjectorCalibrationTest, DisabledPointsAreMeasuredButNotFitted) {
     std::mt19937 rng(1100);
     const ProjectorCamera truth = randomCamera(rng);
