@@ -9,7 +9,6 @@
 #include "output/OutputManager.hpp"
 #include "source/SourceManager.hpp"
 
-#include <GLFW/glfw3.h>
 #include <imgui.h>
 
 #ifdef _WIN32
@@ -38,20 +37,26 @@ void MainMenuBar::render(EditorContext& ctx) {
         return;
     }
 
+    // File actions are only requested here; Application runs them at the next frame
+    // boundary, after the unsaved-changes check (ADR-046).
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("New Project", "Ctrl+N")) {
-            if (onNewProject_) onNewProject_();
+        using FileAction = EditorState::FileAction;
+        if (ImGui::MenuItem("New Project")) {
+            es.pendingFileAction = FileAction::New;
+        }
+        if (ImGui::MenuItem("Open Project...")) {
+            es.pendingFileAction = FileAction::Open;
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
-            if (onSaveProject_) onSaveProject_();
+            es.pendingFileAction = FileAction::Save;
         }
-        if (ImGui::MenuItem("Load Project", "Ctrl+O")) {
-            if (onLoadProject_) onLoadProject_();
+        if (ImGui::MenuItem("Save Project As...")) {
+            es.pendingFileAction = FileAction::SaveAs;
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4")) {
-            glfwSetWindowShouldClose(ctx.window, true);
+            es.pendingFileAction = FileAction::Exit;
         }
         ImGui::EndMenu();
     }

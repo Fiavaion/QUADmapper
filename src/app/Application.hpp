@@ -70,6 +70,15 @@ public:
     // Shutdown
     void shutdown();
 
+    // Window close button / Alt+F4 (GLFW close callback): veto the close and route it
+    // through the deferred Exit action so the unsaved-changes prompt can run (ADR-046).
+    void requestExit();
+
+    // Crash guard (ADR-046 §4): best-effort write of the live project to
+    // <project>.crash.qmap (or the recovery folder when untitled). Never touches the
+    // real project file and never throws; called from main()'s catch-all.
+    void emergencySave() noexcept;
+
     // Accessors
     GLFWwindow* getWindow() const { return m_window; }
     Renderer* getRenderer() const { return m_renderer.get(); }
@@ -92,13 +101,32 @@ private:
     void update(float deltaTime);
     void render();
 
-    // Project lifecycle actions, invoked from the menu bar, the Ctrl+N/S/O
-    // shortcuts, and the Resources>Project tab. Single home for New/Save/Load,
-    // replacing the blocks that were duplicated across render() (TD-02). Save
-    // and load no-op when the editor's project path is empty.
-    void newProject();
-    void saveProject();
-    void loadProject();
+    // Project lifecycle requests from Ctrl+S and the Resources>Project tab. They only
+    // queue a deferred EditorState::FileAction (as the File menu does); the work runs
+    // in processPendingFileAction() at the next frame boundary (ADR-046).
+    void saveProject();   // Save; an untitled project asks for a path
+    void loadProject();   // Load the path typed in the Project tab
+
+    // ---- Show-safe session (ADR-046 §4) -----------------------------------------
+    // Runs once per frame between glfwPollEvents() and render(): establishes the
+    // clean baseline, offers startup recovery, runs any pending file action, autosaves.
+    void runFrameBoundaryTasks();
+    void processPendingFileAction();
+    void performNewProject();
+    bool performLoadProject(const std::string& path);
+    bool performSaveProject(bool chooseNewPath);
+    void performRestoreRecovery();
+    // The live editor as a serializable Project DTO, and its canonical JSON text
+    // (compared against the last saved text to decide "unsaved changes").
+    void buildEditorProject(Project& out);
+    std::string editorSnapshot();
+    bool isProjectDirty();
+    void markProjectClean();
+    void autosaveIfDue();
+    // Offer a recovery file for `projectPath` ("" = untitled) newer than the project.
+    void offerRecovery(const std::string& projectPath);
+    // Unsaved-changes and recovery modals; called inside the ImGui frame.
+    void renderSessionDialogs();
 
     // AI pre-show "Detect Surface" (QM-058): capture a frame (live camera, or the
     // QM_AI_TEST_IMAGE override) -> sidecar /surface -> apply the proposed quad to
@@ -175,6 +203,15 @@ private:
     // State
     bool m_running = false;
     float m_lastFrameTime = 0.0f;
+
+    // Show-safe session state (ADR-046 §4).
+    bool m_haveCleanBaseline = false;  // m_savedSnapshot captured after the first frame
+    std::string m_savedSnapshot;       // editorSnapshot() as of the last save/load/new
+    std::string m_autosavedSnapshot;   // editorSnapshot() last written to the autosave
+    bool m_autoSaveEnabled = true;
+    double m_autoSaveIntervalSec = 60.0;
+    double m_lastAutosaveTime = 0.0;
+    bool m_exitConfirmed = false;      // Exit passed the unsaved-changes check
 
     // QM-058 self-test hook (QM_AI_SELFTEST). Off in normal runs.
     bool m_aiSelfTestPending = false;

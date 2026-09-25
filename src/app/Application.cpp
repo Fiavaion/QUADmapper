@@ -19,6 +19,10 @@
 #include "../source/procedural/ProceduralSource.hpp"
 #include "../source/CameraSource.hpp"
 #include "../source/CameraDevices.hpp"
+#include "../source/HapFileSource.hpp"
+#include "../source/StaticImageSource.hpp"
+#include "../source/VideoFileSource.hpp"
+#include "../source/procedural/ProceduralFactory.hpp"
 #include "../ai/SidecarClient.hpp"
 #include "../renderer/UvTestGrid.hpp"
 #include "../renderer/Renderer.hpp"
@@ -40,11 +44,14 @@
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <filesystem>
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <thread>
+#include <unordered_set>
 #include <imgui_internal.h>  // For DockBuilder API
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -55,6 +62,9 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
+#include <shlobj.h>   // SHGetKnownFolderPath: recovery folder (ADR-046)
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>  // glfwGetWin32Window: owner of the Save/Open dialogs
 
 namespace quadmapper {
 
@@ -72,10 +82,100 @@ static void glfwErrorCallback(int error, const char* description) {
 // scene + output into the DTO (the serializer then writes .qmap v3); load rebuilds the
 // live scenes/outputs and remaps each scene's output assignment onto the freshly
 // created output ids. Quad geometry + texture binding (incl. mesh offsets, flipH/V,
-// colour, soft edge) copy whole, so nothing is dropped on round-trip.
-static void syncEditorToProject(EditorState& es, OutputManager* om, Project& project) {
+// colour, soft edge) copy whole, so nothing is dropped on round-trip. Each bound
+// SourceManager source is described into the v3.1 "sources" table (ADR-046).
+
+// Absolute form of a media path; texturePath and file sources are stored absolute.
+static std::string absolutePathString(const std::filesystem::path& path) {
+    std::error_code ec;
+    const std::filesystem::path abs = std::filesystem::absolute(path, ec);
+    return ec ? path.string() : abs.string();
+}
+
+static std::optional<ProceduralType> proceduralTypeOf(SourceType type) {
+    switch (type) {
+        case SourceType::PROCEDURAL_SOLID:        return ProceduralType::SOLID_COLOR;
+        case SourceType::PROCEDURAL_GRADIENT:     return ProceduralType::GRADIENT;
+        case SourceType::PROCEDURAL_CHECKERBOARD: return ProceduralType::CHECKERBOARD;
+        case SourceType::PROCEDURAL_TEST_PATTERN: return ProceduralType::TEST_PATTERN;
+        case SourceType::PROCEDURAL_NOISE:        return ProceduralType::NOISE;
+        case SourceType::PROCEDURAL_PLASMA:       return ProceduralType::PLASMA;
+        case SourceType::PROCEDURAL_GRID:         return ProceduralType::GRID;
+        default:                                  return std::nullopt;
+    }
+}
+
+static Project::TransportData transportOf(const PlayableSource& p) {
+    Project::TransportData t;
+    t.playing = (p.getPlaybackState() == PlaybackState::PLAYING);
+    t.loopMode = p.getLoopMode();
+    t.speed = p.getSpeed();
+    return t;
+}
+
+// Describe a live source as a "sources" entry; nullopt for kinds .qmap cannot hold.
+static std::optional<Project::SourceData> describeSource(SourceManager& sm, const UUID& id) {
+    TextureSource* src = sm.getSource(id);
+    if (!src) return std::nullopt;
+    Project::SourceData d;
+    d.id = id;
+    if (auto* image = dynamic_cast<StaticImageSource*>(src)) {
+        d.kind = "image";
+        d.path = absolutePathString(image->getPath());
+    } else if (auto* hap = dynamic_cast<HapFileSource*>(src)) {
+        d.kind = "hap";
+        d.path = absolutePathString(hap->getPath());
+        d.transport = transportOf(*hap);
+    } else if (auto* video = dynamic_cast<VideoFileSource*>(src)) {
+        d.kind = "video";
+        d.path = absolutePathString(video->getPath());
+        d.transport = transportOf(*video);
+    } else if (auto* camera = dynamic_cast<CameraSource*>(src)) {
+        d.kind = "camera";
+        d.deviceName = camera->getDeviceName();
+    } else if (auto type = proceduralTypeOf(src->getType())) {
+        d.kind = "procedural";
+        d.proceduralType = ProceduralFactory::getTypeName(*type);
+        d.width = src->getWidth();
+        d.height = src->getHeight();
+    } else {
+        return std::nullopt;
+    }
+    return d;
+}
+
+// Recreate a "sources" entry in the SourceManager; returns the live id (null on failure).
+static UUID createSourceFrom(SourceManager& sm, const Project::SourceData& d) {
+    if (d.kind == "image") return sm.getOrCreateImageSource(d.path);
+    if (d.kind == "video" || d.kind == "hap") {
+        const UUID id = sm.getOrCreateVideoSource(d.path);  // probes HAP itself
+        auto* playable = dynamic_cast<PlayableSource*>(sm.getSource(id));
+        if (playable && d.transport) {
+            playable->setLoopMode(d.transport->loopMode);
+            playable->setSpeed(d.transport->speed);
+            if (d.transport->playing) playable->play();
+        }
+        return id;
+    }
+    if (d.kind == "procedural") {
+        for (ProceduralType type : ProceduralFactory::getAvailableTypes()) {
+            if (ProceduralFactory::getTypeName(type) == d.proceduralType) {
+                return sm.createProceduralSource(type, d.width, d.height);
+            }
+        }
+        Logger::warning("Project: unknown procedural type '{}'", d.proceduralType);
+        return UUID();
+    }
+    if (d.kind == "camera") return sm.createCameraSource(d.deviceName);
+    return UUID();
+}
+
+static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManager* sm,
+                                Project& project) {
     project.getScenes().clear();
     project.getOutputs().clear();
+    project.getSources().clear();
+    std::unordered_set<UUID> describedSources;
 
     for (const auto& scenePtr : es.scenes) {
         if (!scenePtr) continue;
@@ -92,8 +192,14 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, Project& pro
         for (const auto& quadPtr : sc.getQuadManager().getQuads()) {
             sd.quads.push_back(*quadPtr);
             auto it = es.quadTexturePaths.find(quadPtr->getId());
-            sd.texturePaths.push_back(
-                it != es.quadTexturePaths.end() ? it->second : std::string());
+            sd.texturePaths.push_back(it != es.quadTexturePaths.end() && !it->second.empty()
+                                          ? absolutePathString(it->second) : std::string());
+            const UUID& mediaId = quadPtr->getTexture().mediaId;
+            if (sm && !mediaId.isNull() && describedSources.insert(mediaId).second) {
+                if (auto source = describeSource(*sm, mediaId)) {
+                    project.getSources().push_back(std::move(*source));
+                }
+            }
         }
         for (const auto& groupPtr : sc.getGroups()) {
             if (groupPtr) sd.groups.push_back(*groupPtr);
@@ -133,6 +239,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
     es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
+    es.activeVideoSourceId = UUID();
     if (sm) sm->clear();  // drop the previous project's media sources (ADR-040 P2)
 
     // Rebuild outputs from the file (v3) so scene assignments remap onto the freshly
@@ -158,6 +265,12 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         }
     }
 
+    // v3.1 sources (ADR-046), created lazily the first time a quad references one:
+    // saved source id -> live SourceManager id (null = could not be recreated).
+    std::unordered_map<UUID, const Project::SourceData*> savedSources;
+    for (const auto& s : project.getSources()) savedSources[s.id] = &s;
+    std::unordered_map<UUID, UUID> sourceRemap;
+
     for (const auto& sd : project.getScenes()) {
         auto scene = std::make_unique<Scene>(sd.id);
         scene->setName(sd.name);
@@ -177,6 +290,30 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             Quad* nq = qm.createQuad(sd.quads[i].getName());
             quadRemap[sd.quads[i].getId()] = nq->getId();
             applyQuadData(sd.quads[i], nq);
+
+            // The copied binding still carries the SAVED source id; swap it for the
+            // live one. The serializer only leaves a mediaId that resolves in the
+            // sources table, else the quad falls back to texturePath below.
+            const UUID savedMediaId = nq->getTexture().mediaId;
+            nq->getTexture().mediaId = UUID();
+            auto savedIt = savedMediaId.isNull() ? savedSources.end()
+                                                 : savedSources.find(savedMediaId);
+            if (sm && savedIt != savedSources.end()) {
+                const Project::SourceData& src = *savedIt->second;
+                auto remapIt = sourceRemap.find(savedMediaId);
+                if (remapIt == sourceRemap.end()) {
+                    remapIt = sourceRemap.emplace(savedMediaId, createSourceFrom(*sm, src)).first;
+                }
+                if (!remapIt->second.isNull()) {
+                    nq->getTexture().mediaId = remapIt->second;
+                    if (!src.path.empty()) es.quadTexturePaths[nq->getId()] = src.path;
+                    if (src.kind == "video" || src.kind == "hap") {
+                        es.activeVideoSourceId = remapIt->second;
+                    }
+                    continue;
+                }
+            }
+
             if (i < sd.texturePaths.size() && !sd.texturePaths[i].empty()) {
                 // ADR-040 P2: route the media through SourceManager (deduped by
                 // path, so the same file on many quads decodes once) and bind the
@@ -259,6 +396,11 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             es.currentTexturePath[0] = '\0';
         }
     }
+}
+
+// GLFW window close callback: route the close through the deferred Exit action.
+static void windowCloseCallback(GLFWwindow* /*window*/) {
+    Application::instance().requestExit();
 }
 
 // GLFW framebuffer size callback
@@ -366,6 +508,15 @@ bool Application::initialize(int argc, char* argv[]) {
     if (!initializeComponents()) {
         Logger::error("Failed to initialize components");
         return false;
+    }
+
+    // Autosave preferences (ADR-046 §4); the interval is stored in minutes.
+    {
+        PreferencesDialog prefsDialog;
+        prefsDialog.loadPreferences();
+        const auto& general = prefsDialog.getPreferences().general;
+        m_autoSaveEnabled = general.autoSaveEnabled;
+        m_autoSaveIntervalSec = 60.0 * std::max(1, general.autoSaveIntervalMinutes);
     }
 
     Logger::info("QUADmapper initialized successfully");
@@ -647,6 +798,9 @@ int Application::run() {
 
     Logger::info("Starting main loop");
 
+    // The close button / Alt+F4 goes through the unsaved-changes check (ADR-046).
+    glfwSetWindowCloseCallback(m_window, windowCloseCallback);
+
     m_lastFrameTime = static_cast<float>(glfwGetTime());
 
     while (!glfwWindowShouldClose(m_window) && m_running) {
@@ -657,6 +811,11 @@ int Application::run() {
 
         // Poll events
         glfwPollEvents();
+
+        // Frame boundary: pending file actions (New/Open/Save/Exit, recovery) and
+        // autosave run here, before render() takes any scene references (ADR-046).
+        runFrameBoundaryTasks();
+        if (glfwWindowShouldClose(m_window)) break;  // a confirmed Exit
 
         // Process input
         processInput();
@@ -822,12 +981,9 @@ void Application::render() {
         outputPanelInitialized = true;
     }
 
-    // Initialize Main Menu Bar callbacks (set once; lambdas capture this)
+    // Initialize Main Menu Bar callbacks (set once; lambdas capture this). File items
+    // queue es.pendingFileAction directly (ADR-046), so they need no callbacks.
     if (!es.mainMenuBarInitialized) {
-        es.mainMenuBar.setOnNewProject( [this]() { newProject();  });
-        es.mainMenuBar.setOnSaveProject([this]() { saveProject(); });
-        es.mainMenuBar.setOnLoadProject([this]() { loadProject(); });
-
         // AI pre-show assist (QM-056 skeleton). Active state reads cached client
         // state (no per-frame I/O). Enable launches the sidecar on demand; Detect
         // runs the stub /surface round-trip. Both no-op gracefully if absent.
@@ -1296,6 +1452,9 @@ void Application::render() {
         ImGui::ShowDemoWindow(&showDemo);
     }
 
+    // Unsaved-changes / recovery modals (ADR-046); drawn last so they sit on top.
+    renderSessionDialogs();
+
     // Finalize ImGui rendering
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -1309,62 +1468,414 @@ void Application::render() {
     }
 }
 
-// ---- Project lifecycle actions (TD-02) ----
-// Single home for New/Save/Load, replacing the blocks previously duplicated
-// across render() (File menu, Ctrl+S shortcut, Resources>Project tab). Save and
-// load read the editor's project-path buffer and no-op when it is empty.
-void Application::newProject() {
-    EditorState& es = *m_editorState;
+// ---- Project lifecycle (TD-02, ADR-046) ----
+// Everything that replaces or writes the project runs here, at a frame boundary
+// (runFrameBoundaryTasks, called from run() before render()), never from inside the
+// ImGui frame: File > Load used to destroy the Scene whose QuadManager& render() was
+// still using. Callers only queue an EditorState::FileAction.
 
-    es.quadManager().clear();
-    es.quadTextures.clear();
-    es.quadTexturePaths.clear();
-    es.currentTexturePath[0] = '\0';
+namespace {
 
-    es.quadManager().createQuad("Quad 1");
-    if (es.quadManager().getQuadCount() > 0) {
-        es.quadManager().selectQuad(es.quadManager().getQuads()[0]->getId());
+namespace fs = std::filesystem;
+
+// %LOCALAPPDATA%\QUADmapper\recovery: autosave / crash files of untitled projects.
+fs::path recoveryDir() {
+    PWSTR base = nullptr;
+    fs::path dir;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &base))) {
+        dir = fs::path(base) / "QUADmapper" / "recovery";
     }
-
-    m_project->setName("Untitled Project");
-    m_project->setFilePath("");
-    m_project->clearQuads();
-    m_project->getTexturePaths().clear();
-
-    snprintf(es.statusMessage, sizeof(es.statusMessage), "New project created");
-    es.statusTimer = 3.0f;
+    CoTaskMemFree(base);
+    if (dir.empty()) dir = fs::temp_directory_path() / "QUADmapper" / "recovery";
+    return dir;
 }
 
-void Application::saveProject() {
-    EditorState& es = *m_editorState;
-    if (strlen(es.projectPath) == 0) return;
+// <project>.autosave.qmap / <project>.crash.qmap beside the project, or
+// untitled.<kind>.qmap in the recovery folder. kind = "autosave" | "crash".
+fs::path recoveryFileFor(const std::string& projectPath, const char* kind) {
+    const std::string suffix = std::string(".") + kind + ".qmap";
+    if (projectPath.empty()) return recoveryDir() / ("untitled" + suffix);
+    fs::path p(projectPath);
+    return p.replace_extension(suffix);
+}
 
-    syncEditorToProject(es, m_outputManager.get(), *m_project);
-
-    auto result = ProjectSerializer::save(*m_project, es.projectPath);
-    if (result) {
-        m_project->setFilePath(es.projectPath);
-        m_project->setModified(false);
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "Project saved: %s", es.projectPath);
-    } else {
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "Save failed: %s", result.error().message.c_str());
+// Delete a project's autosave + crash files (and the .bak the atomic write keeps) once
+// its state is settled. While a recovery prompt is unanswered nothing is deleted, so
+// closing the window (or saving) before answering it cannot lose that work.
+void discardRecoveryFiles(const EditorState& es, const std::string& projectPath) {
+    if (!es.recoveryFilePath.empty()) return;
+    std::error_code ec;
+    for (const char* kind : {"autosave", "crash"}) {
+        const fs::path file = recoveryFileFor(projectPath, kind);
+        fs::remove(file, ec);
+        fs::remove(fs::path(file) += ".bak", ec);
     }
-    es.statusTimer = 3.0f;
+}
+
+// Native Open/Save dialog for .qmap files; "" when cancelled. OFN_NOCHANGEDIR keeps
+// the working directory (relative resource lookups depend on it).
+std::string chooseProjectFile(GLFWwindow* owner, bool save, const char* initialPath) {
+    char file[MAX_PATH] = "";
+    snprintf(file, sizeof(file), "%s", initialPath);
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner ? glfwGetWin32Window(owner) : nullptr;
+    ofn.lpstrFilter = "QUADmapper Project (*.qmap)\0*.qmap\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = sizeof(file);
+    ofn.lpstrDefExt = "qmap";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+                (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    ofn.lpstrTitle = save ? "Save Project" : "Open Project";
+    const BOOL ok = save ? GetSaveFileNameA(&ofn) : GetOpenFileNameA(&ofn);
+    return ok ? std::string(file) : std::string();
+}
+
+void postStatus(EditorState& es, const std::string& message) {
+    snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", message.c_str());
+    es.statusTimer = 4.0f;
+}
+
+}  // namespace
+
+void Application::saveProject() {
+    m_editorState->pendingFileAction = EditorState::FileAction::Save;
 }
 
 void Application::loadProject() {
-    EditorState& es = *m_editorState;
-    if (strlen(es.projectPath) == 0) return;
+    m_editorState->pendingFileAction = EditorState::FileAction::Load;
+}
 
-    auto result = ProjectSerializer::load(es.projectPath);
-    if (result) {
-        *m_project = std::move(result.value());
-        syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "Project loaded: %s", es.projectPath);
-    } else {
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "Load failed: %s", result.error().message.c_str());
+void Application::requestExit() {
+    if (m_exitConfirmed || !m_editorState) return;  // our own confirmed close: let it through
+    glfwSetWindowShouldClose(m_window, GLFW_FALSE);
+    m_editorState->pendingFileAction = EditorState::FileAction::Exit;
+}
+
+void Application::runFrameBoundaryTasks() {
+    // The clean baseline is the editor after its first frame (the default quad
+    // exists by then); recovery is offered from the same point.
+    if (!m_haveCleanBaseline) {
+        if (!m_editorState->initialized) return;
+        markProjectClean();
+        m_haveCleanBaseline = true;
+        offerRecovery("");
     }
-    es.statusTimer = 3.0f;
+    processPendingFileAction();
+    autosaveIfDue();
+}
+
+void Application::processPendingFileAction() {
+    using FileAction = EditorState::FileAction;
+    EditorState& es = *m_editorState;
+    const FileAction action = es.pendingFileAction;
+    if (action == FileAction::None) return;
+    es.pendingFileAction = FileAction::None;
+
+    // Anything that leaves the current project first settles its unsaved changes.
+    const bool leavesProject = action == FileAction::New || action == FileAction::Open ||
+                               action == FileAction::Load || action == FileAction::Exit;
+    if (leavesProject) {
+        if (es.saveBeforeAction) {
+            es.saveBeforeAction = false;
+            if (!performSaveProject(false)) return;  // cancelled or failed: stay put
+        } else if (!es.discardConfirmed && isProjectDirty()) {
+            es.unsavedPromptFor = action;  // renderSessionDialogs() asks, then re-queues
+            return;
+        }
+        es.discardConfirmed = false;
+    }
+
+    // The project being left: its autosave/crash files are settled once we move on.
+    const std::string leaving = m_project->getFilePath();
+    switch (action) {
+        case FileAction::New:
+            discardRecoveryFiles(es, leaving);
+            performNewProject();
+            break;
+        case FileAction::Open: {
+            const std::string path = chooseProjectFile(m_window, false, es.projectPath);
+            if (path.empty()) break;
+            discardRecoveryFiles(es, leaving);
+            performLoadProject(path);
+            break;
+        }
+        case FileAction::Load:
+            if (es.projectPath[0] == '\0') break;
+            discardRecoveryFiles(es, leaving);
+            performLoadProject(es.projectPath);
+            break;
+        case FileAction::Save:
+            performSaveProject(false);
+            break;
+        case FileAction::SaveAs:
+            performSaveProject(true);
+            break;
+        case FileAction::Exit:
+            discardRecoveryFiles(es, leaving);
+            m_exitConfirmed = true;
+            glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+            break;
+        case FileAction::RestoreRecovery:
+            performRestoreRecovery();
+            break;
+        case FileAction::DiscardRecovery: {
+            const std::string project = es.recoveryProjectPath;
+            es.recoveryFilePath.clear();
+            es.recoveryProjectPath.clear();
+            discardRecoveryFiles(es, project);
+            break;
+        }
+        case FileAction::None:
+            break;
+    }
+}
+
+void Application::performNewProject() {
+    EditorState& es = *m_editorState;
+
+    // Undo commands hold raw quad pointers into the scenes about to be destroyed.
+    es.commandHistory.clear();
+    es.scenes.clear();
+    es.quadTextures.clear();
+    es.quadTexturePaths.clear();
+    es.currentTexturePath[0] = '\0';
+    es.activeVideoSourceId = UUID();
+    if (m_sourceManager) m_sourceManager->clear();
+
+    // One default scene with one quad, still aimed at the first output. Outputs are
+    // hardware setup, not show content, so New keeps them.
+    Scene& scene = es.activeScene();
+    es.setActiveScene(scene.getId());
+    Quad* quad = scene.getQuadManager().createQuad("Quad 1");
+    if (quad) scene.getQuadManager().selectQuad(quad->getId());
+    if (m_outputManager && !m_outputManager->getOutputs().empty()) {
+        scene.setAssignedOutputId(m_outputManager->getOutputs().front()->getId());
+    }
+
+    *m_project = Project();
+    es.projectPath[0] = '\0';
+    markProjectClean();
+    postStatus(es, "New project created");
+}
+
+bool Application::performLoadProject(const std::string& path) {
+    EditorState& es = *m_editorState;
+    auto result = ProjectSerializer::load(path);
+    if (!result) {
+        Logger::error("Load failed: {}", result.error().message);
+        postStatus(es, "Load failed: " + result.error().message);
+        return false;
+    }
+
+    es.commandHistory.clear();  // before the scenes its commands point into go away
+    *m_project = std::move(result.value());
+    syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
+    snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
+    markProjectClean();
+    postStatus(es, "Project loaded: " + path);
+    offerRecovery(path);
+    return true;
+}
+
+bool Application::performSaveProject(bool chooseNewPath) {
+    EditorState& es = *m_editorState;
+    std::string path = es.projectPath;
+    if (chooseNewPath || path.empty()) {
+        path = chooseProjectFile(m_window, true, es.projectPath);
+        if (path.empty()) {
+            postStatus(es, "Save cancelled");
+            return false;
+        }
+    }
+
+    const std::string previousFile = m_project->getFilePath();
+    buildEditorProject(*m_project);
+    auto result = ProjectSerializer::save(*m_project, path);
+    if (!result) {
+        Logger::error("Save failed: {}", result.error().message);
+        postStatus(es, "Save failed: " + result.error().message);
+        return false;
+    }
+
+    m_project->setFilePath(path);
+    m_project->setModified(false);
+    snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
+    markProjectClean();
+    // The real file now holds everything the autosave did.
+    discardRecoveryFiles(es, previousFile);
+    discardRecoveryFiles(es, path);
+    postStatus(es, "Project saved: " + path);
+    return true;
+}
+
+void Application::performRestoreRecovery() {
+    EditorState& es = *m_editorState;
+    const std::string file = es.recoveryFilePath;
+    const std::string projectPath = es.recoveryProjectPath;
+    es.recoveryFilePath.clear();
+    es.recoveryProjectPath.clear();
+
+    auto result = ProjectSerializer::load(file);
+    if (!result) {
+        Logger::error("Recovery failed: {}", result.error().message);
+        postStatus(es, "Could not restore " + file + ": " + result.error().message);
+        return;
+    }
+    es.commandHistory.clear();
+    *m_project = std::move(result.value());
+    m_project->setFilePath(projectPath);  // it belongs to the project, not the autosave
+    syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
+    snprintf(es.projectPath, sizeof(es.projectPath), "%s", projectPath.c_str());
+    // The restored work is not in the project file yet: keep it "unsaved".
+    m_savedSnapshot.clear();
+    postStatus(es, "Restored unsaved work from " + file);
+}
+
+void Application::buildEditorProject(Project& out) {
+    syncEditorToProject(*m_editorState, m_outputManager.get(), m_sourceManager.get(), out);
+}
+
+std::string Application::editorSnapshot() {
+    Project p;
+    p.setName(m_project->getName());
+    buildEditorProject(p);
+    return ProjectSerializer().serialize(p);
+}
+
+// Dirty = the editor no longer serializes to what was last saved/loaded. Comparing
+// snapshots (only on New/Open/Exit and the autosave tick) catches every edit path,
+// including ones that never call Project::setModified().
+bool Application::isProjectDirty() {
+    return editorSnapshot() != m_savedSnapshot;
+}
+
+void Application::markProjectClean() {
+    m_savedSnapshot = editorSnapshot();
+    m_autosavedSnapshot.clear();
+    m_lastAutosaveTime = glfwGetTime();
+}
+
+void Application::autosaveIfDue() {
+    if (!m_autoSaveEnabled) return;
+    const double now = glfwGetTime();
+    if (now - m_lastAutosaveTime < m_autoSaveIntervalSec) return;
+    m_lastAutosaveTime = now;
+
+    Project p;
+    p.setName(m_project->getName());
+    buildEditorProject(p);
+    const std::string snapshot = ProjectSerializer().serialize(p);
+    if (snapshot == m_savedSnapshot || snapshot == m_autosavedSnapshot) return;
+
+    const fs::path file = recoveryFileFor(m_project->getFilePath(), "autosave");
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    auto result = ProjectSerializer::save(p, file);
+    if (result) {
+        m_autosavedSnapshot = snapshot;
+        Logger::info("Autosaved to {}", file.string());
+    } else {
+        Logger::warning("Autosave failed: {}", result.error().message);
+    }
+}
+
+void Application::offerRecovery(const std::string& projectPath) {
+    EditorState& es = *m_editorState;
+    std::error_code ec;
+    fs::file_time_type projectTime = fs::file_time_type::min();
+    if (!projectPath.empty()) {
+        projectTime = fs::last_write_time(projectPath, ec);
+        if (ec) return;
+    }
+    // Newest of the autosave and the crash file, if newer than the project itself.
+    fs::path best;
+    fs::file_time_type bestTime = projectTime;
+    for (const char* kind : {"autosave", "crash"}) {
+        const fs::path file = recoveryFileFor(projectPath, kind);
+        const auto t = fs::last_write_time(file, ec);
+        if (!ec && t > bestTime) {
+            best = file;
+            bestTime = t;
+        }
+    }
+    if (best.empty()) return;
+    es.recoveryFilePath = best.string();
+    es.recoveryProjectPath = projectPath;
+}
+
+void Application::renderSessionDialogs() {
+    using FileAction = EditorState::FileAction;
+    EditorState& es = *m_editorState;
+
+    constexpr const char* kUnsavedPopup = "Unsaved Changes##session";
+    if (es.unsavedPromptFor != FileAction::None && !ImGui::IsPopupOpen(kUnsavedPopup)) {
+        ImGui::OpenPopup(kUnsavedPopup);
+    }
+    if (ImGui::BeginPopupModal(kUnsavedPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("This project has unsaved changes.");
+        ImGui::TextUnformatted("Save them before continuing?");
+        ImGui::Spacing();
+        const FileAction deferred = es.unsavedPromptFor;
+        if (ImGui::Button("Save")) {
+            es.saveBeforeAction = true;
+            es.pendingFileAction = deferred;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Don't Save")) {
+            es.discardConfirmed = true;
+            es.pendingFileAction = deferred;
+        }
+        ImGui::SameLine();
+        const bool cancel = ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        if (es.pendingFileAction != FileAction::None || cancel) {
+            es.unsavedPromptFor = FileAction::None;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    constexpr const char* kRecoveryPopup = "Recover Unsaved Work##session";
+    if (!es.recoveryFilePath.empty() && !ImGui::IsPopupOpen(kRecoveryPopup)) {
+        ImGui::OpenPopup(kRecoveryPopup);
+    }
+    if (ImGui::BeginPopupModal(kRecoveryPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted(es.recoveryProjectPath.empty()
+            ? "QUADmapper found unsaved work from an untitled project."
+            : "QUADmapper found unsaved work newer than this project file.");
+        ImGui::TextDisabled("%s", es.recoveryFilePath.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("Restore")) {
+            es.pendingFileAction = FileAction::RestoreRecovery;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Discard")) {
+            es.pendingFileAction = FileAction::DiscardRecovery;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+void Application::emergencySave() noexcept {
+    try {
+        if (!m_editorState || !m_project) return;
+        Project p;
+        p.setName(m_project->getName());
+        buildEditorProject(p);
+        const fs::path file = recoveryFileFor(m_project->getFilePath(), "crash");
+        std::error_code ec;
+        fs::create_directories(file.parent_path(), ec);
+        auto result = ProjectSerializer::save(p, file);
+        if (result) {
+            Logger::warning("Emergency save written to {}", file.string());
+        } else {
+            Logger::error("Emergency save failed: {}", result.error().message);
+        }
+    } catch (...) {
+        Logger::error("Emergency save failed with an exception");
+    }
 }
 
 void Application::aiDetectSurface() {

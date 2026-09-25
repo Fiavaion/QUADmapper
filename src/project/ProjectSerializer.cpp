@@ -2,6 +2,12 @@
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cmath>
+#include <optional>
+#include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace quadmapper {
 
@@ -11,9 +17,20 @@ namespace quadmapper {
 //   3.x = multi-scene + per-output routing: "scenes" (id/name/quads/groups/view/
 //         assignedOutputId) + "outputs" arrays (ADR-039). The format the app writes
 //         once a project has scenes; v1/v2 are migrated in memory on read.
+//   3.1 = additive "sources" table + per-quad textureBinding.mediaId (ADR-046);
+//         texturePath is still written (absolute) so 3.0 readers keep file media.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
+static constexpr const char* kSceneFormatVersion = "3.1.0";
+
+// Load-time clamps for untrusted values (ADR-046 §3).
+static constexpr int kMaxMonitorIndex = 63;
+static constexpr int kMaxOutputDimension = 16384;
+static constexpr float kMinPlaybackSpeed = 0.1f;  // VideoPlayer::setSpeed range
+static constexpr float kMaxPlaybackSpeed = 4.0f;
+
+namespace fs = std::filesystem;
 
 // Single version policy for every read path (ADR-032). Returns the validated MAJOR version,
 // or an error message: missing/malformed version rejects, and a major newer than this build
@@ -45,9 +62,32 @@ static nlohmann::json serializeVec2(const Vec2& v) {
     return nlohmann::json::array({v.x, v.y});
 }
 
+// Checked readers (ADR-046 §3). nlohmann's const operator[] past the end of an array
+// is undefined behaviour, so every vector is size-, type- and finiteness-checked. A
+// malformed value throws; load()/deserialize() turn that into Err like any parse error.
+static float readFiniteFloat(const nlohmann::json& j) {
+    if (!j.is_number()) {
+        throw std::runtime_error("Malformed project file: expected a number");
+    }
+    const float f = j.get<float>();
+    if (!std::isfinite(f)) {
+        throw std::runtime_error("Malformed project file: number out of range");
+    }
+    return f;
+}
+
+static const nlohmann::json& checkedArray(const nlohmann::json& j, size_t size) {
+    if (!j.is_array() || j.size() != size) {
+        throw std::runtime_error("Malformed project file: expected an array of " +
+                                 std::to_string(size) + " numbers");
+    }
+    return j;
+}
+
 // Helper to deserialize a Vec2
 static Vec2 deserializeVec2(const nlohmann::json& j) {
-    return Vec2(j[0].get<float>(), j[1].get<float>());
+    const auto& a = checkedArray(j, 2);
+    return Vec2(readFiniteFloat(a[0]), readFiniteFloat(a[1]));
 }
 
 // Helper to serialize a Vec3
@@ -57,7 +97,30 @@ static nlohmann::json serializeVec3(const Vec3& v) {
 
 // Helper to deserialize a Vec3
 static Vec3 deserializeVec3(const nlohmann::json& j) {
-    return Vec3(j[0].get<float>(), j[1].get<float>(), j[2].get<float>());
+    const auto& a = checkedArray(j, 3);
+    return Vec3(readFiniteFloat(a[0]), readFiniteFloat(a[1]), readFiniteFloat(a[2]));
+}
+
+// Grid division coords (ADR-038) from an untrusted array: non-numeric/non-finite
+// entries (NaN is written as null) are dropped, values clamped to [0,1], the 0/1
+// endpoints guaranteed, then sorted and deduplicated. Too many divisions is an error.
+static std::vector<float> readGridCoords(const nlohmann::json& j) {
+    std::vector<float> coords{0.0f, 1.0f};
+    for (const auto& v : j) {
+        if (!v.is_number()) continue;
+        const float f = v.get<float>();
+        if (!std::isfinite(f)) continue;
+        coords.push_back(std::clamp(f, 0.0f, 1.0f));
+    }
+    std::sort(coords.begin(), coords.end());
+    coords.erase(std::unique(coords.begin(), coords.end(),
+                             [](float a, float b) { return b - a < 1e-6f; }),
+                 coords.end());
+    coords.back() = 1.0f;  // a near-1 survivor of the dedupe snaps to the endpoint
+    if (coords.size() > static_cast<size_t>(MAX_MESH_RESOLUTION) + 1) {
+        throw std::runtime_error("Malformed project file: too many grid divisions");
+    }
+    return coords;
 }
 
 // Helper to serialize quad geometry
@@ -122,14 +185,16 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
     // the vertex count before the offsets below are applied.
     if (j.contains("uCoords") && j["uCoords"].is_array() &&
         j.contains("vCoords") && j["vCoords"].is_array()) {
-        geometry.setGridCoords(j["uCoords"].get<std::vector<float>>(),
-                               j["vCoords"].get<std::vector<float>>());
+        geometry.setGridCoords(readGridCoords(j["uCoords"]), readGridCoords(j["vCoords"]));
     } else if (j.contains("meshResolution")) {
-        geometry.setMeshResolution(j["meshResolution"].get<int>());
+        geometry.setMeshResolution(j["meshResolution"].get<int>());  // clamps to [MIN,MAX]
     }
 
     if (j.contains("meshMode")) {
-        geometry.setMeshMode(static_cast<MeshMode>(j["meshMode"].get<int>()));
+        // Anything but a known mode falls back to the default corner-pin mode.
+        const int mode = j["meshMode"].get<int>();
+        geometry.setMeshMode(mode == static_cast<int>(MeshMode::MESH_EDIT)
+                                 ? MeshMode::MESH_EDIT : MeshMode::CORNERS_ONLY);
     }
 
     // Deserialize mesh vertex offsets if present
@@ -179,8 +244,27 @@ static nlohmann::json serializeTextureBinding(const TextureBinding& binding) {
     return j;
 }
 
+// Parse a UUID string defensively: anything missing or malformed (older/hand-edited
+// files) yields null so the caller can fall back instead of throwing.
+static UUID parseUuidOrNull(const nlohmann::json& v) {
+    if (!v.is_string()) return UUID();
+    const std::string s = v.get<std::string>();
+    if (s.length() != 36) return UUID();
+    try { return UUID::fromString(s); } catch (...) { return UUID(); }
+}
+
+// Parse an object's "id" field defensively (see parseUuidOrNull).
+static UUID parseIdOrNull(const nlohmann::json& j) {
+    if (!j.is_object() || !j.contains("id")) return UUID();
+    return parseUuidOrNull(j["id"]);
+}
+
 // Helper to deserialize texture binding UV transforms
 static void deserializeTextureBinding(const nlohmann::json& j, TextureBinding& binding) {
+    // v3.1 source reference (ADR-046); resolved against the "sources" table after load.
+    if (j.contains("mediaId")) {
+        binding.mediaId = parseUuidOrNull(j["mediaId"]);
+    }
     if (j.contains("uvOffset") && j["uvOffset"].is_array()) {
         binding.uvOffset = deserializeVec2(j["uvOffset"]);
     }
@@ -273,15 +357,6 @@ static nlohmann::json serializeQuad(const Quad& quad, const std::string& texture
     }
 
     return j;
-}
-
-// Parse an "id" field defensively: a missing or malformed id (older/hand-edited files)
-// yields null so the caller falls back to a fresh id instead of throwing.
-static UUID parseIdOrNull(const nlohmann::json& j) {
-    if (!j.contains("id") || !j["id"].is_string()) return UUID();
-    const std::string s = j["id"].get<std::string>();
-    if (s.length() != 36) return UUID();
-    try { return UUID::fromString(s); } catch (...) { return UUID(); }
 }
 
 // Helper to deserialize a single quad
@@ -379,15 +454,15 @@ static QuadGroup deserializeGroup(const nlohmann::json& j) {
     // Deserialize member quad IDs
     if (j.contains("members") && j["members"].is_array()) {
         for (const auto& memberJson : j["members"]) {
-            UUID memberId = UUID::fromString(memberJson.get<std::string>());
-            group.addMember(memberId);
+            UUID memberId = parseUuidOrNull(memberJson);
+            if (!memberId.isNull()) group.addMember(memberId);
         }
     }
 
     // Deserialize parent group if present
     if (j.contains("parentGroup")) {
-        UUID parentId = UUID::fromString(j["parentGroup"].get<std::string>());
-        group.setParentGroup(parentId);
+        UUID parentId = parseUuidOrNull(j["parentGroup"]);
+        if (!parentId.isNull()) group.setParentGroup(parentId);
     }
 
     return group;
@@ -401,8 +476,10 @@ static void loadQuadIntoScene(Project::SceneData& scene, const nlohmann::json& q
     scene.texturePaths.push_back(texturePath);
 }
 
-// Serialize one scene DTO to a v3 "scenes" element.
-static nlohmann::json serializeScene(const Project::SceneData& scene) {
+// Serialize one scene DTO to a v3 "scenes" element. A quad's mediaId is written only
+// when it names an entry of the "sources" table (knownSourceIds).
+static nlohmann::json serializeScene(const Project::SceneData& scene,
+                                     const std::unordered_set<UUID>& knownSourceIds) {
     nlohmann::json j;
     j["id"] = scene.id.toString();
     j["name"] = scene.name;
@@ -419,7 +496,12 @@ static nlohmann::json serializeScene(const Project::SceneData& scene) {
     nlohmann::json quadsJson = nlohmann::json::array();
     for (size_t i = 0; i < scene.quads.size(); ++i) {
         std::string texPath = (i < scene.texturePaths.size()) ? scene.texturePaths[i] : "";
-        quadsJson.push_back(serializeQuad(scene.quads[i], texPath));
+        nlohmann::json quadJson = serializeQuad(scene.quads[i], texPath);
+        const UUID& mediaId = scene.quads[i].getTexture().mediaId;
+        if (!mediaId.isNull() && knownSourceIds.count(mediaId) > 0) {
+            quadJson["textureBinding"]["mediaId"] = mediaId.toString();
+        }
+        quadsJson.push_back(std::move(quadJson));
     }
     j["quads"] = quadsJson;
 
@@ -437,15 +519,13 @@ static nlohmann::json serializeScene(const Project::SceneData& scene) {
 // the v3-only fields (assignedOutputId/view/id), which fall back to defaults.
 static Project::SceneData deserializeScene(const nlohmann::json& j) {
     Project::SceneData scene;
-    if (j.contains("id")) {
-        scene.id = UUID::fromString(j["id"].get<std::string>());
-    }
+    scene.id = parseIdOrNull(j);
     if (scene.id.isNull()) {
         scene.id = UUID::generate();  // generate a fresh id so every scene is addressable
     }
     scene.name = j.contains("name") ? j["name"].get<std::string>() : "Scene";
     if (j.contains("assignedOutputId")) {
-        scene.assignedOutputId = UUID::fromString(j["assignedOutputId"].get<std::string>());
+        scene.assignedOutputId = parseUuidOrNull(j["assignedOutputId"]);  // bad id = unassigned
     }
     if (j.contains("view") && j["view"].is_object()) {
         const auto& v = j["view"];
@@ -480,20 +560,145 @@ static nlohmann::json serializeOutput(const Project::OutputData& output) {
 
 static Project::OutputData deserializeOutput(const nlohmann::json& j) {
     Project::OutputData output;
-    if (j.contains("id")) {
-        output.id = UUID::fromString(j["id"].get<std::string>());
-    }
+    output.id = parseIdOrNull(j);
     if (output.id.isNull()) {
         output.id = UUID::generate();
     }
     output.name = j.contains("name") ? j["name"].get<std::string>() : "Output";
-    if (j.contains("monitor")) output.monitor = j["monitor"].get<int>();
-    if (j.contains("resolution") && j["resolution"].is_array() && j["resolution"].size() == 2) {
-        output.resolution = IVec2(j["resolution"][0].get<int>(), j["resolution"][1].get<int>());
+    // Clamp hardware settings to sane ranges (ADR-046 §3): -1 = no monitor chosen.
+    if (j.contains("monitor")) {
+        output.monitor = std::clamp(j["monitor"].get<int>(), -1, kMaxMonitorIndex);
     }
-    if (j.contains("rotation")) output.rotationDegrees = j["rotation"].get<int>();
+    if (j.contains("resolution")) {
+        const auto& r = checkedArray(j["resolution"], 2);
+        output.resolution = IVec2(std::clamp(r[0].get<int>(), 1, kMaxOutputDimension),
+                                  std::clamp(r[1].get<int>(), 1, kMaxOutputDimension));
+    }
+    if (j.contains("rotation")) {
+        // Snap to the nearest supported quarter turn in [0, 360).
+        const int deg = ((j["rotation"].get<int>() % 360) + 360) % 360;
+        output.rotationDegrees = ((deg + 45) / 90 % 4) * 90;
+    }
     if (j.contains("enabled")) output.enabled = j["enabled"].get<bool>();
     return output;
+}
+
+// ---- Sources table (.qmap v3.1, ADR-046) ------------------------------------
+
+static bool isFileSourceKind(const std::string& kind) {
+    return kind == "image" || kind == "video" || kind == "hap";
+}
+
+static bool isKnownSourceKind(const std::string& kind) {
+    return isFileSourceKind(kind) || kind == "procedural" || kind == "camera";
+}
+
+static const char* loopModeName(LoopMode mode) {
+    switch (mode) {
+        case LoopMode::ONCE:      return "once";
+        case LoopMode::PING_PONG: return "pingPong";
+        default:                  return "loop";
+    }
+}
+
+static LoopMode parseLoopMode(const std::string& name) {
+    if (name == "once") return LoopMode::ONCE;
+    if (name == "pingPong") return LoopMode::PING_PONG;
+    return LoopMode::LOOP;
+}
+
+// Media paths are written relative to the project directory when they share a root
+// (portable show folders), else absolute. baseDir empty = no project file: absolute.
+static std::string toProjectRelative(const std::string& path, const fs::path& baseDir) {
+    const fs::path p(path);
+    if (baseDir.empty() || !p.is_absolute()) return path;
+    const fs::path rel = p.lexically_relative(baseDir);
+    return rel.empty() ? path : rel.generic_string();
+}
+
+static nlohmann::json serializeSource(const Project::SourceData& s, const fs::path& baseDir) {
+    nlohmann::json j;
+    j["id"] = s.id.toString();
+    j["kind"] = s.kind;
+    if (isFileSourceKind(s.kind)) {
+        j["path"] = toProjectRelative(s.path, baseDir);
+        if (s.transport && s.kind != "image") {
+            j["transport"] = {
+                {"playing", s.transport->playing},
+                {"loopMode", loopModeName(s.transport->loopMode)},
+                {"speed", s.transport->speed},
+            };
+        }
+    } else if (s.kind == "procedural") {
+        j["proceduralType"] = s.proceduralType;
+        j["width"] = s.width;
+        j["height"] = s.height;
+    } else if (s.kind == "camera") {
+        j["deviceName"] = s.deviceName;
+    }
+    return j;
+}
+
+// Parse one "sources" entry; entries with no usable id/kind/path are skipped (nullopt)
+// so the quads that reference them fall back to texturePath.
+static std::optional<Project::SourceData> deserializeSource(const nlohmann::json& j,
+                                                            const fs::path& baseDir) {
+    Project::SourceData s;
+    s.id = parseIdOrNull(j);
+    if (s.id.isNull() || !j.contains("kind") || !j["kind"].is_string()) return std::nullopt;
+    s.kind = j["kind"].get<std::string>();
+    if (!isKnownSourceKind(s.kind)) return std::nullopt;
+
+    if (isFileSourceKind(s.kind)) {
+        if (!j.contains("path") || !j["path"].is_string()) return std::nullopt;
+        fs::path p(j["path"].get<std::string>());
+        if (p.empty()) return std::nullopt;
+        if (p.is_relative() && !baseDir.empty()) p = (baseDir / p).lexically_normal();
+        s.path = p.string();
+        if (s.kind != "image" && j.contains("transport") && j["transport"].is_object()) {
+            const auto& t = j["transport"];
+            Project::TransportData transport;
+            if (t.contains("playing")) transport.playing = t["playing"].get<bool>();
+            if (t.contains("loopMode") && t["loopMode"].is_string()) {
+                transport.loopMode = parseLoopMode(t["loopMode"].get<std::string>());
+            }
+            if (t.contains("speed")) {
+                transport.speed = std::clamp(readFiniteFloat(t["speed"]), kMinPlaybackSpeed,
+                                             kMaxPlaybackSpeed);
+            }
+            s.transport = transport;
+        }
+    } else if (s.kind == "procedural") {
+        if (!j.contains("proceduralType") || !j["proceduralType"].is_string()) return std::nullopt;
+        s.proceduralType = j["proceduralType"].get<std::string>();
+        if (j.contains("width"))  s.width  = std::clamp(j["width"].get<int>(), 1, kMaxOutputDimension);
+        if (j.contains("height")) s.height = std::clamp(j["height"].get<int>(), 1, kMaxOutputDimension);
+    } else if (j.contains("deviceName") && j["deviceName"].is_string()) {  // camera
+        s.deviceName = j["deviceName"].get<std::string>();
+    }
+    return s;
+}
+
+// Resolve each quad's mediaId against the sources table (ADR-046): a reference to a
+// missing entry, or to a file source whose file is gone, is cleared so the quad falls
+// back to its absolute texturePath - the same path every v1/v2/v3.0 file loads by.
+static void resolveQuadSources(Project& project) {
+    std::unordered_map<UUID, const Project::SourceData*> byId;
+    for (const auto& s : project.getSources()) byId[s.id] = &s;
+
+    for (auto& scene : project.getScenes()) {
+        for (auto& quad : scene.quads) {
+            UUID& mediaId = quad.getTexture().mediaId;
+            if (mediaId.isNull()) continue;
+            auto it = byId.find(mediaId);
+            bool usable = (it != byId.end());
+            if (usable && isFileSourceKind(it->second->kind)) {
+                std::error_code ec;
+                usable = fs::exists(it->second->path, ec);
+            }
+            if (!usable) mediaId = UUID();
+        }
+    }
 }
 
 // Rebuild the flat quads_/texturePaths_/groups_ as the union of every scene, so
@@ -516,9 +721,12 @@ static void flattenScenesToFlat(Project& project) {
 
 // Load a JSON document into the Project model (ADR-032 / ADR-039). Every read path
 // yields >= 1 scene: v1.x flat "quads" wrap into one scene; v2.x/v3.x "scenes" map
-// directly; v3.x also restores the "outputs" array. The flat quads_/groups_ are then
-// derived from the scenes so flat consumers stay backward-compatible.
-static void loadProjectModel(const nlohmann::json& json, Project& project) {
+// directly; v3.x also restores the "outputs" array and v3.1 the "sources" table
+// (relative paths resolve against baseDir, the project file's directory; empty =
+// leave them as written). The flat quads_/groups_ are then derived from the scenes
+// so flat consumers stay backward-compatible.
+static void loadProjectModel(const nlohmann::json& json, Project& project,
+                             const fs::path& baseDir) {
     if (json.contains("name")) {
         project.setName(json["name"].get<std::string>());
     }
@@ -560,23 +768,41 @@ static void loadProjectModel(const nlohmann::json& json, Project& project) {
         }
     }
 
+    if (json.contains("sources") && json["sources"].is_array()) {
+        for (const auto& sourceJson : json["sources"]) {
+            if (auto source = deserializeSource(sourceJson, baseDir)) {
+                project.getSources().push_back(std::move(*source));
+            }
+        }
+    }
+    resolveQuadSources(project);
+
     flattenScenesToFlat(project);
 }
 
 // Build the on-disk JSON for a project. Writes v3 (scenes + outputs) when the
 // project carries scene DTOs; otherwise the legacy v1.2 flat format, so a flat-only
 // Project (and the existing flat round-trip tests) is byte-compatible with before.
-static nlohmann::json buildProjectJson(const Project& project) {
+// baseDir is the project file's directory, used to write relative media paths.
+static nlohmann::json buildProjectJson(const Project& project, const fs::path& baseDir) {
     nlohmann::json json;
     json["$schema"] = "quadmapper/project/1.0";
 
     if (!project.getScenes().empty()) {
-        json["version"] = "3.0.0";  // 3.0: multi-scene + per-output routing (ADR-039)
+        json["version"] = kSceneFormatVersion;
         json["name"] = project.getName();
+
+        std::unordered_set<UUID> sourceIds;
+        nlohmann::json sourcesJson = nlohmann::json::array();
+        for (const auto& source : project.getSources()) {
+            sourceIds.insert(source.id);
+            sourcesJson.push_back(serializeSource(source, baseDir));
+        }
+        json["sources"] = sourcesJson;
 
         nlohmann::json scenesJson = nlohmann::json::array();
         for (const auto& scene : project.getScenes()) {
-            scenesJson.push_back(serializeScene(scene));
+            scenesJson.push_back(serializeScene(scene, sourceIds));
         }
         json["scenes"] = scenesJson;
 
@@ -613,10 +839,22 @@ static nlohmann::json buildProjectJson(const Project& project) {
     return json;
 }
 
+// Absolute directory of a project file, for relative media paths ("" on failure).
+static fs::path projectBaseDir(const fs::path& projectFile) {
+    std::error_code ec;
+    const fs::path abs = fs::absolute(projectFile, ec);
+    return ec ? fs::path() : abs.parent_path();
+}
+
 Result<void, Error> ProjectSerializer::save(const Project& project, const std::filesystem::path& path) {
-    nlohmann::json json = buildProjectJson(project);
     Logger::info("Saving project to: {}", path.string());
-    return FileSystem::writeFile(path, json.dump(2));
+    std::string text;
+    try {
+        text = buildProjectJson(project, projectBaseDir(path)).dump(2);
+    } catch (const std::exception& e) {
+        return Err(std::string("Failed to serialize project: ") + e.what());
+    }
+    return FileSystem::writeFileAtomic(path, text);
 }
 
 Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path) {
@@ -636,7 +874,7 @@ Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path
             return Err<Project>(versionResult.error());
         }
 
-        loadProjectModel(json, project);
+        loadProjectModel(json, project, projectBaseDir(path));
 
         project.setFilePath(path.string());
         project.setModified(false);
@@ -653,7 +891,7 @@ Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path
 }
 
 std::string ProjectSerializer::serialize(const Project& project) {
-    return buildProjectJson(project).dump(2);
+    return buildProjectJson(project, fs::path()).dump(2);
 }
 
 Result<void, std::string> ProjectSerializer::deserialize(const std::string& jsonStr, Project& project) {
@@ -675,8 +913,9 @@ Result<void, std::string> ProjectSerializer::deserialize(const std::string& json
         project.clearGroups();
         project.getScenes().clear();
         project.getOutputs().clear();
+        project.getSources().clear();
 
-        loadProjectModel(json, project);
+        loadProjectModel(json, project, fs::path());
 
         project.setModified(false);
 

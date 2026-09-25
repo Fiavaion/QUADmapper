@@ -9,6 +9,7 @@ add_quadmapper_test(test_core
     core/CommandHistoryTest.cpp
     core/PerformanceMonitorTest.cpp
     core/ErrorNotificationTest.cpp
+    core/FileSystemTest.cpp
 )
 target_link_libraries(test_core PRIVATE quadmapper_core)
 
@@ -28,8 +29,13 @@ target_link_libraries(test_scene PRIVATE quadmapper_scene quadmapper_core)
 add_quadmapper_test(test_project
     project/ProjectTest.cpp
     project/ProjectSerializerTest.cpp
+    project/ProjectPersistenceTest.cpp
 )
 target_link_libraries(test_project PRIVATE quadmapper_project quadmapper_scene quadmapper_core)
+# Historical .qmap fixtures (ADR-046): every shipped format version must still load.
+target_compile_definitions(test_project PRIVATE
+    QM_PROJECT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/projects"
+)
 
 # Output module tests
 add_quadmapper_test(test_output

@@ -5,6 +5,7 @@
 #include "ProjectSettings.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadGroup.hpp"
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,26 @@ public:
         bool enabled = true;
     };
 
+    // Media sources bound to quads (.qmap v3.1 "sources" table, ADR-046). A quad
+    // references one through TextureBinding::mediaId. In memory `path` is absolute;
+    // the serializer writes it relative to the project directory when it can.
+    struct TransportData {
+        bool playing = false;
+        LoopMode loopMode = LoopMode::LOOP;
+        float speed = 1.0f;
+    };
+
+    struct SourceData {
+        UUID id;
+        std::string kind;            // "image" | "video" | "hap" | "procedural" | "camera"
+        std::string path;            // image / video / hap
+        std::string proceduralType;  // procedural: ProceduralFactory::getTypeName()
+        int width = 1920;            // procedural
+        int height = 1080;           // procedural
+        std::string deviceName;      // camera
+        std::optional<TransportData> transport;  // video / hap
+    };
+
     const std::string& getName() const { return name_; }
     void setName(const std::string& name) { name_ = name; }
 
@@ -83,6 +104,8 @@ public:
     const std::vector<SceneData>& getScenes() const { return scenes_; }
     std::vector<OutputData>& getOutputs() { return outputs_; }
     const std::vector<OutputData>& getOutputs() const { return outputs_; }
+    std::vector<SourceData>& getSources() { return sources_; }
+    const std::vector<SourceData>& getSources() const { return sources_; }
 
 private:
     std::string name_;
@@ -94,6 +117,7 @@ private:
     std::vector<QuadGroup> groups_;
     std::vector<SceneData> scenes_;
     std::vector<OutputData> outputs_;
+    std::vector<SourceData> sources_;
 };
 
 } // namespace quadmapper
