@@ -13,8 +13,9 @@ struct EditorContext;
 // MUST be called BEFORE ImGui::NewFrame(): it owns the fullscreen GL viewport
 // background and intentionally reads the mouse/keyboard ahead of any panel so a
 // drag/nudge on a vertex is captured before the UI. The keyboard path is gated
-// by !io.WantTextInput && !io.WantCaptureKeyboard so typing in a panel never
-// nudges a vertex. (See ADR-0034 / the CLAUDE.md success metric.)
+// by canvasOwnsEditingKeys() (input/VertexKeyboard.hpp) so typing in a panel never
+// nudges a vertex, and Application claims Tab/arrows after NewFrame so a focused
+// panel cannot swallow them. (See ADR-0034 / the CLAUDE.md success metric.)
 //
 // Does NOT inherit from Panel — panels run post-NewFrame and draw ImGui windows;
 // this draws via the Renderer and toggles GL depth state. It is stateless: all

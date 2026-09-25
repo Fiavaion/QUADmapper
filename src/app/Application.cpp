@@ -31,6 +31,7 @@
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
 #include "../input/InputManager.hpp"
+#include "../input/VertexKeyboard.hpp"
 #include "../ui/Theme.hpp"
 #include "../ui/panels/OutputPanel.hpp"
 #include "../ui/panels/MediaBinPanel.hpp"
@@ -628,6 +629,10 @@ bool Application::initializeImGui() {
     // Configure ImGui
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable keyboard navigation
+    // A focused panel must not stop the canvas from taking Tab/arrows (the vertex
+    // warp keys). Only a widget being edited captures the keyboard; see
+    // claimCanvasEditingKeys() below NewFrame().
+    io.ConfigNavCaptureKeyboard = false;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;      // Enable docking
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;    // Enable multi-viewport
 
@@ -1042,6 +1047,7 @@ void Application::render() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+    claimCanvasEditingKeys(quadManager.getPrimarySelectedQuad() != nullptr);
 
     // Create dockspace over the entire viewport
     ImGuiViewport* viewport = ImGui::GetMainViewport();

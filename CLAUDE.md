@@ -247,7 +247,8 @@ QUADmapper succeeds when a live-event technician can, in under two minutes:
 
 This is the gate. Feature count, test count, and coverage % are **not** the metric — this
 workflow, verified working by running the app, is. Implemented in
-[Application.cpp:674-808](src/app/Application.cpp#L674-L808); never regress it.
+[ViewportEditor.cpp](src/ui/panels/ViewportEditor.cpp) (vertex drag/nudge) with the keyboard
+maths and key ownership in [VertexKeyboard.hpp](src/input/VertexKeyboard.hpp); never regress it.
 
 ## Model Selection Policy
 

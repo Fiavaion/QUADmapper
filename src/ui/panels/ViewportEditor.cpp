@@ -16,6 +16,7 @@
 #include "project/Project.hpp"
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
+#include "input/VertexKeyboard.hpp"
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -202,17 +203,22 @@ void ViewportEditor::render(EditorContext& ctx) {
         es.canvasMouseDownPrev = mouseDown;
         const bool inRegion = mouseX >= regionX && mouseX <= regionX + regionW &&
                               mouseY >= regionY && mouseY <= regionY + regionH;
+        // A fresh press on the canvas itself, not on or over an ImGui window, menu or
+        // popup (io reflects last frame's hit-test at this position). Clicks and drags
+        // start only on such a press, so a slider or a bin clip dragged across a handle
+        // never grabs it and clicks on overlays above the canvas never reselect quads.
+        const bool canvasPress = mousePressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
 
         constexpr float HIT_RADIUS = 0.015f;  // Slightly larger hit radius for corners
         constexpr float SNAP_RADIUS = 0.02f;  // Snap threshold for vertex snapping
 
         Quad* selectedQuad = quadManager.getPrimarySelectedQuad();
 
-        // Click-to-select (ADR-042): a fresh left-press inside the canvas that is NOT
+        // Click-to-select (ADR-042): a fresh left-press on the canvas that is NOT
         // grabbing the current selection's handle picks the topmost quad under the
         // cursor. The handle guard keeps corner-warp drags working when a handle
         // overlaps another quad's body. The division-insert tool takes precedence.
-        if (mousePressed && inRegion && es.gridInsert == EditorState::GridInsert::None) {
+        if (canvasPress && es.gridInsert == EditorState::GridInsert::None) {
             bool onSelectedHandle = false;
             if (selectedQuad) {
                 const QuadGeometry& g = selectedQuad->getGeometry();
@@ -298,7 +304,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                     es.gridInsert = EditorState::GridInsert::None;
                     es.gridInsertMouseLatch = false;
                     es.gridInsertDragIndex = -1;
-                } else if (mouseDown) {
+                } else if (mouseDown && (es.gridInsertMouseLatch || canvasPress)) {
                     Vec2 uv = QuadGeometry::inverseBilinear(geometry.getCorners(), mouseNorm);
                     if (!es.gridInsertMouseLatch) {
                         // Press edge: snapshot the grid (for one-step undo), then
@@ -377,7 +383,7 @@ void ViewportEditor::render(EditorContext& ctx) {
 
                     // Start drag if mouse pressed on a corner (not while the
                     // division-insert tool is armed).
-                    if (mouseDown && cornerHoveredVertex >= 0 && !insertArmed) {
+                    if (canvasPress && cornerHoveredVertex >= 0 && !insertArmed) {
                         cornerDraggedVertex = cornerHoveredVertex;
                         cornerSelectedVertex = cornerHoveredVertex;
                         cornerDragStartMousePos = mouseNorm;
@@ -412,7 +418,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                             float d = glm::length(mouseNorm - cp);
                             if (d < best) { best = d; es.bezierHovered = i; }
                         }
-                        if (mouseDown && es.bezierHovered >= 0 && !insertArmed) {
+                        if (canvasPress && es.bezierHovered >= 0 && !insertArmed) {
                             es.bezierDragged = es.bezierHovered;
                             es.bezierDragBefore = geometry.getBezierOffsets();
                         }
@@ -421,46 +427,23 @@ void ViewportEditor::render(EditorContext& ctx) {
                     es.bezierHovered = -1;
                 }
 
-                // Keyboard controls for corners
+                // Keyboard controls for corners (Tab cycles TL, TR, BR, BL; arrows nudge)
                 ImGuiIO& cornerIO = ImGui::GetIO();
-                if (!cornerIO.WantTextInput && !cornerIO.WantCaptureKeyboard) {
-                    // Tab: Cycle through corners (TL, TR, BR, BL)
+                if (canvasOwnsEditingKeys(true)) {
                     if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
-                        if (cornerIO.KeyShift) {
-                            cornerSelectedVertex = (cornerSelectedVertex <= 0) ? 3 : cornerSelectedVertex - 1;
-                        } else {
-                            cornerSelectedVertex = (cornerSelectedVertex + 1) % 4;
-                        }
+                        cornerSelectedVertex = cycleVertex(cornerSelectedVertex, 4, cornerIO.KeyShift);
                     }
 
-                    // Arrow keys: Move selected corner
                     if (cornerSelectedVertex >= 0 && cornerSelectedVertex < 4) {
-                        float moveAmount = 0.001f;
-                        if (cornerIO.KeyShift) moveAmount *= 10.0f;
-                        if (cornerIO.KeyAlt) moveAmount *= 0.1f;
+                        const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+                        const bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+                        const bool left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true);
+                        const bool right = ImGui::IsKeyPressed(ImGuiKey_RightArrow, true);
+                        const Vec2 oldPos = corners[cornerSelectedVertex];
+                        const Vec2 pos = oldPos + nudgeDelta(up, down, left, right,
+                                             nudgeStep(cornerIO.KeyShift, cornerIO.KeyAlt));
 
-                        Vec2 oldPos = corners[cornerSelectedVertex];
-                        Vec2 pos = oldPos;
-                        bool moved = false;
-
-                        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
-                            pos.y -= moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
-                            pos.y += moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) {
-                            pos.x -= moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) {
-                            pos.x += moveAmount;
-                            moved = true;
-                        }
-
-                        if (moved) {
+                        if (up || down || left || right) {
                             // Command applies the move; consecutive nudges of the same
                             // corner merge into one undo step (CommandHistory::execute).
                             es.commandHistory.execute(std::make_unique<MoveCornerCommand>(
@@ -519,7 +502,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                         }
                     }
 
-                    if (mouseDown && meshHoveredVertex >= 0 && !insertArmed) {
+                    if (canvasPress && meshHoveredVertex >= 0 && !insertArmed) {
                         meshDraggedVertex = meshHoveredVertex;
                         meshSelectedVertex = meshHoveredVertex;
                         meshDragStartMousePos = mouseNorm;
@@ -529,42 +512,21 @@ void ViewportEditor::render(EditorContext& ctx) {
 
                 // Keyboard controls for mesh editing
                 ImGuiIO& meshIO = ImGui::GetIO();
-                if (!meshIO.WantTextInput && !meshIO.WantCaptureKeyboard) {
+                if (canvasOwnsEditingKeys(true)) {
                     if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
-                        if (meshIO.KeyShift) {
-                            meshSelectedVertex = (meshSelectedVertex <= 0) ? vertexCount - 1 : meshSelectedVertex - 1;
-                        } else {
-                            meshSelectedVertex = (meshSelectedVertex + 1) % vertexCount;
-                        }
+                        meshSelectedVertex = cycleVertex(meshSelectedVertex, vertexCount, meshIO.KeyShift);
                     }
 
                     if (meshSelectedVertex >= 0 && meshSelectedVertex < vertexCount) {
-                        float moveAmount = 0.001f;
-                        if (meshIO.KeyShift) moveAmount *= 10.0f;
-                        if (meshIO.KeyAlt) moveAmount *= 0.1f;
+                        const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+                        const bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+                        const bool left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true);
+                        const bool right = ImGui::IsKeyPressed(ImGuiKey_RightArrow, true);
+                        const Vec2 oldOffset = geometry.getMeshVertexByIndex(meshSelectedVertex);
+                        const Vec2 offset = oldOffset + nudgeDelta(up, down, left, right,
+                                                nudgeStep(meshIO.KeyShift, meshIO.KeyAlt));
 
-                        Vec2 oldOffset = geometry.getMeshVertexByIndex(meshSelectedVertex);
-                        Vec2 offset = oldOffset;
-                        bool moved = false;
-
-                        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
-                            offset.y -= moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
-                            offset.y += moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) {
-                            offset.x -= moveAmount;
-                            moved = true;
-                        }
-                        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) {
-                            offset.x += moveAmount;
-                            moved = true;
-                        }
-
-                        if (moved) {
+                        if (up || down || left || right) {
                             es.commandHistory.execute(std::make_unique<MoveMeshVertexCommand>(
                                 es.quadRef(*selectedQuad), meshSelectedVertex, oldOffset, offset));
                             m_project->setModified(true);

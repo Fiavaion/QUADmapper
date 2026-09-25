@@ -58,8 +58,9 @@ target_link_libraries(test_audio PRIVATE quadmapper_audio quadmapper_core)
 # Input module tests
 add_quadmapper_test(test_input
     input/KeyboardShortcutsTest.cpp
+    input/VertexKeyboardTest.cpp
 )
-target_link_libraries(test_input PRIVATE quadmapper_input quadmapper_core)
+target_link_libraries(test_input PRIVATE quadmapper_input quadmapper_core imgui)
 
 # Media module tests
 add_quadmapper_test(test_media
