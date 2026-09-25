@@ -169,6 +169,9 @@ struct EditorState {
     // Load button or the Open dialog). Kept apart from projectPath, which a save
     // rewrites, so "Save" at the unsaved prompt still loads the show that was asked for.
     std::string pendingLoadPath;
+    // Playing sources paused because only the undo history still holds them (their
+    // quad was deleted); resumed if undo puts them back on screen.
+    std::unordered_set<UUID> sourcesPausedWhileUnseen;
     std::string recoveryFilePath;    // != "": "recover unsaved work" modal is up
     std::string recoveryProjectPath; // project that recovery file belongs to ("" = untitled)
 

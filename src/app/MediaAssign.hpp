@@ -89,10 +89,12 @@ inline std::unordered_set<UUID> editorOwnedSources(const EditorState& es) {
 // example) is re-resolved from its saved media path (videos restart playing); if that
 // fails the binding is cleared so it is not retried every frame.
 inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
+    std::unordered_set<UUID> onScreen;  // bound to a quad that exists right now
     for (const auto& scene : es.scenes) {
         if (!scene) continue;
         for (const auto& quad : scene->getQuadManager().getQuads()) {
             UUID& mediaId = quad->getTexture().mediaId;
+            if (!mediaId.isNull() && sm.hasSource(mediaId)) onScreen.insert(mediaId);
             if (mediaId.isNull() || sm.hasSource(mediaId)) continue;
             auto pathIt = es.quadTexturePaths.find(quad->getId());
             UUID healed;
@@ -106,12 +108,35 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
                 }
             }
             mediaId = healed;
+            if (!mediaId.isNull()) onScreen.insert(mediaId);
         }
     }
     std::unordered_set<UUID> inUse = referencedMediaIds(es.scenes, es.commandHistory);
     const std::unordered_set<UUID> owned = editorOwnedSources(es);
     inUse.insert(owned.begin(), owned.end());
     sm.releaseUnreferenced(inUse);
+
+    // A video kept only so undo can restore its deleted quad should not keep decoding
+    // and uploading unseen; pause it, and resume it once undo brings it back.
+    for (auto it = es.sourcesPausedWhileUnseen.begin(); it != es.sourcesPausedWhileUnseen.end();) {
+        auto* playable = sm.getSourceAs<PlayableSource>(*it);
+        if (!playable) {
+            it = es.sourcesPausedWhileUnseen.erase(it);  // released meanwhile
+        } else if (onScreen.count(*it)) {
+            playable->play();
+            it = es.sourcesPausedWhileUnseen.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (const UUID& id : inUse) {
+        if (onScreen.count(id) || owned.count(id)) continue;
+        auto* playable = sm.getSourceAs<PlayableSource>(id);
+        if (playable && playable->getPlaybackState() == PlaybackState::PLAYING) {
+            playable->pause();
+            es.sourcesPausedWhileUnseen.insert(id);
+        }
+    }
 }
 
 // Called when the whole project is replaced (New, Load, recovery), after the old
@@ -119,6 +144,7 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
 // releases the previous project's sources right away, so a reloaded show starts its
 // media fresh instead of inheriting live decoders found by path.
 inline void releaseProjectSources(EditorState& es, SourceManager& sm) {
+    es.sourcesPausedWhileUnseen.clear();
     sm.releaseUnreferenced(editorOwnedSources(es));
 }
 
