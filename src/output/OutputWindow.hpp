@@ -38,6 +38,18 @@ inline const ResolutionPreset RESOLUTION_PRESETS[] = {
 inline constexpr size_t RESOLUTION_PRESET_COUNT = sizeof(RESOLUTION_PRESETS) / sizeof(ResolutionPreset);
 
 /**
+ * The display an output WANTS (QM-090): what the .qmap saved or the user last
+ * chose. It is kept apart from the monitor the output currently resolves to, so
+ * an automatic fallback never overwrites the projector's identity. An empty name
+ * with savedIndex -1 means no display was chosen (pick one automatically).
+ */
+struct MonitorIdentity {
+    std::string name;               // GLFW monitor name; empty = unknown
+    IVec2 position = IVec2(0, 0);   // origin on the virtual desktop (valid with a name)
+    int savedIndex = -1;            // monitor index when chosen; -1 = none
+};
+
+/**
  * OutputWindow represents a single output window for projection mapping.
  * Each output window has its own GLFW window with a shared OpenGL context
  * for efficient texture sharing with the main application window.
@@ -63,8 +75,12 @@ public:
     void setResolution(IVec2 r) { resolution_ = r; }
     Rotation getRotation() const { return rotation_; }
     void setRotation(Rotation r) { rotation_ = r; }
+    // The connected monitor this output resolved to (-1 = none connected).
+    // OutputManager sets it; a user's choice goes through OutputManager::assignMonitor.
     int getMonitor() const { return monitor_; }
     void setMonitor(int m) { monitor_ = m; }
+    const MonitorIdentity& getDesiredMonitor() const { return desiredMonitor_; }
+    void setDesiredMonitor(const MonitorIdentity& identity) { desiredMonitor_ = identity; }
 
     /**
      * Get the effective resolution accounting for rotation.
@@ -200,6 +216,7 @@ private:
     IVec2 resolution_ = IVec2(1920, 1080);
     Rotation rotation_ = Rotation::R0;
     int monitor_ = -1;
+    MonitorIdentity desiredMonitor_;
 
     // State flags
     bool fullscreen_ = false;

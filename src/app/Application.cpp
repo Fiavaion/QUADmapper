@@ -3,6 +3,7 @@
 #include "EditorState.hpp"
 #include "TextureResolve.hpp"
 #include "MediaAssign.hpp"
+#include "OutputPersistence.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
 #include "../project/Project.hpp"
@@ -209,19 +210,7 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
 
     if (om) {
         for (const auto& outPtr : om->getOutputs()) {
-            if (!outPtr) continue;
-            Project::OutputData od;
-            od.id = outPtr->getId();
-            od.name = outPtr->getName();
-            od.monitor = outPtr->getMonitor();
-            if (const MonitorInfo* m = om->getMonitor(od.monitor)) {  // QM-087
-                od.monitorName = m->name;
-                od.monitorPosition = m->position;
-            }
-            od.resolution = outPtr->getResolution();
-            od.rotationDegrees = outPtr->getRotationDegrees();
-            od.enabled = outPtr->isEnabled();
-            project.getOutputs().push_back(std::move(od));
+            if (outPtr) project.getOutputs().push_back(outputToData(*outPtr));
         }
     }
 }
@@ -262,14 +251,11 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         for (const auto& od : project.getOutputs()) {
             OutputWindow* ow = om->createOutput(od.name);
             if (!ow) continue;
-            ow->setName(od.name);
-            ow->setMonitor(OutputManager::resolveMonitor(om->getMonitors(), od.monitor,
-                                                         od.monitorName, od.monitorPosition));
-            ow->setResolution(od.resolution);
-            ow->setRotationDegrees(od.rotationDegrees);
-            ow->setEnabled(od.enabled);
+            applyOutputData(od, *ow);
             outputRemap[od.id] = ow->getId();
         }
+        // Shown in the Output panel now; F11 and hotplug resolve again (QM-090).
+        om->resolveOutputs();
     }
 
     // v3.1 sources (ADR-046), created lazily the first time a quad references one:
@@ -777,21 +763,25 @@ bool Application::initializeComponents() {
         return false;
     }
     m_outputManager->enableMonitorChangeDetection();
+    m_outputManager->setNoticeCallback([this](const std::string& message) {
+        snprintf(m_editorState->statusMessage, sizeof(m_editorState->statusMessage), "%s",
+                 message.c_str());
+        m_editorState->statusTimer = 4.0f;
+    });
     Logger::info("Output manager initialized with {} monitors", m_outputManager->getMonitorCount());
 
     // ADR-039 P2: create the default output and route the default scene to it. The
-    // default scene targets the 2nd monitor (the projector) when present, else the
-    // only display — "launch already aimed at the projector". There is always >= 1
-    // output, so the F11 lazy-create path becomes a no-op.
+    // default output has no chosen monitor, so it resolves to the first display that
+    // is not the editor's (the projector) — "launch already aimed at the projector" —
+    // and to none when the editor's screen is the only one (QM-090). There is always
+    // >= 1 output, so the F11 lazy-create path becomes a no-op.
     {
-        int monitorCount = static_cast<int>(m_outputManager->getMonitorCount());
-        int targetMonitor = (monitorCount > 1) ? 1 : 0;
         OutputWindow* defaultOutput = m_outputManager->createOutput("Projector 1");
         if (defaultOutput) {
-            defaultOutput->setMonitor(targetMonitor);
+            m_outputManager->resolveOutputs();
             m_editorState->activeScene().setAssignedOutputId(defaultOutput->getId());
             Logger::info("Default scene assigned to output '{}' on monitor {}",
-                         defaultOutput->getName(), targetMonitor);
+                         defaultOutput->getName(), defaultOutput->getMonitor());
         }
     }
 
@@ -2292,8 +2282,8 @@ int Application::runStress(const StressConfig& cfg) {
                  cfg.pauseAfter);
 
     // ---- 1. Build outputs ---------------------------------------------------
-    // The default output was already created by initializeComponents() for
-    // monitor 0.  Create additional ones if cfg.outputs > 1.
+    // The default output was already created by initializeComponents().  Create
+    // additional ones if cfg.outputs > 1.
     while (static_cast<int>(m_outputManager->getOutputCount()) < cfg.outputs) {
         int idx = static_cast<int>(m_outputManager->getOutputCount());
         OutputWindow* w = m_outputManager->createOutput("Stress-" + std::to_string(idx));
@@ -2301,8 +2291,12 @@ int Application::runStress(const StressConfig& cfg) {
             Logger::error("[STRESS] Failed to create output window {}", idx);
             return 2;
         }
-        // Assign to monitor 0 (primary) for all stress outputs — dev box is safe.
-        w->setMonitor(0);
+    }
+    // Explicitly choose monitor 0 for every stress output, the default one too —
+    // the dev box is safe, and an automatic choice would leave a one-monitor box
+    // with nothing to show (QM-090).
+    for (auto& ow : m_outputManager->getOutputs()) {
+        m_outputManager->assignMonitor(*ow, 0);
     }
 
     // H3: In --hidden mode keep the main editor window off-screen too.

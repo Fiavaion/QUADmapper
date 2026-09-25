@@ -775,7 +775,7 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
 
                 bool isSelected = (static_cast<int>(i) == currentMonitor);
                 if (ImGui::Selectable(label.c_str(), isSelected)) {
-                    selectedOutput->setMonitor(static_cast<int>(i));
+                    ctx.outputManager->assignMonitor(*selectedOutput, static_cast<int>(i));
                     selectedOutput->setResolution(mon.resolution);
                     if (selectedOutput->isCreated()) {
                         selectedOutput->applyResolution();

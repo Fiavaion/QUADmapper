@@ -484,6 +484,27 @@ TEST(ProjectSerializerV3Test, V3RoundTripScenesAndOutputs) {
     EXPECT_EQ(loaded.getOutputs()[0].rotationDegrees, 90);
 }
 
+// A malformed monitorPosition (wrong type or size) must not fail the load (QM-090).
+// The output keeps its index; the name is dropped with it, since a name with the
+// default (0, 0) position would match whatever display sits there.
+TEST(ProjectSerializerV3Test, MalformedMonitorPositionIsSkipped) {
+    const char* positions[] = {R"("left")", "[1920]", "[1920, 0, 0]", R"(["a", "b"])",
+                               "[1.5, 0]", "null"};
+    for (const char* position : positions) {
+        SCOPED_TRACE(position);
+        const std::string json = std::string(R"({"version": "3.1.0", "name": "Show",
+            "scenes": [], "outputs": [{"name": "Projector 1", "monitor": 1,
+            "monitorName": "EPSON PJ", "monitorPosition": )") + position + "}]}";
+        ProjectSerializer serializer;
+        Project project;
+        ASSERT_TRUE(serializer.deserialize(json, project).isSuccess());
+        ASSERT_EQ(project.getOutputs().size(), 1u);
+        EXPECT_EQ(project.getOutputs()[0].monitor, 1);
+        EXPECT_TRUE(project.getOutputs()[0].monitorName.empty());
+        EXPECT_EQ(project.getOutputs()[0].monitorPosition, IVec2(0, 0));
+    }
+}
+
 // Quad ids and group member references must survive a round-trip: previously the
 // deserializer minted fresh quad ids while group members kept the saved ids, breaking
 // the linkage so groups could not be re-applied on load. The persisted id is now kept.

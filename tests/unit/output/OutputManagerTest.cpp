@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "output/OutputManager.hpp"
+#include "app/OutputPersistence.hpp"
 
 namespace quadmapper {
 namespace test {
@@ -455,7 +456,7 @@ TEST(OutputManagerTest, EnterPerformModeIdempotent) {
     EXPECT_FALSE(manager.isInPerformMode());
 }
 
-// ---- Saved monitor identity (QM-087) -----------------------------------------
+// ---- Desired vs resolved monitor identity (QM-090) ---------------------------
 
 namespace {
 MonitorInfo monitorAt(int index, const std::string& name, IVec2 position) {
@@ -463,53 +464,227 @@ MonitorInfo monitorAt(int index, const std::string& name, IVec2 position) {
     info.index = index;
     info.name = name;
     info.position = position;
+    info.resolution = IVec2(1920, 1080);
     return info;
 }
+
+const std::string kGeneric = "Generic PnP Monitor";
+constexpr int kNoEditor = -1;
 }  // namespace
 
-TEST(ResolveMonitorTest, NameAndPositionWinOverStaleIndex) {
+TEST(ResolveMonitorTest, ExactNameAndPositionWinOverStaleIndex) {
     // Displays re-enumerated: the projector moved from index 1 to index 0.
     std::vector<MonitorInfo> monitors = {monitorAt(0, "Epson", IVec2(2560, 0)),
                                          monitorAt(1, "Dell", IVec2(0, 0))};
-    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 1, "Epson", IVec2(2560, 0)), 0);
+    auto r = OutputManager::resolveMonitor(monitors, {"Epson", IVec2(2560, 0), 1}, 1, {});
+    EXPECT_EQ(r.index, 0);
+    EXPECT_EQ(r.match, MonitorMatch::Exact);
 }
 
-TEST(ResolveMonitorTest, PositionDisambiguatesIdenticalNames) {
-    std::vector<MonitorInfo> monitors = {monitorAt(0, "Generic PnP", IVec2(0, 0)),
-                                         monitorAt(1, "Generic PnP", IVec2(1920, 0)),
-                                         monitorAt(2, "Generic PnP", IVec2(3840, 0))};
-    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 0, "Generic PnP", IVec2(3840, 0)), 2);
+TEST(ResolveMonitorTest, PositionDisambiguatesIdenticalGenericNames) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, kGeneric, IVec2(0, 0)),
+                                         monitorAt(1, kGeneric, IVec2(1920, 0))};
+    auto r = OutputManager::resolveMonitor(monitors, {kGeneric, IVec2(1920, 0), 1}, 0, {});
+    EXPECT_EQ(r.index, 1);
+    EXPECT_EQ(r.match, MonitorMatch::Exact);
 }
 
-TEST(ResolveMonitorTest, NameOnlyWhenPositionChanged) {
+// The QM-087 bug: the laptop and the projector are both "Generic PnP Monitor".
+// With the projector unplugged, the name alone must not send the show to the
+// laptop (the editor's screen).
+TEST(ResolveMonitorTest, GenericNameNeverFallsBackToTheEditor) {
+    std::vector<MonitorInfo> laptopOnly = {monitorAt(0, kGeneric, IVec2(0, 0))};
+    auto r = OutputManager::resolveMonitor(laptopOnly, {kGeneric, IVec2(1920, 0), 1}, 0, {});
+    EXPECT_EQ(r.index, -1);
+    EXPECT_EQ(r.match, MonitorMatch::Unresolved);
+}
+
+TEST(ResolveMonitorTest, SharedNameIsNotUsedToMatch) {
+    // Two other generic displays; the saved one (at 3840) is gone. The name is not
+    // unique, so resolution falls through to the first free display, not a name hit.
+    std::vector<MonitorInfo> monitors = {monitorAt(0, kGeneric, IVec2(0, 0)),
+                                         monitorAt(1, kGeneric, IVec2(1920, 0)),
+                                         monitorAt(2, "Dell", IVec2(-1920, 0))};
+    auto r = OutputManager::resolveMonitor(monitors, {kGeneric, IVec2(3840, 0), 5}, 2, {});
+    EXPECT_EQ(r.index, 0);
+    EXPECT_EQ(r.match, MonitorMatch::FirstFree);
+}
+
+TEST(ResolveMonitorTest, PositionOnlyWhenProjectorRenamed) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                         monitorAt(1, "Barco", IVec2(1920, 0))};
+    auto r = OutputManager::resolveMonitor(monitors, {"Epson", IVec2(1920, 0), 1}, 0, {});
+    EXPECT_EQ(r.index, 1);
+    EXPECT_EQ(r.match, MonitorMatch::Position);
+}
+
+TEST(ResolveMonitorTest, PositionOnlySkipsEditorAndTaken) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                         monitorAt(1, "Barco", IVec2(1920, 0))};
+    auto editor = OutputManager::resolveMonitor(monitors, {"Epson", IVec2(0, 0), -1}, 0, {});
+    EXPECT_NE(editor.match, MonitorMatch::Position);
+    EXPECT_EQ(editor.index, 1);  // first free instead
+    auto taken = OutputManager::resolveMonitor(monitors, {"Epson", IVec2(1920, 0), -1}, 0, {1});
+    EXPECT_EQ(taken.index, -1);
+}
+
+TEST(ResolveMonitorTest, UniqueNameWhenPositionChanged) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                         monitorAt(1, "Epson", IVec2(2560, 0))};
+    auto r = OutputManager::resolveMonitor(monitors, {"Epson", IVec2(1920, 0), 1}, 0, {});
+    EXPECT_EQ(r.index, 1);
+    EXPECT_EQ(r.match, MonitorMatch::UniqueName);
+}
+
+TEST(ResolveMonitorTest, UniqueNameSkipsTheEditor) {
+    // The editor window was dragged onto the projector: its name is unique, but an
+    // automatic step must still not pick the editor's screen.
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Epson", IVec2(0, 0))};
+    auto r = OutputManager::resolveMonitor(monitors, {"Epson", IVec2(1920, 0), -1}, 0, {});
+    EXPECT_EQ(r.match, MonitorMatch::Unresolved);
+}
+
+TEST(ResolveMonitorTest, SavedIndexForPreIdentityFiles) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                         monitorAt(1, "Epson", IVec2(1920, 0)),
+                                         monitorAt(2, "Barco", IVec2(3840, 0))};
+    auto r = OutputManager::resolveMonitor(monitors, {"", IVec2(0, 0), 2}, 0, {});
+    EXPECT_EQ(r.index, 2);
+    EXPECT_EQ(r.match, MonitorMatch::SavedIndex);
+}
+
+TEST(ResolveMonitorTest, SavedIndexSkipsEditorAndTaken) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                         monitorAt(1, "Epson", IVec2(1920, 0)),
+                                         monitorAt(2, "Barco", IVec2(3840, 0))};
+    auto editor = OutputManager::resolveMonitor(monitors, {"", IVec2(0, 0), 0}, 0, {});
+    EXPECT_EQ(editor.index, 1);
+    EXPECT_EQ(editor.match, MonitorMatch::FirstFree);
+    auto taken = OutputManager::resolveMonitor(monitors, {"", IVec2(0, 0), 1}, 0, {1});
+    EXPECT_EQ(taken.index, 2);
+    EXPECT_EQ(taken.match, MonitorMatch::FirstFree);
+}
+
+TEST(ResolveMonitorTest, FirstFreeSkipsEditorAndTaken) {
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                         monitorAt(1, "Epson", IVec2(1920, 0)),
+                                         monitorAt(2, "Barco", IVec2(3840, 0))};
+    auto r = OutputManager::resolveMonitor(monitors, {}, 1, {0});
+    EXPECT_EQ(r.index, 2);
+    EXPECT_EQ(r.match, MonitorMatch::FirstFree);
+}
+
+TEST(ResolveMonitorTest, ExplicitChoiceOfTheEditorMonitorIsHonoured) {
+    // The user picked the editor's own screen in the Output panel.
+    std::vector<MonitorInfo> monitors = {monitorAt(0, kGeneric, IVec2(0, 0)),
+                                         monitorAt(1, kGeneric, IVec2(1920, 0))};
+    auto r = OutputManager::resolveMonitor(monitors, {kGeneric, IVec2(0, 0), 0}, 0, {1});
+    EXPECT_EQ(r.index, 0);
+    EXPECT_EQ(r.match, MonitorMatch::Exact);
+}
+
+TEST(ResolveMonitorTest, UnresolvedWhenOnlyTheEditorIsConnected) {
+    std::vector<MonitorInfo> laptopOnly = {monitorAt(0, "Dell", IVec2(0, 0))};
+    EXPECT_EQ(OutputManager::resolveMonitor(laptopOnly, {}, 0, {}).match,
+              MonitorMatch::Unresolved);
+    EXPECT_EQ(OutputManager::resolveMonitor(laptopOnly, {"", IVec2(0, 0), 0}, 0, {}).index, -1);
+    EXPECT_EQ(OutputManager::resolveMonitor({}, {"Epson", IVec2(0, 0), 1}, kNoEditor, {}).index,
+              -1);
+}
+
+TEST(ResolveMonitorsTest, StrongerMatchClaimsItsMonitorFirst) {
+    // Output A's projector is gone and would fall back to the first free display;
+    // output B, later in the list, really belongs on that display. B keeps it.
+    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                         monitorAt(1, "Epson", IVec2(1920, 0)),
+                                         monitorAt(2, "Barco", IVec2(3840, 0))};
+    auto results = OutputManager::resolveMonitors(
+        monitors, {{"Christie", IVec2(-1920, 0), 7}, {"Epson", IVec2(1920, 0), 1}}, 0);
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_EQ(results[1].index, 1);
+    EXPECT_EQ(results[1].match, MonitorMatch::Exact);
+    EXPECT_EQ(results[0].index, 2);
+    EXPECT_EQ(results[0].match, MonitorMatch::FirstFree);
+}
+
+TEST(ResolveMonitorsTest, TwoAutomaticOutputsTakeDifferentDisplays) {
     std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
                                          monitorAt(1, "Epson", IVec2(1920, 0))};
-    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 0, "Epson", IVec2(2560, 0)), 1);
+    auto results = OutputManager::resolveMonitors(monitors, {{}, {}}, 0);
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_EQ(results[0].index, 1);
+    EXPECT_EQ(results[1].index, -1);  // never doubled up on the projector or the editor
 }
 
-TEST(ResolveMonitorTest, NameOnlyPrefersSavedIndexAmongSameNames) {
-    std::vector<MonitorInfo> monitors = {monitorAt(0, "Generic PnP", IVec2(0, 0)),
-                                         monitorAt(1, "Generic PnP", IVec2(1920, 0))};
-    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 1, "Generic PnP", IVec2(-500, 0)), 1);
-}
-
-TEST(ResolveMonitorTest, IndexWhenNameUnknownOrMissing) {
+TEST(ResolveMonitorTest, MonitorContainingPoint) {
     std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
                                          monitorAt(1, "Epson", IVec2(1920, 0))};
-    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 1, "Barco", IVec2(0, 0)), 1);
-    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 1, "", IVec2(0, 0)), 1);  // pre-QM-087 file
+    EXPECT_EQ(OutputManager::monitorContaining(monitors, IVec2(960, 540)), 0);
+    EXPECT_EQ(OutputManager::monitorContaining(monitors, IVec2(1920, 0)), 1);
+    EXPECT_EQ(OutputManager::monitorContaining(monitors, IVec2(-32000, -32000)), -1);
 }
 
-TEST(ResolveMonitorTest, FallsBackToMonitorZero) {
-    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0))};
-    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 3, "Epson", IVec2(1920, 0)), 0);
-    EXPECT_EQ(OutputManager::resolveMonitor(monitors, 3, "", IVec2(0, 0)), 0);
-    EXPECT_EQ(OutputManager::resolveMonitor({}, 1, "Epson", IVec2(0, 0)), 0);
+// ---- Save writes the desired identity (QM-090) --------------------------------
+
+TEST(OutputPersistenceTest, UnresolvedOutputSavesItsDesiredIdentity) {
+    OutputManager manager;  // no GLFW: no monitors connected at all
+    OutputWindow* output = manager.createOutput("Projector 1");
+    ASSERT_NE(output, nullptr);
+    output->setDesiredMonitor({"EPSON PJ", IVec2(1920, 0), 1});
+
+    manager.resolveOutputs();
+    EXPECT_EQ(output->getMonitor(), -1);
+
+    Project::OutputData saved = outputToData(*output);
+    EXPECT_EQ(saved.monitor, 1);
+    EXPECT_EQ(saved.monitorName, "EPSON PJ");
+    EXPECT_EQ(saved.monitorPosition, IVec2(1920, 0));
 }
 
-TEST(ResolveMonitorTest, UnassignedStaysUnassigned) {
-    std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0))};
-    EXPECT_EQ(OutputManager::resolveMonitor(monitors, -1, "", IVec2(0, 0)), -1);
+TEST(OutputPersistenceTest, FallbackIsNotWrittenBackToTheProject) {
+    // The show opened with the projector unplugged fell back to a spare display.
+    std::vector<MonitorInfo> monitors = {monitorAt(0, kGeneric, IVec2(0, 0)),
+                                         monitorAt(1, "Dell", IVec2(-1920, 0))};
+    OutputWindow output;
+    output.setDesiredMonitor({kGeneric, IVec2(1920, 0), 1});
+    auto r = OutputManager::resolveMonitor(monitors, output.getDesiredMonitor(), 0, {});
+    ASSERT_EQ(r.match, MonitorMatch::SavedIndex);
+    output.setMonitor(r.index);
+
+    Project::OutputData saved = outputToData(output);
+    EXPECT_EQ(saved.monitor, 1);
+    EXPECT_EQ(saved.monitorName, kGeneric);
+    EXPECT_EQ(saved.monitorPosition, IVec2(1920, 0));  // the projector, not the Dell
+
+    OutputWindow reloaded;
+    applyOutputData(saved, reloaded);
+    EXPECT_EQ(reloaded.getDesiredMonitor().name, kGeneric);
+    EXPECT_EQ(reloaded.getDesiredMonitor().position, IVec2(1920, 0));
+    EXPECT_EQ(reloaded.getDesiredMonitor().savedIndex, 1);
+}
+
+TEST(OutputPersistenceTest, ExplicitChoiceBecomesTheDesiredIdentity) {
+    OutputManager manager;
+    OutputWindow* output = manager.createOutput("Projector 1");
+    ASSERT_NE(output, nullptr);
+    output->setDesiredMonitor({"EPSON PJ", IVec2(1920, 0), 1});
+
+    manager.assignMonitor(*output, -1);  // "Automatic"
+    EXPECT_TRUE(output->getDesiredMonitor().name.empty());
+    EXPECT_EQ(output->getDesiredMonitor().savedIndex, -1);
+    EXPECT_EQ(outputToData(*output).monitor, -1);
+}
+
+// ---- Swap pacing (QM-090) ----------------------------------------------------
+
+TEST(VsyncHolderTest, FirstNonMinimisedOutputPacesTheLoop) {
+    EXPECT_EQ(OutputManager::vsyncHolder({}), -1);
+    EXPECT_EQ(OutputManager::vsyncHolder({false}), 0);
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false}), 0);
+    // A minimised output's swap does not block; it must never hold vsync.
+    EXPECT_EQ(OutputManager::vsyncHolder({true, false}), 1);
+    EXPECT_EQ(OutputManager::vsyncHolder({true}), -1);
+    EXPECT_EQ(OutputManager::vsyncHolder({true, true}), -1);
 }
 
 } // namespace test

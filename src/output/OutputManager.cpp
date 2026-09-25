@@ -272,38 +272,208 @@ std::vector<VideoModeInfo> OutputManager::getMonitorVideoModes(int monitorIndex)
     return modes;
 }
 
-int OutputManager::resolveMonitor(const std::vector<MonitorInfo>& monitors, int savedIndex,
-                                  const std::string& savedName, IVec2 savedPosition) {
+MonitorResolution OutputManager::resolveMonitor(const std::vector<MonitorInfo>& monitors,
+                                                const MonitorIdentity& desired,
+                                                int editorMonitor,
+                                                const std::vector<int>& taken) {
     const int count = static_cast<int>(monitors.size());
-    const bool indexValid = savedIndex >= 0 && savedIndex < count;
+    auto isFree = [&](int i) {
+        return i != editorMonitor && std::find(taken.begin(), taken.end(), i) == taken.end();
+    };
 
-    if (!savedName.empty()) {
+    if (!desired.name.empty()) {
         for (int i = 0; i < count; ++i) {
-            if (monitors[i].name == savedName && monitors[i].position == savedPosition) {
-                return i;
+            if (monitors[i].name == desired.name && monitors[i].position == desired.position) {
+                return {i, MonitorMatch::Exact};
             }
         }
-        // Identical projectors often share a name; the saved index breaks the tie.
-        if (indexValid && monitors[savedIndex].name == savedName) {
-            return savedIndex;
-        }
         for (int i = 0; i < count; ++i) {
-            if (monitors[i].name == savedName) {
-                return i;
+            if (monitors[i].position == desired.position && isFree(i)) {
+                return {i, MonitorMatch::Position};
+            }
+        }
+        // Displays are often all "Generic PnP Monitor": a shared name says nothing.
+        int named = -1;
+        int sameName = 0;
+        for (int i = 0; i < count; ++i) {
+            if (monitors[i].name == desired.name) {
+                named = i;
+                ++sameName;
+            }
+        }
+        if (sameName == 1 && isFree(named)) {
+            return {named, MonitorMatch::UniqueName};
+        }
+    }
+
+    if (desired.savedIndex >= 0 && desired.savedIndex < count && isFree(desired.savedIndex)) {
+        return {desired.savedIndex, MonitorMatch::SavedIndex};
+    }
+    for (int i = 0; i < count; ++i) {
+        if (isFree(i)) {
+            return {i, MonitorMatch::FirstFree};
+        }
+    }
+    return {};
+}
+
+std::vector<MonitorResolution> OutputManager::resolveMonitors(
+        const std::vector<MonitorInfo>& monitors,
+        const std::vector<MonitorIdentity>& desired,
+        int editorMonitor) {
+    std::vector<MonitorResolution> results(desired.size());
+    std::vector<bool> done(desired.size(), false);
+    std::vector<int> taken;
+
+    // Each pass accepts matches up to `weakest`; the last accepts everything.
+    for (MonitorMatch weakest : {MonitorMatch::Exact, MonitorMatch::UniqueName,
+                                 MonitorMatch::Unresolved}) {
+        for (size_t i = 0; i < desired.size(); ++i) {
+            if (done[i]) {
+                continue;
+            }
+            const MonitorResolution r = resolveMonitor(monitors, desired[i], editorMonitor, taken);
+            if (r.match > weakest) {
+                continue;
+            }
+            results[i] = r;
+            done[i] = true;
+            if (r.index >= 0) {
+                taken.push_back(r.index);
             }
         }
     }
+    return results;
+}
 
-    if (indexValid) {
-        return savedIndex;
+int OutputManager::monitorContaining(const std::vector<MonitorInfo>& monitors, IVec2 point) {
+    for (int i = 0; i < static_cast<int>(monitors.size()); ++i) {
+        const MonitorInfo& m = monitors[i];
+        if (point.x >= m.position.x && point.x < m.position.x + m.resolution.x &&
+            point.y >= m.position.y && point.y < m.position.y + m.resolution.y) {
+            return i;
+        }
     }
-    if (savedIndex < 0 && savedName.empty()) {
-        return -1;  // no monitor was ever chosen
-    }
+    return -1;
+}
 
-    LOG_WARNING("Saved output monitor '{}' (index {}) is not connected; using monitor 0",
-                savedName, savedIndex);
-    return 0;
+int OutputManager::vsyncHolder(const std::vector<bool>& iconified) {
+    for (size_t i = 0; i < iconified.size(); ++i) {
+        if (!iconified[i]) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+int OutputManager::editorMonitorIndex() const {
+    if (mainWindow_ == nullptr) {
+        return -1;
+    }
+    int x = 0, y = 0, width = 0, height = 0;
+    glfwGetWindowPos(mainWindow_, &x, &y);
+    glfwGetWindowSize(mainWindow_, &width, &height);
+    const int index = monitorContaining(monitors_, IVec2(x + width / 2, y + height / 2));
+    if (index >= 0) {
+        return index;
+    }
+    const MonitorInfo* primary = getPrimaryMonitor();
+    return primary ? primary->index : -1;
+}
+
+void OutputManager::resolveOutputs() {
+    const int editorMonitor = editorMonitorIndex();
+
+    std::vector<OutputWindow*> enabled;
+    std::vector<MonitorIdentity> desired;
+    for (auto& output : outputs_) {
+        if (output->isEnabled()) {
+            enabled.push_back(output.get());
+            desired.push_back(output->getDesiredMonitor());
+        }
+    }
+    const std::vector<MonitorResolution> results =
+        resolveMonitors(monitors_, desired, editorMonitor);
+
+    auto apply = [&](OutputWindow& output, const MonitorResolution& r) {
+        if (r.index != output.getMonitor()) {
+            const MonitorIdentity& want = output.getDesiredMonitor();
+            if (r.index < 0) {
+                LOG_WARNING("Output '{}': no display available (wanted '{}'); not shown",
+                            output.getName(), want.name);
+            } else if (r.match >= MonitorMatch::SavedIndex && !want.name.empty()) {
+                LOG_WARNING("Output '{}': display '{}' not connected; using '{}' (monitor {})",
+                            output.getName(), want.name, monitors_[r.index].name, r.index);
+            } else {
+                LOG_INFO("Output '{}' resolved to '{}' (monitor {})",
+                         output.getName(), monitors_[r.index].name, r.index);
+            }
+        }
+        output.setMonitor(r.index);
+    };
+
+    std::vector<int> taken;
+    for (size_t i = 0; i < enabled.size(); ++i) {
+        apply(*enabled[i], results[i]);
+        if (results[i].index >= 0) {
+            taken.push_back(results[i].index);
+        }
+    }
+    for (auto& output : outputs_) {
+        if (!output->isEnabled()) {
+            apply(*output, resolveMonitor(monitors_, output->getDesiredMonitor(),
+                                          editorMonitor, taken));
+        }
+    }
+}
+
+void OutputManager::assignMonitor(OutputWindow& output, int monitorIndex) {
+    const MonitorInfo* monitor = getMonitor(monitorIndex);
+    MonitorIdentity identity;
+    if (monitor != nullptr) {
+        identity = {monitor->name, monitor->position, monitorIndex};
+    }
+    output.setDesiredMonitor(identity);
+
+    if (mainWindow_ == nullptr) {
+        output.setMonitor(monitor ? monitorIndex : -1);
+        return;
+    }
+    // "Automatic" picks a display now; a chosen monitor resolves Exact to itself.
+    // Other outputs may give way to it, so all of them are re-placed.
+    reresolveOutputs(/*refreshMonitorList=*/false);
+}
+
+void OutputManager::setNoticeCallback(NoticeCallback callback) {
+    noticeCallback_ = std::move(callback);
+}
+
+void OutputManager::notify(const std::string& message) {
+    LOG_WARNING("{}", message);
+    if (noticeCallback_) {
+        noticeCallback_(message);
+    }
+}
+
+bool OutputManager::showOnResolvedMonitor(OutputWindow& output) {
+    const int monitorIndex = output.getMonitor();
+    if (monitorIndex < 0) {
+        return false;
+    }
+    output.show();
+    auto result = useBorderlessFullscreen_
+        ? output.goBorderlessFullscreen(monitorIndex)
+        : output.goFullscreen(monitorIndex);
+    if (!result) {
+        LOG_ERROR("Failed to go fullscreen for output '{}': {}",
+                  output.getName(), result.error().message);
+        output.goWindowed();
+        output.hide();
+        return false;
+    }
+    LOG_INFO("Output '{}' {} on monitor {}", output.getName(),
+             useBorderlessFullscreen_ ? "borderless fullscreen" : "fullscreen", monitorIndex);
+    return true;
 }
 
 Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
@@ -317,8 +487,10 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
 
     LOG_INFO("Entering perform mode with {} outputs (borderless={})", outputs_.size(), borderless);
 
-    // Refresh monitors in case configuration changed
+    // Resolve at the last moment: the projector may have been plugged in since
+    // the show was loaded.
     refreshMonitors();
+    resolveOutputs();
 
     useBorderlessFullscreen_ = borderless;
     bool anySucceeded = false;
@@ -333,37 +505,12 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
             continue;
         }
 
-        // Show the window
-        output->show();
-
-        // Go fullscreen on the assigned monitor
-        int monitorIndex = output->getMonitor();
-        if (monitorIndex < 0 && !monitors_.empty()) {
-            // Default to primary monitor for outputs without assignment
-            for (size_t i = 0; i < monitors_.size(); ++i) {
-                if (monitors_[i].isPrimary) {
-                    monitorIndex = static_cast<int>(i);
-                    break;
-                }
-            }
-            if (monitorIndex < 0) {
-                monitorIndex = 0;  // Fallback to first monitor
-            }
+        if (output->getMonitor() < 0) {
+            notify("Projector '" + output->getName() + "' not connected; its output is not shown");
+            continue;
         }
-
-        auto result = borderless
-            ? output->goBorderlessFullscreen(monitorIndex)
-            : output->goFullscreen(monitorIndex);
-
-        if (result) {
+        if (showOnResolvedMonitor(*output)) {
             anySucceeded = true;
-            LOG_INFO("Output '{}' {} on monitor {}",
-                     output->getName(),
-                     borderless ? "borderless fullscreen" : "fullscreen",
-                     monitorIndex);
-        } else {
-            LOG_ERROR("Failed to go fullscreen for output '{}': {}",
-                      output->getName(), result.error().message);
         }
     }
 
@@ -556,25 +703,31 @@ void OutputManager::presentToOutputs(
         const std::function<void(const OutputWindow&, Renderer&)>& draw) {
     returnFocusToEditor();
 
-    GLFWwindow* previousContext = glfwGetCurrentContext();
-    bool vsyncTaken = false;
-
+    // Hidden outputs (not in perform mode, or hidden by the user) are neither
+    // drawn nor swapped: nobody sees them, and each swap costs frame time.
+    std::vector<std::pair<OutputWindow*, Renderer*>> presented;
+    std::vector<bool> iconified;
     for (auto& output : outputs_) {
-        // Hidden outputs (not in perform mode, or hidden by the user) are neither
-        // drawn nor swapped: nobody sees them, and each swap costs frame time.
         if (!output->isEnabled() || !output->isCreated() || !output->isVisible()) {
             continue;
         }
-
         auto rendererIt = outputRenderers_.find(output->getId());
         if (rendererIt == outputRenderers_.end()) {
             continue;
         }
-        Renderer* renderer = rendererIt->second.get();
+        presented.emplace_back(output.get(), rendererIt->second.get());
+        iconified.push_back(
+            glfwGetWindowAttrib(output->getGLFWwindow(), GLFW_ICONIFIED) == GLFW_TRUE);
+    }
+    const int holder = vsyncHolder(iconified);
+
+    GLFWwindow* previousContext = glfwGetCurrentContext();
+    for (size_t i = 0; i < presented.size(); ++i) {
+        OutputWindow* output = presented[i].first;
+        Renderer* renderer = presented[i].second;
 
         output->makeContextCurrent();
-        output->setSwapInterval(vsyncTaken ? 0 : 1);
-        vsyncTaken = true;
+        output->setSwapInterval(static_cast<int>(i) == holder ? 1 : 0);
 
         int width, height;
         glfwGetFramebufferSize(output->getGLFWwindow(), &width, &height);
@@ -596,9 +749,9 @@ void OutputManager::presentToOutputs(
         glfwMakeContextCurrent(previousContext);
     }
 
-    // The projector paces the loop while one is presented; the editor swaps
+    // A presented, non-minimised projector paces the loop and the editor swaps
     // without waiting. Otherwise the editor is vsync'd as before.
-    setEditorSwapInterval(vsyncTaken ? 0 : 1);
+    setEditorSwapInterval(holder >= 0 ? 0 : 1);
 }
 
 void OutputManager::setEditorSwapInterval(int interval) {
@@ -681,13 +834,57 @@ void OutputManager::glfwMonitorCallback(GLFWmonitor* monitor, int event) {
         LOG_INFO("Monitor disconnected: {}", monitorName ? monitorName : "Unknown");
     }
 
-    // Refresh the monitor list
-    instance_->refreshMonitors();
+    instance_->reresolveOutputs(/*refreshMonitorList=*/true);
 
     // Invoke the user callback if set
     if (instance_->monitorChangeCallback_) {
         instance_->monitorChangeCallback_();
     }
+}
+
+void OutputManager::reresolveOutputs(bool refreshMonitorList) {
+    // Monitor indexes shift on hotplug, so remember each shown output's display
+    // by identity to tell a real move from a renumbering.
+    std::unordered_map<UUID, MonitorIdentity> shownOn;
+    for (const auto& output : outputs_) {
+        const MonitorInfo* monitor = getMonitor(output->getMonitor());
+        if (monitor != nullptr && output->isVisible()) {
+            shownOn[output->getId()] = {monitor->name, monitor->position, monitor->index};
+        }
+    }
+
+    if (refreshMonitorList) {
+        refreshMonitors();
+    }
+    resolveOutputs();
+    if (!performMode_) {
+        return;
+    }
+
+    for (auto& output : outputs_) {
+        if (!output->isEnabled() || !output->isCreated()) {
+            continue;
+        }
+        const MonitorInfo* monitor = getMonitor(output->getMonitor());
+        if (monitor == nullptr) {
+            if (output->isVisible()) {
+                output->goWindowed();
+                output->hide();
+                notify("Projector '" + output->getName() +
+                       "' has no display connected; its output is hidden");
+            }
+            continue;
+        }
+        auto was = shownOn.find(output->getId());
+        if (was != shownOn.end() && was->second.name == monitor->name &&
+            was->second.position == monitor->position) {
+            continue;  // still on the same display
+        }
+        if (showOnResolvedMonitor(*output)) {
+            notify("Projector '" + output->getName() + "' now showing on '" + monitor->name + "'");
+        }
+    }
+    returnFocusToEditor();
 }
 
 void OutputManager::handleF11Key() {
@@ -696,16 +893,11 @@ void OutputManager::handleF11Key() {
     // If there are no outputs yet, auto-create one on the best secondary monitor
     // so a single F11 press immediately sends the scene fullscreen to a projector.
     if (!performMode_ && outputs_.empty()) {
-        refreshMonitors();
-        int monitorCount = static_cast<int>(monitors_.size());
-        int targetMonitor = (monitorCount > 1) ? 1 : 0;
-
+        // No monitor is chosen: enterPerformMode picks the first display that is
+        // not the editor's.
         OutputWindow* output = createOutput("Projector 1");
         if (output) {
-            output->setMonitor(targetMonitor);
-            LOG_INFO("F11 auto-created output on monitor {} ({})",
-                     targetMonitor,
-                     targetMonitor < monitorCount ? monitors_[targetMonitor].name : "unknown");
+            LOG_INFO("F11 auto-created output '{}'", output->getName());
         } else {
             LOG_ERROR("F11 auto-create output failed — cannot enter perform mode");
             return;

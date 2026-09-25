@@ -44,7 +44,8 @@ public:
         int monitor = -1;
         // Monitor identity (QM-087): name + virtual-desktop position of `monitor`
         // when saved, so a re-enumerated display still finds its projector.
-        // Empty name = unknown (older files, or no monitor chosen).
+        // Empty name = unknown (older files, or no monitor chosen). All three hold
+        // the DESIRED monitor, never an automatic fallback (QM-090).
         std::string monitorName;
         IVec2 monitorPosition = IVec2(0, 0);
         IVec2 resolution = IVec2(1920, 1080);

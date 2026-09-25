@@ -21,6 +21,7 @@ OutputWindow::OutputWindow(OutputWindow&& other) noexcept
     , resolution_(other.resolution_)
     , rotation_(other.rotation_)
     , monitor_(other.monitor_)
+    , desiredMonitor_(std::move(other.desiredMonitor_))
     , fullscreen_(other.fullscreen_)
     , borderless_(other.borderless_)
     , enabled_(other.enabled_)
@@ -48,6 +49,7 @@ OutputWindow& OutputWindow::operator=(OutputWindow&& other) noexcept {
         resolution_ = other.resolution_;
         rotation_ = other.rotation_;
         monitor_ = other.monitor_;
+        desiredMonitor_ = std::move(other.desiredMonitor_);
         fullscreen_ = other.fullscreen_;
         borderless_ = other.borderless_;
         enabled_ = other.enabled_;
@@ -215,10 +217,9 @@ Result<void, Error> OutputWindow::goFullscreen(int monitorIndex) {
         return Err("No monitors available");
     }
 
-    // Validate monitor index
+    // Never guess: monitor 0 is usually the operator's own screen (QM-090).
     if (targetMonitor < 0 || targetMonitor >= monitorCount) {
-        // Default to primary monitor
-        targetMonitor = 0;
+        return Err("Monitor " + std::to_string(targetMonitor) + " is not connected");
     }
 
     GLFWmonitor* monitor = monitors[targetMonitor];
@@ -310,10 +311,9 @@ Result<void, Error> OutputWindow::goBorderlessFullscreen(int monitorIndex) {
         return Err("No monitors available");
     }
 
-    // Validate monitor index
+    // Never guess: monitor 0 is usually the operator's own screen (QM-090).
     if (targetMonitor < 0 || targetMonitor >= monitorCount) {
-        // Default to primary monitor
-        targetMonitor = 0;
+        return Err("Monitor " + std::to_string(targetMonitor) + " is not connected");
     }
 
     GLFWmonitor* monitor = monitors[targetMonitor];
