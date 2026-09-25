@@ -63,10 +63,10 @@ void MainMenuBar::render(EditorContext& ctx) {
 
     if (ImGui::BeginMenu("Edit")) {
         if (ImGui::MenuItem("Undo", "Ctrl+Z", false, es.commandHistory.canUndo())) {
-            es.commandHistory.undo();
+            if (es.commandHistory.undo() && ctx.project) ctx.project->setModified(true);
         }
         if (ImGui::MenuItem("Redo", "Ctrl+Y", false, es.commandHistory.canRedo())) {
-            es.commandHistory.redo();
+            if (es.commandHistory.redo() && ctx.project) ctx.project->setModified(true);
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Select All", "Ctrl+A")) {

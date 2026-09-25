@@ -93,6 +93,33 @@ TEST_F(FileSystemAtomicTest, FailedReplaceLeavesOriginalByteIdentical) {
     EXPECT_FALSE(fs::exists(dir_ / "show.qmap.tmp"));
 }
 
+// NTFS file identity: the same for a file rewritten in place, new for a file that
+// replaced it by rename.
+static ULONGLONG fileIndex(const fs::path& p) {
+    HANDLE h = CreateFileW(p.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    BY_HANDLE_FILE_INFORMATION info{};
+    GetFileInformationByHandle(h, &info);
+    CloseHandle(h);
+    return (static_cast<ULONGLONG>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+}
+
+TEST_F(FileSystemAtomicTest, ReplacesTargetByRenameNeverInPlace) {
+    // A writer that truncates the target and rewrites it (even after copying a .bak)
+    // leaves a window where a crash destroys the show. The atomic write must instead
+    // swap a fully written file in, which gives the target a new file identity.
+    const fs::path target = dir_ / "show.qmap";
+    spit(target, "previous save");
+    const ULONGLONG before = fileIndex(target);
+    ASSERT_NE(before, 0u);
+
+    ASSERT_FALSE(FileSystem::writeFileAtomic(target, "new save").isError());
+
+    EXPECT_NE(fileIndex(target), before) << "target was rewritten in place";
+    EXPECT_EQ(slurp(target), "new save");
+}
+
 TEST_F(FileSystemAtomicTest, UnwritableDirectoryReturnsErrAndCreatesNothing) {
     const fs::path target = dir_ / "missing-subdir" / "show.qmap";
 

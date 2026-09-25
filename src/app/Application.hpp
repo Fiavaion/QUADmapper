@@ -1,6 +1,9 @@
 #pragma once
 
+#include "../core/Result.hpp"
+
 #include <array>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -123,6 +126,9 @@ private:
     bool isProjectDirty();
     void markProjectClean();
     void autosaveIfDue();
+    // Collect the finished background autosave write (logs a failure). Blocks if
+    // it is still running.
+    void finishAutosaveWrite();
     // Offer a recovery file for `projectPath` ("" = untitled) newer than the project.
     void offerRecovery(const std::string& projectPath);
     // Unsaved-changes and recovery modals; called inside the ImGui frame.
@@ -211,6 +217,7 @@ private:
     bool m_autoSaveEnabled = true;
     double m_autoSaveIntervalSec = 60.0;
     double m_lastAutosaveTime = 0.0;
+    std::future<Result<void, Error>> m_autosaveWrite;  // in-flight autosave disk write
     bool m_exitConfirmed = false;      // Exit passed the unsaved-changes check
 
     // QM-058 self-test hook (QM_AI_SELFTEST). Off in normal runs.

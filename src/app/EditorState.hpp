@@ -38,6 +38,12 @@
 namespace quadmapper {
 
 struct EditorState {
+    // quadResolver refers to this object's own `scenes`, so a copy or move would
+    // leave it resolving against the source. EditorState lives in a unique_ptr.
+    EditorState() = default;
+    EditorState(const EditorState&) = delete;
+    EditorState& operator=(const EditorState&) = delete;
+
     // Context-sensitive selection tracking
     enum class SelectionType { None, Quad, Output, Media };
 

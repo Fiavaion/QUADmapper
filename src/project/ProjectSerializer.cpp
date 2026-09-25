@@ -846,15 +846,20 @@ static fs::path projectBaseDir(const fs::path& projectFile) {
     return ec ? fs::path() : abs.parent_path();
 }
 
+Result<std::string, Error> ProjectSerializer::serializeFor(const Project& project,
+                                                           const std::filesystem::path& path) {
+    try {
+        return Ok(buildProjectJson(project, projectBaseDir(path)).dump(2));
+    } catch (const std::exception& e) {
+        return Err<std::string>(std::string("Failed to serialize project: ") + e.what());
+    }
+}
+
 Result<void, Error> ProjectSerializer::save(const Project& project, const std::filesystem::path& path) {
     Logger::info("Saving project to: {}", path.string());
-    std::string text;
-    try {
-        text = buildProjectJson(project, projectBaseDir(path)).dump(2);
-    } catch (const std::exception& e) {
-        return Err(std::string("Failed to serialize project: ") + e.what());
-    }
-    return FileSystem::writeFileAtomic(path, text);
+    auto text = serializeFor(project, path);
+    if (!text) return Err(text.error().message);
+    return FileSystem::writeFileAtomic(path, text.value());
 }
 
 Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path) {

@@ -194,6 +194,21 @@ TEST_F(SceneCommandsTest, CommandResolvesIntoReplacementSceneWithSameId) {
     EXPECT_EQ(reloaded->getGeometry().getCorners()[0], oldPos);
 }
 
+TEST_F(SceneCommandsTest, CommandTargetsItsOwnSceneAmongSeveral) {
+    // The resolver must find the command's scene by id, not assume the first one.
+    scenes_.push_back(std::make_unique<Scene>());
+    Scene& second = *scenes_.back();
+    Quad* quad = second.getQuadManager().createQuad();
+    const Vec2 oldPos = quad->getGeometry().getCorners()[0];
+
+    history_->execute(std::make_unique<MoveCornerCommand>(
+        QuadRef{&resolver_, second.getId(), quad->getId()}, 0, oldPos, Vec2(0.8f)));
+
+    EXPECT_EQ(quad->getGeometry().getCorners()[0], Vec2(0.8f));
+    ASSERT_TRUE(history_->undo());
+    EXPECT_EQ(quad->getGeometry().getCorners()[0], oldPos);
+}
+
 TEST_F(SceneCommandsTest, CommandOnMissingTargetIsNotRecorded) {
     Quad* quad = manager().createQuad();
     QuadRef stale = ref(quad);

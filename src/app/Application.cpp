@@ -1232,31 +1232,34 @@ void Application::render() {
         }
     }
 
-    // Handle keyboard shortcuts
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+    // Handle keyboard shortcuts. Editing shortcuts stay off while text is typed or a
+    // popup/modal is open (e.g. the unsaved-changes prompt: Delete must not delete
+    // quads behind it, Ctrl+S must not bypass it). F11/Esc below stay live.
+    const bool editingKeys = !io.WantTextInput &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         saveProject();
     }
 
-    // Undo / Redo (not while typing in a text field).
-    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
-        es.commandHistory.undo();
+    if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+        if (es.commandHistory.undo()) m_project->setModified(true);
     }
-    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
-        es.commandHistory.redo();
+    if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+        if (es.commandHistory.redo()) m_project->setModified(true);
     }
 
-    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
+    if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
         quadManager.selectAll();
     }
 
-    if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
+    if (editingKeys && ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
         quadManager.hasSelection()) {
         es.deleteSelectedQuads();
         m_project->setModified(true);
     }
 
-    // Z-order keyboard shortcuts (only when not typing in text field)
-    if (!io.WantTextInput) {
+    // Z-order keyboard shortcuts
+    if (editingKeys) {
         // Ctrl+] : Move selected quad(s) up (bring forward - render later = on top)
         if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) {
             if (quadManager.hasSelection()) {
@@ -1686,7 +1689,10 @@ bool Application::performLoadProject(const std::string& path) {
 
 bool Application::performSaveProject(bool chooseNewPath) {
     EditorState& es = *m_editorState;
-    std::string path = es.projectPath;
+    // The open project's own file. es.projectPath is the Project tab's editable
+    // "path to load" field and may name a different show; saving there (e.g. the
+    // save-before-load prompt) would overwrite that show with this one.
+    std::string path = m_project->getFilePath();
     if (chooseNewPath || path.empty()) {
         path = chooseProjectFile(m_window, true, es.projectPath);
         if (path.empty()) {
@@ -1742,11 +1748,21 @@ void Application::buildEditorProject(Project& out) {
     syncEditorToProject(*m_editorState, m_outputManager.get(), m_sourceManager.get(), out);
 }
 
+// What counts as an unsaved change: the show's content, not where the viewport is
+// panned/zoomed or whether a video happens to be playing right now.
+static std::string contentFingerprint(Project p) {
+    for (auto& scene : p.getScenes()) scene.view = Project::SceneViewData{};
+    for (auto& source : p.getSources()) {
+        if (source.transport) source.transport->playing = false;
+    }
+    return ProjectSerializer().serialize(p);
+}
+
 std::string Application::editorSnapshot() {
     Project p;
     p.setName(m_project->getName());
     buildEditorProject(p);
-    return ProjectSerializer().serialize(p);
+    return contentFingerprint(std::move(p));
 }
 
 // Dirty = the editor no longer serializes to what was last saved/loaded. Comparing
@@ -1768,21 +1784,45 @@ void Application::autosaveIfDue() {
     if (now - m_lastAutosaveTime < m_autoSaveIntervalSec) return;
     m_lastAutosaveTime = now;
 
+    // The previous write is still flushing: try again next tick.
+    if (m_autosaveWrite.valid() &&
+        m_autosaveWrite.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return;
+    }
+    finishAutosaveWrite();
+
     Project p;
     p.setName(m_project->getName());
     buildEditorProject(p);
-    const std::string snapshot = ProjectSerializer().serialize(p);
+    const std::string snapshot = contentFingerprint(p);
     if (snapshot == m_savedSnapshot || snapshot == m_autosavedSnapshot) return;
 
     const fs::path file = recoveryFileFor(m_project->getFilePath(), "autosave");
-    std::error_code ec;
-    fs::create_directories(file.parent_path(), ec);
-    auto result = ProjectSerializer::save(p, file);
-    if (result) {
-        m_autosavedSnapshot = snapshot;
-        Logger::info("Autosaved to {}", file.string());
-    } else {
+    auto text = ProjectSerializer::serializeFor(p, file);
+    if (!text) {
+        Logger::warning("Autosave failed: {}", text.error().message);
+        return;
+    }
+    // The atomic write flushes through to disk (FlushFileBuffers + WRITE_THROUGH),
+    // which can take tens of ms; keep it off the render thread so outputs never
+    // hitch during a show.
+    m_autosavedSnapshot = snapshot;
+    m_autosaveWrite = std::async(std::launch::async,
+        [file, body = std::move(text.value())]() -> Result<void, Error> {
+            std::error_code ec;
+            fs::create_directories(file.parent_path(), ec);
+            auto result = FileSystem::writeFileAtomic(file, body);
+            if (result) Logger::info("Autosaved to {}", file.string());
+            return result;
+        });
+}
+
+void Application::finishAutosaveWrite() {
+    if (!m_autosaveWrite.valid()) return;
+    auto result = m_autosaveWrite.get();
+    if (!result) {
         Logger::warning("Autosave failed: {}", result.error().message);
+        m_autosavedSnapshot.clear();  // retry on the next tick
     }
 }
 
@@ -2512,6 +2552,7 @@ void Application::shutdown() {
     }
 
     Logger::info("Shutting down QUADmapper...");
+    finishAutosaveWrite();  // never cut an autosave off mid-write
 
     // Cleanup components in reverse order of creation
     m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
