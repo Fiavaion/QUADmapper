@@ -10,6 +10,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <queue>
+#include <string>
 
 namespace quadmapper {
 
@@ -150,6 +151,13 @@ public:
     VideoFrame getBufferedFrame();
 
     /**
+     * @brief Peek the presentation time of the next buffered frame
+     * @param pts Receives the front frame's pts in seconds
+     * @return false if the buffer is empty
+     */
+    bool peekBufferedPts(double& pts) const;
+
+    /**
      * @brief Check if there are buffered frames available
      */
     bool hasBufferedFrames() const;
@@ -158,6 +166,14 @@ public:
      * @brief Get number of currently buffered frames
      */
     size_t getBufferedFrameCount() const;
+
+    /**
+     * @brief Why background decoding is failing, or empty while it is healthy
+     *
+     * Set after DecodeBackoff::ERROR_THRESHOLD consecutive non-EOF failures (the
+     * thread then backs off instead of spinning); cleared by the next good frame.
+     */
+    std::string getLastError() const;
 
 private:
     class Impl;

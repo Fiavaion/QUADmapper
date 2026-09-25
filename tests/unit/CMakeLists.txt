@@ -62,6 +62,13 @@ add_quadmapper_test(test_input
 )
 target_link_libraries(test_input PRIVATE quadmapper_input quadmapper_core imgui)
 
+# Video module tests (QM-088) - pure frame pacing / decode backoff, no FFmpeg file I/O
+add_quadmapper_test(test_video
+    video/FrameSelectionTest.cpp
+    video/DecodeBackoffTest.cpp
+)
+target_link_libraries(test_video PRIVATE quadmapper_video quadmapper_core)
+
 # Media module tests
 add_quadmapper_test(test_media
     media/MediaLibraryTest.cpp
@@ -71,6 +78,7 @@ target_link_libraries(test_media PRIVATE quadmapper_media quadmapper_core)
 # Source module tests (QM-055 camera)
 add_quadmapper_test(test_source
     source/CameraSourceTest.cpp
+    source/SourceReleaseTest.cpp
 )
 target_link_libraries(test_source PRIVATE quadmapper_source quadmapper_core)
 
@@ -101,6 +109,7 @@ add_quadmapper_test(test_render_gl
     renderer/CropRenderTest.cpp
     renderer/HapUploadTest.cpp
     renderer/OutputCompositeRenderTest.cpp
+    renderer/TextureUploadTest.cpp
 )
 target_link_libraries(test_render_gl PRIVATE quadmapper_renderer quadmapper_source quadmapper_core glfw glad)
 

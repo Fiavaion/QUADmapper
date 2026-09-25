@@ -207,8 +207,14 @@ public:
 
     // --- Loop ---
 
+    // ONCE or LOOP. PING_PONG is accepted for old project files and plays as LOOP.
     virtual void setLoopMode(LoopMode mode) = 0;
     virtual LoopMode getLoopMode() const = 0;
+
+    // --- Health ---
+
+    // Why playback is failing (decode errors), or empty while it is healthy.
+    virtual std::string getErrorMessage() const { return {}; }
 };
 
 } // namespace quadmapper

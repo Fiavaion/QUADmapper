@@ -165,6 +165,10 @@ struct EditorState {
     FileAction unsavedPromptFor = FileAction::None;  // != None: unsaved-changes modal is up
     bool saveBeforeAction = false;   // modal answered "Save"
     bool discardConfirmed = false;   // modal answered "Don't Save"
+    // The file a queued Load opens, captured when it is requested (the Project tab's
+    // Load button or the Open dialog). Kept apart from projectPath, which a save
+    // rewrites, so "Save" at the unsaved prompt still loads the show that was asked for.
+    std::string pendingLoadPath;
     std::string recoveryFilePath;    // != "": "recover unsaved work" modal is up
     std::string recoveryProjectPath; // project that recovery file belongs to ("" = untitled)
 

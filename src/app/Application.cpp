@@ -33,6 +33,7 @@
 #include "../input/InputManager.hpp"
 #include "../input/VertexKeyboard.hpp"
 #include "../ui/Theme.hpp"
+#include "../ui/AsyncFileDialog.hpp"
 #include "../ui/panels/OutputPanel.hpp"
 #include "../ui/panels/MediaBinPanel.hpp"
 #include "../ui/panels/QuadListPanel.hpp"
@@ -64,8 +65,6 @@
 #include <windows.h>
 #include <psapi.h>
 #include <shlobj.h>   // SHGetKnownFolderPath: recovery folder (ADR-046)
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>  // glfwGetWin32Window: owner of the Save/Open dialogs
 
 namespace quadmapper {
 
@@ -244,8 +243,10 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
     es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
+    // The previous project's media sources are released at the next frame boundary
+    // once nothing references them (releaseUnusedSources); the media bin's own
+    // generators survive, so its items stay assignable after a Load.
     es.activeVideoSourceId = UUID();
-    if (sm) sm->clear();  // drop the previous project's media sources (ADR-040 P2)
 
     // Rebuild outputs from the file (v3) so scene assignments remap onto the freshly
     // created output ids. v1/v2 files carry no outputs — keep the existing ones (e.g.
@@ -332,7 +333,12 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                     UUID sid;
                     if (MediaLibrary::getTypeFromExtension(ext) == MediaType::VIDEO) {
                         sid = sm->getOrCreateVideoSource(mediaPath);
-                        if (!sid.isNull()) es.activeVideoSourceId = sid;  // panel controls it
+                        if (!sid.isNull()) {
+                            es.activeVideoSourceId = sid;  // panel controls it
+                            // Files older than v3.1 saved no transport state: play
+                            // (looping, the default) as on assign, not a paused first frame.
+                            if (auto* video = sm->getSourceAs<PlayableSource>(sid)) video->play();
+                        }
                     } else {
                         sid = sm->getOrCreateImageSource(mediaPath);
                     }
@@ -1522,23 +1528,17 @@ void discardRecoveryFiles(const EditorState& es, const std::string& projectPath)
     }
 }
 
-// Native Open/Save dialog for .qmap files; "" when cancelled. OFN_NOCHANGEDIR keeps
-// the working directory (relative resource lookups depend on it).
-std::string chooseProjectFile(GLFWwindow* owner, bool save, const char* initialPath) {
-    char file[MAX_PATH] = "";
-    snprintf(file, sizeof(file), "%s", initialPath);
-    OPENFILENAMEA ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner ? glfwGetWin32Window(owner) : nullptr;
-    ofn.lpstrFilter = "QUADmapper Project (*.qmap)\0*.qmap\0All Files (*.*)\0*.*\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = sizeof(file);
-    ofn.lpstrDefExt = "qmap";
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
-                (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
-    ofn.lpstrTitle = save ? "Save Project" : "Open Project";
-    const BOOL ok = save ? GetSaveFileNameA(&ofn) : GetOpenFileNameA(&ofn);
-    return ok ? std::string(file) : std::string();
+// Native Open/Save dialog request for .qmap files (shown by AsyncFileDialog, off the
+// render thread).
+AsyncFileDialog::Request projectFileRequest(bool save, const char* initialPath) {
+    static const char filter[] = "QUADmapper Project (*.qmap)\0*.qmap\0All Files (*.*)\0*.*\0";
+    AsyncFileDialog::Request request;
+    request.kind = save ? AsyncFileDialog::Kind::SaveFile : AsyncFileDialog::Kind::OpenFile;
+    request.title = save ? "Save Project" : "Open Project";
+    request.filter.assign(filter, sizeof(filter));
+    request.defaultExt = "qmap";
+    request.initialPath = initialPath;
+    return request;
 }
 
 void postStatus(EditorState& es, const std::string& message) {
@@ -1553,6 +1553,7 @@ void Application::saveProject() {
 }
 
 void Application::loadProject() {
+    m_editorState->pendingLoadPath = m_editorState->projectPath;
     m_editorState->pendingFileAction = EditorState::FileAction::Load;
 }
 
@@ -1572,23 +1573,48 @@ void Application::runFrameBoundaryTasks() {
         offerRecovery("");
     }
     processPendingFileAction();
+    if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager);
     autosaveIfDue();
+}
+
+void Application::openProjectDialog(bool save, std::function<void(const std::string&)> onChosen) {
+    if (!m_projectDialog) m_projectDialog = std::make_unique<AsyncFileDialog>();
+    if (m_projectDialog->open(projectFileRequest(save, m_editorState->projectPath))) {
+        m_onProjectFileChosen = std::move(onChosen);
+    }
 }
 
 void Application::processPendingFileAction() {
     using FileAction = EditorState::FileAction;
     EditorState& es = *m_editorState;
+
+    // While the Open/Save dialog is up the editor and projectors keep running, but
+    // file actions wait for it; once it closes, its choice is applied here.
+    if (m_projectDialog && m_projectDialog->isBusy()) {
+        std::vector<std::string> chosen;
+        if (!m_projectDialog->takeResult(chosen)) return;
+        auto onChosen = std::move(m_onProjectFileChosen);
+        m_onProjectFileChosen = nullptr;
+        if (onChosen) onChosen(chosen.empty() ? std::string() : chosen.front());
+        return;
+    }
+
     const FileAction action = es.pendingFileAction;
     if (action == FileAction::None) return;
     es.pendingFileAction = FileAction::None;
 
     // Anything that leaves the current project first settles its unsaved changes.
-    const bool leavesProject = action == FileAction::New || action == FileAction::Open ||
-                               action == FileAction::Load || action == FileAction::Exit;
+    // Open only picks a file; the Load it queues settles unsaved changes at that
+    // point, so edits made while the dialog was up are covered too.
+    const bool leavesProject = action == FileAction::New || action == FileAction::Load ||
+                               action == FileAction::Exit;
     if (leavesProject) {
         if (es.saveBeforeAction) {
             es.saveBeforeAction = false;
-            if (!performSaveProject(false)) return;  // cancelled or failed: stay put
+            // Once saved (possibly after the Save dialog) the action is queued again
+            // and runs against the now-clean project; cancelled or failed: stay put.
+            performSaveProject(false, [&es, action]() { es.pendingFileAction = action; });
+            return;
         } else if (!es.discardConfirmed && isProjectDirty()) {
             es.unsavedPromptFor = action;  // renderSessionDialogs() asks, then re-queues
             return;
@@ -1603,18 +1629,21 @@ void Application::processPendingFileAction() {
             discardRecoveryFiles(es, leaving);
             performNewProject();
             break;
-        case FileAction::Open: {
-            const std::string path = chooseProjectFile(m_window, false, es.projectPath);
+        case FileAction::Open:
+            openProjectDialog(false, [this](const std::string& path) {
+                if (path.empty()) return;
+                m_editorState->pendingLoadPath = path;
+                m_editorState->pendingFileAction = FileAction::Load;
+            });
+            break;
+        case FileAction::Load: {
+            const std::string path = es.pendingLoadPath;
+            es.pendingLoadPath.clear();
             if (path.empty()) break;
             discardRecoveryFiles(es, leaving);
             performLoadProject(path);
             break;
         }
-        case FileAction::Load:
-            if (es.projectPath[0] == '\0') break;
-            discardRecoveryFiles(es, leaving);
-            performLoadProject(es.projectPath);
-            break;
         case FileAction::Save:
             performSaveProject(false);
             break;
@@ -1650,8 +1679,7 @@ void Application::performNewProject() {
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
     es.currentTexturePath[0] = '\0';
-    es.activeVideoSourceId = UUID();
-    if (m_sourceManager) m_sourceManager->clear();
+    es.activeVideoSourceId = UUID();  // the old media is released at the frame boundary
 
     // One default scene with one quad, still aimed at the first output. Outputs are
     // hardware setup, not show content, so New keeps them.
@@ -1688,20 +1716,27 @@ bool Application::performLoadProject(const std::string& path) {
     return true;
 }
 
-bool Application::performSaveProject(bool chooseNewPath) {
+void Application::performSaveProject(bool chooseNewPath, std::function<void()> onSaved) {
     EditorState& es = *m_editorState;
     // The open project's own file. es.projectPath is the Project tab's editable
     // "path to load" field and may name a different show; saving there (e.g. the
     // save-before-load prompt) would overwrite that show with this one.
-    std::string path = m_project->getFilePath();
+    const std::string path = m_project->getFilePath();
     if (chooseNewPath || path.empty()) {
-        path = chooseProjectFile(m_window, true, es.projectPath);
-        if (path.empty()) {
-            postStatus(es, "Save cancelled");
-            return false;
-        }
+        openProjectDialog(true, [this, onSaved = std::move(onSaved)](const std::string& chosen) {
+            if (chosen.empty()) {
+                postStatus(*m_editorState, "Save cancelled");
+                return;
+            }
+            if (writeProjectFile(chosen) && onSaved) onSaved();
+        });
+        return;
     }
+    if (writeProjectFile(path) && onSaved) onSaved();
+}
 
+bool Application::writeProjectFile(const std::string& path) {
+    EditorState& es = *m_editorState;
     const std::string previousFile = m_project->getFilePath();
     buildEditorProject(*m_project);
     auto result = ProjectSerializer::save(*m_project, path);

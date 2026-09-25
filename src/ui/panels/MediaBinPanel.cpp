@@ -6,7 +6,6 @@
 #include "source/procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
 #include "video/VideoDecoder.hpp"
-#include "source/VideoFileSource.hpp"
 #include <imgui.h>
 #include <vector>
 #include <algorithm>
@@ -15,9 +14,7 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
-#include <commdlg.h>
 #include <shellapi.h>
-#include <shlobj.h>   // SHBrowseForFolder (Load Folder)
 #endif
 
 namespace quadmapper {
@@ -88,6 +85,7 @@ void MediaBinPanel::renderContent() {
         return;
     }
 
+    pollImportDialog();
     renderControls();
     ImGui::Separator();
     renderThumbnailGrid();
@@ -261,7 +259,7 @@ void MediaBinPanel::updateHoverPreview() {
         if (!sid.isNull()) {
             hoverPreviewId_ = sid;
             hoverPreviewPath_ = hoveredVideoThisFrame_;
-            if (auto* v = sourceManager_->getSourceAs<VideoFileSource>(sid)) v->play();
+            if (auto* v = sourceManager_->getSourceAs<PlayableSource>(sid)) v->play();
         }
     }
 }
@@ -520,107 +518,60 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
 }
 
 void MediaBinPanel::handleImport() {
-#ifdef _WIN32
-    // Build file filter
-    std::string filter = buildFileFilter();
-
-    // Setup open file dialog
-    char filename[MAX_PATH * 10] = "";  // Support multiple files
-
-    OPENFILENAMEA ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = NULL;
-    ofn.lpstrFilter = filter.c_str();
-    ofn.lpstrFile = filename;
-    ofn.nMaxFile = sizeof(filename);
-    ofn.lpstrTitle = "Import Media Files";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
-
-    if (GetOpenFileNameA(&ofn)) {
-        // Parse selected files
-        char* ptr = filename;
-        std::string directory = ptr;
-        ptr += directory.length() + 1;
-
-        if (*ptr == '\0') {
-            // Single file selected
-            mediaLibrary_->addItem(std::filesystem::path(directory));
-        } else {
-            // Multiple files selected - directory followed by filenames
-            while (*ptr != '\0') {
-                std::string file = ptr;
-                std::filesystem::path fullPath = std::filesystem::path(directory) / file;
-                mediaLibrary_->addItem(fullPath);
-                ptr += file.length() + 1;
-            }
-        }
-    }
-#else
-    // On non-Windows platforms, show a message
-    // A cross-platform file dialog would require additional library (e.g., nfd)
-    ImGui::OpenPopup("ImportNotSupported");
-#endif
+    // Runs off the render thread (QM-088); pollImportDialog() adds the chosen files.
+    AsyncFileDialog::Request request;
+    request.kind = AsyncFileDialog::Kind::OpenFiles;
+    request.title = "Import Media Files";
+    request.filter = buildFileFilter();
+    if (importDialog_.open(std::move(request))) importIsFolder_ = false;
 }
 
 void MediaBinPanel::handleImportFolder() {
-#ifdef _WIN32
-    // Native folder picker (shell32 — already linked via ShellExecute). Recursively
-    // scans every supported media file into the library (reuses MediaLibrary::scanFolder).
-    BROWSEINFOA bi = {};
-    bi.lpszTitle = "Select a folder to load all media from";
-    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    // Recursively scans every supported media file in the chosen folder into the
+    // library (MediaLibrary::scanFolder), once pollImportDialog() sees the result.
+    AsyncFileDialog::Request request;
+    request.kind = AsyncFileDialog::Kind::PickFolder;
+    request.title = "Select a folder to load all media from";
+    if (importDialog_.open(std::move(request))) importIsFolder_ = true;
+}
 
-    LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
-    if (pidl) {
-        char path[MAX_PATH] = "";
-        if (SHGetPathFromIDListA(pidl, path) && path[0] != '\0') {
+void MediaBinPanel::pollImportDialog() {
+    std::vector<std::string> chosen;
+    if (!importDialog_.takeResult(chosen)) return;
+    for (const std::string& path : chosen) {
+        if (importIsFolder_) {
             mediaLibrary_->scanFolder(std::filesystem::path(path), /*recursive=*/true);
+        } else {
+            mediaLibrary_->addItem(std::filesystem::path(path));
         }
-        CoTaskMemFree(pidl);
     }
-#endif
 }
 
 std::string MediaBinPanel::buildFileFilter() const {
+    // Win32 filter: NUL-separated "description", "patterns" pairs, NUL-terminated.
+    // Appended with explicit lengths — a "...\0" literal would stop at its first NUL.
+    auto patternsFor = [](const std::vector<std::string>& exts, std::string patterns) {
+        for (const auto& ext : exts) {
+            if (!patterns.empty()) patterns += ";";
+            patterns += "*" + ext;
+        }
+        return patterns;
+    };
     std::string filter;
+    auto addEntry = [&filter](const std::string& description, const std::string& patterns) {
+        filter += description;
+        filter.push_back('\0');
+        filter += patterns;
+        filter.push_back('\0');
+    };
 
-    // All supported files
-    filter += "All Media Files\0";
-    std::string allExts;
-    for (const auto& ext : MediaLibrary::getSupportedImageExtensions()) {
-        if (!allExts.empty()) allExts += ";";
-        allExts += "*" + ext;
-    }
-    for (const auto& ext : MediaLibrary::getSupportedVideoExtensions()) {
-        if (!allExts.empty()) allExts += ";";
-        allExts += "*" + ext;
-    }
-    filter += allExts + '\0';
-
-    // Image files
-    filter += "Image Files\0";
-    std::string imgExts;
-    for (const auto& ext : MediaLibrary::getSupportedImageExtensions()) {
-        if (!imgExts.empty()) imgExts += ";";
-        imgExts += "*" + ext;
-    }
-    filter += imgExts + '\0';
-
-    // Video files
-    filter += "Video Files\0";
-    std::string vidExts;
-    for (const auto& ext : MediaLibrary::getSupportedVideoExtensions()) {
-        if (!vidExts.empty()) vidExts += ";";
-        vidExts += "*" + ext;
-    }
-    filter += vidExts + '\0';
-
-    // All files
-    filter += "All Files\0*.*\0";
-
-    // Double null terminator
-    filter += '\0';
-
+    const std::string images = patternsFor(MediaLibrary::getSupportedImageExtensions(), "");
+    const std::string videos = patternsFor(MediaLibrary::getSupportedVideoExtensions(), "");
+    addEntry("All Media Files", patternsFor(MediaLibrary::getSupportedVideoExtensions(), images));
+    addEntry("Image Files", images);
+    addEntry("Video Files", videos);
+    addEntry("All Files", "*.*");
+    filter.push_back('\0');
     return filter;
 }
 

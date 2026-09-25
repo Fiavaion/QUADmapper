@@ -194,6 +194,10 @@ LoopMode VideoFileSource::getLoopMode() const {
     return LoopMode::ONCE;
 }
 
+std::string VideoFileSource::getErrorMessage() const {
+    return player_ ? player_->getErrorMessage() : std::string();
+}
+
 const VideoInfo& VideoFileSource::getVideoInfo() const {
     static VideoInfo empty;
     if (player_ && player_->isLoaded()) {

@@ -36,6 +36,24 @@ GLenum glCompressedInternalFormat(GpuCompressedFormat fmt) {
     }
 }
 
+// CPU pixel rows are tightly packed (e.g. RGB24 at any width). GL's default unpack
+// alignment of 4 would read every row of a width not divisible by 4 at the wrong
+// offset (sheared image, reads past the buffer), so uploads use alignment 1 and
+// restore the caller's setting.
+class ScopedTightUnpack {
+public:
+    ScopedTightUnpack() {
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &previous_);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    }
+    ~ScopedTightUnpack() { glPixelStorei(GL_UNPACK_ALIGNMENT, previous_); }
+    ScopedTightUnpack(const ScopedTightUnpack&) = delete;
+    ScopedTightUnpack& operator=(const ScopedTightUnpack&) = delete;
+
+private:
+    GLint previous_ = 4;
+};
+
 } // namespace
 
 Texture::Texture() = default;
@@ -144,7 +162,10 @@ bool Texture::create(int width, int height, int channels, const unsigned char* d
     glBindTexture(GL_TEXTURE_2D, textureId_);
 
     // Upload data
-    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+    {
+        ScopedTightUnpack tight;
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+    }
 
     // Generate mipmaps
     glGenerateMipmap(GL_TEXTURE_2D);
@@ -237,7 +258,10 @@ void Texture::update(const unsigned char* data) {
     }
 
     glBindTexture(GL_TEXTURE_2D, textureId_);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, format, GL_UNSIGNED_BYTE, data);
+    {
+        ScopedTightUnpack tight;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, format, GL_UNSIGNED_BYTE, data);
+    }
     // create() built the texture with a mipmap min-filter; a full-texture update
     // must refresh the mip chain, else minified sampling reads the stale (empty)
     // levels and the quad renders black.
@@ -257,7 +281,10 @@ void Texture::update(int x, int y, int width, int height, const unsigned char* d
     }
 
     glBindTexture(GL_TEXTURE_2D, textureId_);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, format, GL_UNSIGNED_BYTE, data);
+    {
+        ScopedTightUnpack tight;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, format, GL_UNSIGNED_BYTE, data);
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 

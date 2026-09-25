@@ -1,13 +1,17 @@
 #include "HapFileSource.hpp"
 #include "hap/HapFrameParser.hpp"
+#include "video/DecodeBackoff.hpp"
+#include "video/FrameSelection.hpp"
 #include "core/Logger.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <limits>
 #include <mutex>
 #include <queue>
+#include <string>
 #include <thread>
 
 #ifdef QUADMAPPER_HAS_FFMPEG
@@ -84,6 +88,8 @@ public:
         width_ = stream->codecpar->width;
         height_ = stream->codecpar->height;
         timeBase_ = av_q2d(stream->time_base);
+        // Frame times are relative to the stream start, so pts 0 is the first frame.
+        startPts_ = stream->start_time != AV_NOPTS_VALUE ? stream->start_time : 0;
 
         if (formatCtx_->duration != AV_NOPTS_VALUE) {
             duration_ = static_cast<double>(formatCtx_->duration) / AV_TIME_BASE;
@@ -100,6 +106,10 @@ public:
         isOpen_ = true;
         position_ = 0.0;
         atEnd_ = false;
+        refreshPending_ = true;
+        // Demux from the start (bounded by the staging queue) so the first frame is
+        // on screen even before play.
+        startThread();
         Logger::info("HapFileSource: demuxing HAP '{}' ({}x{}, {}s)",
                      pathStr, width_, height_, duration_);
         return true;
@@ -116,13 +126,20 @@ public:
         width_ = 0;
         height_ = 0;
         timeBase_ = 0.0;
+        startPts_ = 0;
         duration_ = 0.0;
         position_ = 0.0;
         isOpen_ = false;
         atEnd_ = false;
+        refreshPending_ = false;
     }
 
     bool isOpen() const { return isOpen_; }
+
+    std::string lastError() const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        return lastError_;
+    }
     int width() const { return width_; }
     int height() const { return height_; }
     double duration() const { return duration_; }
@@ -159,18 +176,19 @@ public:
     void setSpeed(float speed) { speed_ = std::clamp(speed, 0.1f, 4.0f); }
     float speed() const { return speed_; }
 
-    void setLoopMode(LoopMode mode) { loopMode_ = mode; }
+    // Ping-pong needs reverse playback, which forward demuxing cannot do; it was only
+    // ever a forward loop, so files that saved it keep looping (QM-088).
+    void setLoopMode(LoopMode mode) { loopMode_ = mode == LoopMode::PING_PONG ? LoopMode::LOOP : mode; }
     LoopMode loopMode() const { return loopMode_; }
 
     void seek(double timeSeconds) {
         if (!isOpen_) return;
         timeSeconds = std::clamp(timeSeconds, 0.0, duration_ > 0.0 ? duration_ : timeSeconds);
 
-        bool wasRunning = threadRunning();
         stopThread();
 
         if (timeBase_ > 0.0) {
-            int64_t ts = static_cast<int64_t>(timeSeconds / timeBase_);
+            int64_t ts = static_cast<int64_t>(timeSeconds / timeBase_) + startPts_;
             if (av_seek_frame(formatCtx_, videoStreamIndex_, ts, AVSEEK_FLAG_BACKWARD) < 0) {
                 Logger::warning("HapFileSource: seek to {}s failed", timeSeconds);
             }
@@ -179,50 +197,56 @@ public:
         clearQueue();
         position_ = timeSeconds;
         atEnd_ = false;
+        refreshPending_ = true;
         if (state_ == PlaybackState::FINISHED) {
             state_ = PlaybackState::PAUSED;
         }
-        if (wasRunning && state_ == PlaybackState::PLAYING) {
-            startThread();
-        }
+        startThread();
     }
 
-    // Advance the playback clock and pull the freshest staged frame at or before
-    // the target time. Returns the frame to display (or nullptr if none new).
-    // Mirrors VideoPlayer::update.
+    // Advance the playback clock (while playing) and take the staged frames that are
+    // due; the newest due one is returned in out. Same rule as VideoPlayer::update
+    // (FrameSelection.hpp): never ahead of the clock, late frames dropped.
     bool update(double deltaTime, FrameData& out) {
-        if (!isOpen_ || state_ != PlaybackState::PLAYING) {
+        if (!isOpen_) {
             return false;
         }
 
-        position_ += deltaTime * static_cast<double>(speed_);
-        double target = position_;
-
-        bool got = false;
-        {
-            std::unique_lock<std::mutex> lock(queueMutex_);
-            while (!frameQueue_.empty()) {
-                StagedFrame& front = frameQueue_.front();
-                // Take the frame; if it is still ahead of target, leave it for next time.
-                if (front.pts > target && got) {
-                    break;
-                }
-                out = std::move(front.data);
-                double pts = front.pts;
-                frameQueue_.pop();
-                got = true;
-                // Stop once we've reached a frame at/after the target PTS.
-                if (pts >= target) {
-                    break;
-                }
+        const bool playing = state_ == PlaybackState::PLAYING;
+        if (playing) {
+            position_ += deltaTime * static_cast<double>(speed_);
+            if (duration_ > 0.0 && position_ > duration_) {
+                position_ = duration_;
             }
         }
-        queueCond_.notify_one();
+        // At the clip's end take whatever is left, so it drains and loops.
+        const bool clockAtEnd = playing && duration_ > 0.0 && position_ >= duration_;
+        const double target = clockAtEnd ? std::numeric_limits<double>::infinity() : position_;
+
+        size_t taken = 0;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            taken = popDueFrames(
+                target, !refreshPending_,
+                [this](double& pts) {
+                    if (frameQueue_.empty()) return false;
+                    pts = frameQueue_.front().pts;
+                    return true;
+                },
+                [this, &out]() {
+                    out = std::move(frameQueue_.front().data);
+                    frameQueue_.pop();
+                });
+        }
+        if (taken > 0) {
+            refreshPending_ = false;
+            queueCond_.notify_one();
+        }
 
         // End-of-stream handling once the demux thread is drained. Check emptiness
         // under the lock but call handleEndOfVideo() WITHOUT it — that path joins the
         // demux thread (via seek), which itself blocks on queueMutex_ (deadlock if held).
-        if (atEnd_ && !got) {
+        if (playing && atEnd_ && taken == 0) {
             bool drained;
             {
                 std::lock_guard<std::mutex> lock(queueMutex_);
@@ -233,7 +257,7 @@ public:
             }
         }
 
-        return got;
+        return taken > 0;
     }
 
 private:
@@ -243,21 +267,14 @@ private:
     };
 
     void handleEndOfVideo() {
-        switch (loopMode_) {
-            case LoopMode::ONCE:
-                state_ = PlaybackState::FINISHED;
-                break;
-            case LoopMode::LOOP:
-            case LoopMode::PING_PONG:  // backward playback not yet supported; loop forward
-                // Re-arm from the start. seek() restarts the demux thread.
-                position_ = 0.0;
-                seek(0.0);
-                play();
-                break;
+        if (loopMode_ == LoopMode::ONCE) {
+            state_ = PlaybackState::FINISHED;
+            return;
         }
+        // Re-arm from the start. seek() restarts the demux thread.
+        seek(0.0);
+        play();
     }
-
-    bool threadRunning() const { return thread_.joinable(); }
 
     void startThread() {
         if (thread_.joinable()) return;
@@ -267,9 +284,32 @@ private:
 
     void stopThread() {
         if (!thread_.joinable()) return;
-        stopFlag_ = true;
+        // Set the flag under the mutex the demux thread waits on: set outside it,
+        // the notify can land between the thread's predicate check and its wait,
+        // and join() then hangs on a thread that never wakes.
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            stopFlag_ = true;
+            lastError_.clear();
+        }
         queueCond_.notify_all();
         thread_.join();
+    }
+
+    // One failed read or parse on the demux thread; waits out the backoff delay
+    // (interruptible by stop) and surfaces the error once past the threshold.
+    void onDemuxFailure(DecodeBackoff& backoff, const std::string& reason) {
+        const auto delay = backoff.onFailure();
+        std::unique_lock<std::mutex> lock(queueMutex_);
+        if (backoff.failing()) {
+            if (lastError_.empty()) {
+                Logger::error("HapFileSource: {} (retrying with backoff)", reason);
+            }
+            lastError_ = reason;
+        }
+        if (delay.count() > 0) {
+            queueCond_.wait_for(lock, delay, [this]() { return stopFlag_.load(); });
+        }
     }
 
     void clearQueue() {
@@ -286,6 +326,7 @@ private:
             return;
         }
 
+        DecodeBackoff backoff;
         while (!stopFlag_) {
             // Backpressure: wait until there's room in the staging queue.
             {
@@ -299,9 +340,16 @@ private:
             int rc = av_read_frame(formatCtx_, packet);
             if (rc < 0) {
                 if (rc == AVERROR_EOF) {
+                    // Idle until a seek or stop restarts the thread.
                     atEnd_ = true;
+                    std::unique_lock<std::mutex> lock(queueMutex_);
+                    queueCond_.wait_for(lock, std::chrono::milliseconds(10),
+                                        [this]() { return stopFlag_.load(); });
+                } else {
+                    char err[AV_ERROR_MAX_STRING_SIZE] = {0};
+                    av_strerror(rc, err, sizeof(err));
+                    onDemuxFailure(backoff, std::string("HAP read failed: ") + err);
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
 
@@ -316,15 +364,16 @@ private:
 
             double pts = 0.0;
             if (packet->pts != AV_NOPTS_VALUE && timeBase_ > 0.0) {
-                pts = static_cast<double>(packet->pts) * timeBase_;
+                pts = static_cast<double>(packet->pts - startPts_) * timeBase_;
             } else if (packet->dts != AV_NOPTS_VALUE && timeBase_ > 0.0) {
-                pts = static_cast<double>(packet->dts) * timeBase_;
+                pts = static_cast<double>(packet->dts - startPts_) * timeBase_;
             }
 
             av_packet_unref(packet);
 
             if (!decoded.valid()) {
                 Logger::warning("HapFileSource: parseHapFrame produced an invalid frame; skipping");
+                onDemuxFailure(backoff, "HAP frames could not be decoded");
                 continue;
             }
 
@@ -348,8 +397,10 @@ private:
             staged.data.timestamp = static_cast<uint64_t>(pts * 1000000.0);
             staged.data.frameNumber = frameCounter_++;
 
+            backoff.onSuccess();
             {
                 std::lock_guard<std::mutex> lock(queueMutex_);
+                lastError_.clear();
                 frameQueue_.push(std::move(staged));
             }
         }
@@ -365,11 +416,13 @@ private:
     int width_ = 0;
     int height_ = 0;
     double timeBase_ = 0.0;
+    int64_t startPts_ = 0;  // stream start_time, in time_base units
     double duration_ = 0.0;
     bool isOpen_ = false;
 
     // Playback clock (main thread)
     double position_ = 0.0;
+    bool refreshPending_ = false;  // an open/seek made the shown frame stale
     float speed_ = 1.0f;
     PlaybackState state_ = PlaybackState::STOPPED;
     LoopMode loopMode_ = LoopMode::LOOP;
@@ -384,6 +437,7 @@ private:
     mutable std::mutex queueMutex_;
     std::condition_variable queueCond_;
     std::queue<StagedFrame> frameQueue_;
+    std::string lastError_;  // guarded by queueMutex_
 };
 
 #else // !QUADMAPPER_HAS_FFMPEG
@@ -411,6 +465,7 @@ public:
     LoopMode loopMode() const { return LoopMode::ONCE; }
     void seek(double) {}
     bool update(double, FrameData&) { return false; }
+    std::string lastError() const { return {}; }
 };
 
 #endif // QUADMAPPER_HAS_FFMPEG
@@ -518,5 +573,7 @@ float HapFileSource::getSpeed() const { return impl_ ? impl_->speed() : 1.0f; }
 
 void HapFileSource::setLoopMode(LoopMode mode) { if (impl_) impl_->setLoopMode(mode); }
 LoopMode HapFileSource::getLoopMode() const { return impl_ ? impl_->loopMode() : LoopMode::ONCE; }
+
+std::string HapFileSource::getErrorMessage() const { return impl_ ? impl_->lastError() : std::string(); }
 
 } // namespace quadmapper

@@ -5,6 +5,7 @@
 #include "core/Types.hpp"
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <filesystem>
 #include <functional>
 
@@ -129,6 +130,19 @@ public:
      */
     void clear();
 
+    /**
+     * @brief Release file-backed sources nothing uses any more (QM-088)
+     * @param inUse Ids still referenced (quad bindings, the Video Player's source, ...)
+     * @return Number of sources released
+     *
+     * Image, video (incl. HAP) and procedural sources not in inUse are shut down
+     * (decode thread joined) and their GPU textures freed; callers put every source the
+     * media bin still offers into inUse. Camera sources are never released here (the AI
+     * capture path owns them). Call at a frame boundary, never while a render pass holds
+     * texture pointers.
+     */
+    size_t releaseUnreferenced(const std::unordered_set<UUID>& inUse);
+
     // --- Source Access ---
 
     /**
@@ -155,6 +169,11 @@ public:
      * @param id Source UUID
      */
     bool hasSource(const UUID& id) const;
+
+    /**
+     * @brief File a source was loaded from (image, video or HAP), else empty
+     */
+    std::filesystem::path getSourcePath(const UUID& id) const;
 
     /**
      * @brief Get all source IDs

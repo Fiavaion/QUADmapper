@@ -14,117 +14,124 @@
 #include <imgui.h>
 #include <cstring>
 #include <cstdio>
-
-#ifdef _WIN32
-#define NOMINMAX
-#include <windows.h>
-#include <commdlg.h>
-#endif
+#include <string>
+#include <vector>
 
 namespace quadmapper {
 
 namespace {
 
-// Native "open video file" dialog (Win32 comdlg32 — no new dependency). Returns
-// true and writes the chosen path into out on success; false if cancelled or
-// unsupported. initial seeds the starting file/folder so it reopens where you were.
-bool pickVideoFile(char* out, size_t outSize, const char* initial) {
-#ifdef _WIN32
-    char filename[MAX_PATH] = "";
-    if (initial && initial[0] != '\0') {
-        strncpy(filename, initial, sizeof(filename) - 1);
-    }
+// Native "open video file" request; initial seeds the dialog so it reopens where you were.
+AsyncFileDialog::Request videoFileRequest(const char* initial) {
+    AsyncFileDialog::Request request;
+    request.kind = AsyncFileDialog::Kind::OpenFile;
+    request.title = "Load Video";
     // Filter blocks are NUL-delimited and the whole thing is NUL-terminated.
     static const char filter[] =
         "Video Files\0*.mp4;*.mov;*.avi;*.mkv;*.webm;*.m4v;*.wmv;*.flv\0"
         "All Files\0*.*\0";
+    request.filter.assign(filter, sizeof(filter));
+    request.initialPath = initial ? initial : "";
+    return request;
+}
 
-    OPENFILENAMEA ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = NULL;
-    ofn.lpstrFilter = filter;
-    ofn.lpstrFile = filename;
-    ofn.nMaxFile = sizeof(filename);
-    ofn.lpstrTitle = "Load Video";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
-
-    if (GetOpenFileNameA(&ofn)) {
-        strncpy(out, filename, outSize - 1);
-        out[outSize - 1] = '\0';
-        return true;
+// Decode failures surfaced by the source (QM-088), shown under the controls.
+void showPlaybackError(const PlayableSource& video) {
+    const std::string error = video.getErrorMessage();
+    if (!error.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "%s", error.c_str());
     }
-    return false;
-#else
-    (void)out; (void)outSize; (void)initial;
-    return false;
-#endif
 }
 
 }  // namespace
 
-// ADR-040 P3: the Video Player drives one active VideoFileSource owned by the
-// SourceManager. "Load" creates the source; controls drive it through the
-// PlayableSource interface; "Assign" binds the source to a quad by mediaId — and
+void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
+    EditorState& es = ctx.es;
+    if (es.videoPath[0] == '\0' || !ctx.sourceManager) return;
+
+    // Deduped: loading a file that is already a source reuses it (one decode).
+    UUID sid = ctx.sourceManager->getOrCreateVideoSource(es.videoPath);
+    if (sid.isNull()) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage),
+                 "Failed to load video: %s", es.videoPath);
+        es.statusTimer = 3.0f;
+        return;
+    }
+    es.activeVideoSourceId = sid;
+
+    if (simpleMode) {
+        if (Quad* selected = es.quadManager().getPrimarySelectedQuad()) {
+            bindSourceToQuad(es, ctx.project, *selected, sid, es.videoPath, /*isVideo=*/true);
+        }
+        // Auto-play so the video is visible at once.
+        if (auto* video = ctx.sourceManager->getSourceAs<PlayableSource>(sid)) {
+            video->play();
+        }
+    }
+    snprintf(es.statusMessage, sizeof(es.statusMessage), "Video loaded: %s", es.videoPath);
+    es.statusTimer = 3.0f;
+}
+
+// ADR-040 P3: the Video Player drives one active playable source (FFmpeg-decoded or
+// HAP) owned by the SourceManager. "Load" creates the source; controls drive it through
+// the PlayableSource interface; "Assign" binds the source to a quad by mediaId — and
 // because mediaId is just a reference, the SAME video can be assigned to many
 // quads (each with its own crop) and decodes/uploads exactly once.
 void VideoPlayerPanel::render(EditorContext& ctx) {
     EditorState& es = ctx.es;
 
+    // Collect a finished "Load Video..." pick even while the window is hidden.
+    std::vector<std::string> picked;
+    if (loadDialog_.takeResult(picked) && !picked.empty()) {
+        snprintf(es.videoPath, sizeof(es.videoPath), "%s", picked.front().c_str());
+        loadVideo(ctx, loadDialogSimpleMode_);
+    }
+
     if (!es.showVideoPlayer) return;
 
     ImGui::Begin("Video Player");
 
+    const bool simpleMode = es.uiMode == EditorState::UiMode::Simple;
+    auto loadButton = [&](const char* tooltip) {
+        ImGui::BeginDisabled(loadDialog_.isBusy());
+        if (ImGui::Button("Load Video...") && loadDialog_.open(videoFileRequest(es.videoPath))) {
+            loadDialogSimpleMode_ = simpleMode;
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("%s", tooltip);
+    };
+
+    PlayableSource* video = ctx.sourceManager
+        ? ctx.sourceManager->getSourceAs<PlayableSource>(es.activeVideoSourceId)
+        : nullptr;
+
     // Simple mode (ADR-042): Load Video... (browses + assigns to the selected quad),
     // then just Play/Pause, Loop and Speed — nothing else.
-    if (es.uiMode == EditorState::UiMode::Simple) {
+    if (simpleMode) {
         Quad* selected = es.quadManager().getPrimarySelectedQuad();
         ImGui::TextDisabled(selected ? "Loads onto the selected quad"
                                      : "Select a quad first, then load");
 
-        if (ImGui::Button("Load Video...")) {
-            char picked[sizeof(es.videoPath)] = "";
-            if (pickVideoFile(picked, sizeof(picked), es.videoPath) && ctx.sourceManager) {
-                strncpy(es.videoPath, picked, sizeof(es.videoPath) - 1);
-                es.videoPath[sizeof(es.videoPath) - 1] = '\0';
-                UUID sid = ctx.sourceManager->getOrCreateVideoSource(es.videoPath);
-                if (!sid.isNull()) {
-                    es.activeVideoSourceId = sid;
-                    if (selected) {
-                        bindSourceToQuad(es, ctx.project, *selected, sid,
-                                         es.videoPath, /*isVideo=*/true);
-                    }
-                    // Auto-play so the video is visible at once (a paused video uploads
-                    // no frames, leaving the quad black).
-                    if (auto* vs = ctx.sourceManager->getSourceAs<VideoFileSource>(sid)) {
-                        vs->play();
-                    }
-                    snprintf(es.statusMessage, sizeof(es.statusMessage), "Loaded video");
-                    es.statusTimer = 3.0f;
-                }
-            }
-        }
-        ImGui::SetItemTooltip("Browse for a video and apply it to the selected quad");
+        loadButton("Browse for a video and apply it to the selected quad");
 
-        VideoFileSource* v = ctx.sourceManager
-            ? ctx.sourceManager->getSourceAs<VideoFileSource>(es.activeVideoSourceId)
-            : nullptr;
-        if (v) {
+        if (video) {
             ImGui::Separator();
-            const bool playing = v->getPlaybackState() == PlaybackState::PLAYING;
+            const bool playing = video->getPlaybackState() == PlaybackState::PLAYING;
             if (ImGui::Button(playing ? "Pause" : "Play")) {
-                if (playing) v->pause(); else v->play();
+                if (playing) video->pause(); else video->play();
             }
-            bool loop = v->getLoopMode() == LoopMode::LOOP;
+            bool loop = video->getLoopMode() == LoopMode::LOOP;
             if (ImGui::Checkbox("Loop", &loop)) {
-                v->setLoopMode(loop ? LoopMode::LOOP : LoopMode::ONCE);
+                video->setLoopMode(loop ? LoopMode::LOOP : LoopMode::ONCE);
             }
-            float speed = v->getSpeed();
+            float speed = video->getSpeed();
             ImGui::SetNextItemWidth(180.0f);
             if (ImGui::SliderFloat("Speed", &speed, 0.1f, 4.0f, "%.1fx")) {
-                v->setSpeed(speed);
+                video->setSpeed(speed);
             }
             ImGui::SameLine();
-            if (ImGui::Button("1x")) v->setSpeed(1.0f);
+            if (ImGui::Button("1x")) video->setSpeed(1.0f);
+            showPlaybackError(*video);
         } else {
             ImGui::TextDisabled("No video loaded");
         }
@@ -133,57 +140,34 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         return;
     }
 
-    // Load a video from es.videoPath through the SourceManager (shared by the
-    // file-picker and the typed-path fallback).
-    auto loadFromPath = [&]() {
-        if (strlen(es.videoPath) > 0 && ctx.sourceManager) {
-            UUID sid = ctx.sourceManager->createVideoSource(es.videoPath);
-            if (!sid.isNull()) {
-                es.activeVideoSourceId = sid;
-                snprintf(es.statusMessage, sizeof(es.statusMessage),
-                         "Video loaded: %s", es.videoPath);
-            } else {
-                snprintf(es.statusMessage, sizeof(es.statusMessage),
-                         "Failed to load video: %s", es.videoPath);
-            }
-            es.statusTimer = 3.0f;
-        }
-    };
-
     // Primary path: "Load Video" opens a native file explorer; picking a file sets
-    // the path field and loads it immediately. The text field still shows the path
-    // (and a typed/pasted path can be loaded with the small "Use Path" fallback).
+    // the path field and loads it. The text field still shows the path (and a
+    // typed/pasted path can be loaded with the small "Use Path" fallback).
     ImGui::Text("Video File:");
-    if (ImGui::Button("Load Video...")) {
-        char picked[sizeof(es.videoPath)] = "";
-        if (pickVideoFile(picked, sizeof(picked), es.videoPath)) {
-            strncpy(es.videoPath, picked, sizeof(es.videoPath) - 1);
-            es.videoPath[sizeof(es.videoPath) - 1] = '\0';
-            loadFromPath();
-        }
-    }
-    ImGui::SetItemTooltip("Browse the hard drive for a video file");
+    loadButton("Browse the hard drive for a video file");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-70.0f);
     const bool pathEntered = ImGui::InputText("##videopath", es.videoPath, sizeof(es.videoPath),
                                               ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
     if (ImGui::Button("Use Path") || pathEntered) {
-        loadFromPath();
+        loadVideo(ctx, /*simpleMode=*/false);
+        video = ctx.sourceManager
+            ? ctx.sourceManager->getSourceAs<PlayableSource>(es.activeVideoSourceId)
+            : nullptr;
     }
 
-    VideoFileSource* video = ctx.sourceManager
-        ? ctx.sourceManager->getSourceAs<VideoFileSource>(es.activeVideoSourceId)
-        : nullptr;
-
     if (video) {
-        const VideoInfo& info = video->getVideoInfo();
-
         ImGui::Separator();
-        ImGui::Text("Size: %dx%d | FPS: %.2f | Duration: %.1fs",
-                    info.width, info.height, info.frameRate, info.duration);
-        if (info.hasAudio) {
-            ImGui::Text("Audio: %d ch @ %d Hz", info.audioChannels, info.audioSampleRate);
+        ImGui::Text("%s | Size: %dx%d | Duration: %.1fs", video->getTypeName().c_str(),
+                    video->getWidth(), video->getHeight(), video->getDuration());
+        // Decoder details only the FFmpeg-decoded source reports.
+        if (const auto* decoded = dynamic_cast<const VideoFileSource*>(video)) {
+            const VideoInfo& info = decoded->getVideoInfo();
+            ImGui::Text("FPS: %.2f", info.frameRate);
+            if (info.hasAudio) {
+                ImGui::Text("Audio: %d ch @ %d Hz", info.audioChannels, info.audioSampleRate);
+            }
         }
 
         ImGui::Separator();
@@ -207,6 +191,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
             video->seekProgress(progress);
         }
         ImGui::Text("Time: %.1f / %.1f s", video->getCurrentTime(), video->getDuration());
+        showPlaybackError(*video);
 
         ImGui::Separator();
 
@@ -219,10 +204,10 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         if (ImGui::Button("1x")) video->setSpeed(1.0f);
 
         // Loop mode
-        const char* loopModes[] = { "Once", "Loop", "Ping-Pong" };
-        int loopMode = static_cast<int>(video->getLoopMode());
-        if (ImGui::Combo("Loop Mode", &loopMode, loopModes, 3)) {
-            video->setLoopMode(static_cast<LoopMode>(loopMode));
+        const char* loopModes[] = { "Once", "Loop" };
+        int loopMode = video->getLoopMode() == LoopMode::LOOP ? 1 : 0;
+        if (ImGui::Combo("Loop Mode", &loopMode, loopModes, 2)) {
+            video->setLoopMode(loopMode == 1 ? LoopMode::LOOP : LoopMode::ONCE);
         }
 
         ImGui::Separator();
@@ -242,7 +227,8 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
                     // Centralized bind (ADR-042 P2): records the path so the assignment
                     // persists in the .qmap; load re-creates the source and re-binds.
                     bindSourceToQuad(es, ctx.project, *selected, es.activeVideoSourceId,
-                                     video->getPath().string(), /*isVideo=*/true);
+                                     ctx.sourceManager->getSourcePath(es.activeVideoSourceId).string(),
+                                     /*isVideo=*/true);
                 }
             }
             if (isAssigned) {
@@ -256,7 +242,19 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
 
         ImGui::Separator();
         if (ImGui::Button("Unload Video")) {
-            ctx.sourceManager->removeSource(es.activeVideoSourceId);
+            // Take it off every quad too, so no binding is left pointing at nothing.
+            const UUID unloaded = es.activeVideoSourceId;
+            for (const auto& scene : es.scenes) {
+                if (!scene) continue;
+                for (const auto& quad : scene->getQuadManager().getQuads()) {
+                    if (quad->getTexture().mediaId == unloaded) {
+                        quad->getTexture().mediaId = UUID();
+                        es.quadTexturePaths.erase(quad->getId());
+                        ctx.project->setModified(true);
+                    }
+                }
+            }
+            ctx.sourceManager->removeSource(unloaded);
             es.activeVideoSourceId = UUID();
         }
     } else {

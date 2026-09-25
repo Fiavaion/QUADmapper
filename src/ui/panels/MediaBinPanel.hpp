@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Panel.hpp"
+#include "ui/AsyncFileDialog.hpp"
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include <string>
@@ -33,6 +34,7 @@ public:
      * @param library Pointer to the media library
      */
     void setMediaLibrary(MediaLibrary* library) { mediaLibrary_ = library; }
+    const MediaLibrary* getMediaLibrary() const { return mediaLibrary_; }
 
     /**
      * Set the source manager for creating procedural sources.
@@ -73,6 +75,12 @@ public:
      */
     void clearSelection() { selectedItemId_ = UUID::null(); }
 
+    /**
+     * The hover-to-play preview source, or null. It is bound to no quad, so the
+     * unused-source cleanup must be told to keep it.
+     */
+    const UUID& getPreviewSourceId() const { return hoverPreviewId_; }
+
     // Thumbnail size settings
     float getThumbnailSize() const { return thumbnailSize_; }
     void setThumbnailSize(float size) { thumbnailSize_ = size; }
@@ -102,6 +110,9 @@ private:
 
     // Handle "Load Folder" — pick a folder and scan all media in it (ADR-042 P3)
     void handleImportFolder();
+
+    // Add whatever the Load Files / Load Folder dialog returned, once it has closed.
+    void pollImportDialog();
 
     // Handle procedural creation
     void createProcedural(ProceduralType type);
@@ -152,6 +163,10 @@ private:
     UUID hoverPreviewId_;
     std::string hoverPreviewPath_;
     std::string hoveredVideoThisFrame_;
+
+    // Load Files / Load Folder run off the render thread (QM-088); one at a time.
+    AsyncFileDialog importDialog_;
+    bool importIsFolder_ = false;
 };
 
 } // namespace quadmapper

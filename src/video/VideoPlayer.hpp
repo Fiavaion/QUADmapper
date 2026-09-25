@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <functional>
+#include <string>
 
 namespace quadmapper {
 
@@ -123,6 +124,11 @@ public:
      */
     const std::filesystem::path& getPath() const;
 
+    /**
+     * @brief Decoder failure message, or empty while decoding is healthy
+     */
+    std::string getErrorMessage() const;
+
     // --- Frame Access ---
 
     /**
@@ -160,6 +166,8 @@ public:
 private:
     void handleEndOfVideo();
     void updatePlaybackPosition(double deltaTime);
+    // Pop the buffered frames due at targetPts (see FrameSelection.hpp); returns the count.
+    size_t takeDueFrames(double targetPts, bool haveFrame);
 
     std::unique_ptr<VideoDecoder> decoder_;
     VideoPlaybackState state_;
@@ -167,6 +175,7 @@ private:
     std::filesystem::path path_;
 
     bool hasNewFrame_ = false;
+    bool refreshPending_ = false;  // a load/seek made the shown frame stale
     bool needsSeek_ = false;
     double seekTarget_ = 0.0;
 
