@@ -506,7 +506,10 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
         }
 
         if (output->getMonitor() < 0) {
-            notify("Projector '" + output->getName() + "' not connected; its output is not shown");
+            // Never fall back onto the operator's own screen by itself; say how to do it
+            // on purpose (e.g. rehearsing on a laptop with no projector attached).
+            notify("Projector '" + output->getName() + "' not connected; its output is not shown."
+                   " To preview it on this screen, pick this display for it in Outputs.");
             continue;
         }
         if (showOnResolvedMonitor(*output)) {
