@@ -327,7 +327,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                     if (es.gridInsertDragIndex >= 0) {
                         GridSnapshot before{es.gridInsertBeforeU, es.gridInsertBeforeV,
                                             es.gridInsertBeforeOffsets};
-                        pushGridChange(es.commandHistory, selectedQuad, "Insert Division",
+                        pushGridChange(es.commandHistory, es.quadRef(*selectedQuad), "Insert Division",
                                        before, captureGrid(geometry));
                         es.gridInsert = EditorState::GridInsert::None;
                         es.gridInsertDragIndex = -1;
@@ -356,7 +356,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                         if (cornerDraggedVertex >= 0 &&
                             corners[cornerDraggedVertex] != cornerDragStartPos) {
                             es.commandHistory.execute(std::make_unique<MoveCornerCommand>(
-                                selectedQuad, cornerDraggedVertex,
+                                es.quadRef(*selectedQuad), cornerDraggedVertex,
                                 cornerDragStartPos, corners[cornerDraggedVertex]));
                         }
                         cornerSelectedVertex = cornerDraggedVertex;
@@ -395,13 +395,12 @@ void ViewportEditor::render(EditorContext& ctx) {
                             m_project->setModified(true);
                         } else {
                             // Release — record the whole bend as one undo step.
-                            Quad* bq = selectedQuad;
                             es.commandHistory.execute(
-                                std::make_unique<SetPropertyCommand<std::array<Vec2, 8>>>(
-                                    "Bezier Edge", es.bezierDragBefore,
-                                    geometry.getBezierOffsets(),
-                                    [bq](const std::array<Vec2, 8>& o) {
-                                        bq->getGeometry().setBezierOffsets(o);
+                                std::make_unique<QuadPropertyCommand<std::array<Vec2, 8>>>(
+                                    "Bezier Edge", es.quadRef(*selectedQuad),
+                                    es.bezierDragBefore, geometry.getBezierOffsets(),
+                                    [](Quad& q, const std::array<Vec2, 8>& o) {
+                                        q.getGeometry().setBezierOffsets(o);
                                     }));
                             es.bezierDragged = -1;
                         }
@@ -465,7 +464,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                             // Command applies the move; consecutive nudges of the same
                             // corner merge into one undo step (CommandHistory::execute).
                             es.commandHistory.execute(std::make_unique<MoveCornerCommand>(
-                                selectedQuad, cornerSelectedVertex, oldPos, pos));
+                                es.quadRef(*selectedQuad), cornerSelectedVertex, oldPos, pos));
                             m_project->setModified(true);
                         }
                     }
@@ -501,7 +500,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                             Vec2 finalOffset = geometry.getMeshVertexByIndex(meshDraggedVertex);
                             if (finalOffset != meshDragStartOffset) {
                                 es.commandHistory.execute(std::make_unique<MoveMeshVertexCommand>(
-                                    selectedQuad, meshDraggedVertex,
+                                    es.quadRef(*selectedQuad), meshDraggedVertex,
                                     meshDragStartOffset, finalOffset));
                             }
                         }
@@ -567,7 +566,7 @@ void ViewportEditor::render(EditorContext& ctx) {
 
                         if (moved) {
                             es.commandHistory.execute(std::make_unique<MoveMeshVertexCommand>(
-                                selectedQuad, meshSelectedVertex, oldOffset, offset));
+                                es.quadRef(*selectedQuad), meshSelectedVertex, oldOffset, offset));
                             m_project->setModified(true);
                         }
                     }

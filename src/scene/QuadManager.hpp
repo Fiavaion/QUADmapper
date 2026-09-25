@@ -26,8 +26,12 @@ public:
     Quad* createQuad();
     Quad* createQuad(const std::string& name);
     void deleteQuad(const UUID& id);
-    void deleteSelectedQuads();
     void clear();
+
+    // Re-insert a quad (keeping its id and state) at list position `index`
+    // (clamped), which is also its z-order. Used by undo/redo to restore a
+    // deleted quad. Returns nullptr if the quad is null or its id already exists.
+    Quad* insertQuad(std::unique_ptr<Quad> quad, size_t index);
 
     // Quad access
     Quad* getQuad(const UUID& id);
@@ -81,8 +85,9 @@ public:
     // Z-order sorted access (highest z-order first - for UI display)
     std::vector<Quad*> getQuadsByZOrderDescending() const;
 
-    // Duplicate
-    Quad* duplicateQuad(const UUID& id);
+    // Duplicate: full-state copy under newId, with a " Copy" name and a small offset,
+    // placed on top and selected. Returns nullptr if id is unknown or newId is taken.
+    Quad* duplicateQuad(const UUID& id, const UUID& newId = UUID::generate());
 
     // Generate unique name for new quad
     std::string generateUniqueName() const;

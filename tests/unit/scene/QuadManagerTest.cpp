@@ -50,17 +50,31 @@ TEST_F(QuadManagerTest, DeleteQuadRemovesFromManager) {
     EXPECT_EQ(manager.getQuad(id), nullptr);
 }
 
-TEST_F(QuadManagerTest, DeleteSelectedQuadsRemovesAll) {
-    manager.createQuad("Quad 1");
-    Quad* quad2 = manager.createQuad("Quad 2");
-    Quad* quad3 = manager.createQuad("Quad 3");
+TEST_F(QuadManagerTest, InsertQuadKeepsIdAndPlacesAtIndex) {
+    manager.createQuad("A");
+    manager.createQuad("B");
+    const UUID id = UUID::generate();
+    auto quad = std::make_unique<Quad>(id);
+    quad->setName("Restored");
 
-    manager.addToSelection(quad2->getId());
-    manager.addToSelection(quad3->getId());
-    manager.deleteSelectedQuads();
+    Quad* inserted = manager.insertQuad(std::move(quad), 1);
 
-    EXPECT_EQ(manager.getQuadCount(), 1);
-    EXPECT_EQ(manager.getQuads()[0]->getName(), "Quad 1");
+    ASSERT_NE(inserted, nullptr);
+    EXPECT_EQ(inserted->getId(), id);
+    EXPECT_EQ(manager.getQuads()[1]->getId(), id);
+    EXPECT_EQ(inserted->getZOrder(), 1);
+    EXPECT_EQ(manager.getQuads()[2]->getZOrder(), 2);
+}
+
+TEST_F(QuadManagerTest, InsertQuadRejectsDuplicateIdAndClampsIndex) {
+    Quad* existing = manager.createQuad();
+
+    EXPECT_EQ(manager.insertQuad(std::make_unique<Quad>(existing->getId()), 0), nullptr);
+    EXPECT_EQ(manager.insertQuad(nullptr, 0), nullptr);
+
+    Quad* last = manager.insertQuad(std::make_unique<Quad>(), 99);
+    ASSERT_NE(last, nullptr);
+    EXPECT_EQ(last->getZOrder(), 1);
 }
 
 TEST_F(QuadManagerTest, ClearRemovesAllQuads) {
@@ -339,6 +353,50 @@ TEST_F(QuadManagerTest, DuplicateQuadHasCopyInName) {
     Quad* duplicate = manager.duplicateQuad(original->getId());
 
     EXPECT_TRUE(duplicate->getName().find("Copy") != std::string::npos);
+}
+
+TEST_F(QuadManagerTest, DuplicateCopiesFullStateIncludingMeshBezierAndMedia) {
+    Quad* original = manager.createQuad("Original");
+    auto& geo = original->getGeometry();
+    geo.setMeshMode(MeshMode::MESH_EDIT);
+    geo.setMeshVertexByIndex(4, Vec2(0.02f, 0.04f));
+    geo.setBezierEnabled(true);
+    geo.setBezierControl(1, 0, Vec2(0.9f, 0.4f));
+    original->getTexture().mediaId = UUID::generate();
+    original->getTexture().cropRect = NormalizedRect{0.1f, 0.1f, 0.5f, 0.5f};
+    original->getTexture().flipV = true;
+    ColorCorrection cc;
+    cc.contrast = 1.5f;
+    original->setColorCorrection(cc);
+    SoftEdge se;
+    se.right = 0.2f;
+    original->setSoftEdge(se);
+
+    Quad* duplicate = manager.duplicateQuad(original->getId());
+
+    ASSERT_NE(duplicate, nullptr);
+    EXPECT_EQ(duplicate->getGeometry().getMeshVertices(), geo.getMeshVertices());
+    EXPECT_EQ(duplicate->getGeometry().getUCoords(), geo.getUCoords());
+    EXPECT_EQ(duplicate->getGeometry().getVCoords(), geo.getVCoords());
+    EXPECT_TRUE(duplicate->getGeometry().isBezierEnabled());
+    EXPECT_EQ(duplicate->getGeometry().getBezierOffsets(), geo.getBezierOffsets());
+    EXPECT_EQ(duplicate->getTexture().mediaId, original->getTexture().mediaId);
+    EXPECT_FLOAT_EQ(duplicate->getTexture().cropRect.width, 0.5f);
+    EXPECT_TRUE(duplicate->getTexture().flipV);
+    EXPECT_FLOAT_EQ(duplicate->getColorCorrection().contrast, 1.5f);
+    EXPECT_FLOAT_EQ(duplicate->getSoftEdge().right, 0.2f);
+    // Offset so it's visible; everything else is relative to the corners.
+    EXPECT_FLOAT_EQ(duplicate->getGeometry().getCorners()[0].x, geo.getCorners()[0].x + 0.05f);
+    EXPECT_EQ(duplicate->getZOrder(), 1);
+    EXPECT_EQ(manager.getPrimarySelectedId(), duplicate->getId());
+}
+
+TEST_F(QuadManagerTest, DuplicateWithTakenIdReturnsNull) {
+    Quad* a = manager.createQuad();
+    Quad* b = manager.createQuad();
+
+    EXPECT_EQ(manager.duplicateQuad(a->getId(), b->getId()), nullptr);
+    EXPECT_EQ(manager.getQuadCount(), 2);
 }
 
 TEST_F(QuadManagerTest, DuplicateInvalidIdReturnsNull) {

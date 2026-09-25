@@ -4,6 +4,7 @@
 #include "app/EditorState.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
+#include "project/Project.hpp"
 #include "renderer/UvTestGrid.hpp"
 #include "output/OutputManager.hpp"
 #include "source/SourceManager.hpp"
@@ -71,11 +72,8 @@ void MainMenuBar::render(EditorContext& ctx) {
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Delete Selected", "Delete", false, es.quadManager().hasSelection())) {
-            for (const UUID& id : es.quadManager().getSelectedIds()) {
-                es.quadTextures.erase(id);
-                es.quadTexturePaths.erase(id);
-            }
-            es.quadManager().deleteSelectedQuads();
+            es.deleteSelectedQuads();
+            if (ctx.project) ctx.project->setModified(true);
         }
         ImGui::EndMenu();
     }

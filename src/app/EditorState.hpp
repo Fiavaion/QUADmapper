@@ -20,6 +20,7 @@
 #include "../core/Types.hpp"   // Vec2
 #include "../core/UUID.hpp"
 #include "../core/CommandHistory.hpp"
+#include "../scene/Commands.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../renderer/Texture.hpp"
@@ -54,6 +55,9 @@ struct EditorState {
     // scene list comes in a later phase; today one default scene is created.
     std::vector<std::unique_ptr<Scene>> scenes;
     UUID activeSceneId;
+
+    // Resolves undo-command targets by id against `scenes` (declared after it).
+    SceneListResolver quadResolver{scenes};
 
     Scene& activeScene() {
         if (scenes.empty()) {
@@ -244,10 +248,31 @@ struct EditorState {
     // viewport (ADR-042). Distinct from the corner/mesh drag latches.
     bool canvasMouseDownPrev = false;
 
-    // Undo/redo for geometry + rename edits. Holds raw quad pointers, so Application
-    // CLEARS it whenever a quad is deleted or the active scene changes (see the
-    // structural guard in render()) — that keeps every queued command's quad alive.
+    // Undo/redo for quad edits, deletes and duplicates. Commands hold (scene id, quad
+    // id) and resolve through quadResolver, so a quad or scene destroyed while its
+    // commands are queued makes those steps safe no-ops.
     CommandHistory commandHistory;
+
+    // Stable command target for a quad of the active scene.
+    QuadRef quadRef(const Quad& quad) {
+        return QuadRef{&quadResolver, activeScene().getId(), quad.getId()};
+    }
+
+    // Delete every selected quad of the active scene as ONE undo step, through
+    // Scene::deleteQuad (group cleanup). Legacy quadTextures/quadTexturePaths entries
+    // are kept so undo brings the quad back with its UV grid and saved media path.
+    void deleteSelectedQuads() {
+        Scene& scene = activeScene();
+        const std::vector<UUID> ids(scene.getQuadManager().getSelectedIds().begin(),
+                                    scene.getQuadManager().getSelectedIds().end());
+        if (ids.empty()) return;
+        commandHistory.beginCompoundCommand(ids.size() == 1 ? "Delete quad" : "Delete quads");
+        for (const UUID& id : ids) {
+            commandHistory.execute(std::make_unique<DeleteQuadCommand>(
+                QuadRef{&quadResolver, scene.getId(), id}));
+        }
+        commandHistory.endCompoundCommand();
+    }
 };
 
 }  // namespace quadmapper

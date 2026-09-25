@@ -99,7 +99,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         if (ImGui::InputText("Name", quadName_, sizeof(quadName_),
                              ImGuiInputTextFlags_EnterReturnsTrue)) {
             ctx.es.commandHistory.execute(
-                std::make_unique<RenameQuadCommand>(selectedQuad, quadName_));
+                std::make_unique<RenameQuadCommand>(ctx.es.quadRef(*selectedQuad), quadName_));
             ctx.project->setModified(true);
         }
 
@@ -386,7 +386,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64)) {
                 GridSnapshot before = captureGrid(geometry);
                 geometry.setUniformGrid(meshRes);
-                pushGridChange(ctx.es.commandHistory, selectedQuad, "Even Grid",
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Even Grid",
                                before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
@@ -401,7 +401,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             if (ImGui::Button("Add Column")) {
                 GridSnapshot before = captureGrid(geometry);
                 geometry.insertUDivision(gridInsertPos_);
-                pushGridChange(ctx.es.commandHistory, selectedQuad, "Add Column",
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Add Column",
                                before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
@@ -409,7 +409,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             if (ImGui::Button("Add Row")) {
                 GridSnapshot before = captureGrid(geometry);
                 geometry.insertVDivision(gridInsertPos_);
-                pushGridChange(ctx.es.commandHistory, selectedQuad, "Add Row",
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Add Row",
                                before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
@@ -417,7 +417,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             if (ImGui::Button("Del Column") && geometry.getColumns() > MIN_MESH_RESOLUTION) {
                 GridSnapshot before = captureGrid(geometry);
                 geometry.removeUDivision(geometry.getColumns() - 1);
-                pushGridChange(ctx.es.commandHistory, selectedQuad, "Delete Column",
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Delete Column",
                                before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
@@ -425,7 +425,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             if (ImGui::Button("Del Row") && geometry.getRows() > MIN_MESH_RESOLUTION) {
                 GridSnapshot before = captureGrid(geometry);
                 geometry.removeVDivision(geometry.getRows() - 1);
-                pushGridChange(ctx.es.commandHistory, selectedQuad, "Delete Row",
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Delete Row",
                                before, captureGrid(geometry));
                 ctx.project->setModified(true);
             }
@@ -665,7 +665,8 @@ void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) 
     quadName_[sizeof(quadName_) - 1] = '\0';
     if (ImGui::InputText("Name", quadName_, sizeof(quadName_),
                          ImGuiInputTextFlags_EnterReturnsTrue)) {
-        ctx.es.commandHistory.execute(std::make_unique<RenameQuadCommand>(&quad, quadName_));
+        ctx.es.commandHistory.execute(
+            std::make_unique<RenameQuadCommand>(ctx.es.quadRef(quad), quadName_));
         ctx.project->setModified(true);
     }
     ImGui::Separator();

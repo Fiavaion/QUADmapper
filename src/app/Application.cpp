@@ -768,8 +768,6 @@ void Application::render() {
     EditorState& es = *m_editorState;
     using SelectionType = EditorState::SelectionType;
     auto& quadManager = es.quadManager();
-    auto& quadTextures = es.quadTextures;
-    auto& quadTexturePaths = es.quadTexturePaths;
     auto& projectPath = es.projectPath;
     auto& statusMessage = es.statusMessage;
     auto& statusTimer = es.statusTimer;
@@ -1072,22 +1070,6 @@ void Application::render() {
         }
     }
 
-    // Undo-history safety guard (ADR-042 follow-up): the command stack holds raw quad
-    // pointers, so invalidate it whenever a quad is DELETED (count drops) or the active
-    // scene changes. Creating a quad (count rises) is safe and keeps the history.
-    {
-        static UUID s_histScene;
-        static size_t s_histCount = 0;
-        static bool s_histInit = false;
-        const size_t count = quadManager.getQuadCount();
-        if (!s_histInit) { s_histScene = es.activeSceneId; s_histCount = count; s_histInit = true; }
-        if (es.activeSceneId != s_histScene || count < s_histCount) {
-            es.commandHistory.clear();
-        }
-        s_histScene = es.activeSceneId;
-        s_histCount = count;
-    }
-
     // Handle keyboard shortcuts
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         saveProject();
@@ -1101,16 +1083,14 @@ void Application::render() {
         es.commandHistory.redo();
     }
 
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
+    if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
         quadManager.selectAll();
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && quadManager.hasSelection()) {
-        for (const UUID& id : quadManager.getSelectedIds()) {
-            quadTextures.erase(id);
-            quadTexturePaths.erase(id);
-        }
-        quadManager.deleteSelectedQuads();
+    if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
+        quadManager.hasSelection()) {
+        es.deleteSelectedQuads();
+        m_project->setModified(true);
     }
 
     // Z-order keyboard shortcuts (only when not typing in text field)
