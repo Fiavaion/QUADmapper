@@ -80,3 +80,19 @@ https://github.com/Vidvox/hap/blob/master/documentation/HapVideoDRAFT.md
 > CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 > ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 > POSSIBILITY OF SUCH DAMAGE.
+
+---
+
+## Bundled fonts (SIL Open Font License 1.1)
+
+The redesigned UI (ADR-045) bundles two OFL-1.1 licensed fonts under `resources/fonts/`,
+redistributed unmodified:
+
+- **Hanken Grotesk** — © The Hanken Grotesk Project Authors
+  (https://github.com/displaay/Hanken-Grotesk). UI typography.
+- **JetBrains Mono** — © 2020 The JetBrains Mono Project Authors
+  (https://github.com/JetBrains/JetBrainsMono). Numeric values and file paths.
+
+Both are licensed under the SIL Open Font License, Version 1.1
+(https://scripts.sil.org/OFL). Full license text ships with each font's upstream
+distribution; the OFL permits bundling and redistribution with the application.
