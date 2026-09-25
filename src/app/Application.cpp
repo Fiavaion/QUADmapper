@@ -1241,7 +1241,7 @@ void Application::render() {
 
     // Handle keyboard shortcuts. Editing shortcuts stay off while text is typed or a
     // popup/modal is open (e.g. the unsaved-changes prompt: Delete must not delete
-    // quads behind it, Ctrl+S must not bypass it). F11/Esc below stay live.
+    // quads behind it, Ctrl+S must not bypass it). F11/Esc are handled separately.
     const bool editingKeys = !io.WantTextInput &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
@@ -1263,6 +1263,16 @@ void Application::render() {
         quadManager.hasSelection()) {
         es.deleteSelectedQuads();
         m_project->setModified(true);
+    }
+
+    // F11 toggles perform mode and Esc leaves it, even with a popup open: the way out
+    // of fullscreen must never take two presses. Only a text field keeps them (its Esc
+    // cancels the edit).
+    if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F11, false)) {
+        m_outputManager->handleF11Key();
+    }
+    if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        m_outputManager->handleEscapeKey();
     }
 
     // Z-order keyboard shortcuts
@@ -1299,15 +1309,6 @@ void Application::render() {
             }
         }
 
-        // F11 : Toggle Perform Mode
-        if (ImGui::IsKeyPressed(ImGuiKey_F11, false)) {
-            m_outputManager->handleF11Key();
-        }
-
-        // Escape : Exit Perform Mode (if active)
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-            m_outputManager->handleEscapeKey();
-        }
 
         // Mesh editing shortcuts
         Quad* meshQuad = quadManager.getPrimarySelectedQuad();
