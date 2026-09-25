@@ -1,5 +1,10 @@
 #include <gtest/gtest.h>
 #include "scene/QuadGeometry.hpp"
+#include <glm/glm.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
 
 namespace quadmapper {
 namespace test {
@@ -494,6 +499,150 @@ TEST(QuadGeometryControlGridTest, InverseBilinearWorksForUnitSquare) {
     Vec2 uv = QuadGeometry::inverseBilinear(unit, Vec2(0.3f, 0.8f));
     EXPECT_NEAR(uv.x, 0.3f, 1e-4f);
     EXPECT_NEAR(uv.y, 0.8f, 1e-4f);
+}
+
+// --- Perspective-correct surface (foundation audit 0.1) ------------------------
+
+namespace {
+
+// A strongly keystoned trapezoid, as a projector hitting a wall at an angle.
+QuadGeometry keystonedQuad() {
+    QuadGeometry g;
+    g.setCorners({Vec2(0.10f, 0.10f), Vec2(0.90f, 0.30f),
+                  Vec2(0.90f, 0.70f), Vec2(0.10f, 0.90f)});
+    return g;
+}
+
+float cross2(const Vec2& a, const Vec2& b) { return a.x * b.y - a.y * b.x; }
+
+// The classic bilinearly-blended Coons patch that surfacePoint() computed before
+// the projective base, rebuilt from the public bezier controls.
+Vec2 legacyCoons(const QuadGeometry& g, float u, float v) {
+    const auto& c = g.getCorners();
+    auto edge = [&](int e, float t) {
+        const Vec2 p0 = c[e], p3 = c[(e + 1) % 4];
+        const Vec2 c1 = g.getBezierControl(e, 0), c2 = g.getBezierControl(e, 1);
+        const float mt = 1.0f - t;
+        return mt * mt * mt * p0 + 3.0f * mt * mt * t * c1 + 3.0f * mt * t * t * c2
+             + t * t * t * p3;
+    };
+    const Vec2 ruledV = (1.0f - v) * edge(0, u) + v * edge(2, 1.0f - u);
+    const Vec2 ruledU = (1.0f - u) * edge(3, 1.0f - v) + u * edge(1, v);
+    return ruledV + ruledU - g.transformUVToPosition(Vec2(u, v));
+}
+
+}  // namespace
+
+TEST(QuadGeometrySurfaceTest, KeystoneCentreLandsOnDiagonalIntersection) {
+    // Under perspective the centre of a flat rectangle projects to where the quad's
+    // diagonals cross; the old bilinear patch put it at the corner average instead.
+    const QuadGeometry g = keystonedQuad();
+    const auto& c = g.getCorners();
+    const Vec2 d1 = c[2] - c[0];
+    const Vec2 d2 = c[3] - c[1];
+    const float t = cross2(c[1] - c[0], d2) / cross2(d1, d2);
+    const Vec2 intersection = c[0] + t * d1;
+
+    const Vec2 centre = g.surfacePoint(0.5f, 0.5f);
+    EXPECT_NEAR(centre.x, intersection.x, 1e-5f);
+    EXPECT_NEAR(centre.y, intersection.y, 1e-5f);
+}
+
+TEST(QuadGeometrySurfaceTest, KeystoneMapsStraightLinesToStraightLines) {
+    // Projective maps keep every straight line straight, including the diagonal
+    // u == v, which a bilinear patch bends into a curve.
+    const QuadGeometry g = keystonedQuad();
+    const Vec2 a = g.surfacePoint(0.0f, 0.0f);
+    const Vec2 b = g.surfacePoint(1.0f, 1.0f);
+    for (float s = 0.1f; s < 1.0f; s += 0.1f) {
+        const Vec2 p = g.surfacePoint(s, s);
+        EXPECT_NEAR(cross2(b - a, p - a), 0.0f, 1e-5f) << "s=" << s;
+    }
+}
+
+TEST(QuadGeometrySurfaceTest, CornersMapExactly) {
+    const QuadGeometry g = keystonedQuad();
+    const auto& c = g.getCorners();
+    const Vec2 uv[4] = {Vec2(0, 0), Vec2(1, 0), Vec2(1, 1), Vec2(0, 1)};
+    for (int i = 0; i < 4; ++i) {
+        const Vec2 p = g.surfacePoint(uv[i].x, uv[i].y);
+        EXPECT_NEAR(p.x, c[i].x, 1e-6f) << "corner " << i;
+        EXPECT_NEAR(p.y, c[i].y, 1e-6f) << "corner " << i;
+    }
+}
+
+TEST(QuadGeometrySurfaceTest, ParallelogramMatchesBilinear) {
+    // For an affine quad the homography is affine, so nothing changes for
+    // unwarped or merely sheared quads.
+    QuadGeometry g;
+    g.setCorners({Vec2(0.2f, 0.1f), Vec2(0.7f, 0.2f),
+                  Vec2(0.8f, 0.6f), Vec2(0.3f, 0.5f)});
+    for (float u = 0.0f; u <= 1.0f; u += 0.25f) {
+        for (float v = 0.0f; v <= 1.0f; v += 0.25f) {
+            const Vec2 p = g.surfacePoint(u, v);
+            const Vec2 q = g.transformUVToPosition(Vec2(u, v));
+            EXPECT_NEAR(p.x, q.x, 1e-5f);
+            EXPECT_NEAR(p.y, q.y, 1e-5f);
+        }
+    }
+}
+
+TEST(QuadGeometrySurfaceTest, ConcaveQuadFallsBackToBilinear) {
+    // No projective map exists for a concave quad; keep the old bilinear surface
+    // rather than producing a fold or a pole.
+    QuadGeometry g;
+    g.setCorners({Vec2(0.1f, 0.1f), Vec2(0.9f, 0.1f),
+                  Vec2(0.3f, 0.3f), Vec2(0.1f, 0.9f)});
+    for (float u = 0.0f; u <= 1.0f; u += 0.25f) {
+        for (float v = 0.0f; v <= 1.0f; v += 0.25f) {
+            const Vec2 p = g.surfacePoint(u, v);
+            const Vec2 q = g.transformUVToPosition(Vec2(u, v));
+            ASSERT_TRUE(std::isfinite(p.x) && std::isfinite(p.y));
+            EXPECT_NEAR(p.x, q.x, 1e-6f);
+            EXPECT_NEAR(p.y, q.y, 1e-6f);
+        }
+    }
+}
+
+TEST(QuadGeometrySurfaceTest, BezierOnParallelogramIsUnchanged) {
+    // Existing curved-edge projects on unkeystoned quads must render identically.
+    QuadGeometry g;
+    g.setBezierEnabled(true);
+    g.setBezierControl(0, 0, Vec2(0.40f, 0.20f));
+    g.setBezierControl(1, 1, Vec2(0.78f, 0.62f));
+    g.setBezierControl(3, 0, Vec2(0.25f, 0.55f));
+    for (float u = 0.0f; u <= 1.0f; u += 0.125f) {
+        for (float v = 0.0f; v <= 1.0f; v += 0.125f) {
+            const Vec2 p = g.surfacePoint(u, v);
+            const Vec2 q = legacyCoons(g, u, v);
+            EXPECT_NEAR(p.x, q.x, 1e-5f) << "u=" << u << " v=" << v;
+            EXPECT_NEAR(p.y, q.y, 1e-5f) << "u=" << u << " v=" << v;
+        }
+    }
+}
+
+TEST(QuadGeometrySurfaceTest, BezierBoundaryStaysOnEdgeCurveWhenKeystoned) {
+    // Over the projective base, each boundary must still trace its bezier curve
+    // exactly (only the parameterisation along it changes).
+    QuadGeometry g = keystonedQuad();
+    g.setBezierEnabled(true);
+    g.setBezierControl(0, 0, Vec2(0.35f, 0.08f));
+    g.setBezierControl(0, 1, Vec2(0.65f, 0.16f));
+    const auto& c = g.getCorners();
+    const Vec2 c1 = g.getBezierControl(0, 0), c2 = g.getBezierControl(0, 1);
+
+    std::vector<Vec2> curve;
+    for (int i = 0; i <= 4000; ++i) {
+        const float t = i / 4000.0f, mt = 1.0f - t;
+        curve.push_back(mt * mt * mt * c[0] + 3.0f * mt * mt * t * c1
+                        + 3.0f * mt * t * t * c2 + t * t * t * c[1]);
+    }
+    for (float u = 0.0f; u <= 1.0f; u += 0.1f) {
+        const Vec2 p = g.surfacePoint(u, 0.0f);
+        float best = 1.0f;
+        for (const Vec2& q : curve) best = std::min(best, glm::length(p - q));
+        EXPECT_LT(best, 5e-4f) << "u=" << u;
+    }
 }
 
 } // namespace test

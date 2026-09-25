@@ -115,14 +115,17 @@ public:
     // Total control-grid vertex count (vertsPerRow * vertsPerCol)
     int getVertexCount() const;
 
-    // Calculate interpolated position for UV coordinate
+    // Bilinear corner interpolation. This is the base the MESH_EDIT control grid and
+    // its stored offsets are defined against; it is NOT perspective-correct.
     Vec2 transformUVToPosition(const Vec2& uv) const;
 
     // Smooth render sampler (ADR-043): the surface position at parametric (u,v) in
-    // [0,1]. For straight edges this is the bilinear corner patch; with bezier edges
-    // enabled it is the cubic Coons patch of the four edge curves. The renderer
-    // tessellates CORNERS_ONLY quads via this so extreme warps stay smooth (the
-    // render density is decoupled from the control grid).
+    // [0,1]. The base is the projective map (homography) of the unit square onto the
+    // corners, so a corner-pinned flat surface is perspective-correct; concave or
+    // degenerate corners fall back to the bilinear patch. With bezier edges enabled,
+    // the edge curves' deviations from their chords are blended over that base as a
+    // Coons patch. The renderer tessellates CORNERS_ONLY quads via this (the render
+    // density is decoupled from the control grid).
     Vec2 surfacePoint(float u, float v) const;
 
     // Inverse of the corner bilinear map: the (u,v) parameters of point p inside

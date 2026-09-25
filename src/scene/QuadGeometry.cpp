@@ -327,25 +327,72 @@ bool QuadGeometry::hasBezierEdges() const {
     return false;
 }
 
+namespace {
+
+// Projective map of the unit square onto a quad (Heckbert's square-to-quad):
+// x = (a u + b v + c) / w, y = (d u + e v + f) / w, with w = g u + h v + 1.
+struct Homography {
+    float a, b, c, d, e, f, g, h;
+};
+
+// Solves the square->quad map for corners [TL, TR, BR, BL] = (0,0),(1,0),(1,1),(0,1).
+// Returns false when no orientation-preserving map exists (concave, self-intersecting
+// or collapsed corners): w is affine in (u,v), so positive at the four corners means
+// positive over the whole square.
+bool squareToQuad(const std::array<Vec2, 4>& q, Homography& hm) {
+    const float sx = q[0].x - q[1].x + q[2].x - q[3].x;
+    const float sy = q[0].y - q[1].y + q[2].y - q[3].y;
+    const float dx1 = q[1].x - q[2].x, dx2 = q[3].x - q[2].x;
+    const float dy1 = q[1].y - q[2].y, dy2 = q[3].y - q[2].y;
+    const float det = dx1 * dy2 - dx2 * dy1;
+    if (std::fabs(det) < 1e-12f) return false;
+    hm.g = (sx * dy2 - dx2 * sy) / det;
+    hm.h = (dx1 * sy - sx * dy1) / det;
+    hm.a = q[1].x - q[0].x + hm.g * q[1].x;
+    hm.b = q[3].x - q[0].x + hm.h * q[3].x;
+    hm.c = q[0].x;
+    hm.d = q[1].y - q[0].y + hm.g * q[1].y;
+    hm.e = q[3].y - q[0].y + hm.h * q[3].y;
+    hm.f = q[0].y;
+    constexpr float kMinW = 1e-4f;
+    return 1.0f + hm.g > kMinW && 1.0f + hm.h > kMinW && 1.0f + hm.g + hm.h > kMinW;
+}
+
+}  // namespace
+
 Vec2 QuadGeometry::surfacePoint(float u, float v) const {
-    if (!bezierEnabled_) {
-        return transformUVToPosition(Vec2(u, v));  // straight-edge bilinear patch
-    }
-    // Bilinearly-blended Coons patch from the four cubic-bezier boundary curves.
-    // Boundary params: top S(u,0)=TL->TR, bottom S(u,1)=BL->BR, left S(0,v)=TL->BL,
-    // right S(1,v)=TR->BR. Edges 2 (BR->BL) and 3 (BL->TL) are reversed to match.
-    const Vec2 cTop    = bezierEdgePoint(0, u);
-    const Vec2 cBottom = bezierEdgePoint(2, 1.0f - u);
-    const Vec2 cLeft   = bezierEdgePoint(3, 1.0f - v);
-    const Vec2 cRight  = bezierEdgePoint(1, v);
-    const Vec2 ruledV = (1.0f - v) * cTop + v * cBottom;
-    const Vec2 ruledU = (1.0f - u) * cLeft + u * cRight;
-    const Vec2 bilinear =
-          (1.0f - u) * (1.0f - v) * corners_[0]   // TL
-        + u * (1.0f - v) * corners_[1]            // TR
-        + (1.0f - u) * v * corners_[3]            // BL
-        + u * v * corners_[2];                    // BR
-    return ruledV + ruledU - bilinear;
+    Homography hm{};
+    const bool projective = squareToQuad(corners_, hm);
+    const Vec2 base = projective
+        ? Vec2((hm.a * u + hm.b * v + hm.c), (hm.d * u + hm.e * v + hm.f))
+              / (hm.g * u + hm.h * v + 1.0f)
+        : transformUVToPosition(Vec2(u, v));
+    if (!bezierEnabled_) return base;
+
+    // Coons patch of the edge curves' deviations from their straight chords, added
+    // over the base. The base walks each edge with a projective parameter, so each
+    // deviation is sampled at that same chord parameter and the boundary lands exactly
+    // on the bezier curve. With the bilinear fallback (all corner weights 1) this is
+    // identical to the classic bilinearly-blended Coons patch.
+    const float w[4] = {1.0f,
+                        projective ? 1.0f + hm.g : 1.0f,
+                        projective ? 1.0f + hm.g + hm.h : 1.0f,
+                        projective ? 1.0f + hm.h : 1.0f};
+    // Chord parameter of the base point at parameter t along the edge corner i -> j.
+    auto chordParam = [&w](int i, int j, float t) {
+        return w[j] * t / ((1.0f - t) * w[i] + t * w[j]);
+    };
+    auto deviation = [this](int edge, float s) {
+        return bezierEdgePoint(edge, s)
+             - glm::mix(corners_[edge], corners_[(edge + 1) % 4], s);
+    };
+    // Edges run TL->TR (0), TR->BR (1), BR->BL (2), BL->TL (3); 2 and 3 are reversed
+    // relative to increasing u / v.
+    const Vec2 dTop    = deviation(0, chordParam(0, 1, u));
+    const Vec2 dRight  = deviation(1, chordParam(1, 2, v));
+    const Vec2 dBottom = deviation(2, 1.0f - chordParam(3, 2, u));
+    const Vec2 dLeft   = deviation(3, 1.0f - chordParam(0, 3, v));
+    return base + (1.0f - v) * dTop + v * dBottom + (1.0f - u) * dLeft + u * dRight;
 }
 
 std::vector<Vec2> QuadGeometry::generateMeshPositions() const {

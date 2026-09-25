@@ -204,7 +204,7 @@ void Renderer::createOutlineBuffers() {
 void Renderer::updateQuadBuffers(const Quad& quad) {
     const QuadGeometry& geometry = quad.getGeometry();
 
-    // Smooth path (ADR-043): a CORNERS_ONLY quad is a bilinear (or bezier) corner
+    // Smooth path (ADR-043): a CORNERS_ONLY quad is a projective (or bezier) corner
     // patch — its surface is fully defined by the corners, so render it as a fine
     // N×N tessellation sampled from surfacePoint(). This decouples render density
     // from the 1×1 control grid and removes the diagonal "fold" on extreme warps.

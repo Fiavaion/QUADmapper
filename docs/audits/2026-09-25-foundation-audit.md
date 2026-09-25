@@ -56,7 +56,7 @@ Beyond the bugs, three **missing foundations** block every next-tier feature:
 
 | Check | Result |
 |---|---|
-| `cmake --build build/debug` | ✅ exit 0, **0 compiler warnings** |
+| `cmake --build build/debug` | ✅ exit 0. (The first run was incremental. A later rebuild of `app`/`ui` shows existing MSVC C4996 deprecation warnings for `strncpy`/`getenv`; no other warnings.) |
 | `ctest --test-dir build/debug` | 649 pass, 4 skipped, **`stress_smoke` "Not Run"**. The VS multi-config generator needs `-C Debug`, so the documented command is wrong for that test |
 | `ctest ... -C Debug -R stress_smoke` | ✅ passes |
 | Skipped tests | 4 × `AudioDecoderIntegrationTest`, skipped because no fixture media exists, so the audio decode path is never exercised |
