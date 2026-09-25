@@ -313,6 +313,12 @@ public:
 
         VideoFrame result;
         for (;;) {
+            // Skipping to a seek target can decode seconds of video. VideoPlayer joins
+            // this thread on the UI thread before every seek (a scrub seeks each frame),
+            // so give up promptly when asked to stop; the next seek() resets the skip
+            // and a plain resume carries on from where it stopped.
+            if (stopDecoding_) break;
+
             int receiveResult = avcodec_receive_frame(codecCtx_, frame_);
             if (receiveResult == AVERROR_EOF && checkFirstFrame_ && retrySeekEarlier()) {
                 continue;  // the seek landed after the last keyframe: nothing decoded
@@ -524,6 +530,7 @@ private:
             if (stopDecoding_) break;
 
             VideoFrame frame = decodeNextFrame();
+            if (stopDecoding_) break;  // interrupted mid-skip: not a decode failure
             if (!frame.isValid()) {
                 std::chrono::milliseconds delay{10};  // at end of stream: idle until seek/stop
                 if (!atEnd_) {
