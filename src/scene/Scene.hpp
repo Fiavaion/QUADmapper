@@ -90,6 +90,8 @@ public:
     void deleteObject(const UUID& id);
     MeshObject* getObject(const UUID& id);
     const std::vector<std::unique_ptr<MeshObject>>& getObjects() const { return objects_; }
+    // World bounds of every visible object with a mesh; false when there are none.
+    bool visibleObjectBounds(Vec3& min, Vec3& max) const;
 
 private:
     UUID id_;

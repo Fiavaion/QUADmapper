@@ -138,6 +138,7 @@ private:
     // Collect the finished background autosave write (logs a failure). Blocks if
     // it is still running.
     void finishAutosaveWrite();
+    void fitProjectorsToOutputs();
     // Offer a recovery file for `projectPath` ("" = untitled) newer than the project.
     void offerRecovery(const std::string& projectPath);
     // Unsaved-changes and recovery modals; called inside the ImGui frame.

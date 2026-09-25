@@ -207,4 +207,17 @@ MeshObject* Scene::getObject(const UUID& id) {
     return nullptr;
 }
 
+bool Scene::visibleObjectBounds(Vec3& min, Vec3& max) const {
+    bool any = false;
+    for (const auto& object : objects_) {
+        if (!object->isVisible() || object->getMesh().empty()) continue;
+        Vec3 lo, hi;
+        object->worldBounds(lo, hi);
+        min = any ? glm::min(min, lo) : lo;
+        max = any ? glm::max(max, hi) : hi;
+        any = true;
+    }
+    return any;
+}
+
 } // namespace quadmapper

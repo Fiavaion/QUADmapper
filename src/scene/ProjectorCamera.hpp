@@ -60,6 +60,14 @@ struct ProjectorCamera {
     // looking down -Z (world +Y up), far enough back that the whole box is in view.
     static ProjectorCamera framing(const Vec3& boxMin, const Vec3& boxMax,
                                    const ProjectorIntrinsics& intrinsics);
+
+    // The camera an output renders and calibrates through, given its current
+    // (rotation-aware) image size. A calibrated camera keeps its pose and has its lens
+    // rescaled if the size changed; an uncalibrated one keeps its throw ratio and lens
+    // shift and, when the scene has objects (bounds non-null), is re-framed on them, so
+    // objects stay in view whatever was imported, assigned or rotated since.
+    static ProjectorCamera fitToOutput(const ProjectorCamera& stored, int width, int height,
+                                       const Vec3* boundsMin, const Vec3* boundsMax);
 };
 
 }  // namespace quadmapper

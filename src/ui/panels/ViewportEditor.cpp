@@ -155,7 +155,12 @@ void ViewportEditor::render(EditorContext& ctx) {
     // That output's projector also draws the scene's 3D objects (ADR-052); with no
     // output the default camera stands in, as it would for a fresh output.
     float canvasAspect = 16.0f / 9.0f;
-    const ProjectorCamera defaultProjector;
+    // No output: a fresh output's camera (16:9), framed on the scene's objects.
+    Vec3 objectsMin, objectsMax;
+    const bool haveObjects = es.activeScene().visibleObjectBounds(objectsMin, objectsMax);
+    const ProjectorCamera defaultProjector = ProjectorCamera::fitToOutput(
+        ProjectorCamera{}, 1920, 1080, haveObjects ? &objectsMin : nullptr,
+        haveObjects ? &objectsMax : nullptr);
     const ProjectorCamera* canvasProjector = &defaultProjector;
     OutputWindow* canvasOutput = nullptr;
     if (m_outputManager) {

@@ -96,6 +96,48 @@ TEST(ProjectorCameraTest, FramingPutsTheWholeBoxInViewUpright) {
     EXPECT_LT(high.y, low.y);
 }
 
+TEST(ProjectorCameraTest, FitToOutputFramesAnUncalibratedProjectorOnItsObjects) {
+    // Imported before any output was assigned, or rotated since: still in view.
+    ProjectorCamera stored;  // default: 1920x1080, uncalibrated
+    const Vec3 lo(-1.0f, 0.0f, -1.0f), hi(1.0f, 2.0f, 1.0f);
+    const ProjectorCamera fitted = ProjectorCamera::fitToOutput(stored, 1080, 1920, &lo, &hi);
+    EXPECT_FALSE(fitted.calibrated);
+    EXPECT_EQ(fitted.intrinsics.width, 1080);   // rotated (portrait) output
+    EXPECT_EQ(fitted.intrinsics.height, 1920);
+    EXPECT_FLOAT_EQ(fitted.intrinsics.fx / 1080.0f, stored.intrinsics.fx / 1920.0f);  // same lens
+    Vec2 px;
+    ASSERT_TRUE(fitted.project(Vec3(0.0f, 1.0f, 0.0f), px));
+    EXPECT_GT(px.x, 0.0f);
+    EXPECT_LT(px.x, 1080.0f);
+    EXPECT_GT(px.y, 0.0f);
+    EXPECT_LT(px.y, 1920.0f);
+}
+
+TEST(ProjectorCameraTest, FitToOutputKeepsACalibratedPoseAndRescalesItsLens) {
+    ProjectorCamera stored = obliqueCamera();
+    stored.calibrated = true;
+    const Vec3 lo(-5.0f), hi(5.0f);
+    const ProjectorCamera same = ProjectorCamera::fitToOutput(stored, 1920, 1080, &lo, &hi);
+    EXPECT_EQ(same.pose.translation, stored.pose.translation);  // never re-framed
+    EXPECT_FLOAT_EQ(same.intrinsics.fx, stored.intrinsics.fx);
+
+    // Same projector at half the resolution: every point lands at half the pixel.
+    const ProjectorCamera half = ProjectorCamera::fitToOutput(stored, 960, 540, nullptr, nullptr);
+    Vec2 full, halved;
+    ASSERT_TRUE(stored.project(Vec3(0.3f, 0.2f, 0.1f), full));
+    ASSERT_TRUE(half.project(Vec3(0.3f, 0.2f, 0.1f), halved));
+    EXPECT_NEAR(halved.x, full.x * 0.5f, 1e-3f);
+    EXPECT_NEAR(halved.y, full.y * 0.5f, 1e-3f);
+}
+
+TEST(ProjectorCameraTest, FitToOutputWithoutObjectsOrSizeIsANoOpPose) {
+    const ProjectorCamera stored = obliqueCamera();
+    const ProjectorCamera fitted = ProjectorCamera::fitToOutput(stored, 1920, 1080, nullptr, nullptr);
+    EXPECT_EQ(fitted.pose.translation, stored.pose.translation);
+    const ProjectorCamera noSize = ProjectorCamera::fitToOutput(stored, 0, 0, nullptr, nullptr);
+    EXPECT_EQ(noSize.intrinsics.width, stored.intrinsics.width);
+}
+
 TEST(MeshObjectTest, WorldBoundsFollowTheTransform) {
     MeshObject object;
     object.getMesh().positions = {Vec3(0, 0, 0), Vec3(1, 2, 3)};

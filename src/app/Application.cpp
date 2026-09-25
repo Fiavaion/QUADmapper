@@ -1312,18 +1312,21 @@ void Application::render() {
     // quads behind it, Ctrl+S must not bypass it). F11/Esc are handled separately.
     const bool editingKeys = !io.WantTextInput &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    // While calibrating a projector the quads are hidden and not being edited, so the
+    // quad shortcuts (undo, select all, z-order, mesh) must not reach them.
+    const bool quadKeys = editingKeys && es.calibratingOutputId.isNull();
     if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         saveProject();
     }
 
-    if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+    if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
         if (es.commandHistory.undo()) m_project->setModified(true);
     }
-    if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+    if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
         if (es.commandHistory.redo()) m_project->setModified(true);
     }
 
-    if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
+    if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
         quadManager.selectAll();
     }
 
@@ -1361,8 +1364,8 @@ void Application::render() {
         }
     }
 
-    // Z-order keyboard shortcuts
-    if (editingKeys) {
+    // Z-order and mesh keyboard shortcuts
+    if (quadKeys) {
         // Ctrl+] : Move selected quad(s) up (bring forward - render later = on top)
         if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) {
             if (quadManager.hasSelection()) {
@@ -1723,7 +1726,24 @@ void Application::runFrameBoundaryTasks() {
     }
     processPendingFileAction();
     if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager);
+    fitProjectorsToOutputs();
     autosaveIfDue();
+}
+
+// Keep each output's projector camera matched to what it shows now (ADR-052): its
+// current rotation-aware size and, while uncalibrated, framed on its scene's objects.
+// Every render and calibration path then reads a camera that is already right.
+void Application::fitProjectorsToOutputs() {
+    if (!m_outputManager) return;
+    for (const auto& output : m_outputManager->getOutputs()) {
+        if (!output) continue;
+        const IVec2 size = output->getEffectiveResolution();
+        const Scene* scene = OutputManager::sceneForOutput(m_editorState->scenes, output->getId());
+        Vec3 lo, hi;
+        const bool framed = scene && scene->visibleObjectBounds(lo, hi);
+        output->getProjector() = ProjectorCamera::fitToOutput(
+            output->getProjector(), size.x, size.y, framed ? &lo : nullptr, framed ? &hi : nullptr);
+    }
 }
 
 void Application::openProjectDialog(bool save, std::function<void(const std::string&)> onChosen) {
@@ -1958,6 +1978,11 @@ void Application::buildEditorProject(Project& out) {
 // panned/zoomed or whether a video happens to be playing right now.
 static std::string contentFingerprint(Project p) {
     for (auto& scene : p.getScenes()) scene.view = Project::SceneViewData{};
+    // An uncalibrated projector's pose is re-derived every frame (framed on the scene),
+    // so it is not an edit of its own.
+    for (auto& output : p.getOutputs()) {
+        if (!output.projector.calibrated) output.projector.pose = ProjectorPose{};
+    }
     for (auto& source : p.getSources()) {
         if (source.transport) source.transport->playing = false;
     }

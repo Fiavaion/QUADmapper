@@ -75,4 +75,31 @@ ProjectorCamera ProjectorCamera::framing(const Vec3& boxMin, const Vec3& boxMax,
     return camera;
 }
 
+ProjectorCamera ProjectorCamera::fitToOutput(const ProjectorCamera& stored, int width, int height,
+                                             const Vec3* boundsMin, const Vec3* boundsMax) {
+    if (width <= 0 || height <= 0) return stored;
+    ProjectorCamera fitted = stored;
+    const ProjectorIntrinsics& k = stored.intrinsics;
+    if (k.width != width || k.height != height) {
+        if (stored.calibrated && k.width > 0 && k.height > 0) {
+            const float sx = static_cast<float>(width) / static_cast<float>(k.width);
+            const float sy = static_cast<float>(height) / static_cast<float>(k.height);
+            fitted.intrinsics.fx *= sx;
+            fitted.intrinsics.cx *= sx;
+            fitted.intrinsics.fy *= sy;
+            fitted.intrinsics.cy *= sy;
+            fitted.intrinsics.width = width;
+            fitted.intrinsics.height = height;
+        } else {
+            const float throwRatio = k.width > 0 ? k.fx / static_cast<float>(k.width) : 1.5f;
+            const float shift = k.height > 0 ? k.cy / static_cast<float>(k.height) - 0.5f : 0.0f;
+            fitted.intrinsics = ProjectorIntrinsics::fromThrowRatio(throwRatio, width, height, shift);
+        }
+    }
+    if (!stored.calibrated && boundsMin && boundsMax) {
+        fitted = framing(*boundsMin, *boundsMax, fitted.intrinsics);
+    }
+    return fitted;
+}
+
 }  // namespace quadmapper
