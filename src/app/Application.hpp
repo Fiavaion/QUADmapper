@@ -27,8 +27,9 @@ struct StressConfig {
     // Required for those source types; empty = error.
     std::string media   = "";
     // H3: hidden mode — exercise the resource lifecycle (per-output Renderer
-    // create/destroy + renderToOutputs) without taking over the screen.
-    // Windows stay hidden; no borderless-fullscreen transition.
+    // create/destroy) without taking over the screen. Windows stay hidden, and
+    // hidden outputs are neither drawn nor swapped (QM-087), so this mode does not
+    // exercise the output draw path or vsync pacing.
     bool hidden         = false;
     // H3: working-set bound — FAIL if post-warm-up working set grows more than
     // this many MB across all cycles.

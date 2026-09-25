@@ -612,10 +612,6 @@ bool Application::initializeOpenGL() {
     // Enable depth testing (will be useful later)
     glEnable(GL_DEPTH_TEST);
 
-    // Enable blending for transparency
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
     // Set clear color (dark gray)
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
 
