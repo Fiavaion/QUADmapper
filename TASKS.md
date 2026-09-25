@@ -1,13 +1,36 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-06-19 (Session 20)
+Last Updated: 2026-09-25 (Session 22)
 
 ## Quick Status
-- In Progress: 0 — Session-21 work built + verified, **uncommitted** (awaiting review)
-- Todo: QM-081 H4 (capture gate + pause/re-perform asserts + hap-source flag) + QM-082
-  (Convert-to-HAP, follow-up) + QM-079 (bezier on grid division lines) + TD-08 (LOW) + 🚩 QM-061 (hardware)
-- Done: 80 — Session 21 added QM-080 (HAP playback, verified) + QM-081 H0–H3 (stress harness, CI-gated)
+- In Progress: QM-090 (monitor identity rework, verifier HIGH on QM-087)
+- Todo: Phase 0 S6 hygiene (move AI + stress out of Application.cpp, dead stubs, audio decision,
+  dev→master PR), Phase 1 ADR-047..051, QM-079 (needs ADR-049), QM-082, TD-08/11/12/13, 🚩 QM-061
+- Done: Session 22 added QM-083..QM-089 (see below)
 - Blocked: 0
+- Plan of record: [docs/audits/2026-09-25-foundation-audit.md](docs/audits/2026-09-25-foundation-audit.md) §8
+
+## Session 22 (2026-09-25) — Foundation audit + Phase 0 (committed on dev, not pushed)
+Nine-team CEM audit (Opus 5.5 lead) → Phase 0 slices, each gated by a fresh-context Opus-high
+verifier. 747/747 ctest (4 audio skips) at 9607a1f.
+- **Foundation audit** — [docs/audits/2026-09-25-foundation-audit.md](docs/audits/2026-09-25-foundation-audit.md).
+- **QM-083 DONE** — Refined theme (ADR-045) committed.
+- **QM-084 DONE** — show-safe persistence (ADR-046): atomic save + .bak, `.qmap` v3.1 `sources`
+  table + saved mediaId/transport, fixtures v1.0–v3.1, hardened parsing, deferred file actions,
+  unsaved prompt, autosave (off the render thread) + recovery, crash guard. Verify REJECTED the
+  first merge (save-before-load overwrote another show) → fixed in d741940 + dd55374.
+- **QM-085 DONE** — id-keyed undo (no raw Quad*), undoable full-state delete/duplicate.
+- **QM-086 DONE** — perspective-correct corner pin (homography base + exact projective texcoords;
+  bezier edges generalised). Was up to 185 px off at 1080p. TD-11 logs the mesh-mode toggle jump.
+- **QM-087 DONE (fix pending QM-090)** — projector truth: blend on outputs, GL 3.3 outputs, output
+  rotation, focus stays in the editor after F11, projector-paced vsync, monitor identity fields.
+- **QM-088 DONE** — playback: frame pacing (30 fps no longer 2× at 60 Hz), unpack alignment,
+  HAP playable from UI, stop-flag race, decode backoff + error state, unused-source release,
+  ping-pong removed, non-blocking file dialogs.
+- **QM-089 DONE** — success metric: canvas owns Tab/arrows while a quad is selected (no extra
+  click after "+ Add Quad"), press-only drags, nudge maths extracted + headless-ImGui tests.
+- **QM-090 IN PROGRESS** — monitor identity: desired vs resolved, never auto-fallback onto the
+  operator's screen, resolve at F11/hotplug; iconified-output pacing; mirror-proof rotation test.
 
 ## Session 21 (2026-06-19) — MultiMon cross-pollination (built + verified, uncommitted)
 Cross-pollinated from the MultiMon project (`D:\AIprojects\MultiMon`). Model-switched build
