@@ -3,10 +3,10 @@
 Last Updated: 2026-09-25 (Session 22)
 
 ## Quick Status
-- In Progress: QM-090 (monitor identity rework, verifier HIGH on QM-087)
+- In Progress: 0
 - Todo: Phase 0 S6 hygiene (move AI + stress out of Application.cpp, dead stubs, audio decision,
-  dev→master PR), Phase 1 ADR-047..051, QM-079 (needs ADR-049), QM-082, TD-08/11/12/13, 🚩 QM-061
-- Done: Session 22 added QM-083..QM-089 (see below)
+  dev→master PR), Phase 1 ADR-047..051, QM-079 (needs ADR-049), QM-082, TD-08/11/12/13/14, 🚩 QM-061
+- Done: Session 22 added QM-083..QM-091 (see below)
 - Blocked: 0
 - Plan of record: [docs/audits/2026-09-25-foundation-audit.md](docs/audits/2026-09-25-foundation-audit.md) §8
 
@@ -29,8 +29,11 @@ verifier. 747/747 ctest (4 audio skips) at 9607a1f.
   ping-pong removed, non-blocking file dialogs.
 - **QM-089 DONE** — success metric: canvas owns Tab/arrows while a quad is selected (no extra
   click after "+ Add Quad"), press-only drags, nudge maths extracted + headless-ImGui tests.
-- **QM-090 IN PROGRESS** — monitor identity: desired vs resolved, never auto-fallback onto the
+- **QM-090 DONE** — monitor identity: desired vs resolved, never auto-fallback onto the
   operator's screen, resolve at F11/hotplug; iconified-output pacing; mirror-proof rotation test.
+- **QM-091 DONE** — frame-exact seeks on MPEG-TS (keyframe landing check + backwards retry,
+  interruptible so scrubbing never freezes outputs), decoder drained at EOF (no lost B-frames).
+- Final verify of the source-lifetime redesign + QM-090 passed; its LOW/MEDIUM follow-ups are TD-14.
 
 ## Session 21 (2026-06-19) — MultiMon cross-pollination (built + verified, uncommitted)
 Cross-pollinated from the MultiMon project (`D:\AIprojects\MultiMon`). Model-switched build
