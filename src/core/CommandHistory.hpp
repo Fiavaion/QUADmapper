@@ -1,9 +1,12 @@
 #pragma once
 
+#include "UUID.hpp"
+
 #include <memory>
 #include <vector>
 #include <string>
 #include <functional>
+#include <unordered_set>
 
 namespace quadmapper {
 
@@ -32,6 +35,10 @@ public:
     // Merge another command into this one
     // Only called if canMergeWith returns true
     virtual void mergeWith(const Command& other) { (void)other; }
+
+    // Media source ids this command can put back onto a quad (e.g. the snapshot of a
+    // deleted quad). They must stay loaded while the command is in the history.
+    virtual void collectMediaIds(std::unordered_set<UUID>& out) const { (void)out; }
 
 protected:
     Command() = default;
@@ -77,6 +84,10 @@ public:
     size_t getMaxHistory() const { return maxHistory_; }
     void setMaxHistory(size_t max);
 
+    // Every media source id an undo or redo step could restore (see
+    // Command::collectMediaIds), including an open compound group.
+    void collectMediaIds(std::unordered_set<UUID>& out) const;
+
     // Get current stack sizes
     size_t getUndoCount() const { return undoIndex_; }
     size_t getRedoCount() const { return commands_.size() - undoIndex_; }
@@ -120,6 +131,7 @@ public:
     // Executes the command immediately; it is kept only if that succeeds.
     void addCommand(std::unique_ptr<Command> command);
     bool isEmpty() const { return commands_.empty(); }
+    void collectMediaIds(std::unordered_set<UUID>& out) const override;
 
 private:
     std::string description_;

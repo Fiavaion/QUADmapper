@@ -26,6 +26,15 @@ bool CommandHistory::CompoundCommand::undo() {
     return ok;
 }
 
+void CommandHistory::CompoundCommand::collectMediaIds(std::unordered_set<UUID>& out) const {
+    for (const auto& command : commands_) command->collectMediaIds(out);
+}
+
+void CommandHistory::collectMediaIds(std::unordered_set<UUID>& out) const {
+    for (const auto& command : commands_) command->collectMediaIds(out);
+    if (compoundCommand_) compoundCommand_->collectMediaIds(out);
+}
+
 void CommandHistory::CompoundCommand::addCommand(std::unique_ptr<Command> command) {
     if (command->execute()) {
         commands_.push_back(std::move(command));

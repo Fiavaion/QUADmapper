@@ -221,7 +221,8 @@ size_t SourceManager::releaseUnreferenced(const std::unordered_set<UUID>& inUse)
         const bool fileBacked = type == SourceType::STATIC_IMAGE || type == SourceType::VIDEO_FILE;
         const bool procedural = type >= SourceType::PROCEDURAL_SOLID &&
                                 type <= SourceType::PROCEDURAL_GRID;
-        if ((fileBacked || procedural) && inUse.count(id) == 0) {
+        const bool camera = type == SourceType::WEBCAM;
+        if ((fileBacked || procedural || camera) && inUse.count(id) == 0) {
             unused.push_back(id);
         }
     }

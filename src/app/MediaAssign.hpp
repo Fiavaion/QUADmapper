@@ -13,6 +13,7 @@
 #include "media/MediaLibrary.hpp"
 #include "source/SourceManager.hpp"
 #include "scene/Quad.hpp"
+#include "scene/MediaReferences.hpp"
 #include "project/Project.hpp"
 
 #include <string>
@@ -67,47 +68,58 @@ inline UUID assignMediaToQuad(EditorState& es, SourceManager* sm, Project* proje
     return sid;
 }
 
-// Frame-boundary source housekeeping (QM-088): release file-backed sources that no
-// quad in any scene uses and that are not the Video Player's or the media bin's
-// preview source, so orphaned videos stop decoding and uploading.
+// Sources the editor keeps alive whatever the project references: the Video
+// Player's source, the media bin's hover preview, and every source the bin offers
+// (its procedural generators), so bin items stay assignable.
+inline std::unordered_set<UUID> editorOwnedSources(const EditorState& es) {
+    std::unordered_set<UUID> ids{es.activeVideoSourceId, es.mediaBinPanel.getPreviewSourceId()};
+    if (const MediaLibrary* library = es.mediaBinPanel.getMediaLibrary()) {
+        for (const auto& item : library->getItems()) {
+            if (item && item->hasSource()) ids.insert(item->getSourceId());
+        }
+    }
+    return ids;
+}
+
+// Frame-boundary source housekeeping (QM-088): release sources that no quad in any
+// scene uses, that no undo/redo step can restore, and that the editor does not keep
+// alive, so orphaned videos and generators stop decoding, rendering and uploading.
 //
-// Undo can bring back a deleted quad whose source was released meanwhile. Such a
-// binding is re-resolved from the quad's saved media path (videos restart playing);
-// if that fails the binding is cleared so it is not retried every frame.
+// A quad whose source is missing (a binding restored from an older history, for
+// example) is re-resolved from its saved media path (videos restart playing); if that
+// fails the binding is cleared so it is not retried every frame.
 inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
-    std::unordered_set<UUID> inUse;
     for (const auto& scene : es.scenes) {
         if (!scene) continue;
         for (const auto& quad : scene->getQuadManager().getQuads()) {
             UUID& mediaId = quad->getTexture().mediaId;
-            if (mediaId.isNull()) continue;
-            if (!sm.hasSource(mediaId)) {
-                auto pathIt = es.quadTexturePaths.find(quad->getId());
-                UUID healed;
-                if (pathIt != es.quadTexturePaths.end() && !pathIt->second.empty()) {
-                    const std::filesystem::path path = pathIt->second;
-                    if (MediaLibrary::getTypeFromExtension(path.extension().string()) == MediaType::VIDEO) {
-                        healed = sm.getOrCreateVideoSource(path);
-                        if (auto* playable = sm.getSourceAs<PlayableSource>(healed)) playable->play();
-                    } else {
-                        healed = sm.getOrCreateImageSource(path);
-                    }
+            if (mediaId.isNull() || sm.hasSource(mediaId)) continue;
+            auto pathIt = es.quadTexturePaths.find(quad->getId());
+            UUID healed;
+            if (pathIt != es.quadTexturePaths.end() && !pathIt->second.empty()) {
+                const std::filesystem::path path = pathIt->second;
+                if (MediaLibrary::getTypeFromExtension(path.extension().string()) == MediaType::VIDEO) {
+                    healed = sm.getOrCreateVideoSource(path);
+                    if (auto* playable = sm.getSourceAs<PlayableSource>(healed)) playable->play();
+                } else {
+                    healed = sm.getOrCreateImageSource(path);
                 }
-                mediaId = healed;
-                if (mediaId.isNull()) continue;
             }
-            inUse.insert(mediaId);
+            mediaId = healed;
         }
     }
-    inUse.insert(es.activeVideoSourceId);
-    inUse.insert(es.mediaBinPanel.getPreviewSourceId());
-    // Sources the media bin offers (its procedural generators) stay available to assign.
-    if (const MediaLibrary* library = es.mediaBinPanel.getMediaLibrary()) {
-        for (const auto& item : library->getItems()) {
-            if (item && item->hasSource()) inUse.insert(item->getSourceId());
-        }
-    }
+    std::unordered_set<UUID> inUse = referencedMediaIds(es.scenes, es.commandHistory);
+    const std::unordered_set<UUID> owned = editorOwnedSources(es);
+    inUse.insert(owned.begin(), owned.end());
     sm.releaseUnreferenced(inUse);
+}
+
+// Called when the whole project is replaced (New, Load, recovery), after the old
+// scenes and undo history are gone and before the new project's sources are created:
+// releases the previous project's sources right away, so a reloaded show starts its
+// media fresh instead of inheriting live decoders found by path.
+inline void releaseProjectSources(EditorState& es, SourceManager& sm) {
+    sm.releaseUnreferenced(editorOwnedSources(es));
 }
 
 }  // namespace quadmapper

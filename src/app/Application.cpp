@@ -243,10 +243,11 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
     es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
-    // The previous project's media sources are released at the next frame boundary
-    // once nothing references them (releaseUnusedSources); the media bin's own
-    // generators survive, so its items stay assignable after a Load.
+    // Release the previous project's media now (the media bin's own generators stay,
+    // so its items remain assignable); a reloaded show then starts fresh decoders
+    // rather than inheriting ones found by path.
     es.activeVideoSourceId = UUID();
+    if (sm) releaseProjectSources(es, *sm);
 
     // Rebuild outputs from the file (v3) so scene assignments remap onto the freshly
     // created output ids. v1/v2 files carry no outputs — keep the existing ones (e.g.
@@ -1633,8 +1634,14 @@ void Application::processPendingFileAction() {
         case FileAction::Open:
             openProjectDialog(false, [this](const std::string& path) {
                 if (path.empty()) return;
-                m_editorState->pendingLoadPath = path;
-                m_editorState->pendingFileAction = FileAction::Load;
+                EditorState& state = *m_editorState;
+                if (state.pendingFileAction != FileAction::None) {
+                    // Exit/Save/New queued while the dialog was up wins.
+                    postStatus(state, "Open cancelled: another file action is pending");
+                    return;
+                }
+                state.pendingLoadPath = path;
+                state.pendingFileAction = FileAction::Load;
             });
             break;
         case FileAction::Load: {
@@ -1680,7 +1687,8 @@ void Application::performNewProject() {
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
     es.currentTexturePath[0] = '\0';
-    es.activeVideoSourceId = UUID();  // the old media is released at the frame boundary
+    es.activeVideoSourceId = UUID();
+    if (m_sourceManager) releaseProjectSources(es, *m_sourceManager);
 
     // One default scene with one quad, still aimed at the first output. Outputs are
     // hardware setup, not show content, so New keeps them.

@@ -136,10 +136,10 @@ public:
      * @return Number of sources released
      *
      * Image, video (incl. HAP) and procedural sources not in inUse are shut down
-     * (decode thread joined) and their GPU textures freed; callers put every source the
-     * media bin still offers into inUse. Camera sources are never released here (the AI
-     * capture path owns them). Call at a frame boundary, never while a render pass holds
-     * texture pointers.
+     * (decode thread joined) and their GPU textures freed, as are camera sources
+     * (the AI capture path opens its own CameraSource, not one managed here); callers
+     * put every source the media bin still offers into inUse. Call at a frame
+     * boundary, never while a render pass holds texture pointers.
      */
     size_t releaseUnreferenced(const std::unordered_set<UUID>& inUse);
 

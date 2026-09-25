@@ -1,3 +1,4 @@
+#include "scene/MediaReferences.hpp"
 #include <gtest/gtest.h>
 #include "scene/Commands.hpp"
 #include "scene/QuadManager.hpp"
@@ -207,6 +208,57 @@ TEST_F(SceneCommandsTest, CommandTargetsItsOwnSceneAmongSeveral) {
     EXPECT_EQ(quad->getGeometry().getCorners()[0], Vec2(0.8f));
     ASSERT_TRUE(history_->undo());
     EXPECT_EQ(quad->getGeometry().getCorners()[0], oldPos);
+}
+
+// --- Which media sources are still referenced (source release, QM-088) -------------
+
+TEST_F(SceneCommandsTest, ReferencedMediaCoversQuadsInEveryScene) {
+    scenes_.push_back(std::make_unique<Scene>());
+    Quad* a = manager().createQuad();
+    Quad* b = scenes_.back()->getQuadManager().createQuad();
+    a->getTexture().mediaId = UUID::generate();
+    b->getTexture().mediaId = UUID::generate();
+
+    const auto ids = referencedMediaIds(scenes_, *history_);
+
+    EXPECT_EQ(ids.size(), 2u);
+    EXPECT_TRUE(ids.count(a->getTexture().mediaId));
+    EXPECT_TRUE(ids.count(b->getTexture().mediaId));  // not only the active scene
+}
+
+TEST_F(SceneCommandsTest, ReferencedMediaKeepsWhatUndoCanRestore) {
+    // A deleted quad's source must survive while Ctrl+Z can bring the quad back,
+    // or undo restores the quad without its media (procedurals cannot be rebuilt).
+    Quad* quad = manager().createQuad();
+    const UUID media = UUID::generate();
+    quad->getTexture().mediaId = media;
+    history_->execute(std::make_unique<DeleteQuadCommand>(ref(quad)));
+    ASSERT_EQ(manager().getQuadCount(), 0u);
+
+    EXPECT_TRUE(referencedMediaIds(scenes_, *history_).count(media));
+
+    history_->clear();  // New/Load: nothing can bring it back any more
+    EXPECT_FALSE(referencedMediaIds(scenes_, *history_).count(media));
+}
+
+TEST_F(SceneCommandsTest, ReferencedMediaIncludesCompoundDeletes) {
+    Quad* a = manager().createQuad();
+    Quad* b = manager().createQuad();
+    const UUID mediaA = UUID::generate();
+    const UUID mediaB = UUID::generate();
+    a->getTexture().mediaId = mediaA;
+    b->getTexture().mediaId = mediaB;
+
+    history_->beginCompoundCommand("Delete Quads");
+    history_->execute(std::make_unique<DeleteQuadCommand>(ref(a)));
+    // Still inside the open group: its commands count too.
+    EXPECT_TRUE(referencedMediaIds(scenes_, *history_).count(mediaA));
+    history_->execute(std::make_unique<DeleteQuadCommand>(ref(b)));
+    history_->endCompoundCommand();
+
+    const auto ids = referencedMediaIds(scenes_, *history_);
+    EXPECT_TRUE(ids.count(mediaA));
+    EXPECT_TRUE(ids.count(mediaB));
 }
 
 TEST_F(SceneCommandsTest, CommandOnMissingTargetIsNotRecorded) {

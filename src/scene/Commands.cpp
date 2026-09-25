@@ -439,4 +439,27 @@ void MoveQuadCommand::mergeWith(const Command& other) {
     }
 }
 
+namespace {
+
+// The media a snapshot quad would bring back, if any.
+void collectSnapshotMedia(const std::optional<Quad>& snapshot, std::unordered_set<UUID>& out) {
+    if (snapshot && !snapshot->getTexture().mediaId.isNull()) {
+        out.insert(snapshot->getTexture().mediaId);
+    }
+}
+
+}  // namespace
+
+void CreateQuadCommand::collectMediaIds(std::unordered_set<UUID>& out) const {
+    collectSnapshotMedia(snapshot_, out);
+}
+
+void DeleteQuadCommand::collectMediaIds(std::unordered_set<UUID>& out) const {
+    collectSnapshotMedia(snapshot_, out);
+}
+
+void DuplicateQuadCommand::collectMediaIds(std::unordered_set<UUID>& out) const {
+    collectSnapshotMedia(snapshot_, out);
+}
+
 } // namespace quadmapper

@@ -140,6 +140,7 @@ public:
     bool execute() override;
     bool undo() override;
     std::string getDescription() const override;
+    void collectMediaIds(std::unordered_set<UUID>& out) const override;
 
     // Get the created quad's ID (valid after execute)
     const UUID& getCreatedQuadId() const { return created_.quadId; }
@@ -159,6 +160,7 @@ public:
     bool execute() override;
     bool undo() override;
     std::string getDescription() const override;
+    void collectMediaIds(std::unordered_set<UUID>& out) const override;
 
 private:
     QuadRef target_;
@@ -175,6 +177,7 @@ public:
     bool execute() override;
     bool undo() override;
     std::string getDescription() const override;
+    void collectMediaIds(std::unordered_set<UUID>& out) const override;
 
     // The duplicate's ID, fixed at construction (the quad exists once execute succeeds)
     const UUID& getDuplicateId() const { return duplicate_.quadId; }

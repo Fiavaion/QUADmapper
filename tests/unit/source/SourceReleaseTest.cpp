@@ -1,6 +1,6 @@
-// Unused-source release (QM-088): file-backed and procedural sources nothing
-// references are shut down and removed; referenced ones and cameras stay. Uses
-// stand-in sources with zero size so no GL context is needed.
+// Unused-source release (QM-088): file-backed, procedural and camera sources nothing
+// references are shut down and removed; referenced ones stay. Uses stand-in sources
+// with zero size so no GL context is needed.
 
 #include <gtest/gtest.h>
 
@@ -53,21 +53,24 @@ TEST(SourceRelease, ReleasesOnlyUnreferencedMediaSources) {
     const UUID orphanImage = add(sm, SourceType::STATIC_IMAGE, &shutdowns);
     const UUID binProcedural = add(sm, SourceType::PROCEDURAL_PLASMA, &shutdowns);
     const UUID orphanProcedural = add(sm, SourceType::PROCEDURAL_NOISE, &shutdowns);
-    const UUID camera = add(sm, SourceType::WEBCAM, &shutdowns);
-    ASSERT_EQ(sm.getSourceCount(), 6u);
+    const UUID boundCamera = add(sm, SourceType::WEBCAM, &shutdowns);
+    const UUID orphanCamera = add(sm, SourceType::WEBCAM, &shutdowns);
+    ASSERT_EQ(sm.getSourceCount(), 7u);
 
     // binProcedural stands for a generator the media bin still offers.
-    const size_t released = sm.releaseUnreferenced({boundVideo, binProcedural});
+    const size_t released = sm.releaseUnreferenced({boundVideo, binProcedural, boundCamera});
 
-    EXPECT_EQ(released, 3u);
-    EXPECT_EQ(shutdowns, 3);  // each released source was shut down (decode thread joined)
+    EXPECT_EQ(released, 4u);
+    EXPECT_EQ(shutdowns, 4);  // each released source was shut down (decode thread joined)
     EXPECT_TRUE(sm.hasSource(boundVideo));
     EXPECT_FALSE(sm.hasSource(orphanVideo));
     EXPECT_FALSE(sm.hasSource(orphanImage));
     EXPECT_TRUE(sm.hasSource(binProcedural));
     // A generator from a previous project's sources table no longer runs every frame.
     EXPECT_FALSE(sm.hasSource(orphanProcedural));
-    EXPECT_TRUE(sm.hasSource(camera));
+    EXPECT_TRUE(sm.hasSource(boundCamera));
+    // A camera from a previous project no longer captures and uploads forever.
+    EXPECT_FALSE(sm.hasSource(orphanCamera));
 }
 
 TEST(SourceRelease, ReferencedSourcesSurviveRepeatedPasses) {
