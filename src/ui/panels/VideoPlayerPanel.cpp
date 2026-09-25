@@ -186,9 +186,10 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         ImGui::SameLine();
         if (ImGui::Button(">> 5s")) video->seek(video->getCurrentTime() + 5.0);
 
-        float progress = video->getProgress();
-        if (ImGui::SliderFloat("Progress", &progress, 0.0f, 1.0f, "%.1f%%")) {
-            video->seekProgress(progress);
+        // Shown as a percentage; the source works in a 0-1 fraction.
+        float percent = video->getProgress() * 100.0f;
+        if (ImGui::SliderFloat("Progress", &percent, 0.0f, 100.0f, "%.1f%%")) {
+            video->seekProgress(percent / 100.0f);
         }
         ImGui::Text("Time: %.1f / %.1f s", video->getCurrentTime(), video->getDuration());
         showPlaybackError(*video);

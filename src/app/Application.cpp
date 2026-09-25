@@ -1774,8 +1774,9 @@ void Application::performRestoreRecovery() {
     m_project->setFilePath(projectPath);  // it belongs to the project, not the autosave
     syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", projectPath.c_str());
-    // The restored work is not in the project file yet: keep it "unsaved".
+    // The restored work is not in the project file yet: keep it "unsaved", and say so.
     m_savedSnapshot.clear();
+    m_project->setModified(true);
     postStatus(es, "Restored unsaved work from " + file);
 }
 
