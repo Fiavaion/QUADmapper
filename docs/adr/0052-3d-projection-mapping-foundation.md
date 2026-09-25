@@ -70,3 +70,9 @@ Build the foundation in four slices (Phase 3D-A). Use no new third-party depende
 1. **OpenCV in-process via vcpkg** (`solvePnP`, `calibrateCamera`). Rejected for now: a large build and runtime dependency for about 300 lines of well-understood maths. It can be revisited with its own ADR if structured-light decoding moves in-process.
 2. **Extend the homography/quad model to curved surfaces with dense mesh warps.** Rejected: manual and view-dependent, and it cannot reproject content correctly onto real 3D geometry.
 3. **Monocular depth as the geometry.** Rejected: centimetre-level errors with no metric guarantee. It is a proposal tool only (Later phases above).
+
+## Amendment (QM-093..095 integration, 2026-09-26)
+- **On-disk layouts.** An object's `transform[16]` is column-major (glm order). A projector's `pose.rotation[9]` is row-major (OpenCV order).
+- **UV convention.** The renderer samples v = 0 at the image's top row, as quads do. OBJ's v = 0 is the bottom, so the loader stores `1 - v`. Meshes without UVs get planar UVs from the XY bounds, with world +Y at the top.
+- **Robust solve.** When the worst reprojection error exceeds 3 px, the solver isolates a single mis-clicked pair and re-fits with a Cauchy loss. It drops nothing, and `perPointError` flags the pair. Clean data never reaches this path. Only one bad pair is handled.
+- **Mesh change detection** in the renderer's GPU-mesh cache uses storage pointer, size and endpoint checks, so an in-place edit of interior vertices would not be seen. Nothing edits meshes in place today. A revision counter on `MeshObject` is recorded as TD-15, to add before any mesh-editing feature.
