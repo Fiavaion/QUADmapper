@@ -188,7 +188,12 @@ bool VideoPlayer::update(double deltaTime) {
         refreshPending_ = false;
     }
 
-    if (playing && decoder_->isAtEnd() && !decoder_->hasBufferedFrames()) {
+    // The clip ends once the last frame has had its full display time, so a loop does
+    // not cut the final frame short.
+    const double fps = decoder_->getInfo().frameRate;
+    const double lastFrameEnd = currentFrame_.pts + (fps > 0.0 ? 1.0 / fps : 0.0);
+    const bool lastFrameDone = clockAtEnd || state_.position + FRAME_DUE_EPSILON >= lastFrameEnd;
+    if (playing && decoder_->isAtEnd() && !decoder_->hasBufferedFrames() && lastFrameDone) {
         handleEndOfVideo();
     }
 

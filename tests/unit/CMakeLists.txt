@@ -69,6 +69,17 @@ add_quadmapper_test(test_video
 )
 target_link_libraries(test_video PRIVATE quadmapper_video quadmapper_core)
 
+# VideoDecoder seek/drain tests (QM-091) - encode a tiny B-frame clip with the linked
+# FFmpeg at test time, so they need its headers and libraries directly.
+if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
+    add_quadmapper_test(test_video_decoder
+        video/VideoDecoderSeekTest.cpp
+    )
+    target_include_directories(test_video_decoder PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_video_decoder PRIVATE quadmapper_video quadmapper_core
+        ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY})
+endif()
+
 # Media module tests
 add_quadmapper_test(test_media
     media/MediaLibraryTest.cpp

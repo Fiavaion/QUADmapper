@@ -16,6 +16,8 @@ extern "C" {
 #endif
 }
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace quadmapper {
@@ -148,8 +150,9 @@ public:
 
         // Allocate frame
         frame_ = av_frame_alloc();
+        skippedFrame_ = av_frame_alloc();
         rgbFrame_ = av_frame_alloc();
-        if (!frame_ || !rgbFrame_) {
+        if (!frame_ || !skippedFrame_ || !rgbFrame_) {
             LOG_ERROR("Failed to allocate frames");
             close();
             return false;
@@ -210,6 +213,12 @@ public:
         // Frame times are reported relative to the stream start, so pts 0 is the
         // first frame even in containers whose timestamps begin elsewhere (MPEG-TS).
         startPts_ = videoStream->start_time != AV_NOPTS_VALUE ? videoStream->start_time : 0;
+        frameTicks_ = info_.frameRate > 0.0
+            ? std::max<int64_t>(1, std::llround(1.0 / (info_.frameRate * timeBase_)))
+            : 1;
+        seekTargetPts_ = AV_NOPTS_VALUE;
+        checkFirstPacket_ = false;
+        checkFirstFrame_ = false;
         isOpen_ = true;
         currentFrame_ = 0;
         currentTime_ = 0.0;
@@ -229,6 +238,10 @@ public:
         if (frame_) {
             av_frame_free(&frame_);
             frame_ = nullptr;
+        }
+        if (skippedFrame_) {
+            av_frame_free(&skippedFrame_);
+            skippedFrame_ = nullptr;
         }
         if (rgbFrame_) {
             av_frame_free(&rgbFrame_);
@@ -264,14 +277,13 @@ public:
     bool seek(double timeSeconds) {
         if (!isOpen_) return false;
 
-        int64_t timestamp = static_cast<int64_t>(timeSeconds / timeBase_) + startPts_;
-
-        if (av_seek_frame(formatCtx_, videoStreamIndex_, timestamp, AVSEEK_FLAG_BACKWARD) < 0) {
+        const int64_t target = startPts_ + std::llround(timeSeconds / timeBase_);
+        if (!seekDemuxer(target)) {
             LOG_WARNING("Seek failed");
             return false;
         }
 
-        avcodec_flush_buffers(codecCtx_);
+        seekTargetPts_ = target;
         atEnd_ = false;
         currentTime_ = timeSeconds;
         currentFrame_ = static_cast<int64_t>(timeSeconds * info_.frameRate);
@@ -300,59 +312,82 @@ public:
         if (!packet) return VideoFrame{};
 
         VideoFrame result;
-        bool gotFrame = false;
+        for (;;) {
+            int receiveResult = avcodec_receive_frame(codecCtx_, frame_);
+            if (receiveResult == AVERROR_EOF && checkFirstFrame_ && retrySeekEarlier()) {
+                continue;  // the seek landed after the last keyframe: nothing decoded
+            }
+            if (receiveResult == AVERROR_EOF && seekTargetPts_ != AV_NOPTS_VALUE &&
+                skippedFrame_->buf[0]) {
+                // The seek target lies past the last frame, so that frame is the one to show.
+                av_frame_move_ref(frame_, skippedFrame_);
+                seekTargetPts_ = AV_NOPTS_VALUE;
+                receiveResult = 0;
+            }
+            if (receiveResult == AVERROR_EOF) {
+                // Fully drained: every frame of the stream has been returned.
+                atEnd_ = true;
+                break;
+            }
+            if (receiveResult >= 0) {
+                if (!reachedSeekTarget()) continue;
 
-        while (!gotFrame) {
-            int readResult = av_read_frame(formatCtx_, packet);
-            if (readResult < 0) {
-                if (readResult == AVERROR_EOF) {
-                    atEnd_ = true;
+                // Convert to RGB
+                sws_scale(swsCtx_, frame_->data, frame_->linesize, 0,
+                         codecCtx_->height, rgbFrame_->data, rgbFrame_->linesize);
+
+                // Create output frame
+                result.width = info_.width;
+                result.height = info_.height;
+                result.frameNumber = currentFrame_++;
+
+                // Calculate PTS
+                if (frame_->pts != AV_NOPTS_VALUE) {
+                    result.pts = static_cast<double>(frame_->pts - startPts_) * timeBase_;
+                    currentTime_ = result.pts;
                 } else {
-                    lastReadError_ = readResult;
+                    result.pts = currentTime_;
+                    // std::atomic<double> has no operator+= in C++17; single writer
+                    // (this thread), so load+store is correct.
+                    currentTime_.store(currentTime_.load() + 1.0 / info_.frameRate);
                 }
-                av_packet_free(&packet);
-                return VideoFrame{};
+
+                // Copy pixel data
+                int rowBytes = info_.width * 3;
+                result.data.resize(rowBytes * info_.height);
+                for (int y = 0; y < info_.height; y++) {
+                    memcpy(result.data.data() + y * rowBytes,
+                           rgbFrame_->data[0] + y * rgbFrame_->linesize[0],
+                           rowBytes);
+                }
+
+                break;
+            }
+
+            // The decoder wants more input (EAGAIN; a decode error also moves on).
+            int readResult = av_read_frame(formatCtx_, packet);
+            if (readResult == AVERROR_EOF) {
+                // Enter draining mode so the frames still held for B-frame reordering
+                // come out. Already draining (only after a decode error) means done.
+                if (avcodec_send_packet(codecCtx_, nullptr) < 0) {
+                    atEnd_ = true;
+                    break;
+                }
+                continue;
+            }
+            if (readResult < 0) {
+                lastReadError_ = readResult;
+                break;
             }
 
             if (packet->stream_index == videoStreamIndex_) {
-                int sendResult = avcodec_send_packet(codecCtx_, packet);
-                if (sendResult >= 0) {
-                    int receiveResult = avcodec_receive_frame(codecCtx_, frame_);
-                    if (receiveResult >= 0) {
-                        // Convert to RGB
-                        sws_scale(swsCtx_, frame_->data, frame_->linesize, 0,
-                                 codecCtx_->height, rgbFrame_->data, rgbFrame_->linesize);
-
-                        // Create output frame
-                        result.width = info_.width;
-                        result.height = info_.height;
-                        result.frameNumber = currentFrame_++;
-
-                        // Calculate PTS
-                        if (frame_->pts != AV_NOPTS_VALUE) {
-                            result.pts = static_cast<double>(frame_->pts - startPts_) * timeBase_;
-                            currentTime_ = result.pts;
-                        } else {
-                            result.pts = currentTime_;
-                            // std::atomic<double> has no operator+= in C++17; single writer
-                            // (this thread), so load+store is correct.
-                            currentTime_.store(currentTime_.load() + 1.0 / info_.frameRate);
-                        }
-
-                        // Copy pixel data
-                        int rowBytes = info_.width * 3;
-                        result.data.resize(rowBytes * info_.height);
-                        for (int y = 0; y < info_.height; y++) {
-                            memcpy(result.data.data() + y * rowBytes,
-                                   rgbFrame_->data[0] + y * rgbFrame_->linesize[0],
-                                   rowBytes);
-                        }
-
-                        gotFrame = true;
-                    }
+                // A seek that lands on a non-key packet resumes at the next keyframe.
+                const bool landedOffKey = checkFirstPacket_ && !(packet->flags & AV_PKT_FLAG_KEY);
+                checkFirstPacket_ = false;
+                if (!landedOffKey || !retrySeekEarlier()) {
+                    avcodec_send_packet(codecCtx_, packet);  // a corrupt packet is skipped
                 }
             }
-
             av_packet_unref(packet);
         }
 
@@ -424,6 +459,58 @@ public:
     }
 
 private:
+    // Position the demuxer at a keyframe at or before `pts` (stream time base) and
+    // reset the decoder, which also clears its drained state after an EOF.
+    bool seekDemuxer(int64_t pts) {
+        if (av_seek_frame(formatCtx_, videoStreamIndex_, pts, AVSEEK_FLAG_BACKWARD) < 0) {
+            return false;
+        }
+        avcodec_flush_buffers(codecCtx_);
+        av_frame_unref(skippedFrame_);
+        seekFromPts_ = pts;
+        checkFirstPacket_ = true;
+        checkFirstFrame_ = true;
+        return true;
+    }
+
+    // Demuxer seeks are not always keyframe-exact: MPEG-TS bisects on packet
+    // timestamps and can stop on a non-key packet, so decoding would resume at the
+    // next keyframe, past the target (or reach EOF with no frame when none follows).
+    // Seek back further, doubling the distance each time; false once the demuxer was
+    // already positioned before the stream start, where nothing earlier exists.
+    bool retrySeekEarlier() {
+        checkFirstPacket_ = false;
+        checkFirstFrame_ = false;
+        if (seekFromPts_ < startPts_) return false;
+        const int64_t oneSecond = std::llround(1.0 / timeBase_);
+        const int64_t back = std::max(2 * (seekTargetPts_ - seekFromPts_), oneSecond);
+        if (seekDemuxer(seekTargetPts_ - back)) return true;
+        LOG_WARNING("Seek landed after the target and could not back off");
+        return false;
+    }
+
+    // After a seek, whether frame_ is the one to show: a first frame past the target
+    // means the seek landed late and is retried; frames that end before the target
+    // are skipped, so the seek is frame-exact.
+    bool reachedSeekTarget() {
+        if (seekTargetPts_ == AV_NOPTS_VALUE || frame_->pts == AV_NOPTS_VALUE) return true;
+
+        if (checkFirstFrame_) {
+            checkFirstFrame_ = false;
+            if (frame_->pts > seekTargetPts_ && retrySeekEarlier()) return false;
+        }
+
+        if (frame_->pts + frameTicks_ <= seekTargetPts_) {
+            // Held in case the stream ends before the target.
+            av_frame_unref(skippedFrame_);
+            av_frame_move_ref(skippedFrame_, frame_);
+            return false;
+        }
+        av_frame_unref(skippedFrame_);
+        seekTargetPts_ = AV_NOPTS_VALUE;
+        return true;
+    }
+
     void backgroundDecodingLoop() {
         DecodeBackoff backoff;
         while (!stopDecoding_) {
@@ -474,6 +561,7 @@ private:
     AVCodecContext* codecCtx_ = nullptr;
     SwsContext* swsCtx_ = nullptr;
     AVFrame* frame_ = nullptr;
+    AVFrame* skippedFrame_ = nullptr;  // last frame skipped on the way to a seek target
     AVFrame* rgbFrame_ = nullptr;
     std::vector<uint8_t> rgbBuffer_;
 
@@ -485,6 +573,12 @@ private:
     VideoInfo info_;
     double timeBase_ = 0.0;
     int64_t startPts_ = 0;      // stream start_time, in time_base units
+    int64_t frameTicks_ = 1;    // one frame's duration, in time_base units
+    // Decode thread only (seek() runs while the thread is stopped).
+    int64_t seekTargetPts_ = AV_NOPTS_VALUE;  // skip frames before this; NOPTS = no seek pending
+    int64_t seekFromPts_ = 0;   // where the demuxer was last asked to seek
+    bool checkFirstPacket_ = false;  // next video packet is the first after a demuxer seek
+    bool checkFirstFrame_ = false;   // next decoded frame is the first after a demuxer seek
     int lastReadError_ = 0;     // last non-EOF av_read_frame error (decode thread only)
     bool isOpen_ = false;
     bool isLive_ = false;   // live capture device (no seek/duration)
