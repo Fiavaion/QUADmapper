@@ -45,7 +45,7 @@ struct EditorState {
     EditorState& operator=(const EditorState&) = delete;
 
     // Context-sensitive selection tracking
-    enum class SelectionType { None, Quad, Output, Media };
+    enum class SelectionType { None, Quad, Output, Media, Object };
 
     // UI complexity mode (ADR-042). Simple = curated, friendly subset for new
     // users / students; Advanced = the full control set (today's UI). Panels read
@@ -160,7 +160,8 @@ struct EditorState {
     // an action; Application runs it at the next frame boundary, before render()
     // takes any scene/QuadManager references. New/Open/Load/Exit first pass the
     // unsaved-changes check, which may raise the Save / Don't Save / Cancel modal.
-    enum class FileAction { None, New, Open, Load, Save, SaveAs, Exit, RestoreRecovery, DiscardRecovery };
+    enum class FileAction { None, New, Open, Load, Save, SaveAs, Exit, RestoreRecovery, DiscardRecovery,
+                            ImportObject };
     FileAction pendingFileAction = FileAction::None;
     FileAction unsavedPromptFor = FileAction::None;  // != None: unsaved-changes modal is up
     bool saveBeforeAction = false;   // modal answered "Save"
@@ -239,6 +240,8 @@ struct EditorState {
 
     // Current selection
     SelectionType currentSelectionType = SelectionType::Quad;
+    // The 3D object of the active scene the Inspector edits (ADR-052); null = none.
+    UUID selectedObjectId;
 
     // Grid-division insert tool (ADR-038 Tier 1 batch 3b). When armed, a click in
     // the viewport inserts a U (Column) or V (Row) division at the clicked param

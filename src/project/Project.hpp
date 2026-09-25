@@ -5,6 +5,8 @@
 #include "ProjectSettings.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadGroup.hpp"
+#include "scene/ProjectorCamera.hpp"
+#include <glm/glm.hpp>
 #include <optional>
 #include <string>
 #include <vector>
@@ -28,6 +30,19 @@ public:
         bool snapToGrid = false;
     };
 
+    // A 3D object (.qmap v3.2, ADR-052). The mesh itself is not stored: it is re-imported
+    // from path (absolute in memory; the serializer writes it relative to the project
+    // directory when it can, as for media sources).
+    struct ObjectData {
+        UUID id;
+        std::string name;
+        std::string path;
+        glm::mat4 transform{1.0f};  // model -> world
+        TextureBinding texture;     // mediaId references the sources table
+        bool visible = true;
+        float opacity = 1.0f;
+    };
+
     struct SceneData {
         UUID id;
         std::string name;
@@ -36,6 +51,7 @@ public:
         std::vector<Quad> quads;
         std::vector<std::string> texturePaths;  // parallel to quads
         std::vector<QuadGroup> groups;
+        std::vector<ObjectData> objects;       // .qmap v3.2
     };
 
     struct OutputData {
@@ -51,6 +67,10 @@ public:
         IVec2 resolution = IVec2(1920, 1080);
         int rotationDegrees = 0;
         bool enabled = true;
+        // The projector behind this output and the point pairs it was calibrated
+        // from (.qmap v3.2, ADR-052).
+        ProjectorCamera projector;
+        std::vector<CalibrationPoint> calibrationPoints;
     };
 
     // Media sources bound to quads (.qmap v3.1 "sources" table, ADR-046). A quad

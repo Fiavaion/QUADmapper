@@ -12,6 +12,9 @@
 #include "../scene/Quad.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../scene/QuadGroup.hpp"
+#include "../scene/MeshObject.hpp"
+#include "../scene/ObjLoader.hpp"
+#include "../scene/ProjectorCamera.hpp"
 #include "../media/MediaLibrary.hpp"
 #include "../media/MediaItem.hpp"
 #include "../media/FolderWatcher.hpp"
@@ -177,6 +180,13 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
     project.getOutputs().clear();
     project.getSources().clear();
     std::unordered_set<UUID> describedSources;
+    auto describeOnce = [&](const UUID& mediaId) {
+        if (sm && !mediaId.isNull() && describedSources.insert(mediaId).second) {
+            if (auto source = describeSource(*sm, mediaId)) {
+                project.getSources().push_back(std::move(*source));
+            }
+        }
+    };
 
     for (const auto& scenePtr : es.scenes) {
         if (!scenePtr) continue;
@@ -195,15 +205,25 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
             auto it = es.quadTexturePaths.find(quadPtr->getId());
             sd.texturePaths.push_back(it != es.quadTexturePaths.end() && !it->second.empty()
                                           ? absolutePathString(it->second) : std::string());
-            const UUID& mediaId = quadPtr->getTexture().mediaId;
-            if (sm && !mediaId.isNull() && describedSources.insert(mediaId).second) {
-                if (auto source = describeSource(*sm, mediaId)) {
-                    project.getSources().push_back(std::move(*source));
-                }
-            }
+            describeOnce(quadPtr->getTexture().mediaId);
         }
         for (const auto& groupPtr : sc.getGroups()) {
             if (groupPtr) sd.groups.push_back(*groupPtr);
+        }
+        for (const auto& objectPtr : sc.getObjects()) {
+            if (!objectPtr) continue;
+            const MeshObject& object = *objectPtr;
+            Project::ObjectData od;
+            od.id = object.getId();
+            od.name = object.getName();
+            od.path = object.getSourcePath().empty() ? std::string()
+                                                     : absolutePathString(object.getSourcePath());
+            od.transform = object.getTransform();
+            od.texture = object.getTexture();
+            od.visible = object.isVisible();
+            od.opacity = object.getOpacity();
+            describeOnce(od.texture.mediaId);
+            sd.objects.push_back(std::move(od));
         }
         project.getScenes().push_back(std::move(sd));
     }
@@ -227,8 +247,11 @@ static void applyQuadData(const Quad& src, Quad* dst) {
     dst->setSoftEdge(src.getSoftEdge());                // ADR-037
 }
 
-static void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
-                                SourceManager* sm) {
+// Returns how many 3D objects' meshes could not be re-imported. Those objects are kept
+// with an empty mesh, so a missing model file never fails the load.
+static int syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
+                               SourceManager* sm) {
+    es.selectedObjectId = UUID();
     es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
@@ -264,6 +287,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
     std::unordered_map<UUID, const Project::SourceData*> savedSources;
     for (const auto& s : project.getSources()) savedSources[s.id] = &s;
     std::unordered_map<UUID, UUID> sourceRemap;
+    int missingMeshes = 0;
 
     for (const auto& sd : project.getScenes()) {
         auto scene = std::make_unique<Scene>(sd.id);
@@ -361,6 +385,44 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             }
         }
 
+        // 3D objects (ADR-052): the mesh is re-imported from its file; the media
+        // binding is remapped onto the live source like a quad's.
+        for (const Project::ObjectData& od : sd.objects) {
+            auto object = std::make_unique<MeshObject>(od.id);
+            object->setName(od.name);
+            object->setSourcePath(od.path);
+            object->setTransform(od.transform);
+            object->getTexture() = od.texture;
+            object->getTexture().mediaId = UUID();
+            object->setVisible(od.visible);
+            object->setOpacity(od.opacity);
+
+            auto savedIt = od.texture.mediaId.isNull() ? savedSources.end()
+                                                       : savedSources.find(od.texture.mediaId);
+            if (sm && savedIt != savedSources.end()) {
+                const Project::SourceData& src = *savedIt->second;
+                auto remapIt = sourceRemap.find(src.id);
+                if (remapIt == sourceRemap.end()) {
+                    remapIt = sourceRemap.emplace(src.id, createSourceFrom(*sm, src)).first;
+                }
+                object->getTexture().mediaId = remapIt->second;
+                if (!remapIt->second.isNull() && (src.kind == "video" || src.kind == "hap")) {
+                    es.activeVideoSourceId = remapIt->second;
+                }
+            }
+
+            auto mesh = od.path.empty() ? Err<MeshData>("no mesh file path saved")
+                                        : loadObj(od.path);
+            if (mesh) {
+                object->getMesh() = std::move(mesh.value());
+            } else {
+                ++missingMeshes;
+                Logger::warning("3D object '{}': mesh not loaded ({})", od.name,
+                                mesh.error().message);
+            }
+            scene->adoptObject(std::move(object));
+        }
+
         es.scenes.push_back(std::move(scene));
     }
 
@@ -395,6 +457,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             es.currentTexturePath[0] = '\0';
         }
     }
+    return missingMeshes;
 }
 
 // GLFW window close callback: route the close through the deferred Exit action.
@@ -1538,6 +1601,58 @@ void postStatus(EditorState& es, const std::string& message) {
     es.statusTimer = 4.0f;
 }
 
+// Appended to the load status when 3D objects came back without their mesh.
+std::string missingMeshesNote(int missing) {
+    if (missing == 0) return std::string();
+    return " (warning: " + std::to_string(missing) + " 3D object mesh" +
+           (missing == 1 ? "" : "es") + " not found; see the log)";
+}
+
+AsyncFileDialog::Request objectFileRequest() {
+    static const char filter[] = "Wavefront OBJ (*.obj)\0*.obj\0All Files (*.*)\0*.*\0";
+    AsyncFileDialog::Request request;
+    request.kind = AsyncFileDialog::Kind::OpenFile;
+    request.title = "Import 3D Object";
+    request.filter.assign(filter, sizeof(filter));
+    return request;
+}
+
+// File > Import 3D Object (ADR-052): the object goes into the active scene. An
+// uncalibrated projector on that scene's output is re-aimed to frame it, so the
+// object is in view as soon as it is imported.
+void importObjectFile(EditorState& es, OutputManager* om, Project* project,
+                      const std::string& path) {
+    auto mesh = loadObj(path);
+    if (!mesh) {
+        Logger::error("Import 3D object failed: {}", mesh.error().message);
+        postStatus(es, "Import failed: " + mesh.error().message);
+        return;
+    }
+    Scene& scene = es.activeScene();
+    const std::filesystem::path file(path);
+    MeshObject* object = scene.createObject(file.stem().string());
+    object->setSourcePath(absolutePathString(file));
+    object->getMesh() = std::move(mesh.value());
+
+    OutputWindow* output = (om && scene.hasAssignedOutput())
+                               ? om->getOutput(scene.getAssignedOutputId()) : nullptr;
+    if (output && !output->getProjector().calibrated) {
+        Vec3 boxMin, boxMax;
+        object->worldBounds(boxMin, boxMax);
+        const IVec2 res = output->getEffectiveResolution();
+        output->getProjector() = ProjectorCamera::framing(
+            boxMin, boxMax, ProjectorIntrinsics::fromThrowRatio(1.5f, res.x, res.y));
+    }
+
+    es.selectedObjectId = object->getId();
+    es.currentSelectionType = EditorState::SelectionType::Object;
+    es.mediaBinPanel.clearSelection();
+    es.outputPanel.clearSelection();
+    if (project) project->setModified(true);
+    postStatus(es, "Imported 3D object: " + object->getName() + " (" +
+                   std::to_string(object->getMesh().triangleCount()) + " triangles)");
+}
+
 }  // namespace
 
 void Application::saveProject() {
@@ -1656,6 +1771,15 @@ void Application::processPendingFileAction() {
         case FileAction::RestoreRecovery:
             performRestoreRecovery();
             break;
+        case FileAction::ImportObject:
+            if (!m_projectDialog) m_projectDialog = std::make_unique<AsyncFileDialog>();
+            if (m_projectDialog->open(objectFileRequest())) {
+                m_onProjectFileChosen = [this](const std::string& path) {
+                    if (path.empty()) return;
+                    importObjectFile(*m_editorState, m_outputManager.get(), m_project.get(), path);
+                };
+            }
+            break;
         case FileAction::DiscardRecovery: {
             const std::string project = es.recoveryProjectPath;
             es.recoveryFilePath.clear();
@@ -1673,6 +1797,7 @@ void Application::performNewProject() {
 
     // Undo commands hold raw quad pointers into the scenes about to be destroyed.
     es.commandHistory.clear();
+    es.selectedObjectId = UUID();
     es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
@@ -1707,10 +1832,11 @@ bool Application::performLoadProject(const std::string& path) {
 
     es.commandHistory.clear();  // before the scenes its commands point into go away
     *m_project = std::move(result.value());
-    syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
+    const int missingMeshes =
+        syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
     markProjectClean();
-    postStatus(es, "Project loaded: " + path);
+    postStatus(es, "Project loaded: " + path + missingMeshesNote(missingMeshes));
     offerRecovery(path);
     return true;
 }
@@ -1772,12 +1898,13 @@ void Application::performRestoreRecovery() {
     es.commandHistory.clear();
     *m_project = std::move(result.value());
     m_project->setFilePath(projectPath);  // it belongs to the project, not the autosave
-    syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
+    const int missingMeshes =
+        syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", projectPath.c_str());
     // The restored work is not in the project file yet: keep it "unsaved", and say so.
     m_savedSnapshot.clear();
     m_project->setModified(true);
-    postStatus(es, "Restored unsaved work from " + file);
+    postStatus(es, "Restored unsaved work from " + file + missingMeshesNote(missingMeshes));
 }
 
 void Application::buildEditorProject(Project& out) {

@@ -226,6 +226,18 @@ TEST_F(SceneCommandsTest, ReferencedMediaCoversQuadsInEveryScene) {
     EXPECT_TRUE(ids.count(b->getTexture().mediaId));  // not only the active scene
 }
 
+TEST_F(SceneCommandsTest, ReferencedMediaCoversObjectsInEveryScene) {
+    scenes_.push_back(std::make_unique<Scene>());
+    MeshObject* object = scenes_.back()->createObject("Prop");
+    const UUID media = UUID::generate();
+    object->getTexture().mediaId = media;
+
+    EXPECT_TRUE(referencedMediaIds(scenes_, *history_).count(media));
+
+    scenes_.back()->deleteObject(object->getId());
+    EXPECT_FALSE(referencedMediaIds(scenes_, *history_).count(media));
+}
+
 TEST_F(SceneCommandsTest, ReferencedMediaKeepsWhatUndoCanRestore) {
     // A deleted quad's source must survive while Ctrl+Z can bring the quad back,
     // or undo restores the quad without its media (procedurals cannot be rebuilt).

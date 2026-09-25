@@ -18,6 +18,8 @@ add_library(quadmapper_scene STATIC
     ProjectorCamera.hpp
     ProjectorCamera.cpp
     MeshObject.hpp
+    ObjLoader.hpp
+    ObjLoader.cpp
     MediaReferences.hpp
 )
 

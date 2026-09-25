@@ -13,6 +13,7 @@
 #include "media/MediaLibrary.hpp"
 #include "source/SourceManager.hpp"
 #include "scene/Quad.hpp"
+#include "scene/MeshObject.hpp"
 #include "scene/MediaReferences.hpp"
 #include "project/Project.hpp"
 
@@ -33,38 +34,59 @@ inline void bindSourceToQuad(EditorState& es, Project* project, Quad& quad,
     if (project) project->setModified(true);
 }
 
-// Resolve a MediaItem to a (deduped) SourceManager source by type, then bind it to the
-// quad. Returns the bound source UUID, or null on failure / unsupported type (audio).
+// Resolve a MediaItem to a (deduped) SourceManager source by type. Null on failure or
+// for a type that cannot texture anything (audio).
+inline UUID resolveMediaSource(SourceManager& sm, const MediaItem& item, bool& isVideo) {
+    isVideo = false;
+    switch (item.getType()) {
+        case MediaType::IMAGE:
+            return sm.getOrCreateImageSource(item.getPath());
+        case MediaType::VIDEO:
+            isVideo = true;
+            return sm.getOrCreateVideoSource(item.getPath());
+        case MediaType::PROCEDURAL:
+            return item.getSourceId();  // procedural sources are pre-registered in the bin
+        default:
+            return UUID();              // audio / unknown: nothing to texture
+    }
+}
+
+// Start playback so an assignment is visible immediately (loop default). Any
+// playable source, FFmpeg-decoded or HAP, plays the same way.
+inline void playAssignedVideo(SourceManager& sm, const UUID& sid) {
+    if (auto* playable = sm.getSourceAs<PlayableSource>(sid)) playable->play();
+}
+
+// Resolve a MediaItem to a source, then bind it to the quad. Returns the bound
+// source UUID, or null on failure / unsupported type (audio).
 inline UUID assignMediaToQuad(EditorState& es, SourceManager* sm, Project* project,
                               Quad& quad, const MediaItem& item) {
     if (!sm) return UUID();
-
-    UUID sid;
     bool isVideo = false;
-    switch (item.getType()) {
-        case MediaType::IMAGE:
-            sid = sm->getOrCreateImageSource(item.getPath());
-            break;
-        case MediaType::VIDEO:
-            sid = sm->getOrCreateVideoSource(item.getPath());
-            isVideo = true;
-            break;
-        case MediaType::PROCEDURAL:
-            sid = item.getSourceId();  // procedural sources are pre-registered in the bin
-            break;
-        default:
-            return UUID();             // audio / unknown: nothing to texture
-    }
+    const UUID sid = resolveMediaSource(*sm, item, isVideo);
     if (sid.isNull()) return UUID();
 
     bindSourceToQuad(es, project, quad, sid,
                      item.hasPath() ? item.getPath().string() : std::string(), isVideo);
+    if (isVideo) playAssignedVideo(*sm, sid);
+    return sid;
+}
 
-    // Start playback so the assignment is visible immediately (loop default).
-    // Any playable source — FFmpeg-decoded or HAP — plays the same way.
+// The same for a 3D object (ADR-052). Objects have no legacy texturePath: the
+// "sources" table alone persists the binding.
+inline UUID assignMediaToObject(EditorState& es, SourceManager* sm, Project* project,
+                                MeshObject& object, const MediaItem& item) {
+    if (!sm) return UUID();
+    bool isVideo = false;
+    const UUID sid = resolveMediaSource(*sm, item, isVideo);
+    if (sid.isNull()) return UUID();
+
+    object.getTexture().mediaId = sid;
     if (isVideo) {
-        if (auto* playable = sm->getSourceAs<PlayableSource>(sid)) playable->play();
+        es.activeVideoSourceId = sid;
+        playAssignedVideo(*sm, sid);
     }
+    if (project) project->setModified(true);
     return sid;
 }
 
@@ -109,6 +131,10 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
             }
             mediaId = healed;
             if (!mediaId.isNull()) onScreen.insert(mediaId);
+        }
+        for (const auto& object : scene->getObjects()) {
+            const UUID& mediaId = object->getTexture().mediaId;
+            if (!mediaId.isNull() && sm.hasSource(mediaId)) onScreen.insert(mediaId);
         }
     }
     std::unordered_set<UUID> inUse = referencedMediaIds(es.scenes, es.commandHistory);

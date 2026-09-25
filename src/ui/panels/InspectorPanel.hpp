@@ -1,5 +1,10 @@
 #pragma once
 
+#include "core/Types.hpp"
+#include "core/UUID.hpp"
+
+#include <glm/glm.hpp>
+
 namespace quadmapper {
 
 struct EditorContext;
@@ -30,10 +35,20 @@ private:
     void renderCropControls(EditorContext& ctx, TextureBinding& texBinding);
     void renderOutputProperties(EditorContext& ctx);
     void renderMediaProperties(EditorContext& ctx);
+    void renderObjectProperties(EditorContext& ctx);  // 3D objects (ADR-052)
 
     char quadName_[128]   = "";
     char outputName_[128] = "";
     char mediaName_[128]  = "";
+    char objectName_[128] = "";
+
+    // The selected object's transform as edited: position, rotation (degrees) and
+    // uniform scale, re-read from the matrix only when transformShown_ goes stale.
+    UUID transformObjectId_;
+    glm::mat4 transformShown_{1.0f};
+    Vec3 objectPosition_{0.0f};
+    Vec3 objectRotationDeg_{0.0f};
+    float objectScale_ = 1.0f;
 
     // Normalized position (0..1) for inserting a grid division (ADR-038 Tier 1).
     float gridInsertPos_ = 0.5f;

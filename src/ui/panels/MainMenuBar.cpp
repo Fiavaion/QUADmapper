@@ -55,6 +55,10 @@ void MainMenuBar::render(EditorContext& ctx) {
             es.pendingFileAction = FileAction::SaveAs;
         }
         ImGui::Separator();
+        if (ImGui::MenuItem("Import 3D Object (OBJ)...")) {
+            es.pendingFileAction = FileAction::ImportObject;
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4")) {
             es.pendingFileAction = FileAction::Exit;
         }

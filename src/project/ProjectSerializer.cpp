@@ -19,14 +19,17 @@ namespace quadmapper {
 //         once a project has scenes; v1/v2 are migrated in memory on read.
 //   3.1 = additive "sources" table + per-quad textureBinding.mediaId (ADR-046);
 //         texturePath is still written (absolute) so 3.0 readers keep file media.
+//   3.2 = additive per-scene "objects" (3D meshes by path) + per-output "projector"
+//         (lens, pose, calibration points) (ADR-052); older readers ignore both.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
-static constexpr const char* kSceneFormatVersion = "3.1.0";
+static constexpr const char* kSceneFormatVersion = "3.2.0";
 
 // Load-time clamps for untrusted values (ADR-046 §3).
 static constexpr int kMaxMonitorIndex = 63;
 static constexpr int kMaxOutputDimension = 16384;
+static constexpr size_t kMaxCalibrationPoints = 4096;
 static constexpr float kMinPlaybackSpeed = 0.1f;  // VideoPlayer::setSpeed range
 static constexpr float kMaxPlaybackSpeed = 4.0f;
 
@@ -547,6 +550,101 @@ static Project::SceneData deserializeScene(const nlohmann::json& j) {
     return scene;
 }
 
+// ---- Projector camera (.qmap v3.2, ADR-052) ----------------------------------
+// rotation[9] is row-major (OpenCV's R), translation[3] as in pc = R * world + t.
+
+static nlohmann::json serializeProjector(const Project::OutputData& output) {
+    const ProjectorIntrinsics& k = output.projector.intrinsics;
+    const glm::mat3& r = output.projector.pose.rotation;
+    nlohmann::json rotation = nlohmann::json::array();
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) rotation.push_back(r[col][row]);
+    }
+    nlohmann::json points = nlohmann::json::array();
+    for (const CalibrationPoint& p : output.calibrationPoints) {
+        points.push_back({{"world", serializeVec3(p.world)},
+                          {"pixel", serializeVec2(p.pixel)},
+                          {"enabled", p.enabled}});
+    }
+    nlohmann::json j;
+    j["intrinsics"] = {{"fx", k.fx}, {"fy", k.fy}, {"cx", k.cx}, {"cy", k.cy},
+                       {"width", k.width}, {"height", k.height}};
+    j["pose"] = {{"rotation", rotation},
+                 {"translation", serializeVec3(output.projector.pose.translation)}};
+    j["calibrated"] = output.projector.calibrated;
+    j["points"] = points;
+    return j;
+}
+
+// Numbers are checked like every other vector; a lens or rotation that cannot be a
+// real projector falls back to the uncalibrated default with a warning instead of
+// failing the load.
+static void deserializeProjector(const nlohmann::json& j, Project::OutputData& output) {
+    if (!j.is_object()) throw std::runtime_error("Malformed project file: expected a projector object");
+    ProjectorCamera camera;
+    if (j.contains("intrinsics")) {
+        const auto& k = j["intrinsics"];
+        if (!k.is_object()) throw std::runtime_error("Malformed project file: expected intrinsics");
+        ProjectorIntrinsics& in = camera.intrinsics;
+        if (k.contains("width"))  in.width  = std::clamp(k["width"].get<int>(), 1, kMaxOutputDimension);
+        if (k.contains("height")) in.height = std::clamp(k["height"].get<int>(), 1, kMaxOutputDimension);
+        if (k.contains("fx")) in.fx = readFiniteFloat(k["fx"]);
+        if (k.contains("fy")) in.fy = readFiniteFloat(k["fy"]);
+        if (k.contains("cx")) in.cx = readFiniteFloat(k["cx"]);
+        if (k.contains("cy")) in.cy = readFiniteFloat(k["cy"]);
+    }
+    if (j.contains("pose")) {
+        const auto& pose = j["pose"];
+        if (!pose.is_object()) throw std::runtime_error("Malformed project file: expected a pose");
+        if (pose.contains("rotation")) {
+            const auto& r = checkedArray(pose["rotation"], 9);
+            for (int row = 0; row < 3; ++row) {
+                for (int col = 0; col < 3; ++col) {
+                    camera.pose.rotation[col][row] = readFiniteFloat(r[row * 3 + col]);
+                }
+            }
+        }
+        if (pose.contains("translation")) camera.pose.translation = deserializeVec3(pose["translation"]);
+    }
+    if (j.contains("calibrated")) camera.calibrated = j["calibrated"].get<bool>();
+
+    const glm::mat3& r = camera.pose.rotation;
+    const glm::mat3 drift = glm::transpose(r) * r - glm::mat3(1.0f);
+    float worst = 0.0f;
+    for (int c = 0; c < 3; ++c) {
+        for (int i = 0; i < 3; ++i) worst = std::max(worst, std::abs(drift[c][i]));
+    }
+    const bool lensOk = camera.intrinsics.fx > 0.0f && camera.intrinsics.fy > 0.0f;
+    const bool rotationOk = worst < 1e-2f && glm::determinant(r) > 0.0f;
+    if (!lensOk || !rotationOk) {
+        Logger::warning("Output '{}': projector {} is not valid; using the default lens",
+                        output.name, lensOk ? "rotation" : "focal length");
+        const int width = camera.intrinsics.width;
+        const int height = camera.intrinsics.height;
+        camera = ProjectorCamera();
+        camera.intrinsics = ProjectorIntrinsics::fromThrowRatio(1.5f, width, height);
+    }
+    output.projector = camera;
+
+    if (j.contains("points")) {
+        const auto& points = j["points"];
+        if (!points.is_array()) throw std::runtime_error("Malformed project file: expected a points array");
+        if (points.size() > kMaxCalibrationPoints) {
+            throw std::runtime_error("Malformed project file: too many calibration points");
+        }
+        for (const auto& p : points) {
+            if (!p.is_object() || !p.contains("world") || !p.contains("pixel")) {
+                throw std::runtime_error("Malformed project file: bad calibration point");
+            }
+            CalibrationPoint point;
+            point.world = deserializeVec3(p["world"]);
+            point.pixel = deserializeVec2(p["pixel"]);
+            if (p.contains("enabled")) point.enabled = p["enabled"].get<bool>();
+            output.calibrationPoints.push_back(point);
+        }
+    }
+}
+
 static nlohmann::json serializeOutput(const Project::OutputData& output) {
     nlohmann::json j;
     j["id"] = output.id.toString();
@@ -560,6 +658,7 @@ static nlohmann::json serializeOutput(const Project::OutputData& output) {
     j["resolution"] = nlohmann::json::array({output.resolution.x, output.resolution.y});
     j["rotation"] = output.rotationDegrees;
     j["enabled"] = output.enabled;
+    j["projector"] = serializeProjector(output);
     return j;
 }
 
@@ -601,6 +700,13 @@ static Project::OutputData deserializeOutput(const nlohmann::json& j) {
         output.rotationDegrees = ((deg + 45) / 90 % 4) * 90;
     }
     if (j.contains("enabled")) output.enabled = j["enabled"].get<bool>();
+    if (j.contains("projector")) {
+        deserializeProjector(j["projector"], output);
+    } else {
+        // Files before v3.2: an uncalibrated projector with the default lens for this output.
+        output.projector.intrinsics =
+            ProjectorIntrinsics::fromThrowRatio(1.5f, output.resolution.x, output.resolution.y);
+    }
     return output;
 }
 
@@ -700,25 +806,81 @@ static std::optional<Project::SourceData> deserializeSource(const nlohmann::json
     return s;
 }
 
-// Resolve each quad's mediaId against the sources table (ADR-046): a reference to a
-// missing entry, or to a file source whose file is gone, is cleared so the quad falls
-// back to its absolute texturePath - the same path every v1/v2/v3.0 file loads by.
+// ---- 3D objects (.qmap v3.2, ADR-052) ------------------------------------------
+// transform[16] is column-major, as glm stores it. The mesh is re-imported from path.
+
+static nlohmann::json serializeObject(const Project::ObjectData& object,
+                                      const std::unordered_set<UUID>& knownSourceIds,
+                                      const fs::path& baseDir) {
+    nlohmann::json transform = nlohmann::json::array();
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) transform.push_back(object.transform[col][row]);
+    }
+    nlohmann::json j;
+    j["id"] = object.id.toString();
+    j["name"] = object.name;
+    j["path"] = toProjectRelative(object.path, baseDir);
+    j["transform"] = transform;
+    j["texture"] = serializeTextureBinding(object.texture);
+    const UUID& mediaId = object.texture.mediaId;
+    if (!mediaId.isNull() && knownSourceIds.count(mediaId) > 0) {
+        j["texture"]["mediaId"] = mediaId.toString();
+    }
+    j["visible"] = object.visible;
+    j["opacity"] = object.opacity;
+    return j;
+}
+
+static Project::ObjectData deserializeObject(const nlohmann::json& j, const fs::path& baseDir) {
+    if (!j.is_object()) throw std::runtime_error("Malformed project file: expected an object entry");
+    Project::ObjectData object;
+    object.id = parseIdOrNull(j);
+    if (object.id.isNull()) object.id = UUID::generate();
+    object.name = (j.contains("name") && j["name"].is_string()) ? j["name"].get<std::string>()
+                                                                : "Object";
+    // No usable path keeps the object (its transform and media) with an empty mesh.
+    if (j.contains("path") && j["path"].is_string()) {
+        fs::path p(j["path"].get<std::string>());
+        if (!p.empty() && p.is_relative() && !baseDir.empty()) p = (baseDir / p).lexically_normal();
+        object.path = p.string();
+    }
+    if (j.contains("transform")) {
+        const auto& t = checkedArray(j["transform"], 16);
+        for (int col = 0; col < 4; ++col) {
+            for (int row = 0; row < 4; ++row) {
+                object.transform[col][row] = readFiniteFloat(t[col * 4 + row]);
+            }
+        }
+    }
+    if (j.contains("texture") && j["texture"].is_object()) {
+        deserializeTextureBinding(j["texture"], object.texture);
+    }
+    if (j.contains("visible")) object.visible = j["visible"].get<bool>();
+    if (j.contains("opacity")) object.opacity = std::clamp(readFiniteFloat(j["opacity"]), 0.0f, 1.0f);
+    return object;
+}
+
+// Resolve each quad's and object's mediaId against the sources table (ADR-046): a
+// reference to a missing entry, or to a file source whose file is gone, is cleared so
+// a quad falls back to its absolute texturePath - the same path every v1/v2/v3.0 file
+// loads by - and an object shows untextured.
 static void resolveQuadSources(Project& project) {
     std::unordered_map<UUID, const Project::SourceData*> byId;
     for (const auto& s : project.getSources()) byId[s.id] = &s;
 
-    for (auto& scene : project.getScenes()) {
-        for (auto& quad : scene.quads) {
-            UUID& mediaId = quad.getTexture().mediaId;
-            if (mediaId.isNull()) continue;
-            auto it = byId.find(mediaId);
-            bool usable = (it != byId.end());
-            if (usable && isFileSourceKind(it->second->kind)) {
-                std::error_code ec;
-                usable = fs::exists(it->second->path, ec);
-            }
-            if (!usable) mediaId = UUID();
+    auto resolve = [&](UUID& mediaId) {
+        if (mediaId.isNull()) return;
+        auto it = byId.find(mediaId);
+        bool usable = (it != byId.end());
+        if (usable && isFileSourceKind(it->second->kind)) {
+            std::error_code ec;
+            usable = fs::exists(it->second->path, ec);
         }
+        if (!usable) mediaId = UUID();
+    };
+    for (auto& scene : project.getScenes()) {
+        for (auto& quad : scene.quads) resolve(quad.getTexture().mediaId);
+        for (auto& object : scene.objects) resolve(object.texture.mediaId);
     }
 }
 
@@ -756,6 +918,15 @@ static void loadProjectModel(const nlohmann::json& json, Project& project,
     if (json.contains("scenes") && json["scenes"].is_array()) {
         for (const auto& sceneJson : json["scenes"]) {
             scenes.push_back(deserializeScene(sceneJson));
+            if (sceneJson.is_object() && sceneJson.contains("objects")) {
+                const auto& objectsJson = sceneJson["objects"];
+                if (!objectsJson.is_array()) {
+                    throw std::runtime_error("Malformed project file: expected an objects array");
+                }
+                for (const auto& objectJson : objectsJson) {
+                    scenes.back().objects.push_back(deserializeObject(objectJson, baseDir));
+                }
+            }
         }
     } else {
         // v1.x flat: wrap the top-level quads/groups into a single scene.
@@ -823,7 +994,15 @@ static nlohmann::json buildProjectJson(const Project& project, const fs::path& b
 
         nlohmann::json scenesJson = nlohmann::json::array();
         for (const auto& scene : project.getScenes()) {
-            scenesJson.push_back(serializeScene(scene, sourceIds));
+            nlohmann::json sceneJson = serializeScene(scene, sourceIds);
+            if (!scene.objects.empty()) {
+                nlohmann::json objectsJson = nlohmann::json::array();
+                for (const auto& object : scene.objects) {
+                    objectsJson.push_back(serializeObject(object, sourceIds, baseDir));
+                }
+                sceneJson["objects"] = objectsJson;
+            }
+            scenesJson.push_back(std::move(sceneJson));
         }
         json["scenes"] = scenesJson;
 

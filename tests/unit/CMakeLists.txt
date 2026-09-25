@@ -23,6 +23,7 @@ add_quadmapper_test(test_scene
     scene/QuadGroupTest.cpp
     scene/CommandsTest.cpp
     scene/ProjectorCameraTest.cpp
+    scene/ObjLoaderTest.cpp
 )
 target_link_libraries(test_scene PRIVATE quadmapper_scene quadmapper_core)
 

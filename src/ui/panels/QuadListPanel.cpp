@@ -8,6 +8,7 @@
 #include "scene/QuadGroup.hpp"
 #include "scene/Commands.hpp"
 #include "scene/Scene.hpp"
+#include "scene/MeshObject.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
 #include "core/UUID.hpp"
@@ -19,6 +20,7 @@
 #include <memory>
 #include <cstring>
 #include <cfloat>
+#include <cstdio>
 
 namespace quadmapper {
 
@@ -455,7 +457,84 @@ void QuadListPanel::render(EditorContext& ctx) {
         }
     }
 
+    renderObjects(ctx);
+
     ImGui::End();
+}
+
+// The active scene's 3D objects (ADR-052): select, rename, show/hide and delete.
+// Object edits are outside the undo history, which only holds quad commands.
+void QuadListPanel::renderObjects(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    Scene& scene = es.activeScene();
+
+    ImGui::Separator();
+    ImGui::Text("Objects: %zu", scene.getObjects().size());
+    if (scene.getObjects().empty()) {
+        ImGui::TextDisabled("File > Import 3D Object (OBJ)... adds one");
+    }
+
+    UUID deleteId;
+    for (const auto& objectPtr : scene.getObjects()) {
+        MeshObject& object = *objectPtr;
+        ImGui::PushID(object.getId().toString().c_str());
+
+        bool visible = object.isVisible();
+        if (ImGui::Checkbox("##objVisible", &visible)) {
+            object.setVisible(visible);
+            ctx.project->setModified(true);
+        }
+        ImGui::SetItemTooltip("Visible");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) deleteId = object.getId();
+        ImGui::SetItemTooltip("Delete object");
+        ImGui::SameLine();
+
+        auto beginRename = [&]() {
+            objectRenaming_ = true;
+            objectRenameId_ = object.getId();
+            std::snprintf(objectNameBuf_, sizeof(objectNameBuf_), "%s", object.getName().c_str());
+        };
+
+        if (objectRenaming_ && objectRenameId_ == object.getId()) {
+            ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText("##objrename", objectNameBuf_, sizeof(objectNameBuf_),
+                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
+                object.setName(objectNameBuf_);
+                ctx.project->setModified(true);
+                objectRenaming_ = false;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) objectRenaming_ = false;
+        } else {
+            const bool selected = es.currentSelectionType == EditorState::SelectionType::Object &&
+                                  es.selectedObjectId == object.getId();
+            const std::string label =
+                object.getName() + (object.getMesh().empty() ? " (mesh missing)" : "");
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                es.selectedObjectId = object.getId();
+                es.currentSelectionType = EditorState::SelectionType::Object;
+                es.mediaBinPanel.clearSelection();
+                es.outputPanel.clearSelection();
+            }
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                beginRename();
+            }
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Rename")) beginRename();
+                if (ImGui::MenuItem("Delete")) deleteId = object.getId();
+                ImGui::EndPopup();
+            }
+        }
+        ImGui::PopID();
+    }
+
+    if (!deleteId.isNull()) {
+        scene.deleteObject(deleteId);
+        if (es.selectedObjectId == deleteId) es.selectedObjectId = UUID();
+        if (objectRenameId_ == deleteId) objectRenaming_ = false;
+        ctx.project->setModified(true);
+    }
 }
 
 }  // namespace quadmapper

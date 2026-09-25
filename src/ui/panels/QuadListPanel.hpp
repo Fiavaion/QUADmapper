@@ -22,6 +22,9 @@ public:
     void render(EditorContext& ctx);
 
 private:
+    // The "Objects" section below the quads (3D objects, ADR-052).
+    void renderObjects(EditorContext& ctx);
+
     // Inline rename buffer for group context-menu (replaces function-static).
     char groupNameBuf_[128] = "";
 
@@ -29,6 +32,11 @@ private:
     bool quadRenaming_ = false;
     UUID quadRenameId_;
     char quadNameBuf_[128] = "";
+
+    // Inline object rename (double-click, or context-menu > Rename).
+    bool objectRenaming_ = false;
+    UUID objectRenameId_;
+    char objectNameBuf_[128] = "";
 };
 
 }  // namespace quadmapper

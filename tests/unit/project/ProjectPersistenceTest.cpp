@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -73,7 +74,7 @@ protected:
 
 // ---- v3.1 sources table -------------------------------------------------------
 
-TEST_F(ProjectPersistenceTest, WriterEmitsV31WithSourcesTable) {
+TEST_F(ProjectPersistenceTest, WriterEmitsV32WithSourcesTable) {
     ProjectSerializer serializer;
     Project::SourceData src;
     src.id = UUID::generate();
@@ -82,7 +83,7 @@ TEST_F(ProjectPersistenceTest, WriterEmitsV31WithSourcesTable) {
 
     const auto json = nlohmann::json::parse(serializer.serialize(projectWithBoundQuad(src, "")));
 
-    EXPECT_EQ(json["version"], "3.1.0");
+    EXPECT_EQ(json["version"], "3.2.0");
     ASSERT_TRUE(json["sources"].is_array());
     ASSERT_EQ(json["sources"].size(), 1u);
     EXPECT_EQ(json["sources"][0]["kind"], "procedural");
@@ -342,6 +343,160 @@ TEST_F(ProjectPersistenceTest, OutputMonitorResolutionRotationAreClamped) {
         "outputs": [{"resolution": [1920]}]})", project).isError());
 }
 
+// ---- 3D objects and projectors (.qmap v3.2, ADR-052) ------------------------------
+
+TEST_F(ProjectPersistenceTest, ObjectWithTransformAndMediaRoundTrips) {
+    const fs::path model = dir_ / "models" / "column.obj";
+    touch(model);
+    Project::SourceData src;
+    src.id = UUID::generate();
+    src.kind = "procedural";
+    src.proceduralType = "Plasma";
+    Project project = projectWithBoundQuad(src, "");
+    Project::ObjectData object;
+    object.id = UUID::generate();
+    object.name = "Column";
+    object.path = model.string();
+    object.transform = glm::mat4(1.0f);
+    object.transform[0][0] = 2.0f;
+    object.transform[3] = glm::vec4(0.5f, -1.0f, 3.0f, 1.0f);
+    object.texture.mediaId = src.id;
+    object.texture.flipV = true;
+    object.visible = false;
+    object.opacity = 0.25f;
+    project.getScenes()[0].objects.push_back(object);
+    const fs::path file = dir_ / "show.qmap";
+
+    ASSERT_TRUE(ProjectSerializer::save(project, file).isSuccess());
+    const auto json = nlohmann::json::parse(slurp(file));
+    EXPECT_EQ(json["scenes"][0]["objects"][0]["path"], "models/column.obj");  // relative
+
+    auto loaded = ProjectSerializer::load(file);
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const auto& objects = loaded.value().getScenes()[0].objects;
+    ASSERT_EQ(objects.size(), 1u);
+    const Project::ObjectData& o = objects[0];
+    EXPECT_EQ(o.id, object.id);
+    EXPECT_EQ(o.name, "Column");
+    EXPECT_TRUE(fs::equivalent(o.path, model));
+    EXPECT_EQ(o.transform, object.transform);
+    EXPECT_EQ(o.texture.mediaId, src.id);
+    EXPECT_TRUE(o.texture.flipV);
+    EXPECT_FALSE(o.visible);
+    EXPECT_FLOAT_EQ(o.opacity, 0.25f);
+}
+
+TEST_F(ProjectPersistenceTest, ObjectMediaNotInSourcesIsDropped) {
+    ProjectSerializer serializer;
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    Project::ObjectData object;
+    object.path = "C:/Shows/prop.obj";
+    object.texture.mediaId = UUID::generate();  // no sources entry
+    scene.objects.push_back(object);
+    project.getScenes().push_back(scene);
+
+    Project loaded;
+    ASSERT_TRUE(serializer.deserialize(serializer.serialize(project), loaded).isSuccess());
+
+    ASSERT_EQ(loaded.getScenes()[0].objects.size(), 1u);
+    EXPECT_TRUE(loaded.getScenes()[0].objects[0].texture.mediaId.isNull());
+    EXPECT_EQ(loaded.getScenes()[0].objects[0].path, "C:/Shows/prop.obj");
+}
+
+TEST_F(ProjectPersistenceTest, ProjectorWithCalibrationRoundTrips) {
+    ProjectSerializer serializer;
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    project.getScenes().push_back(scene);
+    Project::OutputData output;
+    output.id = UUID::generate();
+    output.name = "Projector 1";
+    ProjectorCamera& cam = output.projector;
+    cam.intrinsics = ProjectorIntrinsics::fromThrowRatio(1.2f, 1280, 800, 0.25f);
+    cam.intrinsics.fy = 1530.0f;
+    const float c = std::cos(0.3f), s = std::sin(0.3f);
+    cam.pose.rotation = glm::mat3(glm::vec3(c, 0, -s), glm::vec3(0, 1, 0), glm::vec3(s, 0, c));
+    cam.pose.translation = Vec3(0.1f, -0.2f, 4.5f);
+    cam.calibrated = true;
+    output.calibrationPoints = {{Vec3(0, 0, 0), Vec2(640, 400), true},
+                                {Vec3(1, 2, 3), Vec2(10.5f, 20.25f), false}};
+    project.getOutputs().push_back(output);
+
+    Project loaded;
+    ASSERT_TRUE(serializer.deserialize(serializer.serialize(project), loaded).isSuccess());
+
+    ASSERT_EQ(loaded.getOutputs().size(), 1u);
+    const Project::OutputData& o = loaded.getOutputs()[0];
+    EXPECT_EQ(o.projector.intrinsics.width, 1280);
+    EXPECT_EQ(o.projector.intrinsics.height, 800);
+    EXPECT_FLOAT_EQ(o.projector.intrinsics.fx, cam.intrinsics.fx);
+    EXPECT_FLOAT_EQ(o.projector.intrinsics.fy, 1530.0f);
+    EXPECT_FLOAT_EQ(o.projector.intrinsics.cy, cam.intrinsics.cy);
+    for (int col = 0; col < 3; ++col) {
+        for (int row = 0; row < 3; ++row) {
+            EXPECT_FLOAT_EQ(o.projector.pose.rotation[col][row], cam.pose.rotation[col][row]);
+        }
+    }
+    EXPECT_EQ(o.projector.pose.translation, cam.pose.translation);
+    EXPECT_TRUE(o.projector.calibrated);
+    ASSERT_EQ(o.calibrationPoints.size(), 2u);
+    EXPECT_EQ(o.calibrationPoints[1].world, Vec3(1, 2, 3));
+    EXPECT_EQ(o.calibrationPoints[1].pixel, Vec2(10.5f, 20.25f));
+    EXPECT_FALSE(o.calibrationPoints[1].enabled);
+    EXPECT_TRUE(o.calibrationPoints[0].enabled);
+}
+
+TEST_F(ProjectPersistenceTest, InvalidProjectorFallsBackToDefaultLens) {
+    ProjectSerializer serializer;
+    Project project;
+    const std::string json = R"({"version": "3.2.0", "scenes": [], "outputs": [
+        {"id": "4a1b2c3d-0000-4000-8000-0000000000e1", "resolution": [1280, 720],
+         "projector": {"intrinsics": {"fx": -5, "fy": 100, "cx": 1, "cy": 1,
+                                      "width": 1280, "height": 720},
+                       "pose": {"rotation": [2, 0, 0, 0, 2, 0, 0, 0, 2], "translation": [0, 0, 1]},
+                       "calibrated": true}}]})";
+
+    ASSERT_TRUE(serializer.deserialize(json, project).isSuccess());
+
+    const ProjectorCamera& cam = project.getOutputs()[0].projector;
+    EXPECT_FALSE(cam.calibrated);
+    EXPECT_FLOAT_EQ(cam.intrinsics.fx, 1280.0f * 1.5f);
+    EXPECT_EQ(cam.intrinsics.height, 720);
+}
+
+TEST_F(ProjectPersistenceTest, MalformedObjectOrProjectorReturnsErr) {
+    ProjectSerializer serializer;
+    const char* bad[] = {
+        R"({"version": "3.2.0", "scenes": [{"objects": {"id": 1}}]})",
+        R"({"version": "3.2.0", "scenes": [{"objects": [{"transform": [1, 0, 0]}]}]})",
+        R"({"version": "3.2.0", "scenes": [{"objects": [{"opacity": "high"}]}]})",
+        R"({"version": "3.2.0", "scenes": [], "outputs": [{"projector": {"pose": {"rotation": [1, 0]}}}]})",
+        R"({"version": "3.2.0", "scenes": [], "outputs": [{"projector": {"intrinsics": {"fx": "x"}}}]})",
+        R"({"version": "3.2.0", "scenes": [], "outputs": [{"projector": {"points": [{"world": [0, 0]}]}}]})",
+    };
+    for (const char* json : bad) {
+        Project project;
+        EXPECT_TRUE(serializer.deserialize(json, project).isError()) << json;
+    }
+}
+
+TEST_F(ProjectPersistenceTest, OlderOutputsGetAnUncalibratedDefaultProjector) {
+    ProjectSerializer serializer;
+    Project project;
+    ASSERT_TRUE(serializer.deserialize(R"({"version": "3.1.0", "scenes": [],
+        "outputs": [{"id": "4a1b2c3d-0000-4000-8000-0000000000e1", "resolution": [1280, 720]}]})",
+        project).isSuccess());
+
+    const Project::OutputData& o = project.getOutputs()[0];
+    EXPECT_FALSE(o.projector.calibrated);
+    EXPECT_EQ(o.projector.intrinsics.width, 1280);
+    EXPECT_FLOAT_EQ(o.projector.intrinsics.cx, 640.0f);
+    EXPECT_TRUE(o.calibrationPoints.empty());
+}
+
 // ---- Historical fixtures (ADR-032 / ADR-046) -------------------------------------
 
 TEST(ProjectFixtureTest, EveryHistoricalFormatLoads) {
@@ -355,6 +510,7 @@ TEST(ProjectFixtureTest, EveryHistoricalFormatLoads) {
         {"v2.0-scenes.qmap", 2, 1},
         {"v3.0-scenes-outputs.qmap", 1, 1},
         {"v3.1-sources.qmap", 1, 2},
+        {"v3.2-objects-projector.qmap", 1, 1},
     };
     for (const auto& e : expected) {
         auto loaded = ProjectSerializer::load(dir / e.file);
@@ -378,6 +534,36 @@ TEST(ProjectFixtureTest, V31FixtureKeepsProceduralAndFallsBackForMissingVideo) {
     EXPECT_EQ(quads[0].getTexture().mediaId.toString(), "4a1b2c3d-0000-4000-8000-0000000000f1");
     EXPECT_TRUE(quads[1].getTexture().mediaId.isNull());  // video not shipped -> texturePath
     EXPECT_EQ(loaded.value().getScenes()[0].texturePaths[1], "C:/Shows/media/not-shipped.mp4");
+}
+
+TEST(ProjectFixtureTest, V32FixtureKeepsObjectAndProjector) {
+    const fs::path dir = QM_PROJECT_FIXTURES_DIR;
+    auto loaded = ProjectSerializer::load(dir / "v3.2-objects-projector.qmap");
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const Project& p = loaded.value();
+
+    ASSERT_EQ(p.getScenes()[0].objects.size(), 1u);
+    const Project::ObjectData& o = p.getScenes()[0].objects[0];
+    EXPECT_EQ(o.name, "Column");
+    // The mesh file is not shipped: the path still resolves against the project folder.
+    EXPECT_EQ(fs::path(o.path), (dir / "models" / "not-shipped.obj").lexically_normal());
+    EXPECT_FLOAT_EQ(o.transform[0][0], 2.0f);
+    EXPECT_FLOAT_EQ(o.transform[3][0], 0.5f);   // translation column
+    EXPECT_FLOAT_EQ(o.transform[3][2], -1.0f);
+    EXPECT_EQ(o.texture.mediaId.toString(), "4a1b2c3d-0000-4000-8000-0000000000f1");
+    EXPECT_TRUE(o.texture.flipH);
+    EXPECT_FLOAT_EQ(o.opacity, 0.75f);
+
+    const Project::OutputData& out = p.getOutputs()[0];
+    EXPECT_TRUE(out.projector.calibrated);
+    EXPECT_FLOAT_EQ(out.projector.intrinsics.cy, 600.0f);
+    EXPECT_FLOAT_EQ(out.projector.pose.rotation[1][1], -1.0f);
+    EXPECT_FLOAT_EQ(out.projector.pose.translation.z, 5.0f);
+    ASSERT_EQ(out.calibrationPoints.size(), 2u);
+    EXPECT_FALSE(out.calibrationPoints[1].enabled);
+    Vec2 pixel;
+    ASSERT_TRUE(out.projector.project(Vec3(0.0f), pixel));
+    EXPECT_EQ(pixel, out.calibrationPoints[0].pixel);
 }
 
 TEST(ProjectFixtureTest, V12FixtureKeepsGridAndOffsets) {

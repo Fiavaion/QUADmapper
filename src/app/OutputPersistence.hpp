@@ -19,6 +19,8 @@ inline Project::OutputData outputToData(const OutputWindow& output) {
     data.resolution = output.getResolution();
     data.rotationDegrees = output.getRotationDegrees();
     data.enabled = output.isEnabled();
+    data.projector = output.getProjector();
+    data.calibrationPoints = output.getCalibrationPoints();
     return data;
 }
 
@@ -30,6 +32,8 @@ inline void applyOutputData(const Project::OutputData& data, OutputWindow& outpu
     output.setResolution(data.resolution);
     output.setRotationDegrees(data.rotationDegrees);
     output.setEnabled(data.enabled);
+    output.getProjector() = data.projector;
+    output.getCalibrationPoints() = data.calibrationPoints;
 }
 
 }  // namespace quadmapper

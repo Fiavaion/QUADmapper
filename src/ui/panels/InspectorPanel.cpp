@@ -8,6 +8,8 @@
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGeometry.hpp"
 #include "scene/Commands.hpp"
+#include "scene/MeshObject.hpp"
+#include "scene/Scene.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/UvTestGrid.hpp"
 #include "media/MediaLibrary.hpp"
@@ -20,8 +22,11 @@
 #include "core/Logger.hpp"
 #include "core/Types.hpp"
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 #include <algorithm>
+#include <cmath>
+#include <filesystem>
 #include <string>
 #include <cstdio>
 #include <cstring>
@@ -48,6 +53,9 @@ void InspectorPanel::render(EditorContext& ctx) {
         case SelectionType::Media:
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f), "Media Properties");
             break;
+        case SelectionType::Object:
+            ImGui::TextColored(ImVec4(0.8f, 0.6f, 1.0f, 1.0f), "Object Properties");
+            break;
         default:
             ImGui::TextDisabled("Properties");
             break;
@@ -60,6 +68,8 @@ void InspectorPanel::render(EditorContext& ctx) {
         renderOutputProperties(ctx);
     } else if (es.currentSelectionType == SelectionType::Media) {
         renderMediaProperties(ctx);
+    } else if (es.currentSelectionType == SelectionType::Object) {
+        renderObjectProperties(ctx);
     } else {
         // -------- No Selection --------
         ImGui::TextDisabled("Nothing selected");
@@ -1011,6 +1021,149 @@ void InspectorPanel::renderMediaProperties(EditorContext& ctx) {
     } else {
         ImGui::TextDisabled("No media selected");
         ImGui::TextDisabled("Select media from the Media tab");
+    }
+}
+
+// ============================================================
+//  3D Object Properties (ADR-052)
+// ============================================================
+namespace {
+
+constexpr float kDegPerRad = 57.2957795f;
+
+// model = translate(position) * Rx * Ry * Rz (degrees) * uniform scale.
+glm::mat4 composeObjectTransform(const Vec3& position, const Vec3& rotationDeg, float scale) {
+    glm::mat4 m = glm::translate(glm::mat4(1.0f), position);
+    m = glm::rotate(m, rotationDeg.x / kDegPerRad, Vec3(1, 0, 0));
+    m = glm::rotate(m, rotationDeg.y / kDegPerRad, Vec3(0, 1, 0));
+    m = glm::rotate(m, rotationDeg.z / kDegPerRad, Vec3(0, 0, 1));
+    return glm::scale(m, Vec3(scale));
+}
+
+// The inverse of composeObjectTransform for a rotation + uniform scale + translation
+// (a sheared or non-uniformly scaled matrix is read by its first axis's length).
+void decomposeObjectTransform(const glm::mat4& m, Vec3& position, Vec3& rotationDeg, float& scale) {
+    position = Vec3(m[3]);
+    scale = glm::length(Vec3(m[0]));
+    if (scale < 1e-6f) scale = 1.0f;
+    const glm::mat3 r = glm::mat3(m) / scale;  // r[col][row]
+    // R = Rx(a) Ry(b) Rz(c): R(0,2) = sin b, R(1,2) = -sin a cos b, R(2,2) = cos a cos b,
+    // R(0,1) = -cos b sin c, R(0,0) = cos b cos c.
+    const float b = std::atan2(r[2][0], std::sqrt(r[2][1] * r[2][1] + r[2][2] * r[2][2]));
+    float a, c;
+    if (std::cos(b) > 1e-5f) {
+        a = std::atan2(-r[2][1], r[2][2]);
+        c = std::atan2(-r[1][0], r[0][0]);
+    } else {  // gimbal lock: fold the whole remaining rotation into x
+        a = std::atan2(r[1][2], r[1][1]);
+        c = 0.0f;
+    }
+    rotationDeg = Vec3(a, b, c) * kDegPerRad;
+}
+
+}  // namespace
+
+void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    MeshObject* object = es.selectedObjectId.isNull()
+                             ? nullptr : es.activeScene().getObject(es.selectedObjectId);
+    if (!object) {
+        ImGui::TextDisabled("No object selected");
+        ImGui::TextDisabled("Select an object in the Quad List, or use");
+        ImGui::TextDisabled("File > Import 3D Object (OBJ)...");
+        return;
+    }
+
+    snprintf(objectName_, sizeof(objectName_), "%s", object->getName().c_str());
+    if (ImGui::InputText("Name", objectName_, sizeof(objectName_),
+                         ImGuiInputTextFlags_EnterReturnsTrue)) {
+        object->setName(objectName_);
+        ctx.project->setModified(true);
+    }
+
+    if (object->getMesh().empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Mesh not loaded");
+    } else {
+        ImGui::Text("Mesh: %zu triangles", object->getMesh().triangleCount());
+    }
+    if (!object->getSourcePath().empty()) {
+        ImGui::TextWrapped("File: %s", object->getSourcePath().c_str());
+    }
+
+    bool visible = object->isVisible();
+    if (ImGui::Checkbox("Visible", &visible)) {
+        object->setVisible(visible);
+        ctx.project->setModified(true);
+    }
+    float opacity = object->getOpacity();
+    if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
+        object->setOpacity(opacity);
+        ctx.project->setModified(true);
+    }
+
+    // Transform, shown as position / rotation / uniform scale. The fields are re-read
+    // from the matrix only when the object or its matrix changed elsewhere, so editing
+    // one field never re-derives (and nudges) the others.
+    ImGui::Separator();
+    ImGui::Text("Transform:");
+    if (transformObjectId_ != object->getId() || transformShown_ != object->getTransform()) {
+        decomposeObjectTransform(object->getTransform(), objectPosition_, objectRotationDeg_,
+                                 objectScale_);
+        transformObjectId_ = object->getId();
+        transformShown_ = object->getTransform();
+    }
+    bool changed = false;
+    changed |= ImGui::DragFloat3("Position", &objectPosition_.x, 0.01f, 0.0f, 0.0f, "%.3f");
+    changed |= ImGui::DragFloat3("Rotation (deg)", &objectRotationDeg_.x, 0.5f, -360.0f, 360.0f, "%.1f");
+    changed |= ImGui::DragFloat("Scale", &objectScale_, 0.01f, 0.001f, 1000.0f, "%.3f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::Button("Reset Transform")) {
+        objectPosition_ = Vec3(0.0f);
+        objectRotationDeg_ = Vec3(0.0f);
+        objectScale_ = 1.0f;
+        changed = true;
+    }
+    if (changed) {
+        transformShown_ = composeObjectTransform(objectPosition_, objectRotationDeg_, objectScale_);
+        object->setTransform(transformShown_);
+        ctx.project->setModified(true);
+    }
+
+    // Media: the same bin items quads can be given (audio cannot texture anything).
+    ImGui::Separator();
+    ImGui::Text("Media:");
+    const UUID& boundId = object->getTexture().mediaId;
+    const std::filesystem::path boundPath =
+        (ctx.sourceManager && !boundId.isNull()) ? ctx.sourceManager->getSourcePath(boundId)
+                                                 : std::filesystem::path();
+    auto isBound = [&](const MediaItem& item) {
+        if (boundId.isNull()) return false;
+        if (item.hasSource()) return item.getSourceId() == boundId;
+        return item.hasPath() && !boundPath.empty() && item.getPath() == boundPath;
+    };
+    std::string preview = boundId.isNull() ? "None" : "(assigned)";
+    if (ctx.mediaLibrary) {
+        for (const auto& item : ctx.mediaLibrary->getItems()) {
+            if (item && isBound(*item)) { preview = item->getName(); break; }
+        }
+    }
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##ObjectMedia", preview.c_str())) {
+        if (ImGui::Selectable("None", boundId.isNull())) {
+            object->getTexture().mediaId = UUID();
+            ctx.project->setModified(true);
+        }
+        if (ctx.mediaLibrary) {
+            for (const auto& item : ctx.mediaLibrary->getItems()) {
+                if (!item || item->getType() == MediaType::AUDIO) continue;
+                ImGui::PushID(item->getId().toString().c_str());
+                if (ImGui::Selectable(item->getName().c_str(), isBound(*item))) {
+                    assignMediaToObject(es, ctx.sourceManager, ctx.project, *object, *item);
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndCombo();
     }
 }
 
