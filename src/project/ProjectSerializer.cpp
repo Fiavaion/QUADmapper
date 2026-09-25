@@ -574,14 +574,20 @@ static Project::OutputData deserializeOutput(const nlohmann::json& j) {
     if (j.contains("monitor")) {
         output.monitor = std::clamp(j["monitor"].get<int>(), -1, kMaxMonitorIndex);
     }
-    // Monitor identity (QM-087, additive): a malformed name is ignored rather than
-    // failing the load, since the index is still a usable fallback.
+    // Monitor identity (QM-087, additive): a malformed name or position is skipped
+    // with a warning rather than failing the load, since the index is still a
+    // usable fallback. A name is kept only with its position: a name alone would
+    // match any display at (0, 0), usually the operator's own screen (QM-090).
     if (j.contains("monitorName") && j["monitorName"].is_string()) {
-        output.monitorName = j["monitorName"].get<std::string>();
-        if (j.contains("monitorPosition")) {
-            const auto& p = checkedArray(j["monitorPosition"], 2);
+        const auto pos = j.find("monitorPosition");
+        if (pos != j.end() && pos->is_array() && pos->size() == 2 &&
+            (*pos)[0].is_number_integer() && (*pos)[1].is_number_integer()) {
+            output.monitorName = j["monitorName"].get<std::string>();
             // Only ever compared for equality, so any integer is safe.
-            output.monitorPosition = IVec2(p[0].get<int>(), p[1].get<int>());
+            output.monitorPosition = IVec2((*pos)[0].get<int>(), (*pos)[1].get<int>());
+        } else {
+            Logger::warning("Output '{}': missing or malformed monitorPosition; ignoring its monitor name",
+                            output.name);
         }
     }
     if (j.contains("resolution")) {

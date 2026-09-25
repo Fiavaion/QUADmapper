@@ -198,15 +198,9 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
     // Show resolution and monitor info on the same line
     ImGui::SameLine(200);
     IVec2 res = output->getResolution();
-    int monitorIdx = output->getMonitor();
-    const char* monitorName = "No Monitor";
-    if (monitorIdx >= 0 && static_cast<size_t>(monitorIdx) < outputManager_->getMonitorCount()) {
-        const MonitorInfo* info = outputManager_->getMonitor(monitorIdx);
-        if (info) {
-            monitorName = info->name.c_str();
-        }
-    }
-    ImGui::TextDisabled("%dx%d | %s", res.x, res.y, monitorName);
+    const MonitorInfo* info = outputManager_->getMonitor(output->getMonitor());
+    ImGui::TextDisabled("%dx%d | %s", res.x, res.y,
+                        info ? info->name.c_str() : "Not connected");
 
     // Context menu - use explicit ID to avoid issues with TextDisabled having no item ID
     char contextMenuId[32];
@@ -263,33 +257,41 @@ void OutputPanel::renderMonitorDropdown(OutputWindow* output) {
 
     int currentMonitor = output->getMonitor();
     const auto& monitors = outputManager_->getMonitors();
+    // No chosen display = automatic: the first one that is not the editor's (QM-090).
+    const MonitorIdentity& desired = output->getDesiredMonitor();
+    const bool automatic = desired.name.empty() && desired.savedIndex < 0;
 
     // Build preview string
-    std::string previewStr = "Not Assigned";
+    std::string previewStr;
     if (currentMonitor >= 0 && static_cast<size_t>(currentMonitor) < monitors.size()) {
         previewStr = monitors[currentMonitor].getDisplayString();
+        if (automatic) {
+            previewStr += " (automatic)";
+        }
+    } else if (!desired.name.empty()) {
+        previewStr = desired.name + " (not connected)";
+    } else {
+        previewStr = "Not connected";
     }
 
     ImGui::SetNextItemWidth(-1);
     if (ImGui::BeginCombo("##monitor", previewStr.c_str())) {
-        // Option for no monitor
-        bool isNone = (currentMonitor < 0);
-        if (ImGui::Selectable("Not Assigned", isNone)) {
-            output->setMonitor(-1);
+        if (ImGui::Selectable("Automatic (not the editor's display)", automatic)) {
+            outputManager_->assignMonitor(*output, -1);
         }
 
         ImGui::Separator();
 
         // Available monitors
         for (size_t i = 0; i < monitors.size(); i++) {
-            bool isSelected = (static_cast<int>(i) == currentMonitor);
+            bool isSelected = !automatic && static_cast<int>(i) == currentMonitor;
             std::string label = monitors[i].getDisplayString();
             if (monitors[i].isPrimary) {
                 label += " (Primary)";
             }
 
             if (ImGui::Selectable(label.c_str(), isSelected)) {
-                output->setMonitor(static_cast<int>(i));
+                outputManager_->assignMonitor(*output, static_cast<int>(i));
             }
         }
 

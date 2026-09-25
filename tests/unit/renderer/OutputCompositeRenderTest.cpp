@@ -172,6 +172,50 @@ TEST_P(OutputRotationRenderTest, TopHalfOfCanvasLandsOnRotatedSide) {
     renderer.shutdown();
 }
 
+// A half-plane probe cannot tell a clockwise turn from a mirror: at 90 a
+// transpose also puts the top half on the right. A marker in the canvas's
+// top-LEFT corner can: a clockwise turn carries it to the top-right (90),
+// bottom-right (180) or bottom-left (270); a mirror lands it in another corner.
+TEST_P(OutputRotationRenderTest, TopLeftCornerTurnsClockwise) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    Framebuffer fbo;
+    ASSERT_TRUE(fbo.resize(32, 16));
+    fbo.bind();
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    renderer.setOutputRotation(GetParam());
+    renderer.renderQuad(makeQuad(0.0f, 0.0f, 0.5f, 0.5f), nullptr);
+
+    // Quadrant centres, GL window coordinates (origin bottom-left, y up).
+    const RGB topLeft = readPixel(8, 12);
+    const RGB topRight = readPixel(24, 12);
+    const RGB bottomLeft = readPixel(8, 4);
+    const RGB bottomRight = readPixel(24, 4);
+    const RGB* marked = nullptr;
+    switch (GetParam()) {
+        case Rotation::R0:   marked = &topLeft; break;
+        case Rotation::R90:  marked = &topRight; break;
+        case Rotation::R180: marked = &bottomRight; break;
+        case Rotation::R270: marked = &bottomLeft; break;
+    }
+    ASSERT_NE(marked, nullptr);
+    for (const RGB* corner : {&topLeft, &topRight, &bottomLeft, &bottomRight}) {
+        if (corner == marked) {
+            EXPECT_TRUE(isWhite(*corner));
+        } else {
+            EXPECT_TRUE(isBlack(*corner));
+        }
+    }
+
+    Framebuffer::unbind();
+    renderer.shutdown();
+}
+
 INSTANTIATE_TEST_SUITE_P(AllQuarterTurns, OutputRotationRenderTest,
                          ::testing::Values(Rotation::R0, Rotation::R90,
                                            Rotation::R180, Rotation::R270),

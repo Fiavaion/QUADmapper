@@ -55,6 +55,21 @@ struct VideoModeInfo {
     }
 };
 
+/** How an output's monitor was resolved, strongest first (QM-090). */
+enum class MonitorMatch {
+    Exact,        // desired name + position
+    Position,     // desired position only
+    UniqueName,   // desired name, unique among the connected monitors
+    SavedIndex,   // the saved index (fallback)
+    FirstFree,    // first monitor that is neither the editor's nor taken (fallback)
+    Unresolved    // nothing suitable is connected
+};
+
+struct MonitorResolution {
+    int index = -1;
+    MonitorMatch match = MonitorMatch::Unresolved;
+};
+
 /**
  * OutputManager manages multiple output windows for projection mapping.
  * It handles window creation with shared OpenGL contexts, monitor enumeration,
@@ -166,14 +181,66 @@ public:
     std::vector<VideoModeInfo> getMonitorVideoModes(int monitorIndex) const;
 
     /**
-     * Resolve a saved monitor identity against the connected monitors (QM-087).
-     * Match order: name + position, then name (preferring the saved index when
-     * several monitors share the name), then the saved index; otherwise monitor 0
-     * with a logged warning. A saved index < 0 with no name means "no monitor
-     * chosen" and resolves to -1. Pure: no GLFW calls, so it is unit-testable.
+     * Resolve an output's desired monitor against the connected monitors (QM-090).
+     * Pure: no GLFW calls, so every step is unit-testable. Tried in order:
+     *   Exact      - same name and position (always honoured, even the editor's
+     *                monitor: only an explicit choice records that identity);
+     *   Position   - same position (same desk layout, display swapped or renamed);
+     *   UniqueName - same name, only when no other connected monitor shares it;
+     *   SavedIndex - the saved index;
+     *   FirstFree  - the first connected monitor;
+     *   Unresolved - index -1.
+     * Every step after Exact skips `editorMonitor` and the `taken` monitors, so an
+     * automatic choice never covers the operator's screen or another output.
      */
-    static int resolveMonitor(const std::vector<MonitorInfo>& monitors, int savedIndex,
-                              const std::string& savedName, IVec2 savedPosition);
+    static MonitorResolution resolveMonitor(const std::vector<MonitorInfo>& monitors,
+                                            const MonitorIdentity& desired,
+                                            int editorMonitor,
+                                            const std::vector<int>& taken);
+
+    /**
+     * Resolve several outputs together: stronger matches claim their monitor
+     * first (every Exact, then Position/UniqueName, then the fallbacks), so one
+     * output's fallback cannot take the display another output really belongs on.
+     * Pure. Results are in the order of `desired`.
+     */
+    static std::vector<MonitorResolution> resolveMonitors(
+        const std::vector<MonitorInfo>& monitors,
+        const std::vector<MonitorIdentity>& desired,
+        int editorMonitor);
+
+    /**
+     * Index of the monitor whose rectangle contains a virtual-desktop point, or -1.
+     */
+    static int monitorContaining(const std::vector<MonitorInfo>& monitors, IVec2 point);
+
+    /**
+     * Re-resolve every output's monitor from its desired identity against the
+     * monitors found by the last refreshMonitors(). Enabled outputs claim
+     * displays; disabled ones resolve without taking any.
+     */
+    void resolveOutputs();
+
+    /**
+     * The user explicitly chose monitor `monitorIndex` for `output` (-1 =
+     * automatic). Records that monitor's current identity as the desired one,
+     * which is honoured as-is even when it is the editor's own screen. In
+     * perform mode the output moves there at once.
+     */
+    void assignMonitor(OutputWindow& output, int monitorIndex);
+
+    /**
+     * Swap-interval policy (QM-090): the index of the output that waits for
+     * vblank, i.e. the first presented output that is not minimised; -1 if none,
+     * in which case the editor is the vsync'd window. A minimised window's swap
+     * returns at once, so it must never be the one pacing the loop. Pure.
+     */
+    static int vsyncHolder(const std::vector<bool>& iconified);
+
+    // Operator-facing messages (e.g. a projector that is not connected at F11).
+    // Everything passed here is also logged.
+    using NoticeCallback = std::function<void(const std::string&)>;
+    void setNoticeCallback(NoticeCallback callback);
 
     // Monitor change callback
     using MonitorChangeCallback = std::function<void()>;
@@ -202,7 +269,9 @@ public:
 
     // Perform mode
     /**
-     * Enter perform mode - show all enabled outputs fullscreen on their assigned monitors.
+     * Enter perform mode - re-resolve every output's monitor, then show each
+     * enabled output fullscreen on it. An output whose display is not connected
+     * stays hidden and a notice is posted; the others still go fullscreen.
      * @param borderless If true, use borderless fullscreen mode (default: true)
      * @return Result indicating success or error
      */
@@ -310,11 +379,26 @@ private:
 
     // Render every enabled, created, VISIBLE output with its own Renderer and
     // present it. `draw` issues the content draws after the black clear. Applies
-    // the output rotation and the swap policy: only the first presented output
-    // waits for vblank, the rest (and then the editor) swap with interval 0, so
-    // N outputs never divide the frame rate. With no output presented the editor
-    // is the vsync'd window again.
+    // the output rotation and the swap policy (vsyncHolder): only the first
+    // presented, non-minimised output waits for vblank, the rest (and then the
+    // editor) swap with interval 0, so N outputs never divide the frame rate.
+    // With no such output the editor is the vsync'd window again.
     void presentToOutputs(const std::function<void(const OutputWindow&, Renderer&)>& draw);
+
+    // The monitor the editor window's centre is on; the primary monitor if the
+    // editor is off every monitor (e.g. minimised), -1 if unknown.
+    int editorMonitorIndex() const;
+
+    // Show an enabled output fullscreen on its resolved monitor (perform mode).
+    // Returns false, leaving the output hidden, if it has no monitor or the switch failed.
+    bool showOnResolvedMonitor(OutputWindow& output);
+
+    // Re-resolve every output (after a hotplug, or a user's choice), and in
+    // perform mode move outputs whose display changed and hide those left
+    // without one.
+    void reresolveOutputs(bool refreshMonitorList);
+
+    void notify(const std::string& message);
 
     // Set the editor (main) window's swap interval; a no-op when unchanged.
     void setEditorSwapInterval(int interval);
@@ -355,6 +439,7 @@ private:
 
     // Monitor change detection
     MonitorChangeCallback monitorChangeCallback_;
+    NoticeCallback noticeCallback_;
     bool monitorChangeDetectionEnabled_ = false;
 
     // Singleton-like pointer for static callback (GLFW limitation)
