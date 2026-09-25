@@ -34,6 +34,7 @@ $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+. "$PSScriptRoot/screen_capture.ps1"   # not CopyFromScreen; see that file
 
 if (-not ([System.Management.Automation.PSTypeName]'Win32Native').Type) {
     Add-Type @"
@@ -79,11 +80,7 @@ function Focus-App($proc) {
     Start-Sleep -Milliseconds 200
 }
 function Capture([string]$name, [System.Drawing.Rectangle]$bounds) {
-    $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-    $bmp.Save((Join-Path $OutDir $name), [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
+    Save-ScreenRect $bounds (Join-Path $OutDir $name)
     Write-Host "[media] captured $name ($($bounds.Width)x$($bounds.Height))"
 }
 function Click([int]$x, [int]$y) {

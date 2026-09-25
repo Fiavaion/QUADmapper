@@ -27,6 +27,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+. "$PSScriptRoot/screen_capture.ps1"   # not CopyFromScreen; see that file
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -76,11 +77,7 @@ function Focus($h) {
     Start-Sleep -Milliseconds 300
 }
 function Capture($name, $bounds) {
-    $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-    $bmp.Save((Join-Path $OutDir $name), [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
+    Save-ScreenRect $bounds (Join-Path $OutDir $name)
     Write-Host "[ai-smoke] captured $name"
 }
 

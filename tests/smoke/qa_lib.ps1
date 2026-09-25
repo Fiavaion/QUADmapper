@@ -13,6 +13,7 @@
 #>
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+. "$PSScriptRoot/screen_capture.ps1"   # not CopyFromScreen; see that file
 if (-not ([System.Management.Automation.PSTypeName]'QaNative').Type) {
     Add-Type @"
 using System;
@@ -135,11 +136,7 @@ function Cap([string]$name, [switch]$Virtual, [switch]$Mon2, [int[]]$Rect) {
     elseif ($Mon2) { $b = ([System.Windows.Forms.Screen]::AllScreens | Where-Object { -not $_.Primary } | Select-Object -First 1).Bounds }
     elseif ($Rect) { $b = New-Object System.Drawing.Rectangle($Rect[0], $Rect[1], $Rect[2], $Rect[3]) }
     else { $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds }
-    $bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
     $path = Join-Path $QaOut $name
-    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
+    Save-ScreenRect $b $path
     "captured $path ($($b.X),$($b.Y) $($b.Width)x$($b.Height))"
 }

@@ -41,9 +41,10 @@ $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+. "$PSScriptRoot/screen_capture.ps1"   # not CopyFromScreen; see that file
 
 # Make the process DPI-aware BEFORE querying screen metrics, so Screen bounds and
-# CopyFromScreen use physical pixels (the secondary monitor runs at 150% scaling).
+# screen captures use physical pixels (the secondary monitor runs at 150% scaling).
 
 # Win32 helpers for focusing the GLFW window.
 if (-not ([System.Management.Automation.PSTypeName]'Win32Native').Type) {
@@ -96,12 +97,7 @@ function Focus-App($proc) {
 }
 
 function Capture([string]$name, [System.Drawing.Rectangle]$bounds) {
-    $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-    $path = Join-Path $OutDir $name
-    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
+    Save-ScreenRect $bounds (Join-Path $OutDir $name)
     Write-Host "[smoke] captured $name ($($bounds.Width)x$($bounds.Height))"
 }
 
