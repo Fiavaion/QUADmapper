@@ -10,12 +10,13 @@
 #include "core/UUID.hpp"
 #include "core/Types.hpp"          // MediaType
 #include "media/MediaItem.hpp"
+#include "media/MediaLibrary.hpp"
 #include "source/SourceManager.hpp"
-#include "source/VideoFileSource.hpp"
 #include "scene/Quad.hpp"
 #include "project/Project.hpp"
 
 #include <string>
+#include <unordered_set>
 
 namespace quadmapper {
 
@@ -58,12 +59,49 @@ inline UUID assignMediaToQuad(EditorState& es, SourceManager* sm, Project* proje
     bindSourceToQuad(es, project, quad, sid,
                      item.hasPath() ? item.getPath().string() : std::string(), isVideo);
 
-    // A paused video uploads no frames, so the quad would sample an empty (black)
-    // texture. Start playback so the assignment is visible immediately (loop default).
+    // Start playback so the assignment is visible immediately (loop default).
+    // Any playable source — FFmpeg-decoded or HAP — plays the same way.
     if (isVideo) {
-        if (auto* vs = sm->getSourceAs<VideoFileSource>(sid)) vs->play();
+        if (auto* playable = sm->getSourceAs<PlayableSource>(sid)) playable->play();
     }
     return sid;
+}
+
+// Frame-boundary source housekeeping (QM-088): release file-backed sources that no
+// quad in any scene uses and that are not the Video Player's or the media bin's
+// preview source, so orphaned videos stop decoding and uploading.
+//
+// Undo can bring back a deleted quad whose source was released meanwhile. Such a
+// binding is re-resolved from the quad's saved media path (videos restart playing);
+// if that fails the binding is cleared so it is not retried every frame.
+inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
+    std::unordered_set<UUID> inUse;
+    for (const auto& scene : es.scenes) {
+        if (!scene) continue;
+        for (const auto& quad : scene->getQuadManager().getQuads()) {
+            UUID& mediaId = quad->getTexture().mediaId;
+            if (mediaId.isNull()) continue;
+            if (!sm.hasSource(mediaId)) {
+                auto pathIt = es.quadTexturePaths.find(quad->getId());
+                UUID healed;
+                if (pathIt != es.quadTexturePaths.end() && !pathIt->second.empty()) {
+                    const std::filesystem::path path = pathIt->second;
+                    if (MediaLibrary::getTypeFromExtension(path.extension().string()) == MediaType::VIDEO) {
+                        healed = sm.getOrCreateVideoSource(path);
+                        if (auto* playable = sm.getSourceAs<PlayableSource>(healed)) playable->play();
+                    } else {
+                        healed = sm.getOrCreateImageSource(path);
+                    }
+                }
+                mediaId = healed;
+                if (mediaId.isNull()) continue;
+            }
+            inUse.insert(mediaId);
+        }
+    }
+    inUse.insert(es.activeVideoSourceId);
+    inUse.insert(es.mediaBinPanel.getPreviewSourceId());
+    sm.releaseUnreferenced(inUse);
 }
 
 }  // namespace quadmapper

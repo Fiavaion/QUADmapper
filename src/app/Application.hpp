@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -49,6 +50,7 @@ class ThumbnailCache;
 class SourceManager;
 class Quad;
 class Texture;
+class AsyncFileDialog;
 struct EditorState;
 namespace ai { class SidecarClient; enum class SidecarState; }
 
@@ -114,7 +116,13 @@ private:
     void processPendingFileAction();
     void performNewProject();
     bool performLoadProject(const std::string& path);
-    bool performSaveProject(bool chooseNewPath);
+    // Save to the project's path, or via the Save dialog when untitled / chooseNewPath.
+    // onSaved runs once the file is written (after the dialog closes, if one was shown).
+    void performSaveProject(bool chooseNewPath, std::function<void()> onSaved = {});
+    bool writeProjectFile(const std::string& path);
+    // Show the .qmap Open/Save dialog without blocking rendering (QM-088); onChosen
+    // gets the path (empty = cancelled) from processPendingFileAction() once it closes.
+    void openProjectDialog(bool save, std::function<void(const std::string&)> onChosen);
     void performRestoreRecovery();
     // The live editor as a serializable Project DTO, and its canonical JSON text
     // (compared against the last saved text to decide "unsaved changes").
@@ -212,6 +220,8 @@ private:
     double m_autoSaveIntervalSec = 60.0;
     double m_lastAutosaveTime = 0.0;
     bool m_exitConfirmed = false;      // Exit passed the unsaved-changes check
+    std::unique_ptr<AsyncFileDialog> m_projectDialog;  // Open/Save .qmap, off the render thread
+    std::function<void(const std::string&)> m_onProjectFileChosen;
 
     // QM-058 self-test hook (QM_AI_SELFTEST). Off in normal runs.
     bool m_aiSelfTestPending = false;

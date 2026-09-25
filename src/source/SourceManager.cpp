@@ -214,6 +214,22 @@ void SourceManager::clear() {
     sources_.clear();
 }
 
+size_t SourceManager::releaseUnreferenced(const std::unordered_set<UUID>& inUse) {
+    std::vector<UUID> unused;
+    for (const auto& [id, entry] : sources_) {
+        const SourceType type = entry.source->getType();
+        const bool fileBacked = type == SourceType::STATIC_IMAGE || type == SourceType::VIDEO_FILE;
+        if (fileBacked && inUse.count(id) == 0) {
+            unused.push_back(id);
+        }
+    }
+    for (const UUID& id : unused) {
+        Logger::debug("SourceManager: releasing unused source '{}'", sources_[id].source->getName());
+        removeSource(id);
+    }
+    return unused.size();
+}
+
 TextureSource* SourceManager::getSource(const UUID& id) {
     auto it = sources_.find(id);
     return it != sources_.end() ? it->second.source.get() : nullptr;
@@ -226,6 +242,14 @@ const TextureSource* SourceManager::getSource(const UUID& id) const {
 
 bool SourceManager::hasSource(const UUID& id) const {
     return sources_.find(id) != sources_.end();
+}
+
+std::filesystem::path SourceManager::getSourcePath(const UUID& id) const {
+    const TextureSource* source = getSource(id);
+    if (const auto* img = dynamic_cast<const StaticImageSource*>(source)) return img->getPath();
+    if (const auto* vid = dynamic_cast<const VideoFileSource*>(source)) return vid->getPath();
+    if (const auto* hap = dynamic_cast<const HapFileSource*>(source)) return hap->getPath();
+    return {};
 }
 
 std::vector<UUID> SourceManager::getAllSourceIds() const {
