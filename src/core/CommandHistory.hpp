@@ -15,11 +15,12 @@ class Command {
 public:
     virtual ~Command() = default;
 
-    // Execute the command
-    virtual void execute() = 0;
+    // Execute the command. Returns false when it could not be applied (e.g. its
+    // target quad no longer exists); a failed command must leave state untouched.
+    virtual bool execute() = 0;
 
-    // Undo the command
-    virtual void undo() = 0;
+    // Undo the command. Same failure contract as execute().
+    virtual bool undo() = 0;
 
     // Get a description of this command (for UI display)
     virtual std::string getDescription() const = 0;
@@ -51,13 +52,14 @@ public:
     CommandHistory(CommandHistory&&) = default;
     CommandHistory& operator=(CommandHistory&&) = default;
 
-    // Execute a command and add it to history
+    // Execute a command and add it to history. A command that fails on its first
+    // execution is not recorded.
     void execute(std::unique_ptr<Command> command);
 
-    // Undo the last command
+    // Undo / redo one step. Returns false when there is nothing to undo/redo or the
+    // command could not be applied (its target is gone); a failed step is still
+    // consumed so the stack never wedges on a stale entry.
     bool undo();
-
-    // Redo the last undone command
     bool redo();
 
     // Check if undo/redo is available
@@ -111,10 +113,11 @@ class CommandHistory::CompoundCommand : public Command {
 public:
     explicit CompoundCommand(const std::string& description);
 
-    void execute() override;
-    void undo() override;
+    bool execute() override;
+    bool undo() override;
     std::string getDescription() const override { return description_; }
 
+    // Executes the command immediately; it is kept only if that succeeds.
     void addCommand(std::unique_ptr<Command> command);
     bool isEmpty() const { return commands_.empty(); }
 

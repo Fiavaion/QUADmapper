@@ -76,6 +76,14 @@ public:
     Quad();
     explicit Quad(const UUID& id);
 
+    // A copy of this quad's full state (geometry, texture binding, color, soft
+    // edge, outputs) under a different id. Used by duplicate.
+    Quad cloneWithId(const UUID& id) const {
+        Quad copy(*this);
+        copy.id_ = id;
+        return copy;
+    }
+
     // Getters
     const UUID& getId() const { return id_; }
     const std::string& getName() const { return name_; }

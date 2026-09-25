@@ -8,7 +8,6 @@
 #include "scene/QuadGroup.hpp"
 #include "scene/Commands.hpp"
 #include "scene/Scene.hpp"
-#include "renderer/Texture.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
 #include "core/UUID.hpp"
@@ -34,7 +33,6 @@ void QuadListPanel::render(EditorContext& ctx) {
 
     auto& quadManager         = es.quadManager();
     auto& scene               = es.activeScene();
-    auto& quadTextures        = es.quadTextures;
     auto& quadTexturePaths    = es.quadTexturePaths;
     auto& currentTexturePath  = es.currentTexturePath;
     auto& dragDropQuadId      = es.dragDropQuadId;
@@ -57,11 +55,7 @@ void QuadListPanel::render(EditorContext& ctx) {
 
     // Delete button
     if (ImGui::Button("Delete") && quadManager.hasSelection()) {
-        for (const UUID& id : quadManager.getSelectedIds()) {
-            quadTextures.erase(id);
-            quadTexturePaths.erase(id);
-        }
-        quadManager.deleteSelectedQuads();
+        es.deleteSelectedQuads();
         currentTexturePath[0] = '\0';
         ctx.project->setModified(true);
     }
@@ -69,25 +63,20 @@ void QuadListPanel::render(EditorContext& ctx) {
     ImGui::SameLine();
 
     // Duplicate button
+    // The duplicate carries the source's TextureBinding (mediaId), so it shows the
+    // same media; the saved media path is copied so the .qmap keeps it too.
     if (ImGui::Button("Duplicate") && quadManager.getPrimarySelectedQuad()) {
-        auto primaryId = quadManager.getPrimarySelectedId();
-        if (primaryId.has_value()) {
-            Quad* newQuad = quadManager.duplicateQuad(*primaryId);
-            if (newQuad) {
-                // Duplicate texture too
-                auto texIt = quadTextures.find(*primaryId);
-                if (texIt != quadTextures.end()) {
-                    auto pathIt = quadTexturePaths.find(*primaryId);
-                    if (pathIt != quadTexturePaths.end()) {
-                        quadTexturePaths[newQuad->getId()] = pathIt->second;
-                        auto newTex = std::make_unique<Texture>();
-                        if (newTex->loadFromFile(pathIt->second)) {
-                            quadTextures[newQuad->getId()] = std::move(newTex);
-                        }
-                    }
-                }
-                ctx.project->setModified(true);
+        const Quad& source = *quadManager.getPrimarySelectedQuad();
+        const UUID sourceId = source.getId();
+        auto cmd = std::make_unique<DuplicateQuadCommand>(es.quadRef(source));
+        const UUID dupId = cmd->getDuplicateId();
+        es.commandHistory.execute(std::move(cmd));
+        if (quadManager.getQuad(dupId)) {
+            auto pathIt = quadTexturePaths.find(sourceId);
+            if (pathIt != quadTexturePaths.end()) {
+                quadTexturePaths[dupId] = pathIt->second;
             }
+            ctx.project->setModified(true);
         }
     }
 
@@ -187,9 +176,8 @@ void QuadListPanel::render(EditorContext& ctx) {
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (ImGui::InputText("##quadrename", quadNameBuf_, sizeof(quadNameBuf_),
                                  ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
-                if (Quad* mq = quadManager.getQuad(quad->getId())) {
-                    es.commandHistory.execute(std::make_unique<RenameQuadCommand>(mq, quadNameBuf_));
-                }
+                es.commandHistory.execute(
+                    std::make_unique<RenameQuadCommand>(es.quadRef(*quad), quadNameBuf_));
                 ctx.project->setModified(true);
                 quadRenaming_ = false;
             }

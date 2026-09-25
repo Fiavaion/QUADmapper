@@ -9,23 +9,27 @@ CommandHistory::CompoundCommand::CompoundCommand(const std::string& description)
 {
 }
 
-void CommandHistory::CompoundCommand::execute() {
+bool CommandHistory::CompoundCommand::execute() {
+    bool ok = true;
     for (auto& cmd : commands_) {
-        cmd->execute();
+        ok = cmd->execute() && ok;
     }
+    return ok;
 }
 
-void CommandHistory::CompoundCommand::undo() {
+bool CommandHistory::CompoundCommand::undo() {
     // Undo in reverse order
+    bool ok = true;
     for (auto it = commands_.rbegin(); it != commands_.rend(); ++it) {
-        (*it)->undo();
+        ok = (*it)->undo() && ok;
     }
+    return ok;
 }
 
 void CommandHistory::CompoundCommand::addCommand(std::unique_ptr<Command> command) {
-    // Execute immediately when adding to compound command
-    command->execute();
-    commands_.push_back(std::move(command));
+    if (command->execute()) {
+        commands_.push_back(std::move(command));
+    }
 }
 
 // CommandHistory implementation
@@ -63,8 +67,10 @@ void CommandHistory::execute(std::unique_ptr<Command> command) {
         }
     }
 
-    // Execute the command
-    command->execute();
+    if (!command->execute()) {
+        LOG_WARNING("Command '{}' could not be applied; not recorded", command->getDescription());
+        return;
+    }
     LOG_TRACE("Executed command: {}", command->getDescription());
 
     // Add to history
@@ -85,11 +91,15 @@ bool CommandHistory::undo() {
 
     --undoIndex_;
     auto& command = commands_[undoIndex_];
-    command->undo();
-    LOG_DEBUG("Undo: {}", command->getDescription());
+    const bool applied = command->undo();
+    if (applied) {
+        LOG_DEBUG("Undo: {}", command->getDescription());
+    } else {
+        LOG_WARNING("Undo '{}' skipped: its target no longer exists", command->getDescription());
+    }
 
     notifyHistoryChanged();
-    return true;
+    return applied;
 }
 
 bool CommandHistory::redo() {
@@ -99,12 +109,16 @@ bool CommandHistory::redo() {
     }
 
     auto& command = commands_[undoIndex_];
-    command->execute();
-    LOG_DEBUG("Redo: {}", command->getDescription());
+    const bool applied = command->execute();
+    if (applied) {
+        LOG_DEBUG("Redo: {}", command->getDescription());
+    } else {
+        LOG_WARNING("Redo '{}' skipped: its target no longer exists", command->getDescription());
+    }
     ++undoIndex_;
 
     notifyHistoryChanged();
-    return true;
+    return applied;
 }
 
 std::string CommandHistory::getUndoDescription() const {

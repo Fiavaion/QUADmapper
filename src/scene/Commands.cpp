@@ -1,57 +1,66 @@
 #include "Commands.hpp"
 #include "Quad.hpp"
+#include "QuadGroup.hpp"
 #include "QuadManager.hpp"
+#include "Scene.hpp"
 #include "core/Logger.hpp"
+#include <algorithm>
 
 namespace quadmapper {
 
-// QuadData for storing full quad state
-struct CreateQuadCommand::QuadData {
-    std::string name;
-    int zOrder = 0;
-    bool visible = true;
-    bool locked = false;
-    float opacity = 1.0f;
-    std::array<Vec2, 4> corners;
-    int meshResolution = 16;
-    MeshMode meshMode = MeshMode::CORNERS_ONLY;
-    std::vector<Vec2> meshVertices;
-    TextureBinding texture;
-};
+// SceneListResolver / QuadRef
+Scene* SceneListResolver::findScene(const UUID& sceneId) {
+    for (auto& scene : scenes_) {
+        if (scene && scene->getId() == sceneId) return scene.get();
+    }
+    return nullptr;
+}
 
-struct DeleteQuadCommand::QuadData {
-    UUID id;
-    std::string name;
-    int zOrder = 0;
-    bool visible = true;
-    bool locked = false;
-    float opacity = 1.0f;
-    std::array<Vec2, 4> corners;
-    int meshResolution = 16;
-    MeshMode meshMode = MeshMode::CORNERS_ONLY;
-    std::vector<Vec2> meshVertices;
-    TextureBinding texture;
-};
+Scene* QuadRef::scene() const {
+    return resolver ? resolver->findScene(sceneId) : nullptr;
+}
+
+Quad* QuadRef::quad() const {
+    Scene* s = scene();
+    return s ? s->getQuad(quadId) : nullptr;
+}
+
+Quad* resolveForCommand(const QuadRef& ref, const std::string& commandDescription) {
+    Quad* quad = ref.quad();
+    if (!quad) {
+        LOG_WARNING("'{}': quad {} no longer exists; skipped", commandDescription,
+                    ref.quadId.toString());
+    }
+    return quad;
+}
+
+// Restore a full-state snapshot (same id) into the scene at its saved z-order.
+static Quad* restoreSnapshot(Scene& scene, const Quad& snapshot) {
+    return scene.getQuadManager().insertQuad(
+        std::make_unique<Quad>(snapshot), static_cast<size_t>(std::max(0, snapshot.getZOrder())));
+}
 
 // MoveCornerCommand implementation
-MoveCornerCommand::MoveCornerCommand(Quad* quad, int cornerIndex, const Vec2& oldPosition, const Vec2& newPosition)
-    : quad_(quad)
+MoveCornerCommand::MoveCornerCommand(const QuadRef& target, int cornerIndex, const Vec2& oldPosition, const Vec2& newPosition)
+    : target_(target)
     , cornerIndex_(cornerIndex)
     , oldPosition_(oldPosition)
     , newPosition_(newPosition)
 {
 }
 
-void MoveCornerCommand::execute() {
-    if (quad_) {
-        quad_->getGeometry().setCorner(cornerIndex_, newPosition_);
-    }
+bool MoveCornerCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->getGeometry().setCorner(cornerIndex_, newPosition_);
+    return true;
 }
 
-void MoveCornerCommand::undo() {
-    if (quad_) {
-        quad_->getGeometry().setCorner(cornerIndex_, oldPosition_);
-    }
+bool MoveCornerCommand::undo() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->getGeometry().setCorner(cornerIndex_, oldPosition_);
+    return true;
 }
 
 std::string MoveCornerCommand::getDescription() const {
@@ -62,7 +71,7 @@ std::string MoveCornerCommand::getDescription() const {
 bool MoveCornerCommand::canMergeWith(const Command& other) const {
     auto* otherMove = dynamic_cast<const MoveCornerCommand*>(&other);
     if (!otherMove) return false;
-    return quad_ == otherMove->quad_ && cornerIndex_ == otherMove->cornerIndex_;
+    return target_.sameTarget(otherMove->target_) && cornerIndex_ == otherMove->cornerIndex_;
 }
 
 void MoveCornerCommand::mergeWith(const Command& other) {
@@ -73,24 +82,26 @@ void MoveCornerCommand::mergeWith(const Command& other) {
 }
 
 // MoveMeshVertexCommand implementation
-MoveMeshVertexCommand::MoveMeshVertexCommand(Quad* quad, int vertexIndex, const Vec2& oldOffset, const Vec2& newOffset)
-    : quad_(quad)
+MoveMeshVertexCommand::MoveMeshVertexCommand(const QuadRef& target, int vertexIndex, const Vec2& oldOffset, const Vec2& newOffset)
+    : target_(target)
     , vertexIndex_(vertexIndex)
     , oldOffset_(oldOffset)
     , newOffset_(newOffset)
 {
 }
 
-void MoveMeshVertexCommand::execute() {
-    if (quad_) {
-        quad_->getGeometry().setMeshVertexByIndex(vertexIndex_, newOffset_);
-    }
+bool MoveMeshVertexCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->getGeometry().setMeshVertexByIndex(vertexIndex_, newOffset_);
+    return true;
 }
 
-void MoveMeshVertexCommand::undo() {
-    if (quad_) {
-        quad_->getGeometry().setMeshVertexByIndex(vertexIndex_, oldOffset_);
-    }
+bool MoveMeshVertexCommand::undo() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->getGeometry().setMeshVertexByIndex(vertexIndex_, oldOffset_);
+    return true;
 }
 
 std::string MoveMeshVertexCommand::getDescription() const {
@@ -100,7 +111,7 @@ std::string MoveMeshVertexCommand::getDescription() const {
 bool MoveMeshVertexCommand::canMergeWith(const Command& other) const {
     auto* otherMove = dynamic_cast<const MoveMeshVertexCommand*>(&other);
     if (!otherMove) return false;
-    return quad_ == otherMove->quad_ && vertexIndex_ == otherMove->vertexIndex_;
+    return target_.sameTarget(otherMove->target_) && vertexIndex_ == otherMove->vertexIndex_;
 }
 
 void MoveMeshVertexCommand::mergeWith(const Command& other) {
@@ -111,69 +122,37 @@ void MoveMeshVertexCommand::mergeWith(const Command& other) {
 }
 
 // CreateQuadCommand implementation
-CreateQuadCommand::CreateQuadCommand(QuadManager* manager, const std::string& name)
-    : manager_(manager)
+CreateQuadCommand::CreateQuadCommand(QuadResolver& resolver, const UUID& sceneId, const std::string& name)
+    : created_{&resolver, sceneId, UUID()}
     , name_(name)
-    , storedData_(std::make_unique<QuadData>())
 {
 }
 
-void CreateQuadCommand::execute() {
-    if (!manager_) return;
-
-    Quad* quad;
-    if (createdQuadId_.isNull()) {
-        // First execution - create new quad
-        if (name_.empty()) {
-            quad = manager_->createQuad();
-        } else {
-            quad = manager_->createQuad(name_);
-        }
-        if (quad) {
-            createdQuadId_ = quad->getId();
-        }
-    } else {
-        // Re-execution (redo) - restore the quad
-        if (name_.empty()) {
-            quad = manager_->createQuad();
-        } else {
-            quad = manager_->createQuad(storedData_->name);
-        }
-        if (quad) {
-            // Restore stored state
-            quad->setZOrder(storedData_->zOrder);
-            quad->setVisible(storedData_->visible);
-            quad->setLocked(storedData_->locked);
-            quad->setOpacity(storedData_->opacity);
-            quad->getGeometry().setCorners(storedData_->corners);
-            quad->getGeometry().setMeshResolution(storedData_->meshResolution);
-            quad->getGeometry().setMeshMode(storedData_->meshMode);
-            quad->getGeometry().setMeshVertices(storedData_->meshVertices);
-            quad->getTexture() = storedData_->texture;
-            // Note: We can't restore the original ID, but that's acceptable
-        }
+bool CreateQuadCommand::execute() {
+    Scene* scene = created_.scene();
+    if (!scene) {
+        LOG_WARNING("'{}': scene no longer exists; skipped", getDescription());
+        return false;
     }
+
+    if (snapshot_) {
+        // Redo - restore the original quad (same id, same state)
+        return restoreSnapshot(*scene, *snapshot_) != nullptr;
+    }
+
+    QuadManager& manager = scene->getQuadManager();
+    Quad* quad = name_.empty() ? manager.createQuad() : manager.createQuad(name_);
+    if (!quad) return false;
+    created_.quadId = quad->getId();
+    return true;
 }
 
-void CreateQuadCommand::undo() {
-    if (!manager_) return;
-
-    // Store the quad's current state before deleting
-    Quad* quad = manager_->getQuad(createdQuadId_);
-    if (quad) {
-        storedData_->name = quad->getName();
-        storedData_->zOrder = quad->getZOrder();
-        storedData_->visible = quad->isVisible();
-        storedData_->locked = quad->isLocked();
-        storedData_->opacity = quad->getOpacity();
-        storedData_->corners = quad->getGeometry().getCorners();
-        storedData_->meshResolution = quad->getGeometry().getMeshResolution();
-        storedData_->meshMode = quad->getGeometry().getMeshMode();
-        storedData_->meshVertices = quad->getGeometry().getMeshVertices();
-        storedData_->texture = quad->getTexture();
-    }
-
-    manager_->deleteQuad(createdQuadId_);
+bool CreateQuadCommand::undo() {
+    Quad* quad = resolveForCommand(created_, getDescription());
+    if (!quad) return false;
+    snapshot_ = *quad;
+    created_.scene()->deleteQuad(created_.quadId);
+    return true;
 }
 
 std::string CreateQuadCommand::getDescription() const {
@@ -181,95 +160,111 @@ std::string CreateQuadCommand::getDescription() const {
 }
 
 // DeleteQuadCommand implementation
-DeleteQuadCommand::DeleteQuadCommand(QuadManager* manager, const UUID& quadId)
-    : manager_(manager)
-    , quadId_(quadId)
-    , storedData_(std::make_unique<QuadData>())
+DeleteQuadCommand::DeleteQuadCommand(const QuadRef& target)
+    : target_(target)
 {
-    // Store the quad's state immediately
-    if (manager_) {
-        const Quad* quad = manager_->getQuad(quadId_);
-        if (quad) {
-            storedData_->id = quad->getId();
-            storedData_->name = quad->getName();
-            storedData_->zOrder = quad->getZOrder();
-            storedData_->visible = quad->isVisible();
-            storedData_->locked = quad->isLocked();
-            storedData_->opacity = quad->getOpacity();
-            storedData_->corners = quad->getGeometry().getCorners();
-            storedData_->meshResolution = quad->getGeometry().getMeshResolution();
-            storedData_->meshMode = quad->getGeometry().getMeshMode();
-            storedData_->meshVertices = quad->getGeometry().getMeshVertices();
-            storedData_->texture = quad->getTexture();
-        }
-    }
 }
 
-void DeleteQuadCommand::execute() {
-    if (!manager_) return;
+bool DeleteQuadCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
 
-    // Store current state in case we need to restore
-    const Quad* quad = manager_->getQuad(quadId_);
-    if (quad) {
-        storedData_->id = quad->getId();
-        storedData_->name = quad->getName();
-        storedData_->zOrder = quad->getZOrder();
-        storedData_->visible = quad->isVisible();
-        storedData_->locked = quad->isLocked();
-        storedData_->opacity = quad->getOpacity();
-        storedData_->corners = quad->getGeometry().getCorners();
-        storedData_->meshResolution = quad->getGeometry().getMeshResolution();
-        storedData_->meshMode = quad->getGeometry().getMeshMode();
-        storedData_->meshVertices = quad->getGeometry().getMeshVertices();
-        storedData_->texture = quad->getTexture();
+    // Snapshot at execute time (not construction) so the saved z-order is the
+    // quad's position right before this delete; compound undo runs in reverse.
+    Scene* scene = target_.scene();
+    snapshot_ = *quad;
+    groupIds_.clear();
+    for (const QuadGroup* group : scene->getGroupsForQuad(target_.quadId)) {
+        groupIds_.push_back(group->getId());
     }
-
-    manager_->deleteQuad(quadId_);
+    scene->deleteQuad(target_.quadId);
+    return true;
 }
 
-void DeleteQuadCommand::undo() {
-    if (!manager_) return;
-
-    // Recreate the quad
-    Quad* quad = manager_->createQuad(storedData_->name);
-    if (quad) {
-        quad->setZOrder(storedData_->zOrder);
-        quad->setVisible(storedData_->visible);
-        quad->setLocked(storedData_->locked);
-        quad->setOpacity(storedData_->opacity);
-        quad->getGeometry().setCorners(storedData_->corners);
-        quad->getGeometry().setMeshResolution(storedData_->meshResolution);
-        quad->getGeometry().setMeshMode(storedData_->meshMode);
-        quad->getGeometry().setMeshVertices(storedData_->meshVertices);
-        quad->getTexture() = storedData_->texture;
-
-        // Update the stored ID to match the new quad
-        quadId_ = quad->getId();
+bool DeleteQuadCommand::undo() {
+    if (!snapshot_) return false;
+    Scene* scene = target_.scene();
+    if (!scene) {
+        LOG_WARNING("'{}': scene no longer exists; skipped", getDescription());
+        return false;
     }
+    Quad* restored = restoreSnapshot(*scene, *snapshot_);
+    if (!restored) return false;
+
+    for (const UUID& groupId : groupIds_) {
+        scene->addQuadToGroup(groupId, target_.quadId);  // skips groups deleted since
+    }
+    scene->getQuadManager().addToSelection(target_.quadId);
+    return true;
 }
 
 std::string DeleteQuadCommand::getDescription() const {
     return "Delete quad";
 }
 
-// SetQuadVisibilityCommand implementation
-SetQuadVisibilityCommand::SetQuadVisibilityCommand(Quad* quad, bool newVisible)
-    : quad_(quad)
-    , oldVisible_(quad ? quad->isVisible() : true)
-    , newVisible_(newVisible)
+// DuplicateQuadCommand implementation
+DuplicateQuadCommand::DuplicateQuadCommand(const QuadRef& source)
+    : source_(source)
+    , duplicate_{source.resolver, source.sceneId, UUID::generate()}
 {
 }
 
-void SetQuadVisibilityCommand::execute() {
-    if (quad_) {
-        quad_->setVisible(newVisible_);
+bool DuplicateQuadCommand::execute() {
+    Scene* scene = source_.scene();
+    if (!scene) {
+        LOG_WARNING("'{}': scene no longer exists; skipped", getDescription());
+        return false;
     }
+
+    Quad* dup = nullptr;
+    if (snapshot_) {
+        // Redo - restore the same duplicate (same id, same state)
+        dup = restoreSnapshot(*scene, *snapshot_);
+    } else {
+        if (!resolveForCommand(source_, getDescription())) return false;
+        dup = scene->getQuadManager().duplicateQuad(source_.quadId, duplicate_.quadId);
+    }
+    if (!dup) return false;
+
+    scene->getQuadManager().selectQuad(dup->getId());
+    return true;
 }
 
-void SetQuadVisibilityCommand::undo() {
-    if (quad_) {
-        quad_->setVisible(oldVisible_);
-    }
+bool DuplicateQuadCommand::undo() {
+    Quad* dup = resolveForCommand(duplicate_, getDescription());
+    if (!dup) return false;
+    snapshot_ = *dup;
+    Scene* scene = duplicate_.scene();
+    scene->deleteQuad(duplicate_.quadId);
+    scene->getQuadManager().selectQuad(source_.quadId);  // no-op if the source is gone
+    return true;
+}
+
+std::string DuplicateQuadCommand::getDescription() const {
+    return "Duplicate quad";
+}
+
+// SetQuadVisibilityCommand implementation
+SetQuadVisibilityCommand::SetQuadVisibilityCommand(const QuadRef& target, bool newVisible)
+    : target_(target)
+    , oldVisible_(true)
+    , newVisible_(newVisible)
+{
+    if (const Quad* quad = target_.quad()) oldVisible_ = quad->isVisible();
+}
+
+bool SetQuadVisibilityCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->setVisible(newVisible_);
+    return true;
+}
+
+bool SetQuadVisibilityCommand::undo() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->setVisible(oldVisible_);
+    return true;
 }
 
 std::string SetQuadVisibilityCommand::getDescription() const {
@@ -277,23 +272,26 @@ std::string SetQuadVisibilityCommand::getDescription() const {
 }
 
 // SetQuadLockedCommand implementation
-SetQuadLockedCommand::SetQuadLockedCommand(Quad* quad, bool newLocked)
-    : quad_(quad)
-    , oldLocked_(quad ? quad->isLocked() : false)
+SetQuadLockedCommand::SetQuadLockedCommand(const QuadRef& target, bool newLocked)
+    : target_(target)
+    , oldLocked_(false)
     , newLocked_(newLocked)
 {
+    if (const Quad* quad = target_.quad()) oldLocked_ = quad->isLocked();
 }
 
-void SetQuadLockedCommand::execute() {
-    if (quad_) {
-        quad_->setLocked(newLocked_);
-    }
+bool SetQuadLockedCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->setLocked(newLocked_);
+    return true;
 }
 
-void SetQuadLockedCommand::undo() {
-    if (quad_) {
-        quad_->setLocked(oldLocked_);
-    }
+bool SetQuadLockedCommand::undo() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->setLocked(oldLocked_);
+    return true;
 }
 
 std::string SetQuadLockedCommand::getDescription() const {
@@ -301,23 +299,26 @@ std::string SetQuadLockedCommand::getDescription() const {
 }
 
 // SetQuadOpacityCommand implementation
-SetQuadOpacityCommand::SetQuadOpacityCommand(Quad* quad, float newOpacity)
-    : quad_(quad)
-    , oldOpacity_(quad ? quad->getOpacity() : 1.0f)
+SetQuadOpacityCommand::SetQuadOpacityCommand(const QuadRef& target, float newOpacity)
+    : target_(target)
+    , oldOpacity_(1.0f)
     , newOpacity_(newOpacity)
 {
+    if (const Quad* quad = target_.quad()) oldOpacity_ = quad->getOpacity();
 }
 
-void SetQuadOpacityCommand::execute() {
-    if (quad_) {
-        quad_->setOpacity(newOpacity_);
-    }
+bool SetQuadOpacityCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->setOpacity(newOpacity_);
+    return true;
 }
 
-void SetQuadOpacityCommand::undo() {
-    if (quad_) {
-        quad_->setOpacity(oldOpacity_);
-    }
+bool SetQuadOpacityCommand::undo() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->setOpacity(oldOpacity_);
+    return true;
 }
 
 std::string SetQuadOpacityCommand::getDescription() const {
@@ -326,7 +327,7 @@ std::string SetQuadOpacityCommand::getDescription() const {
 
 bool SetQuadOpacityCommand::canMergeWith(const Command& other) const {
     auto* otherCmd = dynamic_cast<const SetQuadOpacityCommand*>(&other);
-    return otherCmd && quad_ == otherCmd->quad_;
+    return otherCmd && target_.sameTarget(otherCmd->target_);
 }
 
 void SetQuadOpacityCommand::mergeWith(const Command& other) {
@@ -337,23 +338,25 @@ void SetQuadOpacityCommand::mergeWith(const Command& other) {
 }
 
 // RenameQuadCommand implementation
-RenameQuadCommand::RenameQuadCommand(Quad* quad, const std::string& newName)
-    : quad_(quad)
-    , oldName_(quad ? quad->getName() : "")
+RenameQuadCommand::RenameQuadCommand(const QuadRef& target, const std::string& newName)
+    : target_(target)
     , newName_(newName)
 {
+    if (const Quad* quad = target_.quad()) oldName_ = quad->getName();
 }
 
-void RenameQuadCommand::execute() {
-    if (quad_) {
-        quad_->setName(newName_);
-    }
+bool RenameQuadCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->setName(newName_);
+    return true;
 }
 
-void RenameQuadCommand::undo() {
-    if (quad_) {
-        quad_->setName(oldName_);
-    }
+bool RenameQuadCommand::undo() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->setName(oldName_);
+    return true;
 }
 
 std::string RenameQuadCommand::getDescription() const {
@@ -361,27 +364,30 @@ std::string RenameQuadCommand::getDescription() const {
 }
 
 // SetMeshResolutionCommand implementation
-SetMeshResolutionCommand::SetMeshResolutionCommand(Quad* quad, int newResolution)
-    : quad_(quad)
-    , oldResolution_(quad ? quad->getGeometry().getMeshResolution() : 16)
+SetMeshResolutionCommand::SetMeshResolutionCommand(const QuadRef& target, int newResolution)
+    : target_(target)
+    , oldResolution_(16)
     , newResolution_(newResolution)
 {
-    if (quad_) {
-        oldMeshVertices_ = quad_->getGeometry().getMeshVertices();
+    if (const Quad* quad = target_.quad()) {
+        oldResolution_ = quad->getGeometry().getMeshResolution();
+        oldMeshVertices_ = quad->getGeometry().getMeshVertices();
     }
 }
 
-void SetMeshResolutionCommand::execute() {
-    if (quad_) {
-        quad_->getGeometry().setMeshResolution(newResolution_);
-    }
+bool SetMeshResolutionCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->getGeometry().setMeshResolution(newResolution_);
+    return true;
 }
 
-void SetMeshResolutionCommand::undo() {
-    if (quad_) {
-        quad_->getGeometry().setMeshResolution(oldResolution_);
-        quad_->getGeometry().setMeshVertices(oldMeshVertices_);
-    }
+bool SetMeshResolutionCommand::undo() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->getGeometry().setMeshResolution(oldResolution_);
+    quad->getGeometry().setMeshVertices(oldMeshVertices_);
+    return true;
 }
 
 std::string SetMeshResolutionCommand::getDescription() const {
@@ -389,30 +395,32 @@ std::string SetMeshResolutionCommand::getDescription() const {
 }
 
 // MoveQuadCommand implementation
-MoveQuadCommand::MoveQuadCommand(Quad* quad, const Vec2& delta)
-    : quad_(quad)
+MoveQuadCommand::MoveQuadCommand(const QuadRef& target, const Vec2& delta)
+    : target_(target)
+    , oldCorners_{}
     , totalDelta_(delta)
 {
-    if (quad_) {
-        oldCorners_ = quad_->getGeometry().getCorners();
+    if (const Quad* quad = target_.quad()) {
+        oldCorners_ = quad->getGeometry().getCorners();
     }
 }
 
-void MoveQuadCommand::execute() {
-    if (quad_) {
-        auto& geometry = quad_->getGeometry();
-        auto corners = oldCorners_;
-        for (auto& corner : corners) {
-            corner += totalDelta_;
-        }
-        geometry.setCorners(corners);
+bool MoveQuadCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    auto corners = oldCorners_;
+    for (auto& corner : corners) {
+        corner += totalDelta_;
     }
+    quad->getGeometry().setCorners(corners);
+    return true;
 }
 
-void MoveQuadCommand::undo() {
-    if (quad_) {
-        quad_->getGeometry().setCorners(oldCorners_);
-    }
+bool MoveQuadCommand::undo() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->getGeometry().setCorners(oldCorners_);
+    return true;
 }
 
 std::string MoveQuadCommand::getDescription() const {
@@ -421,7 +429,7 @@ std::string MoveQuadCommand::getDescription() const {
 
 bool MoveQuadCommand::canMergeWith(const Command& other) const {
     auto* otherMove = dynamic_cast<const MoveQuadCommand*>(&other);
-    return otherMove && quad_ == otherMove->quad_;
+    return otherMove && target_.sameTarget(otherMove->target_);
 }
 
 void MoveQuadCommand::mergeWith(const Command& other) {
