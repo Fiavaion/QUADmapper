@@ -853,6 +853,19 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
             ImGui::EndCombo();
         }
 
+        // Projector calibration (ADR-052 §6)
+        ImGui::Separator();
+        const bool calibratingThis = es.calibratingOutputId == selectedOutput->getId();
+        ImGui::BeginDisabled(calibratingThis);
+        if (ImGui::Button("Calibrate Projector...")) {
+            es.beginCalibration(selectedOutput->getId(), selectedOutput->getProjector());
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Pair points on the 3D objects with projector pixels to solve "
+                              "this projector's lens and position");
+        ImGui::SameLine();
+        ImGui::TextDisabled(selectedOutput->getProjector().calibrated ? "calibrated" : "not calibrated");
+
         // Enabled checkbox
         ImGui::Separator();
         bool enabled = selectedOutput->isEnabled();

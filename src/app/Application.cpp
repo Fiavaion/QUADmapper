@@ -252,6 +252,7 @@ static void applyQuadData(const Quad& src, Quad* dst) {
 static int syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
                                SourceManager* sm) {
     es.selectedObjectId = UUID();
+    es.endCalibration();  // the session's lens and selection belong to the old project
     es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
@@ -1108,7 +1109,19 @@ void Application::render() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
-    claimCanvasEditingKeys(quadManager.getPrimarySelectedQuad() != nullptr);
+    {
+        // The canvas takes Tab/arrows for the selected quad's vertices or, while
+        // calibrating the projector it shows, for the calibration points (ADR-052).
+        bool canvasKeys = quadManager.getPrimarySelectedQuad() != nullptr;
+        if (!es.calibratingOutputId.isNull()) {
+            const OutputWindow* calibrated =
+                m_outputManager ? m_outputManager->getOutput(es.calibratingOutputId) : nullptr;
+            canvasKeys = calibrated &&
+                         es.activeScene().getAssignedOutputId() == es.calibratingOutputId &&
+                         !calibrated->getCalibrationPoints().empty();
+        }
+        claimCanvasEditingKeys(canvasKeys);
+    }
 
     // Create dockspace over the entire viewport
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -1163,6 +1176,7 @@ void Application::render() {
         ImGui::DockBuilderDockWindow("Quad List", dockLeft);
         ImGui::DockBuilderDockWindow("Video Player", dockLeft);  // Tabbed with Quad List
         ImGui::DockBuilderDockWindow("Properties", dockRight);
+        ImGui::DockBuilderDockWindow("Calibration", dockRight);  // Tabbed with Properties
         ImGui::DockBuilderDockWindow("Resources", dockBottom);  // Tabbed panel with Project, Media, Outputs
 
         // Finish the layout
@@ -1313,10 +1327,19 @@ void Application::render() {
         quadManager.selectAll();
     }
 
-    if (editingKeys && ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
-        quadManager.hasSelection()) {
-        es.deleteSelectedQuads();
-        m_project->setModified(true);
+    if (editingKeys && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
+        if (!es.calibratingOutputId.isNull()) {
+            // Calibrating: Delete removes the selected calibration point, never quads.
+            OutputWindow* calibrated = m_outputManager->getOutput(es.calibratingOutputId);
+            if (calibrated && es.calibration.selected >= 0) {
+                es.calibration.removePoint(calibrated->getCalibrationPoints(),
+                                           es.calibration.selected);
+                m_project->setModified(true);
+            }
+        } else if (quadManager.hasSelection()) {
+            es.deleteSelectedQuads();
+            m_project->setModified(true);
+        }
     }
 
     // F11 toggles perform mode and Esc leaves it, even with a popup open: the way out
@@ -1325,8 +1348,17 @@ void Application::render() {
     if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F11, false)) {
         m_outputManager->handleF11Key();
     }
+    // While calibrating, the editor's Esc belongs to calibration: it cancels a pick in
+    // progress, else leaves calibration, and never also leaves perform mode (Esc on an
+    // output window still does).
     if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        m_outputManager->handleEscapeKey();
+        if (es.calibratingOutputId.isNull()) {
+            m_outputManager->handleEscapeKey();
+        } else if (es.calibration.pick != CalibrationSession::Pick::None) {
+            es.calibration.cancelPick();
+        } else {
+            es.endCalibration();
+        }
     }
 
     // Z-order keyboard shortcuts
@@ -1418,6 +1450,15 @@ void Application::render() {
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
         es.inspectorPanel.render(ctx);
+    }
+
+    // ============ Calibration Panel (only while calibrating, ADR-052) ============
+    {
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        es.calibrationPanel.render(ctx);
+        es.calibrationPanel.drawCanvasOverlay(ctx);
     }
 
     // ============ Resources Panel (Tabbed: Project, Media, Outputs) ============
@@ -1799,6 +1840,7 @@ void Application::performNewProject() {
     // Undo commands hold raw quad pointers into the scenes about to be destroyed.
     es.commandHistory.clear();
     es.selectedObjectId = UUID();
+    es.endCalibration();
     es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
@@ -2753,6 +2795,7 @@ void Application::shutdown() {
     m_inputManager.reset();
     m_outputManager.reset();
     m_thumbnailCache.reset();  // Clear GL textures before context destroyed
+    if (m_editorState) m_editorState->calibrationPanel.releaseGlResources();
     m_renderer.reset();
     m_folderWatcher.reset();  // Stop watching before destroying media library
     m_mediaLibrary.reset();

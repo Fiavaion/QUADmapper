@@ -19,6 +19,10 @@ add_library(quadmapper_scene STATIC
     ProjectorCamera.cpp
     ProjectorCalibration.hpp
     ProjectorCalibration.cpp
+    CalibrationSession.hpp
+    CalibrationSession.cpp
+    RayPick.hpp
+    RayPick.cpp
     SmallLinAlg.hpp
     MeshObject.hpp
     ObjLoader.hpp

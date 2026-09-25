@@ -7,6 +7,7 @@
 #include "project/Project.hpp"
 #include "renderer/UvTestGrid.hpp"
 #include "output/OutputManager.hpp"
+#include "output/OutputWindow.hpp"
 #include "source/SourceManager.hpp"
 
 #include <imgui.h>
@@ -83,6 +84,25 @@ void MainMenuBar::render(EditorContext& ctx) {
         if (ImGui::MenuItem("Delete Selected", "Delete", false, es.quadManager().hasSelection())) {
             es.deleteSelectedQuads();
             if (ctx.project) ctx.project->setModified(true);
+        }
+        ImGui::Separator();
+        // Projector calibration (ADR-052): the output the active scene is routed to,
+        // else the first output.
+        OutputWindow* toCalibrate = nullptr;
+        if (ctx.outputManager) {
+            toCalibrate = ctx.outputManager->getOutput(es.activeScene().getAssignedOutputId());
+            if (!toCalibrate && !ctx.outputManager->getOutputs().empty()) {
+                toCalibrate = ctx.outputManager->getOutputs().front().get();
+            }
+        }
+        const bool calibrating = !es.calibratingOutputId.isNull();
+        if (ImGui::MenuItem("Calibrate Projector...", nullptr, calibrating,
+                            calibrating || toCalibrate != nullptr)) {
+            if (calibrating) {
+                es.endCalibration();
+            } else {
+                es.beginCalibration(toCalibrate->getId(), toCalibrate->getProjector());
+            }
         }
         ImGui::EndMenu();
     }

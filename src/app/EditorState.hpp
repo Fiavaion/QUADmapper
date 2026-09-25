@@ -20,11 +20,13 @@
 #include "../core/Types.hpp"   // Vec2
 #include "../core/UUID.hpp"
 #include "../core/CommandHistory.hpp"
+#include "../scene/CalibrationSession.hpp"
 #include "../scene/Commands.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../renderer/Texture.hpp"
 #include "../video/VideoPlayer.hpp"
+#include "../ui/panels/CalibrationPanel.hpp"
 #include "../ui/panels/InspectorPanel.hpp"
 #include "../ui/panels/MainMenuBar.hpp"
 #include "../ui/panels/MediaBinPanel.hpp"
@@ -231,6 +233,7 @@ struct EditorState {
     OutputPreviewPanel outputPreviewPanel;
     VideoPlayerPanel videoPlayerPanel;
     ViewportEditor viewportEditor;  // Non-Panel: pre-NewFrame on-canvas warp surface (ADR-0034)
+    CalibrationPanel calibrationPanel;  // shown while calibrating a projector (ADR-052)
 
     // Panel visibility toggles
     bool showQuadList = true;
@@ -242,6 +245,25 @@ struct EditorState {
     SelectionType currentSelectionType = SelectionType::Quad;
     // The 3D object of the active scene the Inspector edits (ADR-052); null = none.
     UUID selectedObjectId;
+
+    // Projector calibration mode (ADR-052 §6). While an output is being calibrated the
+    // canvas edits that output's calibration points instead of quad vertices.
+    UUID calibratingOutputId;  // null = not calibrating
+    CalibrationSession calibration;
+
+    // Enter calibration on an output. The scene routed to it becomes the active one,
+    // so the canvas shows that projector.
+    void beginCalibration(const UUID& outputId, const ProjectorCamera& projector) {
+        for (auto& s : scenes) {
+            if (s && s->getAssignedOutputId() == outputId) { setActiveScene(s->getId()); break; }
+        }
+        calibratingOutputId = outputId;
+        calibration.begin(projector);
+    }
+    void endCalibration() {
+        calibratingOutputId = UUID::null();
+        calibration.cancelPick();
+    }
 
     // Grid-division insert tool (ADR-038 Tier 1 batch 3b). When armed, a click in
     // the viewport inserts a U (Column) or V (Row) division at the clicked param

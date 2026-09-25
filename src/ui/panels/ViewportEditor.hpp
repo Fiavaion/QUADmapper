@@ -16,6 +16,9 @@ struct EditorContext;
 // by canvasOwnsEditingKeys() (input/VertexKeyboard.hpp) so typing in a panel never
 // nudges a vertex, and Application claims Tab/arrows after NewFrame so a focused
 // panel cannot swallow them. (See ADR-0034 / the CLAUDE.md success metric.)
+// While a projector is being calibrated (EditorState::calibratingOutputId, ADR-052)
+// quad editing is suspended and, when the canvas shows that projector, the same mouse
+// and keyboard model places, drags and nudges its calibration points instead.
 //
 // Does NOT inherit from Panel — panels run post-NewFrame and draw ImGui windows;
 // this draws via the Renderer and toggles GL depth state. It is stateless: all

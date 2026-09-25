@@ -26,6 +26,8 @@ add_library(quadmapper_ui STATIC
     panels/MediaBinPanel.cpp
     panels/ProceduralEditorPanel.hpp
     panels/ProceduralEditorPanel.cpp
+    panels/CalibrationPanel.hpp
+    panels/CalibrationPanel.cpp
     dialogs/PreferencesDialog.hpp
     dialogs/PreferencesDialog.cpp
     dialogs/OutputConfigDialog.hpp

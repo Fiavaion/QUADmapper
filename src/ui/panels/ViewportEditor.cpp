@@ -9,6 +9,7 @@
 #include "scene/QuadGeometry.hpp"
 #include "scene/Commands.hpp"
 #include "scene/Scene.hpp"
+#include "scene/CalibrationSession.hpp"
 #include "renderer/Renderer.hpp"
 #include "renderer/Texture.hpp"
 #include "output/OutputManager.hpp"
@@ -28,6 +29,91 @@
 #include <unordered_map>
 
 namespace quadmapper {
+
+namespace {
+
+// Calibration mode on the canvas (ADR-052 §6): place, drag and nudge the output's
+// calibration pixels with the same press rule and keyboard model as quad vertices.
+// Pixels are canvas-normalised positions times the projector image size.
+void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mouseNorm,
+                           bool mouseDown, bool canvasPress, Project* project) {
+    CalibrationSession& cal = es.calibration;
+    auto& points = output.getCalibrationPoints();
+    const ProjectorIntrinsics& k = output.getProjector().intrinsics;
+    const int count = static_cast<int>(points.size());
+    if (cal.selected >= count) cal.selected = -1;
+    if (cal.dragged >= count) cal.dragged = -1;
+    const Vec2 mousePixel = canvasToPixel(mouseNorm, k);
+    auto changed = [&]() {
+        cal.markChanged();
+        if (project) project->setModified(true);
+    };
+
+    // Second half of Add Point: this press places the picked 3D point's pixel.
+    if (cal.pick == CalibrationSession::Pick::Pixel) {
+        if (canvasPress) {
+            CalibrationPoint point;
+            point.world = cal.pendingWorld;
+            point.pixel = mousePixel;
+            points.push_back(point);
+            cal.selected = static_cast<int>(points.size()) - 1;
+            cal.pick = CalibrationSession::Pick::None;
+            changed();
+        }
+        return;
+    }
+
+    constexpr float HIT_RADIUS = 0.015f;  // as for quad corners, in canvas units
+    if (cal.dragged >= 0) {
+        if (mouseDown) {
+            const Vec2 pixel = cal.dragStartPixel + (mousePixel - cal.dragStartMousePixel);
+            if (pixel != points[cal.dragged].pixel) {
+                points[cal.dragged].pixel = pixel;
+                changed();
+            }
+        } else {
+            cal.dragged = -1;
+        }
+    } else if (canvasPress) {
+        int hit = -1;
+        float closest = HIT_RADIUS;
+        for (int i = 0; i < count; ++i) {
+            const float d = glm::length(mouseNorm - pixelToCanvas(points[i].pixel, k));
+            if (d < closest) {
+                closest = d;
+                hit = i;
+            }
+        }
+        if (hit >= 0) {
+            cal.selected = cal.dragged = hit;
+            cal.dragStartMousePixel = mousePixel;
+            cal.dragStartPixel = points[hit].pixel;
+        }
+    }
+
+    // Keyboard: Tab / Shift+Tab cycles the points, arrows nudge the selected pixel.
+    const ImGuiIO& io = ImGui::GetIO();
+    if (canvasOwnsEditingKeys(count > 0)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
+            cal.selected = cycleVertex(cal.selected, count, io.KeyShift);
+        }
+        if (cal.selected >= 0 && cal.selected < count) {
+            const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+            const bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+            const bool left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true);
+            const bool right = ImGui::IsKeyPressed(ImGuiKey_RightArrow, true);
+            if (up || down || left || right) {
+                const Vec2 delta = nudgeDelta(up, down, left, right,
+                                              nudgeStep(io.KeyShift, io.KeyAlt));
+                points[cal.selected].pixel += Vec2(delta.x * static_cast<float>(k.width),
+                                                   delta.y * static_cast<float>(k.height));
+                changed();
+            }
+        }
+    }
+}
+
+}  // namespace
 
 void ViewportEditor::render(EditorContext& ctx) {
     // Same-named aliases keep the moved render()/interaction body verbatim
@@ -71,10 +157,12 @@ void ViewportEditor::render(EditorContext& ctx) {
     float canvasAspect = 16.0f / 9.0f;
     const ProjectorCamera defaultProjector;
     const ProjectorCamera* canvasProjector = &defaultProjector;
+    OutputWindow* canvasOutput = nullptr;
     if (m_outputManager) {
         const UUID outId = es.activeScene().getAssignedOutputId();
         if (!outId.isNull()) {
-            if (const OutputWindow* ow = m_outputManager->getOutput(outId)) {
+            if (OutputWindow* ow = m_outputManager->getOutput(outId)) {
+                canvasOutput = ow;
                 canvasProjector = &ow->getProjector();
                 IVec2 res = ow->getEffectiveResolution();
                 if (res.x > 0 && res.y > 0) {
@@ -126,6 +214,9 @@ void ViewportEditor::render(EditorContext& ctx) {
     auto& snapTargetPos = es.snapTargetPos;
     auto& meshDragStartOffset = es.meshDragStartOffset;
 
+    // Projector calibration suspends quad editing (ADR-052 §6).
+    const bool calibrating = !es.calibratingOutputId.isNull();
+
     // Disable depth test for 2D rendering
     glDisable(GL_DEPTH_TEST);
 
@@ -156,8 +247,10 @@ void ViewportEditor::render(EditorContext& ctx) {
 
         m_renderer->renderQuads(quadManager, texturePtrs);
 
-        // Render handles for selected quad based on mode
-        Quad* selectedQuadForHandles = quadManager.getPrimarySelectedQuad();
+        // Render handles for selected quad based on mode (none while calibrating, when
+        // the canvas edits calibration points instead).
+        Quad* selectedQuadForHandles =
+            calibrating ? nullptr : quadManager.getPrimarySelectedQuad();
         if (selectedQuadForHandles) {
             MeshMode mode = selectedQuadForHandles->getGeometry().getMeshMode();
             if (mode == MeshMode::MESH_EDIT) {
@@ -219,6 +312,21 @@ void ViewportEditor::render(EditorContext& ctx) {
         // start only on such a press, so a slider or a bin clip dragged across a handle
         // never grabs it and clicks on overlays above the canvas never reselect quads.
         const bool canvasPress = mousePressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
+
+        // Calibrating: the canvas edits the calibration points of the projector it shows
+        // (when it shows the one being calibrated), and quad vertices stay untouched.
+        if (calibrating) {
+            if (canvasOutput && canvasOutput->getId() == es.calibratingOutputId) {
+                editCalibrationPoints(es, *canvasOutput, mouseNorm, mouseDown, canvasPress,
+                                      m_project);
+            }
+            cornerHoveredVertex = cornerDraggedVertex = -1;
+            meshHoveredVertex = meshDraggedVertex = -1;
+            es.bezierHovered = es.bezierDragged = -1;
+            snapActive = false;
+            glEnable(GL_DEPTH_TEST);
+            return;
+        }
 
         constexpr float HIT_RADIUS = 0.015f;  // Slightly larger hit radius for corners
         constexpr float SNAP_RADIUS = 0.02f;  // Snap threshold for vertex snapping
