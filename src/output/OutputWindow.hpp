@@ -3,6 +3,7 @@
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include "core/Result.hpp"
+#include "scene/ProjectorCamera.hpp"
 #include <string>
 #include <vector>
 #include <functional>
@@ -205,12 +206,23 @@ public:
      */
     const KeyCallback& getKeyCallback() const { return keyCallback_; }
 
+    // The physical projector behind this output, modelled as a camera (ADR-052): its
+    // lens and pose place 3D objects, and the point pairs it was calibrated from.
+    ProjectorCamera& getProjector() { return projector_; }
+    const ProjectorCamera& getProjector() const { return projector_; }
+    std::vector<CalibrationPoint>& getCalibrationPoints() { return calibrationPoints_; }
+    const std::vector<CalibrationPoint>& getCalibrationPoints() const { return calibrationPoints_; }
+
 private:
     // Static GLFW key callback handler
     static void glfwKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
     // Identity
     UUID id_;
     std::string name_;
+
+    // Projector model for 3D objects (ADR-052)
+    ProjectorCamera projector_;
+    std::vector<CalibrationPoint> calibrationPoints_;
 
     // Display settings
     IVec2 resolution_ = IVec2(1920, 1080);

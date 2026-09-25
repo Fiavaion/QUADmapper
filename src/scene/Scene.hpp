@@ -5,6 +5,7 @@
 #include "Quad.hpp"
 #include "QuadGroup.hpp"
 #include "QuadManager.hpp"
+#include "MeshObject.hpp"
 #include <string>
 #include <vector>
 #include <memory>
@@ -83,6 +84,13 @@ public:
     // Generate unique group name
     std::string generateUniqueGroupName() const;
 
+    // 3D objects (ADR-052): imported meshes, drawn by each output from its projector.
+    MeshObject* createObject(const std::string& name = "Object");
+    MeshObject* adoptObject(std::unique_ptr<MeshObject> object);  // e.g. from a loader
+    void deleteObject(const UUID& id);
+    MeshObject* getObject(const UUID& id);
+    const std::vector<std::unique_ptr<MeshObject>>& getObjects() const { return objects_; }
+
 private:
     UUID id_;
     std::string name_;
@@ -92,6 +100,7 @@ private:
     QuadManager quadManager_;
     std::vector<std::unique_ptr<QuadGroup>> groups_;
     int nextGroupNumber_ = 1;
+    std::vector<std::unique_ptr<MeshObject>> objects_;
 };
 
 } // namespace quadmapper

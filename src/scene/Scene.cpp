@@ -182,4 +182,29 @@ std::string Scene::generateUniqueGroupName() const {
     return oss.str();
 }
 
+MeshObject* Scene::createObject(const std::string& name) {
+    auto object = std::make_unique<MeshObject>();
+    object->setName(name);
+    return adoptObject(std::move(object));
+}
+
+MeshObject* Scene::adoptObject(std::unique_ptr<MeshObject> object) {
+    if (!object) return nullptr;
+    objects_.push_back(std::move(object));
+    return objects_.back().get();
+}
+
+void Scene::deleteObject(const UUID& id) {
+    objects_.erase(std::remove_if(objects_.begin(), objects_.end(),
+                                  [&](const auto& o) { return o->getId() == id; }),
+                   objects_.end());
+}
+
+MeshObject* Scene::getObject(const UUID& id) {
+    for (const auto& object : objects_) {
+        if (object->getId() == id) return object.get();
+    }
+    return nullptr;
+}
+
 } // namespace quadmapper
