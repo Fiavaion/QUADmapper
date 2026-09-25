@@ -124,9 +124,21 @@ public:
     // corners, so a corner-pinned flat surface is perspective-correct; concave or
     // degenerate corners fall back to the bilinear patch. With bezier edges enabled,
     // the edge curves' deviations from their chords are blended over that base as a
-    // Coons patch. The renderer tessellates CORNERS_ONLY quads via this (the render
-    // density is decoupled from the control grid).
+    // Coons patch.
     Vec2 surfacePoint(float u, float v) const;
+
+    // One tessellation vertex: its position, and q = 1/w of the projective base (1 for
+    // the bilinear fallback). Interpolating (u*q, v*q, q) linearly across a triangle and
+    // dividing by q per fragment reproduces the homography exactly inside it.
+    struct SurfaceSample {
+        Vec2 position;
+        float q;
+    };
+
+    // (n+1)x(n+1) row-major samples of surfacePoint over u,v = i/n, solving the
+    // homography once. The renderer tessellates CORNERS_ONLY quads with this (the
+    // render density is decoupled from the control grid).
+    std::vector<SurfaceSample> sampleSurface(int n) const;
 
     // Inverse of the corner bilinear map: the (u,v) parameters of point p inside
     // the quad [TL,TR,BR,BL] (u runs TL->TR, v runs TL->BL). Returns (-1,-1) if p
@@ -150,8 +162,8 @@ private:
     bool bezierEnabled_ = false;
     std::array<Vec2, 8> bezierOffsets_;  // 2 per edge; offset from 1/3 & 2/3 points
 
-    // Cubic-bezier point on edge e at parameter t (uses corners + control offsets).
-    Vec2 bezierEdgePoint(int edge, float t) const;
+    // The 8 effective bezier control points (2 per edge, edges in corner order).
+    std::array<Vec2, 8> bezierControls() const;
 
     static std::vector<float> evenCoords(int n);
     void initializeMeshVertices();

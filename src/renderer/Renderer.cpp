@@ -164,7 +164,7 @@ void Renderer::createQuadBuffers() {
 
     // TexCoord attribute
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, texCoord));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, texCoord));
 
     glBindVertexArray(0);
 }
@@ -212,16 +212,18 @@ void Renderer::updateQuadBuffers(const Quad& quad) {
         constexpr int N = 32;  // sub-divisions per axis (33×33 verts; within buffers)
         const int line = N + 1;
         vertices_.resize(static_cast<size_t>(line) * line);
+        const auto samples = geometry.sampleSurface(N);
         for (int r = 0; r < line; ++r) {
             for (int c = 0; c < line; ++c) {
                 const float u = static_cast<float>(c) / N;
                 const float v = static_cast<float>(r) / N;
-                Vec2 p = geometry.surfacePoint(u, v);
                 const int index = r * line + c;
-                vertices_[index].position[0] = p.x;
-                vertices_[index].position[1] = p.y;
-                vertices_[index].texCoord[0] = u;
-                vertices_[index].texCoord[1] = v;
+                const QuadGeometry::SurfaceSample& s = samples[index];
+                vertices_[index].position[0] = s.position.x;
+                vertices_[index].position[1] = s.position.y;
+                vertices_[index].texCoord[0] = u * s.q;
+                vertices_[index].texCoord[1] = v * s.q;
+                vertices_[index].texCoord[2] = s.q;
             }
         }
         indices_.resize(static_cast<size_t>(N) * N * 6);
@@ -260,6 +262,7 @@ void Renderer::updateQuadBuffers(const Quad& quad) {
             vertices_[index].position[1] = meshPositions[index].y;
             vertices_[index].texCoord[0] = uCoords[col];
             vertices_[index].texCoord[1] = vCoords[row];
+            vertices_[index].texCoord[2] = 1.0f;
         }
     }
 

@@ -1,9 +1,11 @@
 #version 330 core
 
 layout(location = 0) in vec2 a_Position;
-layout(location = 1) in vec2 a_TexCoord;
+layout(location = 1) in vec3 a_TexCoord;  // (u*q, v*q, q)
 
-out vec2 v_TexCoord;
+// Projective texture coordinate: interpolated linearly across the triangle and
+// divided by .z per fragment, which reproduces the corner homography exactly.
+out vec3 v_TexCoordQ;
 
 // Editor view transform (ADR-041). a_Position is in [0,1] canvas space; the view
 // maps it into the viewport region. Defaults (1,1)/(0,0) = full-region identity,
@@ -16,5 +18,5 @@ void main() {
     vec2 ndc = view * 2.0 - 1.0;
     ndc.y = -ndc.y;
     gl_Position = vec4(ndc, 0.0, 1.0);
-    v_TexCoord = a_TexCoord;
+    v_TexCoordQ = a_TexCoord;
 }

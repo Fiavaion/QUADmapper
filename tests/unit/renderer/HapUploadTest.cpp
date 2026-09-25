@@ -340,11 +340,12 @@ TEST(HapUploadTest, A5VisualCaptureThroughRealPipeline) {
     ASSERT_TRUE(fbo.resize(CW, CH));
 
     // Shared full-frame quad geometry + VAO for the raw control path.
+    // Position in [0,1], projective UV (u, v, q) with q = 1 (quad.vert contract).
     const float verts[] = {
-        0.0f, 0.0f,  0.0f, 0.0f,
-        1.0f, 0.0f,  1.0f, 0.0f,
-        1.0f, 1.0f,  1.0f, 1.0f,
-        0.0f, 1.0f,  0.0f, 1.0f,
+        0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f,  1.0f, 0.0f, 1.0f,
+        1.0f, 1.0f,  1.0f, 1.0f, 1.0f,
+        0.0f, 1.0f,  0.0f, 1.0f, 1.0f,
     };
     const unsigned int idx[] = {0, 1, 2, 0, 2, 3};
 
@@ -384,10 +385,10 @@ TEST(HapUploadTest, A5VisualCaptureThroughRealPipeline) {
         glGenBuffers(1, &ebo);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
                               reinterpret_cast<void*>(0));
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
                               reinterpret_cast<void*>(2 * sizeof(float)));
         glEnableVertexAttribArray(1);
 

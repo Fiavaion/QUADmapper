@@ -290,14 +290,13 @@ Vec2 QuadGeometry::transformUVToPosition(const Vec2& uv) const {
     return glm::mix(top, bottom, uv.y);
 }
 
-Vec2 QuadGeometry::bezierEdgePoint(int edge, float t) const {
-    const Vec2 p0 = corners_[edge];
-    const Vec2 p3 = corners_[(edge + 1) % 4];
-    const Vec2 c1 = getBezierControl(edge, 0);
-    const Vec2 c2 = getBezierControl(edge, 1);
-    const float mt = 1.0f - t;
-    return mt * mt * mt * p0 + 3.0f * mt * mt * t * c1
-         + 3.0f * mt * t * t * c2 + t * t * t * p3;
+std::array<Vec2, 8> QuadGeometry::bezierControls() const {
+    std::array<Vec2, 8> controls;
+    for (int edge = 0; edge < 4; ++edge) {
+        controls[edge * 2] = getBezierControl(edge, 0);
+        controls[edge * 2 + 1] = getBezierControl(edge, 1);
+    }
+    return controls;
 }
 
 Vec2 QuadGeometry::getBezierControl(int edge, int which) const {
@@ -336,9 +335,10 @@ struct Homography {
 };
 
 // Solves the square->quad map for corners [TL, TR, BR, BL] = (0,0),(1,0),(1,1),(0,1).
-// Returns false when no orientation-preserving map exists (concave, self-intersecting
-// or collapsed corners): w is affine in (u,v), so positive at the four corners means
-// positive over the whole square.
+// Returns false unless w > 0 over the whole square, i.e. the corners form a convex
+// quad (either winding); concave, self-intersecting or collapsed corners have no such
+// map. w is affine in (u,v), so checking the four corner weights suffices. The margin
+// is relative to the largest weight so it does not depend on which corner is TL.
 bool squareToQuad(const std::array<Vec2, 4>& q, Homography& hm) {
     const float sx = q[0].x - q[1].x + q[2].x - q[3].x;
     const float sy = q[0].y - q[1].y + q[2].y - q[3].y;
@@ -354,45 +354,93 @@ bool squareToQuad(const std::array<Vec2, 4>& q, Homography& hm) {
     hm.d = q[1].y - q[0].y + hm.g * q[1].y;
     hm.e = q[3].y - q[0].y + hm.h * q[3].y;
     hm.f = q[0].y;
-    constexpr float kMinW = 1e-4f;
-    return 1.0f + hm.g > kMinW && 1.0f + hm.h > kMinW && 1.0f + hm.g + hm.h > kMinW;
+    const float w1 = 1.0f + hm.g, w2 = 1.0f + hm.g + hm.h, w3 = 1.0f + hm.h;
+    constexpr float kMinRelativeW = 1e-4f;
+    return std::min({1.0f, w1, w2, w3}) > kMinRelativeW * std::max({1.0f, w1, w2, w3});
 }
+
+// A quad's corner surface, set up once so a whole tessellation solves the homography
+// and gathers the bezier controls a single time.
+class CornerSurface {
+public:
+    // controls: the 8 effective bezier control points, or nullptr for straight edges.
+    CornerSurface(const std::array<Vec2, 4>& corners, const std::array<Vec2, 8>* controls)
+        : corners_(corners), controls_(controls) {
+        projective_ = squareToQuad(corners_, hm_);
+        if (projective_) w_ = {1.0f, 1.0f + hm_.g, 1.0f + hm_.g + hm_.h, 1.0f + hm_.h};
+    }
+
+    QuadGeometry::SurfaceSample sample(float u, float v) const {
+        Vec2 base;
+        float q = 1.0f;
+        if (projective_) {
+            q = 1.0f / (hm_.g * u + hm_.h * v + 1.0f);
+            base = Vec2(hm_.a * u + hm_.b * v + hm_.c, hm_.d * u + hm_.e * v + hm_.f) * q;
+        } else {
+            base = glm::mix(glm::mix(corners_[0], corners_[1], u),
+                            glm::mix(corners_[3], corners_[2], u), v);
+        }
+        if (!controls_) return {base, q};
+
+        // Coons patch of the edge curves' deviations from their straight chords, added
+        // over the base. The base walks each edge with a projective parameter, so each
+        // deviation is sampled at that same chord parameter and the boundary lands
+        // exactly on the bezier curve. With the bilinear fallback (all corner weights 1)
+        // this is identical to the classic bilinearly-blended Coons patch. Edges run
+        // TL->TR (0), TR->BR (1), BR->BL (2), BL->TL (3); 2 and 3 are reversed relative
+        // to increasing u / v.
+        const Vec2 dTop    = deviation(0, chordParam(0, 1, u));
+        const Vec2 dRight  = deviation(1, chordParam(1, 2, v));
+        const Vec2 dBottom = deviation(2, 1.0f - chordParam(3, 2, u));
+        const Vec2 dLeft   = deviation(3, 1.0f - chordParam(0, 3, v));
+        return {base + (1.0f - v) * dTop + v * dBottom + (1.0f - u) * dLeft + u * dRight, q};
+    }
+
+private:
+    // Chord parameter of the base point at parameter t along the edge corner i -> j.
+    float chordParam(int i, int j, float t) const {
+        return w_[j] * t / ((1.0f - t) * w_[i] + t * w_[j]);
+    }
+
+    // Offset of bezier edge `edge` from its straight chord at parameter s.
+    Vec2 deviation(int edge, float s) const {
+        const Vec2& p0 = corners_[edge];
+        const Vec2& p3 = corners_[(edge + 1) % 4];
+        const Vec2& c1 = (*controls_)[edge * 2];
+        const Vec2& c2 = (*controls_)[edge * 2 + 1];
+        const float ms = 1.0f - s;
+        const Vec2 curve = ms * ms * ms * p0 + 3.0f * ms * ms * s * c1
+                         + 3.0f * ms * s * s * c2 + s * s * s * p3;
+        return curve - glm::mix(p0, p3, s);
+    }
+
+    const std::array<Vec2, 4>& corners_;
+    const std::array<Vec2, 8>* controls_;
+    Homography hm_{};
+    bool projective_ = false;
+    std::array<float, 4> w_{1.0f, 1.0f, 1.0f, 1.0f};
+};
 
 }  // namespace
 
 Vec2 QuadGeometry::surfacePoint(float u, float v) const {
-    Homography hm{};
-    const bool projective = squareToQuad(corners_, hm);
-    const Vec2 base = projective
-        ? Vec2((hm.a * u + hm.b * v + hm.c), (hm.d * u + hm.e * v + hm.f))
-              / (hm.g * u + hm.h * v + 1.0f)
-        : transformUVToPosition(Vec2(u, v));
-    if (!bezierEnabled_) return base;
+    const std::array<Vec2, 8> controls = bezierControls();
+    return CornerSurface(corners_, bezierEnabled_ ? &controls : nullptr)
+        .sample(u, v).position;
+}
 
-    // Coons patch of the edge curves' deviations from their straight chords, added
-    // over the base. The base walks each edge with a projective parameter, so each
-    // deviation is sampled at that same chord parameter and the boundary lands exactly
-    // on the bezier curve. With the bilinear fallback (all corner weights 1) this is
-    // identical to the classic bilinearly-blended Coons patch.
-    const float w[4] = {1.0f,
-                        projective ? 1.0f + hm.g : 1.0f,
-                        projective ? 1.0f + hm.g + hm.h : 1.0f,
-                        projective ? 1.0f + hm.h : 1.0f};
-    // Chord parameter of the base point at parameter t along the edge corner i -> j.
-    auto chordParam = [&w](int i, int j, float t) {
-        return w[j] * t / ((1.0f - t) * w[i] + t * w[j]);
-    };
-    auto deviation = [this](int edge, float s) {
-        return bezierEdgePoint(edge, s)
-             - glm::mix(corners_[edge], corners_[(edge + 1) % 4], s);
-    };
-    // Edges run TL->TR (0), TR->BR (1), BR->BL (2), BL->TL (3); 2 and 3 are reversed
-    // relative to increasing u / v.
-    const Vec2 dTop    = deviation(0, chordParam(0, 1, u));
-    const Vec2 dRight  = deviation(1, chordParam(1, 2, v));
-    const Vec2 dBottom = deviation(2, 1.0f - chordParam(3, 2, u));
-    const Vec2 dLeft   = deviation(3, 1.0f - chordParam(0, 3, v));
-    return base + (1.0f - v) * dTop + v * dBottom + (1.0f - u) * dLeft + u * dRight;
+std::vector<QuadGeometry::SurfaceSample> QuadGeometry::sampleSurface(int n) const {
+    const std::array<Vec2, 8> controls = bezierControls();
+    const CornerSurface surface(corners_, bezierEnabled_ ? &controls : nullptr);
+    std::vector<SurfaceSample> samples;
+    samples.reserve(static_cast<size_t>(n + 1) * (n + 1));
+    for (int r = 0; r <= n; ++r) {
+        for (int c = 0; c <= n; ++c) {
+            samples.push_back(surface.sample(static_cast<float>(c) / n,
+                                             static_cast<float>(r) / n));
+        }
+    }
+    return samples;
 }
 
 std::vector<Vec2> QuadGeometry::generateMeshPositions() const {

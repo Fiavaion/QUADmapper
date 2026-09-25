@@ -14,7 +14,7 @@ namespace quadmapper {
 // Vertex structure for quad mesh
 struct QuadVertex {
     float position[2];
-    float texCoord[2];
+    float texCoord[3];  // (u*q, v*q, q); quad.frag divides by q for projective mapping
 };
 
 class Renderer {

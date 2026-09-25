@@ -57,12 +57,13 @@ RGB renderCropCentre(float cropX, float cropW) {
     Texture tex;
     tex.create(2, 1, 3, texels);
 
-    // Full quad: position in [0,1] (quad.vert maps to NDC), UV in [0,1].
+    // Full quad: position in [0,1] (quad.vert maps to NDC), projective UV (u, v, q)
+    // with q = 1 (no perspective).
     const float verts[] = {
-        0.0f, 0.0f,  0.0f, 0.0f,
-        1.0f, 0.0f,  1.0f, 0.0f,
-        1.0f, 1.0f,  1.0f, 1.0f,
-        0.0f, 1.0f,  0.0f, 1.0f,
+        0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f,  1.0f, 0.0f, 1.0f,
+        1.0f, 1.0f,  1.0f, 1.0f, 1.0f,
+        0.0f, 1.0f,  0.0f, 1.0f, 1.0f,
     };
     const unsigned int idx[] = {0, 1, 2, 0, 2, 3};
 
@@ -75,9 +76,9 @@ RGB renderCropCentre(float cropX, float cropW) {
     glGenBuffers(1, &ebo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), reinterpret_cast<void*>(0));
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), reinterpret_cast<void*>(0));
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
                           reinterpret_cast<void*>(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
 

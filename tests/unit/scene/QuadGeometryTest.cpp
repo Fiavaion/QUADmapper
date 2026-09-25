@@ -621,27 +621,112 @@ TEST(QuadGeometrySurfaceTest, BezierOnParallelogramIsUnchanged) {
     }
 }
 
-TEST(QuadGeometrySurfaceTest, BezierBoundaryStaysOnEdgeCurveWhenKeystoned) {
-    // Over the projective base, each boundary must still trace its bezier curve
-    // exactly (only the parameterisation along it changes).
-    QuadGeometry g = keystonedQuad();
-    g.setBezierEnabled(true);
-    g.setBezierControl(0, 0, Vec2(0.35f, 0.08f));
-    g.setBezierControl(0, 1, Vec2(0.65f, 0.16f));
-    const auto& c = g.getCorners();
-    const Vec2 c1 = g.getBezierControl(0, 0), c2 = g.getBezierControl(0, 1);
+namespace {
 
+// Largest distance from any surface point along edge `edge` to that edge's bezier
+// curve, for boundaries sampled at 11 parameters.
+float maxBoundaryDistanceToCurve(const QuadGeometry& g, int edge) {
+    const auto& c = g.getCorners();
+    const Vec2 p0 = c[edge], p3 = c[(edge + 1) % 4];
+    const Vec2 c1 = g.getBezierControl(edge, 0), c2 = g.getBezierControl(edge, 1);
     std::vector<Vec2> curve;
     for (int i = 0; i <= 4000; ++i) {
         const float t = i / 4000.0f, mt = 1.0f - t;
-        curve.push_back(mt * mt * mt * c[0] + 3.0f * mt * mt * t * c1
-                        + 3.0f * mt * t * t * c2 + t * t * t * c[1]);
+        curve.push_back(mt * mt * mt * p0 + 3.0f * mt * mt * t * c1
+                        + 3.0f * mt * t * t * c2 + t * t * t * p3);
     }
-    for (float u = 0.0f; u <= 1.0f; u += 0.1f) {
-        const Vec2 p = g.surfacePoint(u, 0.0f);
+    float worst = 0.0f;
+    for (int i = 0; i <= 10; ++i) {
+        const float t = i / 10.0f;
+        const Vec2 uv[4] = {Vec2(t, 0.0f), Vec2(1.0f, t), Vec2(t, 1.0f), Vec2(0.0f, t)};
+        const Vec2 p = g.surfacePoint(uv[edge].x, uv[edge].y);
         float best = 1.0f;
         for (const Vec2& q : curve) best = std::min(best, glm::length(p - q));
-        EXPECT_LT(best, 5e-4f) << "u=" << u;
+        worst = std::max(worst, best);
+    }
+    return worst;
+}
+
+// Bows every edge outward by a different amount.
+void curveAllEdges(QuadGeometry& g) {
+    g.setBezierEnabled(true);
+    const Vec2 bows[4] = {Vec2(0.0f, -0.05f), Vec2(0.04f, 0.0f),
+                          Vec2(0.0f, 0.06f), Vec2(-0.03f, 0.0f)};
+    for (int e = 0; e < 4; ++e) {
+        g.setBezierControl(e, 0, g.getBezierControl(e, 0) + bows[e]);
+        g.setBezierControl(e, 1, g.getBezierControl(e, 1) + 0.5f * bows[e]);
+    }
+}
+
+}  // namespace
+
+TEST(QuadGeometrySurfaceTest, BezierBoundariesStayOnEdgeCurvesWhenKeystoned) {
+    // Over the projective base, each boundary must still trace its bezier curve
+    // exactly (only the parameterisation along it changes). Covers the reversed
+    // edges 2 and 3 as well as 0 and 1.
+    QuadGeometry g = keystonedQuad();
+    curveAllEdges(g);
+    for (int e = 0; e < 4; ++e) {
+        EXPECT_LT(maxBoundaryDistanceToCurve(g, e), 5e-4f) << "edge " << e;
+    }
+}
+
+TEST(QuadGeometrySurfaceTest, MirroredKeystoneIsProjectiveAndKeepsBezierBoundaries) {
+    // Dragging corners past each other gives a clockwise (mirrored) quad; it is
+    // still convex, so it gets the projective base too.
+    QuadGeometry g;
+    g.setCorners({Vec2(0.90f, 0.30f), Vec2(0.10f, 0.10f),
+                  Vec2(0.10f, 0.90f), Vec2(0.90f, 0.70f)});
+    const auto& c = g.getCorners();
+    const Vec2 d1 = c[2] - c[0];
+    const Vec2 d2 = c[3] - c[1];
+    const Vec2 intersection = c[0] + (cross2(c[1] - c[0], d2) / cross2(d1, d2)) * d1;
+    const Vec2 centre = g.surfacePoint(0.5f, 0.5f);
+    EXPECT_NEAR(centre.x, intersection.x, 1e-5f);
+    EXPECT_NEAR(centre.y, intersection.y, 1e-5f);
+
+    curveAllEdges(g);
+    for (int e = 0; e < 4; ++e) {
+        EXPECT_LT(maxBoundaryDistanceToCurve(g, e), 5e-4f) << "edge " << e;
+    }
+}
+
+TEST(QuadGeometrySurfaceTest, SampledTexCoordInterpolationIsExactlyProjective) {
+    // The renderer interpolates (u*q, v*q, q) linearly across a triangle and divides
+    // by q. For the projective base that must recover the true (u,v) at any point
+    // between samples, however coarse the tessellation or strong the keystone.
+    QuadGeometry g;
+    g.setCorners({Vec2(0.10f, 0.10f), Vec2(0.90f, 0.40f),
+                  Vec2(0.90f, 0.60f), Vec2(0.10f, 0.90f)});  // 4:1 keystone
+    const int n = 2;
+    const auto samples = g.sampleSurface(n);
+    ASSERT_EQ(samples.size(), 9u);
+
+    // Midpoint of the edge between sample (0,0) and sample (1,1) of the coarse grid.
+    const auto& a = samples[0];
+    const auto& b = samples[4];
+    const Vec2 screenMid = 0.5f * (a.position + b.position);
+    const float q = 0.5f * (a.q + b.q);
+    const Vec2 uv = 0.5f * (Vec2(0.0f, 0.0f) * a.q + Vec2(0.5f, 0.5f) * b.q) / q;
+
+    const Vec2 p = g.surfacePoint(uv.x, uv.y);
+    EXPECT_NEAR(p.x, screenMid.x, 1e-5f);
+    EXPECT_NEAR(p.y, screenMid.y, 1e-5f);
+}
+
+TEST(QuadGeometrySurfaceTest, SampleSurfaceMatchesSurfacePoint) {
+    QuadGeometry g = keystonedQuad();
+    curveAllEdges(g);
+    const int n = 8;
+    const auto samples = g.sampleSurface(n);
+    ASSERT_EQ(samples.size(), static_cast<size_t>((n + 1) * (n + 1)));
+    for (int r = 0; r <= n; ++r) {
+        for (int c = 0; c <= n; ++c) {
+            const Vec2 p = g.surfacePoint(static_cast<float>(c) / n, static_cast<float>(r) / n);
+            const Vec2& s = samples[static_cast<size_t>(r * (n + 1) + c)].position;
+            EXPECT_NEAR(s.x, p.x, 1e-6f);
+            EXPECT_NEAR(s.y, p.y, 1e-6f);
+        }
     }
 }
 

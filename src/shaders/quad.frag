@@ -1,6 +1,6 @@
 #version 330 core
 
-in vec2 v_TexCoord;
+in vec3 v_TexCoordQ;  // (u*q, v*q, q) from quad.vert
 out vec4 FragColor;
 
 uniform sampler2D u_Texture;
@@ -38,8 +38,11 @@ uniform float u_EdgeGamma;
 uniform int u_ColorSpace;
 
 void main() {
+    // Quad-local (u,v): undo the projective weighting from quad.vert.
+    vec2 texCoord = v_TexCoordQ.xy / v_TexCoordQ.z;
+
     // Start with base texture coordinates
-    vec2 baseUV = v_TexCoord;
+    vec2 baseUV = texCoord;
 
     // Apply flips first (before other transforms)
     if (u_FlipH == 1) {
@@ -88,13 +91,13 @@ void main() {
     rgb = pow(max(rgb, 0.0), vec3(1.0 / u_ColorGamma));
     color.rgb = rgb;
 
-    // Soft-edge feather in quad-local space (v_TexCoord, before UV transform).
+    // Soft-edge feather in quad-local space (texCoord, before UV transform).
     // Each edge's width 0 -> ramp 1 (off), so identity is a no-op (ADR-037).
     float edge = 1.0;
-    if (u_EdgeLeft   > 0.0) edge *= clamp(v_TexCoord.x / u_EdgeLeft, 0.0, 1.0);
-    if (u_EdgeRight  > 0.0) edge *= clamp((1.0 - v_TexCoord.x) / u_EdgeRight, 0.0, 1.0);
-    if (u_EdgeTop    > 0.0) edge *= clamp(v_TexCoord.y / u_EdgeTop, 0.0, 1.0);
-    if (u_EdgeBottom > 0.0) edge *= clamp((1.0 - v_TexCoord.y) / u_EdgeBottom, 0.0, 1.0);
+    if (u_EdgeLeft   > 0.0) edge *= clamp(texCoord.x / u_EdgeLeft, 0.0, 1.0);
+    if (u_EdgeRight  > 0.0) edge *= clamp((1.0 - texCoord.x) / u_EdgeRight, 0.0, 1.0);
+    if (u_EdgeTop    > 0.0) edge *= clamp(texCoord.y / u_EdgeTop, 0.0, 1.0);
+    if (u_EdgeBottom > 0.0) edge *= clamp((1.0 - texCoord.y) / u_EdgeBottom, 0.0, 1.0);
     edge = pow(edge, u_EdgeGamma);
 
     color.a *= u_Opacity * edge;
