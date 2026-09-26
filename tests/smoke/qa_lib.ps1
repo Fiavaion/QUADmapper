@@ -27,12 +27,15 @@ public static class QaNative {
     [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint uCode, uint uMapType);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
     [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int w, int h, bool repaint);
 }
 "@
 }
-[QaNative]::SetProcessDPIAware() | Out-Null
+# Per-monitor aware, so a second monitor at a different scale reports physical pixels
+# (system-aware scaled its bounds by the primary's DPI and -Mon2 captured the wrong area).
+if (-not [QaNative]::SetProcessDpiAwarenessContext([IntPtr](-4))) { [QaNative]::SetProcessDPIAware() | Out-Null }
 
 $QaRoot = (Resolve-Path "$PSScriptRoot/../..").Path
 $QaExe  = Join-Path $QaRoot 'build/debug/src/app/Debug/QUADmapper.exe'
