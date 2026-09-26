@@ -86,7 +86,7 @@ TEST_F(ProjectPersistenceTest, WriterEmitsV32WithSourcesTable) {
 
     const auto json = nlohmann::json::parse(serializer.serialize(projectWithBoundQuad(src, "")));
 
-    EXPECT_EQ(json["version"], "3.2.0");
+    EXPECT_EQ(json["version"], "3.3.0");
     ASSERT_TRUE(json["sources"].is_array());
     ASSERT_EQ(json["sources"].size(), 1u);
     EXPECT_EQ(json["sources"][0]["kind"], "procedural");
@@ -845,6 +845,7 @@ TEST(ProjectFixtureTest, EveryHistoricalFormatLoads) {
         {"v3.0-scenes-outputs.qmap", 1, 1},
         {"v3.1-sources.qmap", 1, 2},
         {"v3.2-objects-projector.qmap", 1, 1},
+        {"v3.3-control-audio-lock.qmap", 1, 1},
     };
     for (const auto& e : expected) {
         auto loaded = ProjectSerializer::load(dir / e.file);
@@ -909,6 +910,34 @@ TEST(ProjectFixtureTest, V32FixtureKeepsObjectAndProjector) {
     Vec2 pixel;
     ASSERT_TRUE(out.projector.project(Vec3(0.0f), pixel));
     EXPECT_EQ(pixel, out.calibrationPoints[0].pixel);
+}
+
+TEST(ProjectFixtureTest, V33FixtureKeepsControlAudioAndLock) {
+    auto loaded = ProjectSerializer::load(fs::path(QM_PROJECT_FIXTURES_DIR) / "v3.3-control-audio-lock.qmap");
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const Project& p = loaded.value();
+
+    EXPECT_FLOAT_EQ(p.getAudio().masterVolume, 0.4f);
+    EXPECT_TRUE(p.getAudio().masterMuted);
+
+    ASSERT_EQ(p.getMidiMappings().size(), 2u);
+    EXPECT_EQ(p.getMidiMappings()[0].type, "cc");
+    EXPECT_EQ(p.getMidiMappings()[0].number, 7);
+    EXPECT_EQ(p.getMidiMappings()[0].target, "/qm/master/volume");
+    EXPECT_EQ(p.getMidiMappings()[1].device, "Launchpad");
+    EXPECT_EQ(p.getMidiMappings()[1].mode, "trigger");
+
+    ASSERT_EQ(p.getSources().size(), 1u);
+    const auto& source = p.getSources()[0];
+    EXPECT_TRUE(source.missing);  // the clip is not shipped: kept for relocation
+    ASSERT_TRUE(source.transport.has_value());
+    EXPECT_TRUE(source.transport->timelineLocked);
+    EXPECT_EQ(source.transport->loopMode, LoopMode::PING_PONG);
+    EXPECT_FALSE(source.transport->playing);
+    EXPECT_FLOAT_EQ(source.transport->volume, 0.25f);
+    EXPECT_TRUE(source.transport->muted);
+    EXPECT_EQ(p.getScenes()[0].quads[0].getTexture().mediaId.toString(),
+              "4a1b2c3d-0000-4000-8000-0000000000f2");
 }
 
 TEST(ProjectFixtureTest, V12FixtureKeepsGridAndOffsets) {

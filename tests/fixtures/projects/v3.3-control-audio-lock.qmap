@@ -1,0 +1,64 @@
+{
+  "$schema": "quadmapper/project/1.0",
+  "version": "3.3.0",
+  "name": "Show v3.3",
+  "audio": {"masterVolume": 0.4, "masterMuted": true},
+  "control": {
+    "midi": [
+      {"device": "any", "type": "cc", "channel": 1, "number": 7,
+       "target": "/qm/master/volume", "mode": "value"},
+      {"device": "Launchpad", "type": "note", "channel": 0, "number": 36,
+       "target": "/qm/scene/4a1b2c3d-0000-4000-8000-0000000000c1/take", "mode": "trigger"}
+    ]
+  },
+  "sources": [
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000f2",
+      "kind": "video",
+      "path": "media/not-shipped.mp4",
+      "transport": {"playing": false, "loopMode": "pingPong", "speed": 1.0,
+                    "timelineLocked": true, "volume": 0.25, "muted": true}
+    }
+  ],
+  "scenes": [
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000c1",
+      "name": "Scene 1",
+      "assignedOutputId": "4a1b2c3d-0000-4000-8000-0000000000e1",
+      "view": {"pan": [0.0, 0.0], "zoom": 1.0, "gridVisible": true, "snapToGrid": false},
+      "quads": [
+        {
+          "id": "4a1b2c3d-0000-4000-8000-000000000001",
+          "name": "Quad 1",
+          "zOrder": 0,
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "geometry": {
+            "corners": [[0.1, 0.1], [0.5, 0.1], [0.5, 0.9], [0.1, 0.9]],
+            "meshResolution": 1,
+            "meshMode": 0
+          },
+          "textureBinding": {
+            "mediaId": "4a1b2c3d-0000-4000-8000-0000000000f2",
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": false,
+            "flipV": false
+          }
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000e1",
+      "name": "Projector 1",
+      "monitor": 1,
+      "resolution": [1920, 1080],
+      "rotation": 0,
+      "enabled": true
+    }
+  ]
+}
