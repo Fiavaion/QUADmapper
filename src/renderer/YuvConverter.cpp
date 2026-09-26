@@ -258,15 +258,10 @@ bool YuvConverter::ensureObjects() {
         failed_ = true;
         return false;
     }
-    const GLuint id = program_.getId();
-    locMatrix_ = glGetUniformLocation(id, "uMatrix");
-    locOffset_ = glGetUniformLocation(id, "uOffset");
-    locScale_ = glGetUniformLocation(id, "uScale");
-    locSemiPlanar_ = glGetUniformLocation(id, "uSemiPlanar");
-    glUseProgram(id);
-    glUniform1i(glGetUniformLocation(id, "uY"), 0);
-    glUniform1i(glGetUniformLocation(id, "uU"), 1);
-    glUniform1i(glGetUniformLocation(id, "uV"), 2);
+    program_.bind();
+    program_.setInt("uY", 0);
+    program_.setInt("uU", 1);
+    program_.setInt("uV", 2);
 
     glGenVertexArrays(1, &vao_);  // core profile: a draw needs a bound VAO, even with no attributes
     GlObjectStats::onVertexArrayCreated();
@@ -432,11 +427,11 @@ bool YuvConverter::convert(const YuvPicture& picture, Texture& target, YuvUpload
     glViewport(0, 0, picture.width, picture.height);
 
     const Coefficients c = coefficients(picture.matrix, picture.fullRange, picture.layout);
-    glUseProgram(program_.getId());
-    glUniformMatrix3fv(locMatrix_, 1, GL_FALSE, &c.matrix[0][0]);
-    glUniform3f(locOffset_, c.offset.x, c.offset.y, c.offset.z);
-    glUniform1f(locScale_, c.scale);
-    glUniform1i(locSemiPlanar_, picture.semiPlanar() ? 1 : 0);
+    program_.bind();
+    program_.setMat3("uMatrix", c.matrix);
+    program_.setVec3("uOffset", c.offset);
+    program_.setFloat("uScale", c.scale);
+    program_.setInt("uSemiPlanar", picture.semiPlanar() ? 1 : 0);
 
     for (int p = 0; p < 3; ++p) {
         glActiveTexture(GL_TEXTURE0 + p);

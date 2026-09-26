@@ -119,10 +119,6 @@ private:
     uint32_t vao_ = 0;
     uint32_t fbo_ = 0;
     bool failed_ = false;  // shader or FBO creation failed: don't retry every frame
-    int locMatrix_ = -1;
-    int locOffset_ = -1;
-    int locScale_ = -1;
-    int locSemiPlanar_ = -1;
 
     // GL state saved by begin() on the first convert() and restored by end().
     bool inBatch_ = false;

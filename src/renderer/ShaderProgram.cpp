@@ -163,6 +163,13 @@ void ShaderProgram::setVec4(const char* name, const glm::vec4& value) const {
     }
 }
 
+void ShaderProgram::setMat3(const char* name, const glm::mat3& value) const {
+    Uniform& u = uniform(name);
+    if (changes(u, glm::value_ptr(value), sizeof(value))) {
+        glUniformMatrix3fv(u.location, 1, GL_FALSE, glm::value_ptr(value));
+    }
+}
+
 void ShaderProgram::setMat4(const char* name, const glm::mat4& value) const {
     Uniform& u = uniform(name);
     if (changes(u, glm::value_ptr(value), sizeof(value))) {

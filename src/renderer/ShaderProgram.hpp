@@ -42,6 +42,7 @@ public:
     void setVec2(const char* name, const glm::vec2& value) const;
     void setVec3(const char* name, const glm::vec3& value) const;
     void setVec4(const char* name, const glm::vec4& value) const;
+    void setMat3(const char* name, const glm::mat3& value) const;
     void setMat4(const char* name, const glm::mat4& value) const;
 
     // Query

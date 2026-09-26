@@ -66,3 +66,27 @@ HAP, which the GPU decompresses, already reaches about 98% of frames at 16 strea
   - The gate holds for the reference clip.
   - 30 fps clips and HEVC meet it only on a quiet machine. The remainder is tracked in TD-19.
   - `WGL_NV_DX_interop2` zero-copy is still not attempted. It is the next lever and needs its own ADR.
+
+## Amendment 2 (10-bit investigation, 2026-09-26)
+The gate misses only for 10-bit HEVC: 16 × 1080p25 P010 runs at 30–32 fps with 95–96% of frames presented. Measured on the quiet machine (Release, 2 × 1080p outputs, RTX 3080 Laptop at PCIe 3.0 x8, resizable BAR on).
+
+- **Where the time goes: the plane upload.**
+  - GL timer queries around each conversion: the upload takes 2.1–2.2 ms of GPU per P010 frame, the pass 0.04 ms, the mipmaps 0.13 ms.
+  - Nsight Systems (OpenGL + WDDM + GPU metrics) shows the same 2–3 ms spans back to back through the frame, charged to the next GL call after the upload, whichever it is (the mipmap, or a `glClear` once the passes were batched). The graphics engine is active only about a third of the time (GR Active 34%) and the async copy engine 33–45%: the GPU mostly waits on the transfers.
+  - Skipping only `glTexSubImage2D` gives 136 fps. Uploading only P010's high bytes (NV12-sized, SSE2 extraction on the copier) gives 65–68 fps with 100% of frames presented.
+- **Not the cause.**
+  - The 16-bit formats: byte-pair RG8/RGBA8 textures upload just as slowly.
+  - The D3D11 readback: skipping the GL side entirely gives 161 fps and 100% of frames.
+  - The conversion pass and the mipmaps.
+  - The unpack alignment, the buffer usage hint (DYNAMIC, STREAM_COPY, STATIC), and the size or count of the pixel buffers (≤ 2 MB bands of rows).
+- **Tried, none reaches the gate.**
+  - All uploads of a frame first, then all passes: 23 fps.
+  - Uploading the next frame ahead into a second set of plane textures: 26 fps. At that frame rate there is no spare frame to upload in.
+  - A linear copy into a device-local buffer before the upload: 20 fps.
+  - Reusing each pixel buffer in place once a fence says the GPU has read it, instead of orphaning it every frame. Paging operations fall 3× and 10-bit rises to 35–37 fps with 100% of frames. But H.264 drops 25–40%, because unsynchronised maps stall NVIDIA's driver thread. Not kept.
+- **Why a lossless fix cannot reach the gate on this path.** 10-bit 4:2:0 needs at least 3.9 MB a frame, 25% more than NV12. Adding an upload of that residual size to the high-byte path drops it from 68 to 43 fps.
+- **The way out is one of:**
+  - (a) Zero-copy D3D11→GL through `WGL_NV_DX_interop2`. It removes the readback and the upload, and needs its own ADR: it moves work across the decode/render thread boundary.
+  - (b) Uploading 10-bit sources as 8-bit, optionally dithered. That is an image-quality decision for the owner.
+
+  TD-19 tracks the choice.
