@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -88,6 +89,11 @@ public:
     // real project file and never throws; called from main()'s catch-all.
     void emergencySave() noexcept;
 
+    // Live-show scene take (US-008). Key events from the editor window and, in perform
+    // mode, from a focused output window only queue the scene number (GLFW callbacks
+    // run inside glfwPollEvents); render() takes them under the editing-key guards.
+    void queueSceneTake(int number) { m_pendingSceneTakes.push_back(number); }
+
     // Accessors
     GLFWwindow* getWindow() const { return m_window; }
     Renderer* getRenderer() const { return m_renderer.get(); }
@@ -115,6 +121,8 @@ private:
     // in processPendingFileAction() at the next frame boundary (ADR-046).
     void saveProject();   // Save; an untitled project asks for a path
     void loadProject();   // Load the path typed in the Project tab
+
+    void takeSceneByNumber(int number);  // live-show scene take; ignored while calibrating
 
     // ---- Show-safe session (ADR-046 §4) -----------------------------------------
     // Runs once per frame between glfwPollEvents() and render(): establishes the
@@ -230,6 +238,7 @@ private:
 
     // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
     std::unique_ptr<EditorState> m_editorState;
+    std::vector<int> m_pendingSceneTakes;  // scene numbers pressed since the last frame
 
     // State
     bool m_running = false;

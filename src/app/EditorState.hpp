@@ -26,6 +26,7 @@
 #include "../scene/Scene.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../renderer/Texture.hpp"
+#include "../renderer/UvTestGrid.hpp"
 #include "../video/VideoPlayer.hpp"
 #include "../ui/panels/CalibrationPanel.hpp"
 #include "../ui/panels/InspectorPanel.hpp"
@@ -141,17 +142,47 @@ struct EditorState {
     // returns the first match, so a shared output would be ambiguous). Passing a
     // null outputId clears the assignment.
     void assignSceneToOutput(const UUID& sceneId, const UUID& outputId) {
-        if (!outputId.isNull()) {
-            for (auto& s : scenes) {
-                if (s && s->getId() != sceneId && s->getAssignedOutputId() == outputId) {
-                    s->setAssignedOutputId(UUID::null());
-                }
+        quadmapper::assignSceneToOutput(scenes, sceneId, outputId);
+    }
+
+    // Live-show take of scene `number` (1-9 keys, US-008; see planSceneTake). Returns
+    // what was done; Kind::Route changed the routing (a saved project change).
+    SceneTake takeScene(int number, const std::vector<SceneTakeOutput>& outputs) {
+        const SceneTake take = planSceneTake(scenes, activeScene().getId(), number, outputs);
+        if (take.kind == SceneTake::Kind::Route) assignSceneToOutput(take.sceneId, take.outputId);
+        if (take.kind != SceneTake::Kind::None) setActiveScene(take.sceneId);
+        return take;
+    }
+
+    // Duplicate a scene (Scene::duplicate) right after the original and make the copy
+    // active. The copy's quads keep the source quads' saved media paths and UV test
+    // grids, and count as already seen so the new-quad UV grid does not replace their
+    // media. Main thread only (the UV grid is a GL texture).
+    Scene* duplicateScene(const UUID& id) {
+        const int index = findSceneIndex(scenes, id);
+        if (index < 0) return nullptr;
+        std::unordered_map<UUID, UUID> quadIdMap;
+        std::unique_ptr<Scene> copy = scenes[static_cast<size_t>(index)]->duplicate(&quadIdMap);
+        copy->setName(uniqueSceneCopyName(scenes, scenes[static_cast<size_t>(index)]->getName()));
+        for (const auto& [sourceId, copyId] : quadIdMap) {
+            seenQuadIds.insert(copyId);
+            auto pathIt = quadTexturePaths.find(sourceId);
+            if (pathIt != quadTexturePaths.end()) {
+                std::string path = pathIt->second;
+                quadTexturePaths[copyId] = std::move(path);
+            }
+            if (quadTextures.count(sourceId)) {
+                assignUvTestGrid(quadTextures, quadTexturePaths, copyId, 1024, 8);
             }
         }
-        for (auto& s : scenes) {
-            if (s && s->getId() == sceneId) { s->setAssignedOutputId(outputId); break; }
-        }
+        Scene* ptr = copy.get();
+        scenes.insert(scenes.begin() + index + 1, std::move(copy));
+        setActiveScene(ptr->getId());
+        return ptr;
     }
+
+    // Reorder the scene list (the saved order and the 1-9 numbering).
+    bool moveScene(size_t from, size_t to) { return quadmapper::moveScene(scenes, from, to); }
 
     std::unordered_map<UUID, std::unique_ptr<Texture>> quadTextures;
     std::unordered_map<UUID, std::string> quadTexturePaths;

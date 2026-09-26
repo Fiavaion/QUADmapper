@@ -32,6 +32,14 @@ public:
     MeshObject() : id_(UUID::generate()) {}
     explicit MeshObject(const UUID& id) : id_(id) {}
 
+    // A copy of this object's full state (mesh, transform, texture binding) under a
+    // different id. Used by duplicate scene.
+    MeshObject cloneWithId(const UUID& id) const {
+        MeshObject copy(*this);
+        copy.id_ = id;
+        return copy;
+    }
+
     const UUID& getId() const { return id_; }
     const std::string& getName() const { return name_; }
     void setName(const std::string& name) { name_ = name; }

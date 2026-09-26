@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <filesystem>
@@ -701,6 +702,34 @@ TEST_F(ProjectPersistenceTest, SiblingsInTheNewFolderAreFound) {
 #ifdef _WIN32
     EXPECT_FALSE(relocate::findSibling(moved, "C:/old/show/A.PNG").empty());
 #endif
+}
+
+// ---- Scene order (reorder, US-008 numbering) -------------------------------------
+
+TEST_F(ProjectPersistenceTest, SceneOrderRoundTrips) {
+    Project project;
+    for (const char* name : {"Intro", "Main", "Finale"}) {
+        Project::SceneData scene;
+        scene.id = UUID::generate();
+        scene.name = name;
+        project.getScenes().push_back(std::move(scene));
+    }
+    // Reorder as the Scenes panel does: Finale to the top.
+    auto& scenes = project.getScenes();
+    std::rotate(scenes.begin(), scenes.begin() + 2, scenes.end());
+    const std::vector<UUID> ids{scenes[0].id, scenes[1].id, scenes[2].id};
+    const fs::path file = dir_ / "order.qmap";
+
+    ASSERT_TRUE(ProjectSerializer::save(project, file).isSuccess());
+    auto loaded = ProjectSerializer::load(file);
+
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const auto& back = loaded.value().getScenes();
+    ASSERT_EQ(back.size(), 3u);
+    EXPECT_EQ(back[0].name, "Finale");
+    EXPECT_EQ(back[1].name, "Intro");
+    EXPECT_EQ(back[2].name, "Main");
+    for (size_t i = 0; i < 3; ++i) EXPECT_EQ(back[i].id, ids[i]);
 }
 
 // ---- Historical fixtures (ADR-032 / ADR-046) -------------------------------------

@@ -1,12 +1,15 @@
 #pragma once
 
+#include "core/UUID.hpp"
+
 namespace quadmapper {
 
+class Scene;
 struct EditorContext;
 
 // Scenes panel (ADR-039 P3). Makes the per-output scene routing user-operable:
-// create / delete / rename / switch the ACTIVE scene, and assign each scene to
-// an output window. The viewport, Quad List and Inspector all edit the active
+// create / duplicate / delete / rename / reorder / switch the ACTIVE scene, and
+// assign each scene to an output window. Scenes 1-9 show their take hotkey. The viewport, Quad List and Inspector all edit the active
 // scene (EditorState::activeScene()), so switching here makes them follow.
 //
 // Rendered as a tab inside the Resources panel via renderContent(ctx); it owns
@@ -22,9 +25,10 @@ public:
 private:
     void renderActionButtons(EditorContext& ctx);
     void renderSceneList(EditorContext& ctx);
+    void beginRename(const Scene& scene);
 
-    bool isRenaming_ = false;
-    int renamingIndex_ = -1;
+    // Tracked by id: duplicate and reorder move scenes to other list positions.
+    UUID renamingId_;  // null = not renaming
     char renameBuffer_[128] = "";
 };
 

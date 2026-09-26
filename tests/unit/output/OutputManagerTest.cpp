@@ -2,6 +2,8 @@
 #include "output/OutputManager.hpp"
 #include "app/OutputPersistence.hpp"
 
+#include <GLFW/glfw3.h>
+
 namespace quadmapper {
 namespace test {
 
@@ -685,6 +687,55 @@ TEST(VsyncHolderTest, FirstNonMinimisedOutputPacesTheLoop) {
     EXPECT_EQ(OutputManager::vsyncHolder({true, false}), 1);
     EXPECT_EQ(OutputManager::vsyncHolder({true}), -1);
     EXPECT_EQ(OutputManager::vsyncHolder({true, true}), -1);
+}
+
+// ---- Scene take keys on output windows (US-008) ----------------------------------
+
+TEST(SceneTakeKeyTest, PlainDigitPressesTakeTheirScene) {
+    for (int n = 1; n <= 9; ++n) {
+        EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_0 + n, GLFW_PRESS, 0), n);
+        EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_KP_0 + n, GLFW_PRESS, 0), n);
+    }
+    // Caps Lock / Num Lock state is not a modifier.
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_4, GLFW_PRESS, GLFW_MOD_CAPS_LOCK), 4);
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_4, GLFW_PRESS, GLFW_MOD_NUM_LOCK), 4);
+}
+
+TEST(SceneTakeKeyTest, OtherKeysModifiersAndRepeatsDoNot) {
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_0, GLFW_PRESS, 0), 0);
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_A, GLFW_PRESS, 0), 0);
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_ESCAPE, GLFW_PRESS, 0), 0);
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_KP_0, GLFW_PRESS, 0), 0);
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_KP_DECIMAL, GLFW_PRESS, 0), 0);
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_KP_ENTER, GLFW_PRESS, 0), 0);
+    // AZERTY's "4" key is still GLFW_KEY_4 (physical); the apostrophe key is not a take.
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_APOSTROPHE, GLFW_PRESS, 0), 0);
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_MINUS, GLFW_PRESS, 0), 0);
+    for (int key : {GLFW_KEY_1, GLFW_KEY_KP_1}) {
+        EXPECT_EQ(OutputManager::sceneTakeNumber(key, GLFW_RELEASE, 0), 0);
+        EXPECT_EQ(OutputManager::sceneTakeNumber(key, GLFW_REPEAT, 0), 0);
+        for (int mod : {GLFW_MOD_SHIFT, GLFW_MOD_CONTROL, GLFW_MOD_ALT, GLFW_MOD_SUPER}) {
+            EXPECT_EQ(OutputManager::sceneTakeNumber(key, GLFW_PRESS, mod), 0) << key << " " << mod;
+        }
+    }
+}
+
+TEST(OutputManagerTest, DeleteOutputReportsTheRemovedId) {
+    OutputManager manager;
+    OutputWindow* a = manager.createOutput("A");
+    OutputWindow* b = manager.createOutput("B");
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    const UUID aId = a->getId();
+    std::vector<UUID> removed;
+    manager.setOutputRemovedCallback([&](const UUID& id) { removed.push_back(id); });
+
+    manager.deleteOutput(UUID::generate());  // unknown id: nothing removed, no call
+    EXPECT_TRUE(removed.empty());
+    manager.deleteOutput(aId);
+    ASSERT_EQ(removed.size(), 1u);
+    EXPECT_EQ(removed[0], aId);
+    EXPECT_EQ(manager.getOutput(aId), nullptr);  // already gone when reported
 }
 
 } // namespace test

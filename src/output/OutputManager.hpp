@@ -242,6 +242,26 @@ public:
     using NoticeCallback = std::function<void(const std::string&)>;
     void setNoticeCallback(NoticeCallback callback);
 
+    // Scene take keys (US-008): in perform mode an output window can hold the OS
+    // focus, so its scene-take presses (see sceneTakeNumber) are handed to this
+    // callback with the scene number.
+    using SceneKeyCallback = std::function<void(int sceneNumber)>;
+    void setSceneKeyCallback(SceneKeyCallback callback) { sceneKeyCallback_ = std::move(callback); }
+
+    // The scene number (1-9) a GLFW key event takes, or 0: a press of top-row digit
+    // 1-9 or numpad 1-9 with no Shift/Ctrl/Alt/Super. GLFW key codes name the physical
+    // key (its US-layout position), so the top-row keys take their scene on every
+    // layout, e.g. unshifted "&" on AZERTY takes scene 1. Pure, so the key rule is
+    // testable without GLFW; the editor and output windows both use it.
+    static int sceneTakeNumber(int key, int action, int mods);
+
+    // Called with the id of every output deleteOutput removes, after it is gone, so
+    // the owner can drop references to it (scene routing).
+    using OutputRemovedCallback = std::function<void(const UUID& outputId)>;
+    void setOutputRemovedCallback(OutputRemovedCallback callback) {
+        outputRemovedCallback_ = std::move(callback);
+    }
+
     // Monitor change callback
     using MonitorChangeCallback = std::function<void()>;
 
@@ -441,6 +461,8 @@ private:
     // Monitor change detection
     MonitorChangeCallback monitorChangeCallback_;
     NoticeCallback noticeCallback_;
+    SceneKeyCallback sceneKeyCallback_;
+    OutputRemovedCallback outputRemovedCallback_;
     bool monitorChangeDetectionEnabled_ = false;
 
     // Singleton-like pointer for static callback (GLFW limitation)

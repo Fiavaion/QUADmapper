@@ -511,6 +511,15 @@ static void windowCloseCallback(GLFWwindow* /*window*/) {
     Application::instance().requestExit();
 }
 
+// Editor-window key callback, for the scene take keys only. It is installed before
+// the ImGui backend, which chains to it with the untranslated (physical) GLFW key;
+// ImGui's own keys are translated through the layout, which moves some top-row digits
+// (AZERTY "4" arrives as the apostrophe key), so the take keys cannot use them.
+static void editorKeyCallback(GLFWwindow* /*window*/, int key, int /*scancode*/, int action, int mods) {
+    const int sceneNumber = OutputManager::sceneTakeNumber(key, action, mods);
+    if (sceneNumber > 0) Application::instance().queueSceneTake(sceneNumber);
+}
+
 // GLFW framebuffer size callback
 static void framebufferSizeCallback(GLFWwindow* /*window*/, int width, int height) {
     glViewport(0, 0, width, height);
@@ -672,6 +681,7 @@ bool Application::initializeGLFW() {
     // Set callbacks
     glfwSetFramebufferSizeCallback(m_window, framebufferSizeCallback);
     glfwSetDropCallback(m_window, dropCallback);
+    glfwSetKeyCallback(m_window, editorKeyCallback);  // before ImGui, which chains to it
 
     // Get actual framebuffer size (may differ from window size on high-DPI)
     int fbWidth, fbHeight;
@@ -877,6 +887,12 @@ bool Application::initializeComponents() {
         snprintf(m_editorState->statusMessage, sizeof(m_editorState->statusMessage), "%s",
                  message.c_str());
         m_editorState->statusTimer = 4.0f;
+    });
+    m_outputManager->setSceneKeyCallback([this](int sceneNumber) { queueSceneTake(sceneNumber); });
+    // A removed output must not stay the target of a scene (it would take that
+    // scene off the take keys' routing and resurface as a dangling id in the file).
+    m_outputManager->setOutputRemovedCallback([this](const UUID& outputId) {
+        if (clearOutputAssignments(m_editorState->scenes, outputId)) m_project->setModified(true);
     });
     Logger::info("Output manager initialized with {} monitors", m_outputManager->getMonitorCount());
 
@@ -1390,6 +1406,14 @@ void Application::render() {
         }
     }
 
+    // Scene take (US-008): the 1-9 presses queued since the last frame put scene N on
+    // air. Not while a text field is active (renaming a scene, typing a number) or a
+    // popup is open; presses made then are dropped, never replayed later.
+    if (editingKeys) {
+        for (int n : m_pendingSceneTakes) takeSceneByNumber(n);
+    }
+    m_pendingSceneTakes.clear();
+
     // F11 toggles perform mode and Esc leaves it, even with a popup open: the way out
     // of fullscreen must never take two presses. Only a text field keeps them (its Esc
     // cancels the edit).
@@ -1769,6 +1793,31 @@ void importObjectFile(EditorState& es, OutputManager* om, Project* project,
 }
 
 }  // namespace
+
+void Application::takeSceneByNumber(int number) {
+    EditorState& es = *m_editorState;
+    // Calibration edits the scene routed to the calibrated output; keep it there.
+    if (!es.calibratingOutputId.isNull()) return;
+
+    std::vector<SceneTakeOutput> outputs;
+    for (const auto& output : m_outputManager->getOutputs()) {
+        if (output) outputs.push_back({output->getId(), output->isEnabled()});
+    }
+    const SceneTake take = es.takeScene(number, outputs);
+    if (take.kind == SceneTake::Kind::None) return;
+
+    const Scene& scene = es.activeScene();
+    if (take.kind == SceneTake::Kind::Route) {
+        m_project->setModified(true);
+        const OutputWindow* output = m_outputManager->getOutput(take.outputId);
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Scene %d: %s on %s", number,
+                 scene.getName().c_str(), output ? output->getName().c_str() : "output");
+    } else {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Scene %d: %s", number,
+                 scene.getName().c_str());
+    }
+    es.statusTimer = 3.0f;
+}
 
 void Application::saveProject() {
     m_editorState->pendingFileAction = EditorState::FileAction::Save;

@@ -159,6 +159,9 @@ void OutputManager::deleteOutput(const UUID& id) {
         (*it)->destroy();
         outputs_.erase(it);
         LOG_INFO("Deleted output '{}' (remaining: {})", name, outputs_.size());
+        if (outputRemovedCallback_) {
+            outputRemovedCallback_(id);
+        }
     }
 }
 
@@ -922,16 +925,33 @@ void OutputManager::setupPerformModeKeyCallbacks() {
             continue;
         }
 
-        output->setKeyCallback([this](int key, int /*scancode*/, int action, int /*mods*/) {
+        // Esc and F11 leave perform mode, which clears this very callback: return
+        // straight after them, never touching the lambda's captures again.
+        output->setKeyCallback([this](int key, int /*scancode*/, int action, int mods) {
             if (action == GLFW_PRESS) {
                 if (key == GLFW_KEY_ESCAPE) {
                     handleEscapeKey();
-                } else if (key == GLFW_KEY_F11) {
-                    handleF11Key();
+                    return;
                 }
+                if (key == GLFW_KEY_F11) {
+                    handleF11Key();
+                    return;
+                }
+            }
+            const int sceneNumber = sceneTakeNumber(key, action, mods);
+            if (sceneNumber > 0 && sceneKeyCallback_) {
+                sceneKeyCallback_(sceneNumber);
             }
         });
     }
+}
+
+int OutputManager::sceneTakeNumber(int key, int action, int mods) {
+    constexpr int modifiers = GLFW_MOD_SHIFT | GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER;
+    if (action != GLFW_PRESS || (mods & modifiers) != 0) return 0;
+    if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9) return key - GLFW_KEY_0;
+    if (key >= GLFW_KEY_KP_1 && key <= GLFW_KEY_KP_9) return key - GLFW_KEY_KP_0;
+    return 0;
 }
 
 void OutputManager::clearPerformModeKeyCallbacks() {
