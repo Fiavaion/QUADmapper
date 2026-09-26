@@ -97,7 +97,9 @@ void PreferencesDialog::render(EditorContext& ctx, control::ExternalControl* con
         return;
     }
 
-    ImGui::SetNextWindowSize(ImVec2(560, 460), ImGuiCond_FirstUseEver);
+    // Sized in font units so it fits its hints at any display scale.
+    const float em = ImGui::GetFontSize();
+    ImGui::SetNextWindowSize(ImVec2(46.0f * em, 34.0f * em), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver,
                             ImVec2(0.5f, 0.5f));
     if (!ImGui::Begin("Preferences", &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking)) {
