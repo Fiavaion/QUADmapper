@@ -37,7 +37,6 @@
 #include "../renderer/GpuCapabilities.hpp"
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
-#include "../input/InputManager.hpp"
 #include "../input/VertexKeyboard.hpp"
 #include "../ui/Theme.hpp"
 #include "../ui/AsyncFileDialog.hpp"
@@ -924,9 +923,6 @@ bool Application::initializeComponents() {
         }
     }
 
-    // Create input manager
-    m_inputManager = std::make_unique<InputManager>();
-
     Logger::debug("All components initialized");
     return true;
 }
@@ -1005,9 +1001,6 @@ bool Application::pollFrame(float& deltaTime) {
 void Application::presentFrame(float deltaTime, FrameMarks* marks) {
     using Clock = std::chrono::steady_clock;
 
-    // Process input
-    processInput();
-
     // Update
     update(deltaTime);
 
@@ -1049,19 +1042,6 @@ void Application::runAiSelfTest() {
         oneFlashAnamorphic();
     } else {
         aiDetectSurface();
-    }
-}
-
-void Application::processInput() {
-    // Check for escape key to close window
-    if (glfwGetKey(m_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-        // For now, just log - later we'll show a confirmation dialog
-        // glfwSetWindowShouldClose(m_window, true);
-    }
-
-    // Input manager will handle detailed input processing
-    if (m_inputManager) {
-        // m_inputManager->processInput(m_window);
     }
 }
 
@@ -2937,7 +2917,6 @@ void Application::shutdown() {
     m_externalControl.reset(); // joins the OSC thread, closes MIDI devices
     m_audioEngine.reset();     // stops every video's audio, then closes the device
     m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
-    m_inputManager.reset();
     m_outputManager.reset();
     m_thumbnailCache.reset();  // Clear GL textures before context destroyed
     if (m_editorState) {

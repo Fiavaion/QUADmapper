@@ -1,10 +1,7 @@
-# Input library - Keyboard shortcuts and mouse handling
+# Input library - vertex keyboard maths and mouse handling
 
 add_library(quadmapper_input STATIC
-    InputManager.hpp
-    InputManager.cpp
-    KeyboardShortcuts.hpp
-    KeyboardShortcuts.cpp
+    VertexKeyboard.hpp
     MouseHandler.hpp
     MouseHandler.cpp
 )
@@ -19,8 +16,6 @@ target_link_libraries(quadmapper_input
     PUBLIC
         quadmapper_core
     PRIVATE
-        glfw
-        nlohmann_json::nlohmann_json
         imgui
 )
 
