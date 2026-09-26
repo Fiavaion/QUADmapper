@@ -4,6 +4,7 @@
 #include "AudioDecoder.hpp"
 #include "AudioFrame.hpp"
 #include "AudioMixer.hpp"
+#include "LoopCrossfade.hpp"
 #include "core/Logger.hpp"
 
 #include <algorithm>
@@ -35,10 +36,15 @@ constexpr auto ADOPT_POLL = std::chrono::milliseconds(1);
 constexpr int ADOPT_POLLS = 100;
 constexpr size_t SILENCE_CHUNK_FRAMES = 4096;  // silence is pushed from a fixed scratch
 constexpr size_t END_FADE_FRAMES = 240;  // 5 ms at 48 kHz
+constexpr double LOOP_CROSSFADE_SECONDS = 0.005;  // equal-power crossfade at a Loop wrap
 
 }  // namespace
 
 struct AudioAttachment::DecodeState {
+    explicit DecodeState(int sampleRate)
+        : crossfade(static_cast<size_t>(std::llround(LOOP_CROSSFADE_SECONDS * sampleRate)))
+        , seamTail(crossfade.frames() * 2, 0.0f) {}
+
     AudioDecoder decoder;
     std::vector<float> queue;  // decoded samples waiting for buffer space
     size_t queueOffset = 0;
@@ -53,6 +59,12 @@ struct AudioAttachment::DecodeState {
     bool haveSegment = false;
     bool passEnded = false;
     int failures = 0;
+    // Loop wrap: the outgoing sound past the clip's end (from the frame the pass was
+    // cut in) and the last frame queued, for the crossfade into the next pass.
+    LoopCrossfade crossfade;
+    std::vector<float> seamTail;
+    size_t seamTailFrames = 0;
+    float lastQueued[2] = {0.0f, 0.0f};
 };
 
 AudioAttachment::AudioAttachment(std::filesystem::path path, AudioMixer& mixer)
@@ -62,7 +74,7 @@ AudioAttachment::AudioAttachment(std::filesystem::path path, AudioMixer& mixer)
     , buffer_(std::make_shared<AudioBuffer>(
           static_cast<size_t>(BUFFER_SECONDS * mixer.getSampleRate()) * CHANNELS))
     , source_(std::make_shared<SyncedAudioSource>(buffer_, mixer.getSampleRate()))
-    , decode_(std::make_unique<DecodeState>()) {
+    , decode_(std::make_unique<DecodeState>(mixer.getSampleRate())) {
     source_->setName(path_.filename().u8string());
     thread_ = std::thread(&AudioAttachment::decodeLoop, this);
 }
@@ -285,6 +297,9 @@ void AudioAttachment::startSegment(const Request& request) {
     d.haveSegment = true;
     d.passEnded = false;
     d.failures = 0;
+    d.crossfade.disarm();
+    d.seamTailFrames = 0;
+    d.lastQueued[0] = d.lastQueued[1] = 0.0f;
 
     AudioSegment segment;
     segment.generation = request.generation;
@@ -307,7 +322,7 @@ void AudioAttachment::produce() {
             const int64_t room = static_cast<int64_t>(buffer_->freeSpace() / CHANNELS);
             const int64_t count = std::min({d.silence, room, static_cast<int64_t>(SILENCE_CHUNK_FRAMES)});
             if (count == 0) return;  // full
-            buffer_->push(d.zeros.data(), static_cast<size_t>(count) * CHANNELS);
+            push(d.zeros.data(), static_cast<size_t>(count));
             d.silence -= count;
             continue;
         }
@@ -315,7 +330,7 @@ void AudioAttachment::produce() {
             const size_t space = buffer_->freeSpace() / CHANNELS * CHANNELS;
             if (space == 0) return;  // full: wait for the callback to consume
             const size_t count = std::min(space, d.queue.size() - d.queueOffset);
-            buffer_->push(d.queue.data() + d.queueOffset, count);
+            push(d.queue.data() + d.queueOffset, count / CHANNELS);
             d.queueOffset += count;
             if (d.queueOffset == d.queue.size()) {
                 d.queue.clear();
@@ -359,14 +374,43 @@ void AudioAttachment::produce() {
     }
 }
 
+// Push `frames` frames to the buffer (the caller checked there is room), mixing the
+// Loop-wrap crossfade into the first frames of a new pass.
+void AudioAttachment::push(const float* samples, size_t frames) {
+    LoopCrossfade& crossfade = decode_->crossfade;
+    while (frames > 0) {
+        size_t count = frames;
+        const float* out = samples;
+        if (crossfade.delay() > 0) {  // the outgoing pass's padding: unchanged
+            count = std::min(count, crossfade.delay());
+            crossfade.skip(count);
+        } else if (crossfade.remaining() > 0) {
+            count = std::min(count, crossfade.remaining());
+            out = crossfade.mix(samples, count);
+        }
+        buffer_->push(out, count * CHANNELS);
+        samples += count * CHANNELS;
+        frames -= count;
+    }
+}
+
 void AudioAttachment::queueFrames(const float* samples, int64_t frames) {
     DecodeState& d = *decode_;
     const int64_t room = d.legEndFrame - d.clipFrame;  // a pass ends at the clip's end
     const bool cut = frames > room;
+    if (cut && d.loop && room >= 0) {
+        // The sound past the clip's end: the outgoing side of the wrap's crossfade.
+        d.seamTailFrames = static_cast<size_t>(
+            std::min<int64_t>(frames - room, static_cast<int64_t>(d.crossfade.frames())));
+        std::copy(samples + room * CHANNELS,
+                  samples + (room + static_cast<int64_t>(d.seamTailFrames)) * CHANNELS, d.seamTail.begin());
+    }
     frames = std::min(frames, room);
     if (frames <= 0) return;
     d.queue.insert(d.queue.end(), samples, samples + frames * CHANNELS);
     d.clipFrame += frames;
+    d.lastQueued[0] = samples[(frames - 1) * CHANNELS];
+    d.lastQueued[1] = samples[(frames - 1) * CHANNELS + 1];
     if (cut && !d.loop) {
         // The sound runs on past the clip's end and this pass stops here (Once, a
         // Ping-Pong forward leg): fade its last few milliseconds so the cut does not
@@ -389,6 +433,7 @@ void AudioAttachment::queueSilence(int64_t frames) {
     if (frames <= 0) return;
     d.silence += frames;
     d.clipFrame += frames;
+    d.lastQueued[0] = d.lastQueued[1] = 0.0f;
 }
 
 void AudioAttachment::endOfPass() {
@@ -401,7 +446,12 @@ void AudioAttachment::endOfPass() {
         return;
     }
     // Loop: run on into the next pass. The timeline stays contiguous, so the wrap needs
-    // no resync.
+    // no resync. The next pass fades in over the outgoing sound (equal power, same
+    // sample count), starting once this pass's padding and queue are pushed.
+    const size_t pending = static_cast<size_t>(d.silence) + (d.queue.size() - d.queueOffset) / CHANNELS;
+    d.crossfade.arm(d.seamTail.data(), d.seamTailFrames, d.lastQueued, pending,
+                    static_cast<size_t>(d.legEndFrame));
+    d.seamTailFrames = 0;
     d.decoder.seek(0.0);
     d.clipFrame = 0;
     d.failures = 0;

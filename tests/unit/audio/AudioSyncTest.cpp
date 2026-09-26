@@ -20,6 +20,7 @@
 #include "audio/AudioEngine.hpp"
 #include "audio/AudioFrame.hpp"
 #include "audio/AudioMixer.hpp"
+#include "audio/LoopCrossfade.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/Scene.hpp"
 #include "video/PlaybackClock.hpp"
@@ -28,7 +29,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <optional>
 #include <unordered_set>
@@ -38,6 +41,7 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <process.h>  // _getpid
 #endif
 
 namespace quadmapper {
@@ -1096,6 +1100,194 @@ TEST(AudioSyncTest, AGatedSourceIsSilentAndComesBackInStep) {
     const SyncStats stats = measure(heard, rig.latency(), ref, CLIP_DURATION, rig.history, {}, 2, 0.0);
     EXPECT_GT(stats.windows, 30);
     EXPECT_LT(stats.maxError, 0.005);
+}
+
+// ---- Loop-wrap crossfade (TD-26) -----------------------------------------------
+
+TEST(LoopCrossfadeTest, GainsAreEqualPowerAndTheFadeRunsItsLength) {
+    LoopCrossfade fade(240);
+    ASSERT_EQ(fade.frames(), 240u);
+    EXPECT_EQ(fade.remaining(), 0u) << "nothing armed";
+
+    // Incoming 1 over a continuation of 0 gives the fade-in gain; 0 over 1 the fade-out.
+    std::vector<float> ones(240 * 2, 1.0f), zeros(240 * 2, 0.0f);
+    const float last[2] = {0.0f, 0.0f};
+    fade.arm(zeros.data(), 240, last, 0, 1000);
+    const float* mixed = fade.mix(ones.data(), 240);
+    const std::vector<float> in(mixed, mixed + 240 * 2);
+    EXPECT_EQ(fade.remaining(), 0u);
+    fade.arm(ones.data(), 240, last, 0, 1000);
+    mixed = fade.mix(zeros.data(), 240);
+    const std::vector<float> out(mixed, mixed + 240 * 2);
+    for (size_t i = 0; i < 240; ++i) {
+        EXPECT_NEAR(in[i * 2] * in[i * 2] + out[i * 2] * out[i * 2], 1.0f, 1e-5f) << i;
+        EXPECT_EQ(in[i * 2], in[i * 2 + 1]);
+        if (i > 0) EXPECT_GT(in[i * 2], in[(i - 1) * 2]);
+    }
+    EXPECT_LT(in.front(), 0.01f);
+    EXPECT_GT(in.back(), 0.9999f);
+}
+
+TEST(LoopCrossfadeTest, PaddingPassesUnchangedAndAMissingTailHoldsTheLastFrame) {
+    LoopCrossfade fade(8);
+    const float last[2] = {0.5f, -0.25f};
+    fade.arm(nullptr, 0, last, /*delay=*/5, /*limit=*/1000);
+    EXPECT_EQ(fade.delay(), 5u);
+    fade.skip(3);
+    fade.skip(9);  // never below zero
+    EXPECT_EQ(fade.delay(), 0u);
+    std::vector<float> zeros(8 * 2, 0.0f);
+    const float* mixed = fade.mix(zeros.data(), 8);
+    // Silence incoming: what is heard is the held last frame fading out.
+    EXPECT_NEAR(mixed[0], 0.5f * std::cos(0.5f / 8 * 1.5707963f), 1e-6f);
+    EXPECT_NEAR(mixed[1], -0.25f * std::cos(0.5f / 8 * 1.5707963f), 1e-6f);
+    for (size_t i = 1; i < 8; ++i) EXPECT_LT(std::abs(mixed[i * 2]), std::abs(mixed[(i - 1) * 2]));
+}
+
+TEST(LoopCrossfadeTest, AFadeLongerThanThePassEndsWithinIt) {
+    LoopCrossfade fade(240);
+    std::vector<float> ones(240 * 2, 1.0f), zeros(240 * 2, 0.0f);
+    const float last[2] = {0.0f, 0.0f};
+    fade.arm(zeros.data(), 240, last, 0, /*limit=*/60);
+    EXPECT_EQ(fade.remaining(), 60u);
+    const float* mixed = fade.mix(ones.data(), 60);
+    EXPECT_GT(mixed[59 * 2], 0.9999f) << "fully faded in at the pass's end";
+    EXPECT_EQ(fade.remaining(), 0u);
+}
+
+namespace {
+
+// A stereo 16-bit PCM WAV of A * sin(2 pi f t + phase), `seconds` long.
+struct Tone {
+    double amplitude = 0.5;
+    double frequency = 441.0;
+    double phase = 0.0;
+    double seconds = 1.0;
+    double at(double t) const {
+        if (t < 0.0 || t >= seconds) return 0.0;
+        return amplitude * std::sin(2.0 * 3.14159265358979323846 * frequency * t + phase);
+    }
+    // Largest step between neighbouring samples.
+    double naturalStep() const { return amplitude * 2.0 * 3.14159265358979323846 * frequency / RATE; }
+};
+
+std::filesystem::path writeToneWav(const Tone& tone, const char* name) {
+    const auto path = std::filesystem::temp_directory_path() /
+                      (std::string("qm_loopseam_") + std::to_string(_getpid()) + "_" + name + ".wav");
+    const uint32_t frames = static_cast<uint32_t>(std::llround(tone.seconds * RATE));
+    const uint32_t dataBytes = frames * 4;
+    std::ofstream f(path, std::ios::binary);
+    auto u32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+    auto u16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+    f.write("RIFF", 4); u32(36 + dataBytes); f.write("WAVE", 4);
+    f.write("fmt ", 4); u32(16); u16(1); u16(2); u32(RATE); u32(RATE * 4); u16(4); u16(16);
+    f.write("data", 4); u32(dataBytes);
+    for (uint32_t i = 0; i < frames; ++i) {
+        const auto v = static_cast<int16_t>(std::lround(tone.at(static_cast<double>(i) / RATE) * 32767.0));
+        u16(static_cast<uint16_t>(v));
+        u16(static_cast<uint16_t>(v));
+    }
+    return path;
+}
+
+struct SeamResult {
+    double maxStep = 0.0;        // largest step anywhere in the output
+    double maxOffSeamError = 0.0;  // largest |output - expected| away from the wraps
+    int wraps = 0;
+    int checked = 0;             // samples compared with the expected sound
+};
+
+// Play `tone` looped over a clip of `duration` seconds for `seconds`, offline.
+SeamResult playLooped(const Tone& tone, double duration, double seconds, const char* name) {
+    SeamResult r;
+    const auto path = writeToneWav(tone, name);
+    {
+        OfflineRig rig(path);
+        EXPECT_EQ(rig.attachment().state(), AudioAttachmentState::Ready);
+        PlaybackClock& clock = rig.clock;
+        clock.setDuration(duration, rig.now());
+        clock.setLoopMode(LoopMode::LOOP, rig.now());
+        clock.play(rig.now());
+        rig.event();
+        rig.runUntil(seconds);
+
+        const double seamWindow = 0.006;  // the 5 ms fade and a sample either side
+        float previous = 0.0f;
+        bool first = true;
+        for (const Block& block : rig.blocks) {
+            const Clock::time_point wall = Clock::time_point(std::chrono::nanoseconds(block.wallNs));
+            for (size_t k = 0; k < BLOCK; ++k) {
+                const float left = block.samples[k * 2];
+                if (!first) r.maxStep = std::max(r.maxStep, static_cast<double>(std::abs(left - previous)));
+                previous = left;
+                first = false;
+                const auto clip = rig.history.expect(at(wall, rig.latency() + static_cast<double>(k) / RATE));
+                // Settled (the start fades in over one buffer) and away from a wrap.
+                const double sinceStart = std::chrono::duration<double>(wall - rig.base()).count();
+                if (!clip || sinceStart < 0.1 || *clip < seamWindow || duration - *clip < 1.0 / RATE) continue;
+                const double expected = PAN_GAIN * tone.at(*clip);
+                r.maxOffSeamError = std::max(r.maxOffSeamError, std::abs(left - expected));
+                ++r.checked;
+            }
+        }
+        r.wraps = static_cast<int>(seconds / duration);
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return r;
+}
+
+// Step bound across an equal-power fade of F frames between two signals of amplitude
+// A whose own steps are at most s: |d(out)| <= 2 s + A * pi / F (both gains change by
+// at most pi / (2F) per frame), at the pan gain, plus 16-bit rounding.
+double seamStepBound(const Tone& tone) {
+    const double F = 0.005 * RATE;
+    return PAN_GAIN * (2.0 * tone.naturalStep() + tone.amplitude * 3.14159265358979323846 / F) + 1e-3;
+}
+
+}  // namespace
+
+// The file runs on past the clip's end: the pass is cut mid-cycle (a quarter period
+// off), a 0.35 step at the seam before the crossfade.
+TEST(AudioSyncTest, ALoopWrapCrossfadesInsteadOfStepping) {
+    Tone tone;
+    tone.seconds = 0.8;
+    // A whole number of samples: a pass is cut to the nearest sample, so a fractional
+    // length would slip the audio a fraction of a sample per wrap (the drift control
+    // slews that out, but this test checks sync to the sample).
+    const double duration = std::round((0.5 + 0.25 / tone.frequency) * RATE) / RATE;
+    const double rawStep = PAN_GAIN * std::abs(tone.at(duration - 1.0 / RATE) - tone.at(0.0));
+    ASSERT_GT(rawStep, 4.0 * seamStepBound(tone)) << "the seam must be a real step for this test to mean anything";
+
+    const SeamResult r = playLooped(tone, duration, 2.4, "cut");
+    std::printf("[ SEAM     ] cut: %d wraps, max step %.4f (bound %.4f, raw seam %.4f), "
+                "max error off the seams %.5f over %d samples\n",
+                r.wraps, r.maxStep, seamStepBound(tone), rawStep, r.maxOffSeamError, r.checked);
+    EXPECT_GE(r.wraps, 4);
+    EXPECT_LE(r.maxStep, seamStepBound(tone));
+    // In step with the clock, to the sample, everywhere but the 5 ms after each wrap.
+    EXPECT_GT(r.checked, RATE);
+    EXPECT_LT(r.maxOffSeamError, PAN_GAIN * tone.naturalStep() * 0.6 + 1e-3);
+}
+
+// The file is shorter than the clip: each pass ends in padding silence and the next
+// starts at full amplitude (phase pi/2), a step up from 0 before the crossfade.
+TEST(AudioSyncTest, ALoopWrapAfterPaddingFadesIn) {
+    Tone tone;
+    tone.seconds = 132.25 / tone.frequency;  // the file itself ends on a zero crossing
+    tone.phase = 3.14159265358979323846 / 2.0;
+    const double duration = 0.4;
+    const double rawStep = PAN_GAIN * std::abs(tone.at(0.0));
+    ASSERT_GT(rawStep, 4.0 * seamStepBound(tone));
+
+    const SeamResult r = playLooped(tone, duration, 2.0, "padded");
+    std::printf("[ SEAM     ] padded: %d wraps, max step %.4f (bound %.4f, raw seam %.4f), "
+                "max error off the seams %.5f over %d samples\n",
+                r.wraps, r.maxStep, seamStepBound(tone), rawStep, r.maxOffSeamError, r.checked);
+    EXPECT_GE(r.wraps, 4);
+    EXPECT_LE(r.maxStep, seamStepBound(tone));
+    EXPECT_GT(r.checked, RATE);
+    EXPECT_LT(r.maxOffSeamError, PAN_GAIN * tone.naturalStep() * 0.6 + 1e-3);
 }
 
 // ---- CPU cost (run by hand: --gtest_also_run_disabled_tests) ---------------------
