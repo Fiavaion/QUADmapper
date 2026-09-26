@@ -29,6 +29,14 @@ constexpr int MAX_LM_ITERATIONS = 200;
 // of the rest; the final fit then uses a Cauchy loss with a scale of CAUCHY_SCALE_FACTOR
 // times that RMS (at least CAUCHY_MIN_PX).
 constexpr double OUTLIER_MIN_PX = 3.0;
+
+// Auto solves the lens only from this many enabled points (6 fit 10 unknowns too loosely),
+// and any solved lens must look like a real projector's.
+constexpr size_t MIN_POINTS_AUTO_LENS = 8;
+constexpr float MIN_THROW_RATIO = 0.3f;
+constexpr float MAX_THROW_RATIO = 5.0f;
+constexpr float MAX_PIXEL_ASPECT_ERROR = 0.1f;  // fx / fy within 10% of square
+constexpr float MAX_PRINCIPAL_X_OFFSET = 0.25f;  // cx within a quarter width of centre
 constexpr double OUTLIER_FACTOR = 5.0;
 constexpr double CAUCHY_SCALE_FACTOR = 3.0;
 constexpr double CAUCHY_MIN_PX = 1.0;
@@ -540,9 +548,11 @@ const char* const DEGENERATE_MESSAGE =
 
 }  // namespace
 
-Result<CalibrationResult, Error> calibrateProjector(const std::vector<CalibrationPoint>& points,
-                                                   const ProjectorIntrinsics& knownIntrinsics,
-                                                   CalibrationMode mode) {
+namespace {
+
+Result<CalibrationResult, Error> solveWithMode(const std::vector<CalibrationPoint>& points,
+                                              const ProjectorIntrinsics& knownIntrinsics,
+                                              CalibrationMode mode) {
     std::vector<Pair> pairs;
     for (const CalibrationPoint& p : points) {
         if (!p.enabled) continue;
@@ -676,6 +686,69 @@ Result<CalibrationResult, Error> calibrateProjector(const std::vector<Calibratio
         result.warning = text;
     }
     return Ok(std::move(result));
+}
+
+// A lens a real projector could have. A lens solve from few points or little depth can
+// fit the pairs with an absurd lens (throw ratio 0.6 and a principal point far off the
+// image, found in GUI QA from a single nudge on 6 cube corners); such a result must not
+// be applied.
+bool plausibleLens(const ProjectorIntrinsics& k) {
+    if (k.width <= 0 || k.height <= 0 || !(k.fx > 0.0f) || !(k.fy > 0.0f)) return false;
+    const float w = static_cast<float>(k.width);
+    const float h = static_cast<float>(k.height);
+    const float throwRatio = k.fx / w;
+    return throwRatio > MIN_THROW_RATIO && throwRatio < MAX_THROW_RATIO &&
+           std::abs(k.fx / k.fy - 1.0f) < MAX_PIXEL_ASPECT_ERROR &&
+           std::abs(k.cx - 0.5f * w) < MAX_PRINCIPAL_X_OFFSET * w &&
+           k.cy > -0.5f * h && k.cy < 1.5f * h;
+}
+
+size_t enabledCount(const std::vector<CalibrationPoint>& points) {
+    return static_cast<size_t>(std::count_if(points.begin(), points.end(),
+                                             [](const CalibrationPoint& p) { return p.enabled; }));
+}
+
+std::string lensSummary(const ProjectorIntrinsics& k) {
+    char text[160];
+    std::snprintf(text, sizeof(text), "throw ratio %.2f, principal point (%.0f, %.0f) px",
+                  k.width > 0 ? k.fx / static_cast<float>(k.width) : 0.0f, k.cx, k.cy);
+    return text;
+}
+
+}  // namespace
+
+Result<CalibrationResult, Error> calibrateProjector(const std::vector<CalibrationPoint>& points,
+                                                   const ProjectorIntrinsics& knownIntrinsics,
+                                                   CalibrationMode mode) {
+    if (mode == CalibrationMode::PoseOnly) return solveWithMode(points, knownIntrinsics, mode);
+
+    if (mode == CalibrationMode::Full) {
+        auto full = solveWithMode(points, knownIntrinsics, mode);
+        if (full && !plausibleLens(full.value().camera.intrinsics)) {
+            return Err<CalibrationResult>(
+                "The lens solve is unreliable (" + lensSummary(full.value().camera.intrinsics) +
+                "): add points at more different depths, or use Keep lens");
+        }
+        return full;
+    }
+
+    // Auto: solve the lens only when there is enough data to pin it down, and only keep
+    // a lens a projector could really have; otherwise solve the pose with the known lens.
+    if (enabledCount(points) >= MIN_POINTS_AUTO_LENS) {
+        auto full = solveWithMode(points, knownIntrinsics, CalibrationMode::Full);
+        if (full && plausibleLens(full.value().camera.intrinsics)) return full;
+        auto pose = solveWithMode(points, knownIntrinsics, CalibrationMode::PoseOnly);
+        if (pose && full) {
+            CalibrationResult result = std::move(pose.value());
+            const std::string note = "Lens solve looked unreliable (" +
+                                     lensSummary(full.value().camera.intrinsics) +
+                                     "), so the lens was kept and only the pose solved";
+            result.warning = result.warning.empty() ? note : note + ". " + result.warning;
+            return Ok(std::move(result));
+        }
+        return pose;
+    }
+    return solveWithMode(points, knownIntrinsics, CalibrationMode::PoseOnly);
 }
 
 }  // namespace quadmapper

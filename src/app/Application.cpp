@@ -1869,7 +1869,16 @@ void Application::performNewProject() {
     if (m_sourceManager) releaseProjectSources(es, *m_sourceManager);
 
     // One default scene with one quad, still aimed at the first output. Outputs are
-    // hardware setup, not show content, so New keeps them.
+    // hardware setup, not show content, so New keeps them. Their projector calibration is show
+    // content (it belongs to the objects it was made for), so it starts over.
+    if (m_outputManager) {
+        for (const auto& output : m_outputManager->getOutputs()) {
+            if (!output) continue;
+            output->getProjector() = ProjectorCamera{};
+            output->getCalibrationPoints().clear();
+        }
+    }
+    es.endCalibration();
     Scene& scene = es.activeScene();
     es.setActiveScene(scene.getId());
     Quad* quad = scene.getQuadManager().createQuad("Quad 1");

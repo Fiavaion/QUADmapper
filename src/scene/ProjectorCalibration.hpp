@@ -35,6 +35,11 @@ struct CalibrationResult {
     std::string warning;
 };
 
+// Modes: PoseOnly keeps `knownIntrinsics`. Full solves the lens too (>= 6 points at
+// different depths) and returns an Err if the lens it finds is not one a real projector
+// could have (throw ratio 0.3-5, near-square pixels, principal point near the image).
+// Auto solves the lens only from >= 8 points and only keeps a plausible one; otherwise
+// it solves the pose with the known lens and says so in `warning`.
 // Only points with `enabled` set take part in the solve. When the worst pair is more than
 // 3 px off and there are enough points (9+ solving the lens, 6+ pose only), a single
 // mismatched pair is located and the fit is re-weighted around it (Cauchy loss); it keeps

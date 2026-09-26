@@ -339,6 +339,12 @@ TEST(ProjectorCalibrationTest, AutoPicksFullOrPoseOnly) {
     std::mt19937 rng(600);
     const ProjectorCamera truth = randomCamera(rng);
 
+    // 6-7 points fit the 10 lens-and-pose unknowns too loosely: Auto keeps the lens.
+    auto six = calibrateProjector(pairsFor(rng, truth, visiblePoints(rng, truth, 6, false), 0.0),
+                                  truth.intrinsics);
+    ASSERT_TRUE(six.isSuccess());
+    EXPECT_FALSE(six.value().solvedIntrinsics);
+
     auto general = calibrateProjector(pairsFor(rng, truth, visiblePoints(rng, truth, 8, false), 0.0),
                                       truth.intrinsics);
     ASSERT_TRUE(general.isSuccess());
@@ -353,6 +359,47 @@ TEST(ProjectorCalibrationTest, AutoPicksFullOrPoseOnly) {
                                   truth.intrinsics);
     ASSERT_TRUE(few.isSuccess());
     EXPECT_FALSE(few.value().solvedIntrinsics);
+}
+
+TEST(ProjectorCalibrationTest, AutoNeverAppliesAnImplausibleLens) {
+    // Pairs consistent with a throw ratio of 10 (outside what a projector has): the lens
+    // solve recovers it, Auto refuses it and solves the pose with the known lens instead,
+    // and an explicit lens solve reports it as unreliable.
+    std::mt19937 rng(1400);
+    ProjectorCamera truth = randomCamera(rng);
+    const float scale = 10.0f * static_cast<float>(truth.intrinsics.width) / truth.intrinsics.fx;
+    truth.intrinsics.fx *= scale;
+    truth.intrinsics.fy *= scale;
+    const auto pts = pairsFor(rng, truth, visiblePoints(rng, truth, 12, false), 0.0);
+    ProjectorIntrinsics known = truth.intrinsics;
+    known.fx = known.fy = 1.5f * static_cast<float>(known.width);
+
+    auto automatic = calibrateProjector(pts, known, CalibrationMode::Auto);
+    ASSERT_TRUE(automatic.isSuccess()) << automatic.error().message;
+    EXPECT_FALSE(automatic.value().solvedIntrinsics);
+    EXPECT_FLOAT_EQ(automatic.value().camera.intrinsics.fx, known.fx);  // lens kept
+    EXPECT_NE(automatic.value().warning.find("Lens solve looked unreliable"), std::string::npos);
+
+    auto full = calibrateProjector(pts, known, CalibrationMode::Full);
+    ASSERT_TRUE(full.isError());
+    EXPECT_NE(full.error().message.find("unreliable"), std::string::npos);
+}
+
+TEST(ProjectorCalibrationTest, NudgingOneOfSixPointsKeepsThePoseStable) {
+    // GUI QA: from 6 good pairs, one Shift+Right nudge sent the Auto lens to throw 0.6
+    // and a principal point 9000 px off. With the lens kept, the camera barely moves.
+    std::mt19937 rng(1500);
+    const ProjectorCamera truth = randomCamera(rng);
+    auto pts = pairsFor(rng, truth, visiblePoints(rng, truth, 6, false), 0.0);
+    for (int step = 1; step <= 5; ++step) {
+        pts[2].pixel.x += 10.0f;  // a Shift+Right nudge at 1920 px wide is about 19 px
+        auto result = calibrateProjector(pts, truth.intrinsics, CalibrationMode::Auto);
+        ASSERT_TRUE(result.isSuccess()) << "step " << step << ": " << result.error().message;
+        const ProjectorCamera& cam = result.value().camera;
+        EXPECT_FLOAT_EQ(cam.intrinsics.fx, truth.intrinsics.fx);
+        EXPECT_LT(glm::length(cam.position() - truth.position()), 0.5f * glm::length(truth.position()))
+            << "step " << step;
+    }
 }
 
 TEST(ProjectorCalibrationTest, FullWithCoplanarPointsIsRejected) {
