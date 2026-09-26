@@ -221,7 +221,6 @@ See `.claude/agent-state/spawn-rules.json` for full configuration.
   (`OutputManager`), as scene takes and Ctrl+B blackout do.
 - Keys that must not depend on the keyboard layout (scene takes 1–9) use physical GLFW key
   codes, not `ImGuiKey`.
-- `src/input/KeyboardShortcuts.*` is not wired into the app; do not add to it.
 
 ### Adding a New Media Type
 
