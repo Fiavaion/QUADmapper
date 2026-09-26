@@ -8,6 +8,7 @@
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGeometry.hpp"
 #include "scene/Commands.hpp"
+#include "scene/CropInsets.hpp"
 #include "scene/MeshObject.hpp"
 #include "scene/Scene.hpp"
 #include "renderer/Texture.hpp"
@@ -606,36 +607,61 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
 // Crop controls (Left/Right/Top/Bottom edge insets). Shared by the Advanced crop
 // tree and the Simple-mode panel so the two never drift (ADR-042). The stored model
-// stays {x,y,w,h}; this is a pure UI re-parameterization (left=x, right=1-(x+w), ...).
+// stays normalized {x,y,w,h}; the insets are a pure UI re-parameterization
+// (CropInsets.hpp), shown in source pixels when the source has a real pixel size and
+// as a percentage otherwise (procedural sources, or media not loaded yet).
 void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texBinding) {
     NormalizedRect& crop = texBinding.cropRect;
-    auto clamp01 = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
-    float left   = clamp01(crop.x);
-    float right  = clamp01(1.0f - (crop.x + crop.width));
-    float top    = clamp01(crop.y);
-    float bottom = clamp01(1.0f - (crop.y + crop.height));
 
-    ImGui::TextDisabled("Crop in from each edge (%% of source)");
-    bool changed = false;
-    auto edgeDrag = [&](const char* label, float& edge, float opposite) {
-        float pct = edge * 100.0f;
-        ImGui::SetNextItemWidth(200.0f);
-        if (ImGui::DragFloat(label, &pct, 0.5f, 0.0f, 100.0f, "%.1f%%")) {
-            edge = clamp01(pct / 100.0f);
-            float maxEdge = 1.0f - opposite - 0.01f;
-            if (maxEdge < 0.0f) maxEdge = 0.0f;
-            if (edge > maxEdge) edge = maxEdge;
-            changed = true;
+    int srcWidth = 0;
+    int srcHeight = 0;
+    if (ctx.sourceManager && !texBinding.mediaId.isNull()) {
+        const TextureSource* source = ctx.sourceManager->getSource(texBinding.mediaId);
+        if (source && !dynamic_cast<const ProceduralSource*>(source)) {
+            srcWidth = source->getWidth();
+            srcHeight = source->getHeight();
         }
-    };
-    edgeDrag("Crop Left##crop",   left,   right);
-    edgeDrag("Crop Right##crop",  right,  left);
-    edgeDrag("Crop Top##crop",    top,    bottom);
-    edgeDrag("Crop Bottom##crop", bottom, top);
+    }
+    const bool inPixels = srcWidth > 0 && srcHeight > 0;
 
+    struct EdgeControl { const char* label; CropEdge edge; };
+    constexpr EdgeControl edges[] = {
+        {"Crop Left##crop", CropEdge::Left},   {"Crop Right##crop", CropEdge::Right},
+        {"Crop Top##crop", CropEdge::Top},     {"Crop Bottom##crop", CropEdge::Bottom},
+    };
+
+    bool changed = false;
+    if (inPixels) {
+        ImGui::TextDisabled("Crop in from each edge (source pixels, %d x %d)",
+                            srcWidth, srcHeight);
+        for (const EdgeControl& c : edges) {
+            int px = cropInsetPixels(crop, c.edge, srcWidth, srcHeight);
+            const int maxPx = maxCropInsetPixels(crop, c.edge, srcWidth, srcHeight);
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::DragInt(c.label, &px, 1.0f, 0, maxPx, "%d px",
+                               ImGuiSliderFlags_AlwaysClamp)) {
+                crop = withCropInsetPixels(crop, c.edge, px, srcWidth, srcHeight);
+                changed = true;
+            }
+        }
+        const int left = cropInsetPixels(crop, CropEdge::Left, srcWidth, srcHeight);
+        const int top = cropInsetPixels(crop, CropEdge::Top, srcWidth, srcHeight);
+        const int right = cropInsetPixels(crop, CropEdge::Right, srcWidth, srcHeight);
+        const int bottom = cropInsetPixels(crop, CropEdge::Bottom, srcWidth, srcHeight);
+        ImGui::TextDisabled("Region: %d x %d px at (%d, %d)",
+                            srcWidth - left - right, srcHeight - top - bottom, left, top);
+    } else {
+        ImGui::TextDisabled("Crop in from each edge (%% of source)");
+        for (const EdgeControl& c : edges) {
+            float pct = static_cast<float>(cropInset(crop, c.edge) * 100.0);
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::DragFloat(c.label, &pct, 0.5f, 0.0f, 100.0f, "%.1f%%")) {
+                crop = withCropInset(crop, c.edge, pct / 100.0, 0.01);
+                changed = true;
+            }
+        }
+    }
     if (changed) {
-        crop.x = left;  crop.width  = 1.0f - left - right;
-        crop.y = top;   crop.height = 1.0f - top - bottom;
         ctx.project->setModified(true);
     }
 
