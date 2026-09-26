@@ -1,14 +1,61 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-09-25 (Session 22)
+Last Updated: 2026-09-26 (Session 23)
 
 ## Quick Status
 - In Progress: 0
-- Todo: Phase 0 S6 hygiene (move AI + stress out of Application.cpp, dead stubs, audio decision,
+- Todo: Phase 0 S6 hygiene (move AI out of Application.cpp, dead stubs,
   dev→master PR), Phase 1 ADR-047..051, QM-079 (needs ADR-049), QM-082, TD-08/11..17, 🚩 QM-061
-- Done: Session 22 added QM-083..QM-099 (see below)
+- Done: Session 22 added QM-083..QM-099 (see below); Session 23 added QM-100..QM-109 (PRD MVP
+  gaps + post-MVP control)
 - Blocked: 0
 - Plan of record: [docs/audits/2026-09-25-foundation-audit.md](docs/audits/2026-09-25-foundation-audit.md) §8
+
+## Session 23 (2026-09-26) — PRD MVP gaps, audio, OSC/MIDI (committed on dev, not pushed)
+
+- **QM-100 DONE** — scene take keys 1–9 + numpad (physical keys, any layout; blocked while
+  typing/popups/modifiers), from editor and focused output windows; duplicate scene (deep copy,
+  fresh ids); reorder (drag, Move up/down); removing an output clears its scene assignments.
+  US-008, PRD §4.1.6.
+- **QM-101 DONE** — missing media kept on load and relocatable (Missing Media window: Locate
+  with same-folder siblings, recursive Search Folder on a worker thread, File > Relocate Missing
+  Media); missing surfaces black on outputs, magenta checker in the editor. PRD §4.1.8.
+- **QM-102 DONE** — TIF/TIFF via Windows Imaging Component (OS library, no new dependency).
+- **QM-103 DONE** — crop edited in source pixels when the size is known.
+- **QM-104 DONE** — stills load top row first: every PNG/JPEG/TIF had rendered upside down on
+  quads since the baseline (found in GUI QA); OBJ v stored flipped so object textures and video
+  on objects are upright; the One-Flash ChArUco pattern is no longer vertically mirrored. Note:
+  a saved show that used Flip V to work around it now needs Flip V turned off.
+- **QM-105 DONE** — OSC (UDP, off by default) + MIDI with learn (WinMM), control-target registry,
+  master blackout (Ctrl+B, Output menu, /qm/blackout), MIDI mappings saved in the show (ADR-048).
+  Follow-up: load keeps saved quad ids.
+- **QM-106 DONE** — PlaybackClock (media time follows the wall clock, loops wrap without
+  restarting), real Ping-Pong (HAP exact; long-GOP via backward GOP decode in a 512 MB cache,
+  falls back to Loop with a reason), master timeline + "Lock to master timeline" (ADR-050 §1/3/4).
+- **QM-107 DONE** — `--bench` PRD §5 harness + bench_smoke; stress harness moved to
+  StressHarness.cpp; per-quad mesh cache (256 quads on one 1080p output 19.7 → ~60 fps Release);
+  two-thread file decode.
+- **QM-108 DONE** — integration review of QM-100..107 (fresh-context verify): relocation keeps
+  timeline lock and MIDI mappings, locked clips refuse OSC/MIDI transport (new /qm/timeline/*
+  targets), take refits projectors, queued takes dropped on load, one-Esc rule kept with MIDI
+  learn pending, bench skips OSC/MIDI, One-Flash reports blackout.
+- **QM-109 DONE** — audio from video files slaved to the clock (hard/soft drift correction,
+  ~2 ms max measured error), per-source and master volume/mute, output device, audible only for
+  sources in the active or a live scene, OSC/MIDI volume targets (US-012, ADR-050 §2).
+- `.qmap` is now 3.3.0 (additive: control, audio, transport timelineLocked/volume/muted, missing
+  sources kept); fixture v3.3-control-audio-lock.qmap.
+- PRD §5 measured (Release, RTX 3080 Laptop): latency key→swap p95 19 ms uncapped / 34 ms vsync
+  (target < 50 ✅); drift < 1 frame/h ✅; no leaks ✅; 256 quads 49–62 fps on one output
+  (borderline), 33–45 on two ❌; scene switch p95 21 ms (target 16 ❌, bounded by frame time);
+  16× H.264 1080p ❌ (~2.5 fps; needs hardware decode), 16× HAP ~98% of frames ✅-ish.
+- GUI QA on the real app: scene keys/duplicate/reorder/rename-guard, missing media dialog +
+  Locate + sibling auto-resolve + checker, TIF, pixel crop, orientation fix, Ping-Pong (picture
+  runs backwards), timeline lock + master pause/resume, blackout banner — all seen working.
+  Audio GUI pass: menu-bar Mute / Vol / device strip, per-source Mute + Volume, "No audio stream"
+  and "Silent at non-1x speed" seen; log shows the device opened, mono 44.1 kHz resampled to stereo
+  48 kHz, resync on load and on return to 1x, no underruns. Found and fixed: the Video Player did
+  not follow the selected quad's video. Sync itself was measured by the audio slice (~2 ms max);
+  audible A/V sync, device unplug and 7.1 downmix still need a human ear.
 
 ## Session 22 (2026-09-25) — Foundation audit + Phase 0 (committed on dev, not pushed)
 Nine-team CEM audit (Opus 5.5 lead) → Phase 0 slices, each gated by a fresh-context Opus-high
