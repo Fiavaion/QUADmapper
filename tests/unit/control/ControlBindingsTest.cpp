@@ -49,6 +49,12 @@ public:
     float getSpeed() const override { return speed; }
     void setLoopMode(LoopMode) override {}
     LoopMode getLoopMode() const override { return LoopMode::LOOP; }
+    std::string getLoopModeNotice() const override { return {}; }
+    void setTimelineLocked(bool, const PlaybackClock&) override {}
+    bool isTimelineLocked() const override { return false; }
+    void followTimeline(const PlaybackClock&) override {}
+    const PlaybackClock& getClock() const override { return clock_; }
+    PlaybackTimePoint getClockNow() const override { return {}; }
 
     PlaybackState state = PlaybackState::PAUSED;
     int plays = 0, pauses = 0, seeks = 0;
@@ -56,6 +62,7 @@ public:
     float speed = 1.0f;
 
 private:
+    PlaybackClock clock_;
     UUID id_ = UUID::generate();
     std::string name_;
 };
