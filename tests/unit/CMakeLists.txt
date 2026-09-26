@@ -94,9 +94,11 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
         video/VideoPlayerPlaybackTest.cpp
         source/HapPlaybackTest.cpp
         video/RealMediaPlaybackBench.cpp  # opt-in (DISABLED_), needs local media
+        video/HardwareDecodeTest.cpp      # ADR-055; needs local media + a D3D11 video decoder
+        video/ColourBarsPlaybackTest.cpp  # ADR-055 colour gate; needs a GL 3.3 context
     )
     target_include_directories(test_video_decoder PRIVATE ${AVCODEC_INCLUDE_DIR})
-    target_link_libraries(test_video_decoder PRIVATE quadmapper_source quadmapper_video quadmapper_core
+    target_link_libraries(test_video_decoder PRIVATE quadmapper_source quadmapper_video quadmapper_core glfw glad
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY})
 endif()
 
@@ -143,6 +145,7 @@ add_quadmapper_test(test_render_gl
     renderer/MeshObjectRenderTest.cpp
     renderer/OutputCompositeRenderTest.cpp
     renderer/TextureUploadTest.cpp
+    renderer/YuvConverterTest.cpp
 )
 target_link_libraries(test_render_gl PRIVATE quadmapper_renderer quadmapper_source quadmapper_core glfw glad)
 

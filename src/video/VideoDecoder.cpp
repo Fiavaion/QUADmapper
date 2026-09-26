@@ -6,22 +6,42 @@
 
 #ifdef QUADMAPPER_HAS_FFMPEG
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+// C++ headers: included here, outside extern "C", before hwcontext_d3d11va.h pulls them in.
+#include <d3d11.h>
+#include <dxgi.h>
+#endif
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
+#include <libavutil/buffer.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/error.h>
+#include <libavutil/pixdesc.h>
+#ifdef _WIN32
+#include <libavutil/hwcontext_d3d11va.h>
+#endif
 #ifdef QUADMAPPER_HAS_AVDEVICE
 #include <libavdevice/avdevice.h>
 #endif
 }
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <optional>
 #include <string>
 
 namespace quadmapper {
@@ -33,6 +53,10 @@ constexpr size_t MEGABYTE = size_t(1) << 20;
 constexpr int MAX_REVERSE_RETRIES = 20;
 // Leg changes in a row that produced no frame: the plan cannot make progress.
 constexpr int MAX_EMPTY_LEGS = 3;
+// Row alignment of frames copied from the GPU.
+constexpr int TRANSFER_ALIGN = 32;
+// Half-millisecond polls for a GPU copy before the readback gives up (~2 s).
+constexpr int MAX_READBACK_POLLS = 4000;
 
 size_t frameBytes(const AVFrame* frame) {
     size_t bytes = 0;
@@ -54,6 +78,115 @@ std::string reverseAdvice(size_t cacheBytes) {
            " reverse cache. Re-encode as HAP or all-intra for Ping-Pong.";
 }
 
+// --- Hardware decoding (ADR-055) ---
+
+// The D3D11 device every hardware decoder shares, one per app. Created by the first
+// decoder that asks and then kept until the process ends: creating and destroying a
+// D3D11 device per clip costs ~1.5 MB of driver memory each time that is never given
+// back (40 stress cycles re-creating a clip: +65 MB, against +25 MB with one device).
+// Not released at exit either: freeing D3D objects from a static destructor races the
+// driver's own unload, and the OS reclaims the device with the process.
+struct SharedHardwareDevice {
+    std::mutex mutex;
+    AVBufferRef* device = nullptr;  // the registry's reference, held until exit
+    int created = 0;
+    bool unavailable = false;       // creation failed once: don't retry per clip
+};
+
+SharedHardwareDevice& sharedHardwareDevice() {
+    static SharedHardwareDevice shared;
+    return shared;
+}
+
+std::string adapterName(AVBufferRef* device) {
+#ifdef _WIN32
+    const auto* hw = reinterpret_cast<const AVHWDeviceContext*>(device->data);
+    const auto* d3d = static_cast<const AVD3D11VADeviceContext*>(hw->hwctx);
+    IDXGIDevice* dxgiDevice = nullptr;
+    if (!d3d || !d3d->device ||
+        FAILED(d3d->device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice)))) {
+        return "unknown adapter";
+    }
+    std::string name = "unknown adapter";
+    IDXGIAdapter* adapter = nullptr;
+    DXGI_ADAPTER_DESC desc{};
+    if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&desc))) {
+        name.clear();
+        for (const wchar_t* c = desc.Description; *c; ++c) {
+            name += (*c < 128) ? static_cast<char>(*c) : '?';
+        }
+    }
+    if (adapter) adapter->Release();
+    dxgiDevice->Release();
+    return name;
+#else
+    (void)device;
+    return "unknown adapter";
+#endif
+}
+
+// A new reference to the shared device, or null when the machine has none.
+AVBufferRef* acquireHardwareDevice() {
+    SharedHardwareDevice& shared = sharedHardwareDevice();
+    std::lock_guard<std::mutex> lock(shared.mutex);
+    if (shared.unavailable) return nullptr;
+    if (!shared.device) {
+        AVBufferRef* device = nullptr;
+        const int rc = av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
+        if (rc < 0) {
+            char err[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(rc, err, sizeof(err));
+            LOG_WARNING("Hardware video decoding unavailable (no D3D11 video device: {}); "
+                        "videos decode in software", err);
+            shared.unavailable = true;
+            return nullptr;
+        }
+        LOG_INFO("Hardware video decoding: D3D11VA on {}", adapterName(device));
+        shared.device = device;
+        ++shared.created;
+    }
+    return av_buffer_ref(shared.device);
+}
+
+// The codecs the GPU pass is asked to decode (ADR-055 §1).
+bool hardwareCodec(AVCodecID id) {
+    return id == AV_CODEC_ID_H264 || id == AV_CODEC_ID_HEVC || id == AV_CODEC_ID_VP9 ||
+           id == AV_CODEC_ID_AV1;
+}
+
+// The decoder for `id` that can use D3D11VA (for AV1 the native one, not libdav1d), or null.
+const AVCodec* hardwareDecoder(AVCodecID id) {
+    const AVCodec* codec = id == AV_CODEC_ID_AV1 ? avcodec_find_decoder_by_name("av1")
+                                                  : avcodec_find_decoder(id);
+    for (int i = 0; codec; ++i) {
+        const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
+        if (!config) break;
+        if (config->device_type == AV_HWDEVICE_TYPE_D3D11VA && config->pix_fmt == AV_PIX_FMT_D3D11 &&
+            (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+            return codec;
+        }
+    }
+    return nullptr;
+}
+
+// get_format: take the D3D11 surfaces when offered; otherwise (the GPU refused this
+// stream's profile or size) the first software format. The decoder notices the
+// software frames and restarts the stream in proper, multi-threaded software decoding.
+AVPixelFormat chooseHardwareFormat(AVCodecContext*, const AVPixelFormat* formats) {
+    for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; ++f) {
+        if (*f == AV_PIX_FMT_D3D11) return *f;
+    }
+    for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; ++f) {
+        const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(*f);
+        if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *f;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+void freeFrameHandle(AVFrame* frame) {
+    av_frame_free(&frame);
+}
+
 }  // namespace
 
 class VideoDecoder::Impl {
@@ -61,8 +194,9 @@ public:
     Impl() = default;
     ~Impl() { close(); }
 
-    bool open(const std::filesystem::path& path) {
+    bool open(const std::filesystem::path& path, const DecodeOptions& options) {
         close();
+        options_ = options;
 
         std::string pathStr = path.string();
 
@@ -78,6 +212,7 @@ public:
 
     bool openCamera(const std::string& deviceName, int width, int height, double fps) {
         close();
+        options_ = DecodeOptions{};  // capture stays software, RGB24
 #ifdef QUADMAPPER_HAS_AVDEVICE
         avdevice_register_all();
         const AVInputFormat* ifmt = av_find_input_format("dshow");
@@ -149,47 +284,10 @@ public:
             return false;
         }
 
-        // Get codec parameters
-        AVCodecParameters* codecPar = formatCtx_->streams[videoStreamIndex_]->codecpar;
-
-        // Find decoder
-        const AVCodec* codec = avcodec_find_decoder(codecPar->codec_id);
-        if (!codec) {
-            LOG_ERROR("Unsupported codec");
-            close();
-            return false;
-        }
-
-        // Allocate codec context
-        codecCtx_ = avcodec_alloc_context3(codec);
-        if (!codecCtx_) {
-            LOG_ERROR("Failed to allocate codec context");
-            close();
-            return false;
-        }
-
-        // Copy codec parameters
-        if (avcodec_parameters_to_context(codecCtx_, codecPar) < 0) {
-            LOG_ERROR("Failed to copy codec parameters");
-            close();
-            return false;
-        }
-
-        // Decode files on two cores. On one core a 20 Mbit/s 1080p H.264 clip takes
-        // 35-60 ms a frame (--bench drift), longer than a frame lasts at 25 fps, so the
-        // picture fell behind the clock; two threads keep it in time. Not a thread per
-        // core: with many simultaneous clips that oversubscribes the CPU and starves
-        // the render thread (16 such clips: 3.7 FPS on one thread, 2.6 on two, 0.8 on
-        // one per core). Live capture stays single-threaded: frame threading would add
-        // frames of latency to a camera.
-        if (!isLive_) {
-            codecCtx_->thread_count = 2;
-            codecCtx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-        }
-
-        // Open codec
-        if (avcodec_open2(codecCtx_, codec, nullptr) < 0) {
-            LOG_ERROR("Failed to open codec");
+        const AVCodecID codecId = formatCtx_->streams[videoStreamIndex_]->codecpar->codec_id;
+        bool hardware = options_.hardware && !isLive_ && hardwareCodec(codecId);
+        if (options_.hardware && !hardware) setDecodeNote("the GPU decoder does not handle this codec");
+        if (!openCodec(hardware)) {
             close();
             return false;
         }
@@ -204,30 +302,22 @@ public:
             return false;
         }
 
-        // Setup RGB frame buffer
+        // Setup RGB frame buffer (the scaler is made for each frame's pixel format)
         int numBytes = av_image_get_buffer_size(AV_PIX_FMT_RGB24, codecCtx_->width, codecCtx_->height, 1);
-        rgbBuffer_.resize(numBytes);
-        av_image_fill_arrays(rgbFrame_->data, rgbFrame_->linesize, rgbBuffer_.data(),
-                           AV_PIX_FMT_RGB24, codecCtx_->width, codecCtx_->height, 1);
-
-        // Setup scaler
-        swsCtx_ = sws_getContext(
-            codecCtx_->width, codecCtx_->height, codecCtx_->pix_fmt,
-            codecCtx_->width, codecCtx_->height, AV_PIX_FMT_RGB24,
-            SWS_BILINEAR, nullptr, nullptr, nullptr
-        );
-
-        if (!swsCtx_) {
-            LOG_ERROR("Failed to create scaler context");
+        if (numBytes <= 0) {
+            LOG_ERROR("Invalid video size {}x{}", codecCtx_->width, codecCtx_->height);
             close();
             return false;
         }
+        rgbBuffer_.resize(numBytes);
+        av_image_fill_arrays(rgbFrame_->data, rgbFrame_->linesize, rgbBuffer_.data(),
+                           AV_PIX_FMT_RGB24, codecCtx_->width, codecCtx_->height, 1);
 
         // Fill video info
         AVStream* videoStream = formatCtx_->streams[videoStreamIndex_];
         info_.width = codecCtx_->width;
         info_.height = codecCtx_->height;
-        info_.codecName = codec->name;
+        info_.codecName = codecCtx_->codec->name;
 
         // Duration: the video stream's own, when the container records it, since the
         // playback clock loops at it (a longer audio track would add a frozen tail);
@@ -288,10 +378,261 @@ public:
         atEnd_ = false;
         observedEnd_ = 0.0;
         endSeen_ = false;
-        if (probeEnd) seekExact(0.0);  // back to the first frame after reading the tail
+        // Hardware: decode the first frame now, so a stream the GPU refuses (profile,
+        // size, too many sessions) is in software before playback starts.
+        const bool probeHardware = hwActive_;
+        if (probeHardware && !decodeNextRaw() && hwActive_ && codecCtx_) {
+            resumeInSoftware("the GPU decoded no frame of this stream", startPts_);
+        }
+        if (!codecCtx_) {
+            close();
+            return false;
+        }
+        // Back to the first frame after reading the tail or the first frame.
+        if (probeEnd || probeHardware) seekExact(0.0);
 
-        LOG_INFO("Opened video: {}x{}, {} fps, {:.2f}s", info_.width, info_.height, info_.frameRate, info_.duration);
+        // The logger substitutes plain {} only (no format specs).
+        LOG_INFO("Opened video: {}x{}, {} fps, {} s, {} decoding", info_.width, info_.height,
+                 info_.frameRate, info_.duration, hwActive_ ? "hardware" : "software");
         return true;
+    }
+
+    // Allocate and open the codec context: on the shared D3D11 device when `hardware`
+    // (falling back to software if the device or the codec cannot), else in software.
+    bool openCodec(bool hardware) {
+        const AVCodecParameters* codecPar = formatCtx_->streams[videoStreamIndex_]->codecpar;
+        const AVCodec* codec = nullptr;
+        if (hardware) {
+            codec = hardwareDecoder(codecPar->codec_id);
+            if (codec) hwDevice_ = acquireHardwareDevice();
+            if (!codec || !hwDevice_) {
+                setDecodeNote(codec ? "no GPU video decoder on this machine"
+                                    : "this FFmpeg build has no D3D11 decoder for the codec");
+                codec = nullptr;  // the software decoder for the codec, found below
+                hardware = false;
+            }
+        }
+        if (!codec) codec = avcodec_find_decoder(codecPar->codec_id);
+        if (!codec) {
+            LOG_ERROR("Unsupported codec");
+            return false;
+        }
+
+        codecCtx_ = avcodec_alloc_context3(codec);
+        if (!codecCtx_) {
+            LOG_ERROR("Failed to allocate codec context");
+            return false;
+        }
+        if (avcodec_parameters_to_context(codecCtx_, codecPar) < 0) {
+            LOG_ERROR("Failed to copy codec parameters");
+            return false;
+        }
+
+        if (hardware) {
+            // The GPU decodes; one CPU thread only feeds it. Frames are copied to memory
+            // as soon as they are chosen, so two extra surfaces cover the ones held here.
+            codecCtx_->hw_device_ctx = av_buffer_ref(hwDevice_);
+            codecCtx_->get_format = chooseHardwareFormat;
+            codecCtx_->thread_count = 1;
+            codecCtx_->extra_hw_frames = 2;
+        } else if (!isLive_) {
+            // Decode files on two cores. On one core a 20 Mbit/s 1080p H.264 clip takes
+            // 35-60 ms a frame (--bench drift), longer than a frame lasts at 25 fps, so the
+            // picture fell behind the clock; two threads keep it in time. Not a thread per
+            // core: with many simultaneous clips that oversubscribes the CPU and starves
+            // the render thread (16 such clips: 3.7 FPS on one thread, 2.6 on two, 0.8 on
+            // one per core). Live capture stays single-threaded: frame threading would add
+            // frames of latency to a camera.
+            codecCtx_->thread_count = 2;
+            codecCtx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        }
+
+        if (avcodec_open2(codecCtx_, codec, nullptr) < 0) {
+            if (hardware) {
+                LOG_WARNING("The GPU decoder would not open this stream; decoding in software");
+                setDecodeNote("the GPU decoder would not open this stream");
+                closeCodec();
+                return openCodec(false);
+            }
+            LOG_ERROR("Failed to open codec");
+            return false;
+        }
+        hwActive_ = hardware;
+        reorderDelay_ = std::max(codecCtx_->has_b_frames, 0);
+        return true;
+    }
+
+    void closeCodec() {
+#ifdef _WIN32
+        releaseStaging();
+#endif
+        if (codecCtx_) avcodec_free_context(&codecCtx_);  // drops its device and surface pool
+        av_buffer_unref(&hwDevice_);
+        hwActive_ = false;
+    }
+
+    // The GPU refused or failed this stream: reopen it in software and decode again
+    // from the keyframe before `resumePts` (stream time base), skipping to that frame,
+    // so playback carries on with the same frame. Returns false if even software
+    // decoding could not open (codecCtx_ is then null).
+    bool resumeInSoftware(const std::string& reason, int64_t resumePts) {
+        LOG_WARNING("Hardware decoding stopped ({}); this video carries on in software", reason);
+        setDecodeNote(reason);
+        av_frame_unref(frame_);
+        av_frame_unref(skippedFrame_);
+        closeCodec();
+        if (!openCodec(false)) {
+            closeCodec();
+            return false;
+        }
+        const double landed = landedKeyPts_;
+        if (seekDemuxer(resumePts)) {
+            seekTargetPts_ = resumePts;
+            keepPreroll_ = false;
+            atEnd_ = false;
+            // The reverse leg's group still started at its own keyframe.
+            landedKeyAfterResume_ = landed;
+        }
+        return true;
+    }
+
+    // frame_ holds a frame to show. A hardware frame is copied to memory here (only the
+    // frames shown or cached, not those skipped on the way to a seek target). False if
+    // the GPU failed and decoding restarted in software: decode again.
+    bool finishHardwareFrame() {
+        if (!hwActive_) return true;
+        const int64_t pts = frame_->pts != AV_NOPTS_VALUE
+            ? frame_->pts : startPts_ + std::llround(currentTime_.load() / timeBase_);
+        if (frame_->format != AV_PIX_FMT_D3D11) {
+            resumeInSoftware("the GPU decoder refused this stream", pts);
+            return false;
+        }
+        const bool injected = options_.failHardwareAfterFrames >= 0 &&
+                              hwFrames_ >= options_.failHardwareAfterFrames;
+        AVFrame* copy = av_frame_alloc();
+        const int rc = !copy ? AVERROR(ENOMEM)
+                     : injected ? AVERROR(EIO)
+                     : transferToMemory(frame_, copy);
+        if (rc < 0) {
+            av_frame_free(&copy);
+            resumeInSoftware(injected ? "simulated GPU failure (test)"
+                                      : "copying a decoded frame from the GPU failed", pts);
+            return false;
+        }
+        av_frame_copy_props(copy, frame_);
+        av_frame_unref(frame_);
+        av_frame_move_ref(frame_, copy);
+        av_frame_free(&copy);
+        ++hwFrames_;
+        return true;
+    }
+
+    // Copy a D3D11 surface to memory (NV12, or P010 for 10-bit) in a buffer from this
+    // stream's pool, so frames reuse memory instead of allocating 3 MB each.
+    int transferToMemory(const AVFrame* surface, AVFrame* copy) {
+        const auto* frames = reinterpret_cast<const AVHWFramesContext*>(surface->hw_frames_ctx->data);
+        copy->format = frames->sw_format;
+        copy->width = surface->width;
+        copy->height = surface->height;
+        const auto format = static_cast<AVPixelFormat>(copy->format);
+        const int bytes = av_image_get_buffer_size(format, copy->width, copy->height, TRANSFER_ALIGN);
+        if (bytes <= 0) return AVERROR(EINVAL);
+        if (!transferPool_ || transferPoolBytes_ != bytes) {
+            av_buffer_pool_uninit(&transferPool_);  // buffers still in use are freed on return
+            transferPool_ = av_buffer_pool_init(static_cast<size_t>(bytes), nullptr);
+            transferPoolBytes_ = bytes;
+        }
+        copy->buf[0] = transferPool_ ? av_buffer_pool_get(transferPool_) : nullptr;
+        if (!copy->buf[0]) return AVERROR(ENOMEM);
+        const int filled = av_image_fill_arrays(copy->data, copy->linesize, copy->buf[0]->data, format,
+                                                copy->width, copy->height, TRANSFER_ALIGN);
+        if (filled < 0) return filled;
+#ifdef _WIN32
+        return readBack(surface, copy);
+#else
+        return av_hwframe_transfer_data(copy, surface, 0);
+#endif
+    }
+
+#ifdef _WIN32
+    // av_hwframe_transfer_data for D3D11 holds the shared device's lock while it waits
+    // for the GPU copy and while it copies the pixels, so with many streams every
+    // decoder queues behind every other (16 x 1080p: ~20 ms a frame). Here the lock is
+    // held only for the D3D11 calls themselves: copy to this stream's staging texture,
+    // then poll the map without waiting, and copy the pixels out unlocked.
+    int readBack(const AVFrame* surface, AVFrame* copy) {
+        const auto* frames = reinterpret_cast<const AVHWFramesContext*>(surface->hw_frames_ctx->data);
+        const auto* device = reinterpret_cast<const AVHWDeviceContext*>(frames->device_ref->data);
+        auto* d3d = static_cast<AVD3D11VADeviceContext*>(device->hwctx);
+        auto* texture = reinterpret_cast<ID3D11Texture2D*>(surface->data[0]);
+        const auto index = static_cast<UINT>(reinterpret_cast<intptr_t>(surface->data[1]));
+
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        if (!staging_ || stagingDevice_ != d3d->device || stagingDesc_.Width != desc.Width ||
+            stagingDesc_.Height != desc.Height || stagingDesc_.Format != desc.Format) {
+            releaseStaging();
+            D3D11_TEXTURE2D_DESC wanted{};
+            wanted.Width = desc.Width;
+            wanted.Height = desc.Height;
+            wanted.MipLevels = 1;
+            wanted.ArraySize = 1;
+            wanted.Format = desc.Format;
+            wanted.SampleDesc.Count = 1;
+            wanted.Usage = D3D11_USAGE_STAGING;
+            wanted.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if (FAILED(d3d->device->CreateTexture2D(&wanted, nullptr, &staging_))) {
+                staging_ = nullptr;
+                return AVERROR(ENOMEM);
+            }
+            stagingDevice_ = d3d->device;
+            stagingDesc_ = wanted;
+        }
+
+        d3d->lock(d3d->lock_ctx);
+        d3d->device_context->CopySubresourceRegion(staging_, 0, 0, 0, 0, texture, index, nullptr);
+        d3d->device_context->Flush();  // start the copy now: the map below does not wait
+        d3d->unlock(d3d->lock_ctx);
+
+        D3D11_MAPPED_SUBRESOURCE map{};
+        for (int polls = 0;; ++polls) {
+            d3d->lock(d3d->lock_ctx);
+            const HRESULT hr = d3d->device_context->Map(staging_, 0, D3D11_MAP_READ,
+                                                        D3D11_MAP_FLAG_DO_NOT_WAIT, &map);
+            d3d->unlock(d3d->lock_ctx);
+            if (SUCCEEDED(hr)) break;
+            if (hr != DXGI_ERROR_WAS_STILL_DRAWING || polls > MAX_READBACK_POLLS) return AVERROR_EXTERNAL;
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
+
+        // The staging texture holds the surface at its padded height; the planes follow
+        // each other at the map's row pitch.
+        const auto format = static_cast<AVPixelFormat>(copy->format);
+        uint8_t* src[4] = {};
+        int srcLinesize[4] = {static_cast<int>(map.RowPitch), static_cast<int>(map.RowPitch), 0, 0};
+        const int filled = av_image_fill_pointers(src, format, static_cast<int>(desc.Height),
+                                                  static_cast<uint8_t*>(map.pData), srcLinesize);
+        if (filled >= 0) {
+            av_image_copy(copy->data, copy->linesize, const_cast<const uint8_t**>(src), srcLinesize,
+                          format, copy->width, copy->height);
+        }
+        d3d->lock(d3d->lock_ctx);
+        d3d->device_context->Unmap(staging_, 0);
+        d3d->unlock(d3d->lock_ctx);
+        return filled < 0 ? filled : 0;
+    }
+
+    void releaseStaging() {
+        if (staging_) staging_->Release();
+        staging_ = nullptr;
+        stagingDevice_ = nullptr;
+        stagingDesc_ = D3D11_TEXTURE2D_DESC{};
+    }
+#endif
+
+    void setDecodeNote(const std::string& note) {
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        decodeNote_ = note;
     }
 
     void close() {
@@ -315,10 +656,9 @@ public:
             av_frame_free(&rgbFrame_);
             rgbFrame_ = nullptr;
         }
-        if (codecCtx_) {
-            avcodec_free_context(&codecCtx_);
-            codecCtx_ = nullptr;
-        }
+        closeCodec();
+        av_buffer_pool_uninit(&transferPool_);  // buffers still in frames are freed on release
+        transferPoolBytes_ = 0;
         if (formatCtx_) {
             avformat_close_input(&formatCtx_);
             formatCtx_ = nullptr;
@@ -337,9 +677,18 @@ public:
         observedEnd_ = 0.0;
         endSeen_ = false;
         reversePeakBytes_ = 0;
+        hwFrames_ = 0;
+        landedKeyAfterResume_.reset();
+        rgbColorKey_ = -1;
+        setDecodeNote({});
     }
 
     bool isOpen() const { return isOpen_; }
+    bool isHardwareDecoding() const { return hwActive_; }
+    std::string getDecodeNote() const {
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        return decodeNote_;
+    }
     bool isLive() const { return isLive_; }
     const VideoInfo& getInfo() const { return info_; }
     double getCurrentTime() const { return currentTime_; }
@@ -423,8 +772,13 @@ public:
 
         // One group of pictures, plus the reordering delay's frames decoded past it.
         const int64_t frames = static_cast<int64_t>(std::ceil(widestGap / frameSeconds_ - 1e-6)) +
-                               std::max(codecCtx_->has_b_frames, 0) + 1;
-        const int perFrame = av_image_get_buffer_size(codecCtx_->pix_fmt, info_.width, info_.height, 1);
+                               reorderDelay_.load() + 1;
+        // The cache holds frames in memory in the stream's own format (hardware frames
+        // are copied out as NV12/P010, the same size as 4:2:0 YUV): 1.5 bytes a pixel
+        // for 8-bit 4:2:0, where RGB24 would take 3.
+        const auto format = static_cast<AVPixelFormat>(
+            formatCtx_->streams[videoStreamIndex_]->codecpar->format);
+        const int perFrame = av_image_get_buffer_size(format, info_.width, info_.height, 1);
         if (perFrame <= 0) return {};
         const double needed = static_cast<double>(frames) * perFrame;
         if (needed <= static_cast<double>(cacheBytes)) return {};
@@ -484,6 +838,11 @@ public:
         if (frameBuffer_.empty()) return false;
         due = frameBuffer_.front().due;
         return true;
+    }
+
+    YuvPicture peekBufferedPicture() const {
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        return frameBuffer_.empty() ? YuvPicture{} : frameBuffer_.front().yuv;
     }
 
     bool hasBufferedFrames() const {
@@ -550,6 +909,15 @@ private:
             }
             if (receiveResult >= 0) {
                 if (!reachedSeekTarget()) continue;
+                if (!finishHardwareFrame()) {
+                    if (!codecCtx_) break;  // not even software decoding could open
+                    continue;               // restarted in software: decode this frame again
+                }
+                if (landedKeyAfterResume_) {
+                    landedKeyPts_ = *landedKeyAfterResume_;
+                    landedKeyAfterResume_.reset();
+                }
+                reorderDelay_ = std::max(codecCtx_->has_b_frames, 0);
                 got = true;
                 break;
             }
@@ -598,9 +966,6 @@ private:
 
     VideoFrame convertFrame(const AVFrame* frame) {
         VideoFrame result;
-        sws_scale(swsCtx_, frame->data, frame->linesize, 0,
-                  codecCtx_->height, rgbFrame_->data, rgbFrame_->linesize);
-
         result.width = info_.width;
         result.height = info_.height;
         result.frameNumber = currentFrame_++;
@@ -616,6 +981,109 @@ private:
         }
         result.due = result.pts;
 
+        if (options_.yuvOutput && shareYuv(frame, result)) return result;
+        convertToRgb(frame, result);
+        return result;
+    }
+
+    // Hand the frame's planes on as they are (a new reference, no pixel copy) when the
+    // GPU pass handles its layout.
+    bool shareYuv(const AVFrame* frame, VideoFrame& result) const {
+        YuvPicture& yuv = result.yuv;
+        bool fullRange = frame->color_range == AVCOL_RANGE_JPEG ||
+                         (frame->color_range == AVCOL_RANGE_UNSPECIFIED &&
+                          codecCtx_->color_range == AVCOL_RANGE_JPEG);
+        switch (frame->format) {
+            case AV_PIX_FMT_NV12:        yuv.layout = YuvLayout::NV12; break;
+            case AV_PIX_FMT_P010LE:      yuv.layout = YuvLayout::P010; break;
+            case AV_PIX_FMT_YUV420P:     yuv.layout = YuvLayout::YUV420P; break;
+            case AV_PIX_FMT_YUVJ420P:    yuv.layout = YuvLayout::YUV420P; fullRange = true; break;
+            case AV_PIX_FMT_YUV420P10LE: yuv.layout = YuvLayout::YUV420P10; break;
+            default: return false;
+        }
+        for (int p = 0; p < yuv.planeCount(); ++p) {
+            if (!frame->data[p] || frame->linesize[p] <= 0) {
+                yuv.layout = YuvLayout::None;
+                return false;
+            }
+        }
+        AVFrame* handle = av_frame_clone(frame);
+        if (!handle) {
+            yuv.layout = YuvLayout::None;
+            return false;
+        }
+        yuv.width = frame->width;
+        yuv.height = frame->height;
+        for (int p = 0; p < yuv.planeCount(); ++p) {
+            yuv.planes[p] = handle->data[p];
+            yuv.strides[p] = handle->linesize[p];
+        }
+        yuv.matrix = matrixOf(frame);
+        yuv.fullRange = fullRange;
+        yuv.owner = std::shared_ptr<const void>(handle, freeFrameHandle);
+        result.width = yuv.width;
+        result.height = yuv.height;
+        return true;
+    }
+
+    // The matrix the frame was encoded with; untagged video follows the usual rule
+    // (HD and larger BT.709, SD BT.601).
+    YuvMatrix matrixOf(const AVFrame* frame) const {
+        AVColorSpace space = frame->colorspace;
+        if (space == AVCOL_SPC_UNSPECIFIED) space = codecCtx_->colorspace;
+        switch (space) {
+            case AVCOL_SPC_BT709:
+            case AVCOL_SPC_SMPTE240M:  // near enough to BT.709
+                return YuvMatrix::BT709;
+            case AVCOL_SPC_BT470BG:
+            case AVCOL_SPC_SMPTE170M:
+            case AVCOL_SPC_FCC:
+                return YuvMatrix::BT601;
+            case AVCOL_SPC_BT2020_NCL:
+            case AVCOL_SPC_BT2020_CL:
+                return YuvMatrix::BT2020;
+            default: {
+                // JPEG-derived pictures (MJPEG) are BT.601 whatever their size.
+                const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame->format));
+                if (desc && std::string(desc->name).rfind("yuvj", 0) == 0) return YuvMatrix::BT601;
+                return frame->height > 576 ? YuvMatrix::BT709 : YuvMatrix::BT601;
+            }
+        }
+    }
+
+    // RGB24 on the CPU with swscale: for RGB24 output, and pixel formats the GPU pass
+    // does not handle. For playback (yuvOutput) it uses the frame's matrix and range,
+    // so those formats match the GPU pass; one-off decodes (thumbnails, cameras) keep
+    // swscale's defaults.
+    void convertToRgb(const AVFrame* frame, VideoFrame& result) {
+        const auto format = static_cast<AVPixelFormat>(frame->format);
+        SwsContext* previous = swsCtx_;
+        swsCtx_ = sws_getCachedContext(swsCtx_, frame->width, frame->height, format, info_.width,
+                                       info_.height, AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr,
+                                       nullptr, nullptr);
+        if (!swsCtx_) {
+            LOG_ERROR("No converter from pixel format {} to RGB", av_get_pix_fmt_name(format));
+            return;  // an invalid frame: counted as a decode failure
+        }
+        if (options_.yuvOutput) {
+            const YuvMatrix matrix = matrixOf(frame);
+            const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(format);
+            const bool fullRange = frame->color_range == AVCOL_RANGE_JPEG ||
+                                   (desc && std::string(desc->name).rfind("yuvj", 0) == 0);
+            const int colorKey = static_cast<int>(matrix) * 2 + (fullRange ? 1 : 0);
+            if (swsCtx_ != previous || rgbColorKey_ != colorKey) {
+                const int space = matrix == YuvMatrix::BT709   ? SWS_CS_ITU709
+                                : matrix == YuvMatrix::BT2020 ? SWS_CS_BT2020
+                                                              : SWS_CS_ITU601;
+                // swscale ignores this for RGB sources, which have no matrix.
+                sws_setColorspaceDetails(swsCtx_, sws_getCoefficients(space), fullRange ? 1 : 0,
+                                         sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+                rgbColorKey_ = colorKey;
+            }
+        }
+        sws_scale(swsCtx_, frame->data, frame->linesize, 0, frame->height, rgbFrame_->data,
+                  rgbFrame_->linesize);
+
         const int rowBytes = info_.width * 3;
         result.data.resize(static_cast<size_t>(rowBytes) * info_.height);
         for (int y = 0; y < info_.height; y++) {
@@ -623,7 +1091,6 @@ private:
                    rgbFrame_->data[0] + y * rgbFrame_->linesize[0],
                    rowBytes);
         }
-        return result;
     }
 
     // End of the last video packet (pts + duration, relative to the stream start),
@@ -1040,6 +1507,7 @@ private:
     }
 
     // FFmpeg objects
+    DecodeOptions options_;
     AVFormatContext* formatCtx_ = nullptr;
     AVCodecContext* codecCtx_ = nullptr;
     SwsContext* swsCtx_ = nullptr;
@@ -1047,6 +1515,22 @@ private:
     AVFrame* skippedFrame_ = nullptr;  // last frame skipped on the way to a seek target
     AVFrame* rgbFrame_ = nullptr;
     std::vector<uint8_t> rgbBuffer_;
+    int rgbColorKey_ = -1;  // matrix and range swsCtx_ was set up for (playback only)
+
+    // Hardware decoding (ADR-055; decode thread, or open() before it starts)
+    AVBufferRef* hwDevice_ = nullptr;         // this decoder's reference to the shared device
+    std::atomic<bool> hwActive_{false};       // frames come from the GPU (read by the UI)
+    int hwFrames_ = 0;                        // frames the GPU has produced
+    AVBufferPool* transferPool_ = nullptr;    // memory for frames copied from the GPU
+    int transferPoolBytes_ = 0;
+#ifdef _WIN32
+    ID3D11Texture2D* staging_ = nullptr;      // this stream's readback texture
+    ID3D11Device* stagingDevice_ = nullptr;   // the device it was made on (not owned)
+    D3D11_TEXTURE2D_DESC stagingDesc_{};
+#endif
+    std::optional<double> landedKeyAfterResume_;  // landedKeyPts_ to restore after a resume
+    std::atomic<int> reorderDelay_{0};        // codec reorder delay, for checkReverse()
+    std::string decodeNote_;                  // why software, guarded by bufferMutex_
 
     // Stream indices
     int videoStreamIndex_ = -1;
@@ -1113,7 +1597,7 @@ namespace quadmapper {
 
 class VideoDecoder::Impl {
 public:
-    bool open(const std::filesystem::path&) { return false; }
+    bool open(const std::filesystem::path&, const DecodeOptions&) { return false; }
     bool openCamera(const std::string&, int, int, double) { return false; }
     void close() {}
     bool isOpen() const { return false; }
@@ -1134,9 +1618,12 @@ public:
     void stopBackgroundDecoding() {}
     VideoFrame getBufferedFrame() { return VideoFrame{}; }
     bool peekBufferedDue(double&) const { return false; }
+    YuvPicture peekBufferedPicture() const { return {}; }
     bool hasBufferedFrames() const { return false; }
     size_t getBufferedFrameCount() const { return 0; }
     std::string getLastError() const { return {}; }
+    bool isHardwareDecoding() const { return false; }
+    std::string getDecodeNote() const { return {}; }
 private:
     VideoInfo info_;
 };
@@ -1149,7 +1636,9 @@ VideoDecoder::~VideoDecoder() = default;
 VideoDecoder::VideoDecoder(VideoDecoder&&) noexcept = default;
 VideoDecoder& VideoDecoder::operator=(VideoDecoder&&) noexcept = default;
 
-bool VideoDecoder::open(const std::filesystem::path& path) { return impl_->open(path); }
+bool VideoDecoder::open(const std::filesystem::path& path, const DecodeOptions& options) {
+    return impl_->open(path, options);
+}
 bool VideoDecoder::openCamera(const std::string& deviceName, int width, int height, double fps) {
     return impl_->openCamera(deviceName, width, height, fps);
 }
@@ -1174,8 +1663,21 @@ double VideoDecoder::getObservedEnd() const { return impl_->getObservedEnd(); }
 void VideoDecoder::stopBackgroundDecoding() { impl_->stopBackgroundDecoding(); }
 VideoFrame VideoDecoder::getBufferedFrame() { return impl_->getBufferedFrame(); }
 bool VideoDecoder::peekBufferedDue(double& due) const { return impl_->peekBufferedDue(due); }
+YuvPicture VideoDecoder::peekBufferedPicture() const { return impl_->peekBufferedPicture(); }
 bool VideoDecoder::hasBufferedFrames() const { return impl_->hasBufferedFrames(); }
 size_t VideoDecoder::getBufferedFrameCount() const { return impl_->getBufferedFrameCount(); }
 std::string VideoDecoder::getLastError() const { return impl_->getLastError(); }
+bool VideoDecoder::isHardwareDecoding() const { return impl_->isHardwareDecoding(); }
+std::string VideoDecoder::getDecodeNote() const { return impl_->getDecodeNote(); }
+
+int VideoDecoder::hardwareDevicesCreated() {
+#ifdef QUADMAPPER_HAS_FFMPEG
+    SharedHardwareDevice& shared = sharedHardwareDevice();
+    std::lock_guard<std::mutex> lock(shared.mutex);
+    return shared.created;
+#else
+    return 0;
+#endif
+}
 
 }  // namespace quadmapper

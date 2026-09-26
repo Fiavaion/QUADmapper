@@ -13,6 +13,8 @@ namespace quadmapper {
 
 // Forward declarations
 class Texture;
+class YuvConverter;
+class YuvUploadState;
 
 /**
  * @brief Central manager for all texture sources
@@ -220,8 +222,22 @@ public:
      *
      * Must be called each frame from the main thread.
      * This updates all sources and uploads any new frame data to GPU textures.
+     * Video frames arrive as YUV planes and are converted into the source's RGBA
+     * texture by a GPU pass (ADR-055), which restores the GL state it changes.
      */
     void updateAll(double deltaTime);
+
+    /**
+     * @brief Main-thread time updateAll() has spent uploading frames, since construction
+     *
+     * Wall time around each source's GPU upload (and, for video, its conversion pass),
+     * for the --bench video scenario (ADR-055).
+     */
+    struct UploadStats {
+        double seconds = 0.0;
+        uint64_t uploads = 0;
+    };
+    const UploadStats& getUploadStats() const { return uploadStats_; }
 
     /**
      * @brief Reset every playable source (videos, etc.) to time 0.
@@ -264,10 +280,13 @@ private:
         bool needsTextureUpdate = true;         // True if frame data changed
         uint64_t lastFrameNumber = 0;           // For detecting new frames
         bool compressedUnsupportedLogged = false; // Rate-limit the BCn-unsupported skip log (ADR-044)
+        std::unique_ptr<YuvUploadState> yuvUpload; // plane textures + PBOs of a YUV video (ADR-055)
     };
 
     std::unordered_map<UUID, SourceEntry> sources_;
     PlaybackClock masterTimeline_;
+    UploadStats uploadStats_;
+    std::unique_ptr<YuvConverter> yuvConverter_;  // YUV -> RGBA pass for video frames
 
     SourceAddedCallback sourceAddedCallback_;
     SourceRemovedCallback sourceRemovedCallback_;
@@ -275,6 +294,7 @@ private:
     // Internal helpers
     void createGPUTexture(SourceEntry& entry);
     void uploadFrameToTexture(SourceEntry& entry);
+    void uploadYuvFrame(SourceEntry& entry, const FrameData& frame);
 };
 
 } // namespace quadmapper

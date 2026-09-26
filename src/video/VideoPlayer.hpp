@@ -31,9 +31,10 @@ public:
     /**
      * @brief Load a video file
      * @param path Path to video file
+     * @param options Hardware decoding and frame format (see DecodeOptions)
      * @return true if successful
      */
-    bool load(const std::filesystem::path& path);
+    bool load(const std::filesystem::path& path, const DecodeOptions& options = {});
 
     /**
      * @brief Unload the current video
@@ -173,6 +174,16 @@ public:
      */
     size_t getReverseCachePeakBytes() const;
 
+    /**
+     * @brief Whether the clip is decoding on the GPU right now (ADR-055)
+     */
+    bool isHardwareDecoding() const;
+
+    /**
+     * @brief Why the clip decodes in software although hardware was asked for, or empty
+     */
+    std::string getDecodeNote() const;
+
     // --- Frame Access ---
 
     /**
@@ -187,6 +198,11 @@ public:
      * @return Current frame, or invalid frame if none ready
      */
     const VideoFrame& getCurrentFrame() const;
+
+    /**
+     * @brief The planes of the frame buffered after the current one, or an empty picture
+     */
+    YuvPicture peekNextPicture() const;
 
     /**
      * @brief Check if a new frame is ready

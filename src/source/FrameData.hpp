@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/YuvPicture.hpp"
+
 #include <vector>
 #include <cstdint>
 
@@ -41,10 +43,19 @@ struct FrameData {
     GpuCompressedFormat compressedFormat = GpuCompressedFormat::None;
     bool isCompressed() const { return compressedFormat != GpuCompressedFormat::None; }
 
+    // Decoded video kept as YUV planes (ADR-055): when valid, `pixels` is empty and the
+    // upload converts these into the source's RGBA texture on the GPU.
+    YuvPicture yuv;
+    bool isYuv() const { return yuv.isValid(); }
+    // The frame expected after this one, if already decoded: the upload starts copying
+    // it early. Empty when unknown.
+    YuvPicture nextYuv;
+
     /**
      * @brief Check if frame contains valid data
      */
     bool isValid() const {
+        if (isYuv()) return width > 0 && height > 0;
         return !pixels.empty() && width > 0 && height > 0 &&
                (isCompressed() || channels > 0);
     }
@@ -68,6 +79,8 @@ struct FrameData {
         timestamp = 0;
         frameNumber = 0;
         compressedFormat = GpuCompressedFormat::None;
+        yuv = YuvPicture{};
+        nextYuv = YuvPicture{};
     }
 
     /**

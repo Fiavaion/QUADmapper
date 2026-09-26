@@ -3,9 +3,10 @@
 
 namespace quadmapper {
 
-VideoFileSource::VideoFileSource(const std::filesystem::path& path)
-    : path_(path)
-    , name_(path.filename().string())
+VideoFileSource::VideoFileSource(const std::filesystem::path& path, const DecodeOptions& options)
+    : name_(path.filename().string())
+    , path_(path)
+    , options_(options)
     , player_(std::make_unique<VideoPlayer>())
 {
 }
@@ -19,15 +20,12 @@ bool VideoFileSource::initialize() {
         return true;
     }
 
-    if (!player_->load(path_)) {
+    if (!player_->load(path_, options_)) {
         Logger::error("VideoFileSource: Failed to load '{}'", path_.string());
         return false;
     }
 
-    // Pre-allocate frame buffer based on video dimensions
     const VideoInfo& info = player_->getVideoInfo();
-    frame_.allocate(info.width, info.height, 3);  // RGB24
-
     ready_ = true;
 
     Logger::debug("VideoFileSource: Loaded '{}' ({}x{}, {:.2f}s, {:.1f}fps)",
@@ -222,6 +220,14 @@ std::string VideoFileSource::getErrorMessage() const {
     return player_ ? player_->getErrorMessage() : std::string();
 }
 
+bool VideoFileSource::isHardwareDecoding() const {
+    return player_ && player_->isHardwareDecoding();
+}
+
+std::string VideoFileSource::getDecodeNote() const {
+    return player_ ? player_->getDecodeNote() : std::string();
+}
+
 const VideoInfo& VideoFileSource::getVideoInfo() const {
     static VideoInfo empty;
     if (player_ && player_->isLoaded()) {
@@ -231,9 +237,25 @@ const VideoInfo& VideoFileSource::getVideoInfo() const {
 }
 
 void VideoFileSource::convertVideoFrame(const VideoFrame& videoFrame) {
-    // Ensure frame buffer is correct size
-    if (frame_.width != videoFrame.width ||
-        frame_.height != videoFrame.height) {
+    frame_.timestamp = static_cast<uint64_t>(videoFrame.pts * 1000000.0);  // Convert to microseconds
+    frame_.frameNumber = static_cast<uint64_t>(videoFrame.frameNumber);
+
+    if (videoFrame.yuv.isValid()) {
+        // Share the decoder's planes: the frame moves by handle, not by copy (ADR-055).
+        if (!frame_.pixels.empty()) std::vector<uint8_t>().swap(frame_.pixels);
+        frame_.yuv = videoFrame.yuv;
+        frame_.nextYuv = player_->peekNextPicture();
+        frame_.width = videoFrame.width;
+        frame_.height = videoFrame.height;
+        frame_.channels = 4;  // uploaded into an RGBA texture
+        return;
+    }
+    frame_.yuv = YuvPicture{};
+    frame_.nextYuv = YuvPicture{};
+
+    // RGB24 (formats the GPU conversion does not handle): copy into the frame buffer
+    if (frame_.width != videoFrame.width || frame_.height != videoFrame.height ||
+        frame_.channels != 3 || frame_.pixels.empty()) {
         frame_.allocate(videoFrame.width, videoFrame.height, 3);
     }
 
@@ -242,9 +264,6 @@ void VideoFileSource::convertVideoFrame(const VideoFrame& videoFrame) {
     if (videoFrame.data.size() >= dataSize) {
         std::memcpy(frame_.pixels.data(), videoFrame.data.data(), dataSize);
     }
-
-    frame_.timestamp = static_cast<uint64_t>(videoFrame.pts * 1000000.0);  // Convert to microseconds
-    frame_.frameNumber = static_cast<uint64_t>(videoFrame.frameNumber);
 }
 
 } // namespace quadmapper

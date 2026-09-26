@@ -40,6 +40,16 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace quadmapper {
 
 using json = nlohmann::ordered_json;
@@ -164,6 +174,21 @@ double slope(const std::vector<double>& x, const std::vector<double>& y) {
         sxx += (x[i] - mx) * (x[i] - mx);
     }
     return sxx > 0.0 ? sxy / sxx : 0.0;
+}
+
+// CPU time this process has used (all threads, user + kernel), in seconds.
+double processCpuSeconds() {
+#ifdef _WIN32
+    FILETIME created, exited, kernel, user;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return 0.0;
+    auto toSeconds = [](const FILETIME& t) {
+        const ULONGLONG ticks = (static_cast<ULONGLONG>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
+        return static_cast<double>(ticks) * 1e-7;  // 100 ns units
+    };
+    return toSeconds(kernel) + toSeconds(user);
+#else
+    return 0.0;
+#endif
 }
 
 json glCounts() {
@@ -545,6 +570,8 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
         t.lastTs = fd ? fd->timestamp : std::numeric_limits<uint64_t>::max();
     }
     FrameSeries series;
+    const SourceManager::UploadStats uploadsBefore = sources().getUploadStats();
+    const double cpuBefore = processCpuSeconds();
     const Clock::time_point begin = Clock::now();
     runFrames(cfg_.seconds, [&](const Frame& f) {
         series.add(f);
@@ -568,9 +595,15 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
         }
     });
     const double measured = seconds(begin, Clock::now());
+    const double cpuSeconds = processCpuSeconds() - cpuBefore;
+    const SourceManager::UploadStats& uploadsAfter = sources().getUploadStats();
+    const double uploadMs = (uploadsAfter.seconds - uploadsBefore.seconds) * 1000.0;
+    const uint64_t uploadCount = uploadsAfter.uploads - uploadsBefore.uploads;
 
     json perSource = json::array();
     long totalSkipped = 0;
+    long totalPresented = 0;
+    double totalExpected = 0.0;
     double worstRatio = std::numeric_limits<double>::max();
     std::vector<double> allLag;
     for (size_t i = 0; i < tracks.size(); ++i) {
@@ -583,6 +616,8 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
         const double expected = frameDur > 0.0 ? measured / frameDur : 0.0;
         const double ratio = expected > 0.0 ? static_cast<double>(t.distinct) / expected : 0.0;
         totalSkipped += skipped;
+        totalPresented += t.distinct;
+        totalExpected += expected;
         worstRatio = std::min(worstRatio, ratio);
         allLag.insert(allLag.end(), t.lagMs.begin(), t.lagMs.end());
         perSource.push_back(json{{"source", static_cast<int>(i + 1)},
@@ -597,7 +632,20 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
     r["videos"] = cfg_.videos;
     r["outputs"] = outputInfo(cfg_.outputs);
     r["result"] = series.toJson();
+    const double renderedFrames = static_cast<double>(series.period.size() + (series.any ? 1 : 0));
+    const unsigned threads = std::max(1u, std::thread::hardware_concurrency());
+    r["main_thread_uploads"] = json{
+        {"uploads", uploadCount},
+        {"ms_per_rendered_frame", renderedFrames > 0.0 ? round3(uploadMs / renderedFrames) : 0.0},
+        {"ms_per_upload", uploadCount > 0 ? round3(uploadMs / static_cast<double>(uploadCount)) : 0.0}};
+    r["process_cpu"] = json{
+        {"cores_busy", measured > 0.0 ? round3(cpuSeconds / measured) : 0.0},
+        {"percent_of_machine", measured > 0.0 ? round3(100.0 * cpuSeconds / (measured * threads)) : 0.0}};
     r["sources"] = json{{"skipped_frames_total", totalSkipped},
+                        {"presented_frames_total", totalPresented},
+                        {"expected_frames_total", round3(totalExpected)},
+                        {"presented_over_expected_total",
+                         totalExpected > 0.0 ? round3(totalPresented / totalExpected) : 0.0},
                         {"worst_presented_over_expected", round3(worstRatio)},
                         {"decode_lag_ms_all", summarize(allLag)},
                         {"per_source", perSource}};

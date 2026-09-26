@@ -23,10 +23,10 @@ VideoPlayer::~VideoPlayer() {
 VideoPlayer::VideoPlayer(VideoPlayer&&) noexcept = default;
 VideoPlayer& VideoPlayer::operator=(VideoPlayer&&) noexcept = default;
 
-bool VideoPlayer::load(const std::filesystem::path& path) {
+bool VideoPlayer::load(const std::filesystem::path& path, const DecodeOptions& options) {
     unload();
 
-    if (!decoder_->open(path)) {
+    if (!decoder_->open(path, options)) {
         return false;
     }
 
@@ -176,6 +176,14 @@ size_t VideoPlayer::getReverseCachePeakBytes() const {
     return decoder_ ? decoder_->getReverseCachePeakBytes() : 0;
 }
 
+bool VideoPlayer::isHardwareDecoding() const {
+    return decoder_ && decoder_->isHardwareDecoding();
+}
+
+std::string VideoPlayer::getDecodeNote() const {
+    return decoder_ ? decoder_->getDecodeNote() : std::string();
+}
+
 void VideoPlayer::applyTransport() {
     if (transport_.takeReposition()) reposition();
     refreshState();
@@ -292,6 +300,10 @@ size_t VideoPlayer::takeDueFrames(double target, bool haveFrame) {
 
 const VideoFrame& VideoPlayer::getCurrentFrame() const {
     return currentFrame_;
+}
+
+YuvPicture VideoPlayer::peekNextPicture() const {
+    return decoder_ ? decoder_->peekBufferedPicture() : YuvPicture{};
 }
 
 bool VideoPlayer::hasNewFrame() const {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Types.hpp"
+#include "core/YuvPicture.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -20,7 +21,10 @@ namespace quadmapper {
  * @brief Decoded video frame data
  */
 struct VideoFrame {
-    std::vector<uint8_t> data;    // RGB24 pixel data
+    std::vector<uint8_t> data;    // RGB24 pixel data, when yuv is not set
+    // The decoded planes, shared with the decoder (DecodeOptions::yuvOutput). The GPU
+    // turns them into RGBA (ADR-055); copying the frame copies a handle, not pixels.
+    YuvPicture yuv;
     int width = 0;
     int height = 0;
     double pts = 0.0;             // Presentation timestamp in seconds
@@ -29,7 +33,26 @@ struct VideoFrame {
     double due = 0.0;
     int64_t frameNumber = 0;
 
-    bool isValid() const { return !data.empty() && width > 0 && height > 0; }
+    bool isValid() const { return width > 0 && height > 0 && (yuv.isValid() || !data.empty()); }
+};
+
+/**
+ * @brief How a file is decoded (ADR-055)
+ *
+ * The defaults (software, RGB24) suit one-off decodes such as thumbnails; playback
+ * turns both options on.
+ */
+struct DecodeOptions {
+    // Decode H.264, HEVC, VP9 and AV1 on the GPU (D3D11VA, one device shared by the
+    // app). A stream the GPU refuses, or that fails later, carries on in software.
+    bool hardware = false;
+    // Hand frames on as YUV planes (VideoFrame::yuv) for the GPU conversion pass
+    // instead of converting them to RGB24 on the CPU. Pixel formats the pass does not
+    // handle still arrive as RGB24.
+    bool yuvOutput = false;
+    // Test hook: treat the GPU as failed once it has produced this many frames
+    // (0: already at open). Negative: never.
+    int failHardwareAfterFrames = -1;
 };
 
 // Memory the backward GOP decoder may hold for Ping-Pong's reverse leg (ADR-050 §4).
@@ -82,9 +105,10 @@ public:
     /**
      * @brief Open a video file
      * @param path Path to video file
+     * @param options Hardware decoding and output format
      * @return true if successful
      */
-    bool open(const std::filesystem::path& path);
+    bool open(const std::filesystem::path& path, const DecodeOptions& options = {});
 
     /**
      * @brief Open a live webcam / capture device (Windows dshow)
@@ -218,6 +242,13 @@ public:
     bool peekBufferedDue(double& due) const;
 
     /**
+     * @brief The planes of the next buffered frame (a shared handle), or an empty picture
+     *
+     * Lets the upload start copying the frame expected next (ADR-055).
+     */
+    YuvPicture peekBufferedPicture() const;
+
+    /**
      * @brief Check if there are buffered frames available
      */
     bool hasBufferedFrames() const;
@@ -234,6 +265,27 @@ public:
      * thread then backs off instead of spinning); cleared by the next good frame.
      */
     std::string getLastError() const;
+
+    // --- Hardware decoding (ADR-055) ---
+
+    /**
+     * @brief Whether frames currently come from the GPU decoder
+     */
+    bool isHardwareDecoding() const;
+
+    /**
+     * @brief Why this stream decodes in software although hardware was asked for
+     * @return Empty while hardware decoding runs, or when it was not requested
+     */
+    std::string getDecodeNote() const;
+
+    /**
+     * @brief How many D3D11 decode devices the app has created (0 or 1)
+     *
+     * One device, created with the first hardware decoder, serves every decoder until
+     * the app exits (ADR-055).
+     */
+    static int hardwareDevicesCreated();
 
 private:
     class Impl;

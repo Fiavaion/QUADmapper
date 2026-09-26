@@ -5,8 +5,11 @@
 #include "CameraSource.hpp"
 #include "procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
+#include "renderer/YuvConverter.hpp"
 #include "renderer/GpuCapabilities.hpp"
 #include "core/Logger.hpp"
+
+#include <chrono>
 
 #ifdef QUADMAPPER_HAS_FFMPEG
 extern "C" {
@@ -51,7 +54,9 @@ bool isHapContainer(const std::filesystem::path& path) {
 
 } // namespace
 
-SourceManager::SourceManager() {
+SourceManager::SourceManager()
+    : yuvConverter_(std::make_unique<YuvConverter>())  // no GL work until the first video frame
+{
     masterTimeline_.play(std::chrono::steady_clock::now());
 }
 
@@ -305,6 +310,7 @@ std::unordered_map<UUID, Texture*> SourceManager::getTextureMap() {
 }
 
 void SourceManager::updateAll(double deltaTime) {
+    yuvConverter_->begin();  // GL state is saved once, at the first conversion, and restored below
     for (auto& [id, entry] : sources_) {
         if (!entry.source || !entry.source->isReady()) {
             continue;
@@ -331,10 +337,15 @@ void SourceManager::updateAll(double deltaTime) {
                 }
             } else {
                 // CPU source: upload frame data to GPU texture
+                const auto start = std::chrono::steady_clock::now();
                 uploadFrameToTexture(entry);
+                uploadStats_.seconds +=
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+                ++uploadStats_.uploads;
             }
         }
     }
+    yuvConverter_->end();
 }
 
 void SourceManager::seekAllToStart() {
@@ -397,6 +408,11 @@ void SourceManager::createGPUTexture(SourceEntry& entry) {
         if (width > 0 && height > 0) {
             entry.texture->createEmpty(width, height, 4);
         }
+        // Video frames arrive as YUV planes (ADR-055): the upload state's GL objects
+        // live as long as the source, so its GL object count never changes mid-play.
+        if (dynamic_cast<VideoFileSource*>(entry.source.get())) {
+            entry.yuvUpload = std::make_unique<YuvUploadState>();
+        }
     }
 }
 
@@ -445,6 +461,11 @@ void SourceManager::uploadFrameToTexture(SourceEntry& entry) {
         return;
     }
 
+    if (frame->isYuv()) {
+        uploadYuvFrame(entry, *frame);
+        return;
+    }
+
     // Reallocate if the texture doesn't match the frame — including a CHANNEL
     // mismatch: createGPUTexture provisions RGBA, but video frames are RGB(3),
     // and uploading 3-channel data as RGBA over-reads the buffer (crash).
@@ -458,6 +479,21 @@ void SourceManager::uploadFrameToTexture(SourceEntry& entry) {
     entry.texture->update(frame->pixels.data());
 
     // Mark frame as consumed
+    entry.source->markFrameConsumed();
+}
+
+// Video as YUV planes (ADR-055): the planes go up through the source's pixel buffers
+// and a GPU pass writes them into its RGBA texture, the one texture every consumer samples.
+void SourceManager::uploadYuvFrame(SourceEntry& entry, const FrameData& frame) {
+    Texture& texture = *entry.texture;
+    if (texture.getId() == 0 || texture.isCompressed() || texture.getChannels() != 4 ||
+        texture.getWidth() != frame.width || texture.getHeight() != frame.height) {
+        texture.createEmpty(frame.width, frame.height, 4);
+    }
+    if (!entry.yuvUpload) entry.yuvUpload = std::make_unique<YuvUploadState>();  // a registered source
+    if (yuvConverter_->convert(frame.yuv, texture, *entry.yuvUpload)) {
+        yuvConverter_->prefetch(frame.nextYuv, *entry.yuvUpload);
+    }
     entry.source->markFrameConsumed();
 }
 

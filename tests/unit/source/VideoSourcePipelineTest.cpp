@@ -17,6 +17,8 @@
 #include <filesystem>
 #include <thread>
 #include <chrono>
+#include <cstdint>
+#include <vector>
 
 using namespace quadmapper;
 
@@ -188,16 +190,29 @@ TEST(VideoSourcePipeline, PausedSourceShowsFirstFrame) {
     auto* playable = sm.getSourceAs<PlayableSource>(id);
     ASSERT_NE(playable, nullptr);
 
-    // The GPU texture starts as an empty RGBA placeholder; the first uploaded video
-    // frame (RGB24) reallocates it with 3 channels.
+    // The GPU texture starts as an empty RGBA placeholder; the first video frame arrives
+    // as YUV planes and the GPU pass converts it into that RGBA texture (ADR-055).
     bool uploaded = false;
     for (int i = 0; i < 100 && !uploaded; ++i) {
         sm.updateAll(1.0 / 60.0);
-        Texture* tex = sm.getTexture(id);
-        uploaded = tex && tex->isValid() && tex->getChannels() == 3;
+        const FrameData* frame = playable->getCurrentFrame();
+        uploaded = frame && frame->isYuv();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    EXPECT_TRUE(uploaded);
+    ASSERT_TRUE(uploaded);
+    Texture* tex = sm.getTexture(id);
+    ASSERT_TRUE(tex && tex->isValid());
+    EXPECT_EQ(tex->getChannels(), 4);
+    EXPECT_EQ(tex->getWidth(), playable->getWidth());
+    // Not the black placeholder: the frame's picture is in the texture.
+    std::vector<uint8_t> rgba(static_cast<size_t>(tex->getWidth()) * tex->getHeight() * 4);
+    glBindTexture(GL_TEXTURE_2D, tex->getId());
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+    uint64_t sum = 0;
+    for (size_t i = 0; i < rgba.size(); i += 4) sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+    EXPECT_GT(sum, 0u);
     EXPECT_NE(playable->getPlaybackState(), PlaybackState::PLAYING);
     EXPECT_DOUBLE_EQ(playable->getCurrentTime(), 0.0);  // the clock did not move
 }
