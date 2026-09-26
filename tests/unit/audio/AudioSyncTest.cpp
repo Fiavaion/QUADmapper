@@ -1195,6 +1195,9 @@ struct SeamResult {
     double maxOffSeamError = 0.0;  // largest |output - expected| away from the wraps
     int wraps = 0;
     int checked = 0;             // samples compared with the expected sound
+    double lateError = 0.0;      // largest |output - expected| off the seams, last quarter
+    uint64_t corrections = 0;    // soft drift corrections the attachment made
+    uint64_t resyncs = 0;
 };
 
 // Play `tone` looped over a clip of `duration` seconds for `seconds`, offline.
@@ -1227,10 +1230,13 @@ SeamResult playLooped(const Tone& tone, double duration, double seconds, const c
                 if (!clip || sinceStart < 0.1 || *clip < seamWindow || duration - *clip < 1.0 / RATE) continue;
                 const double expected = PAN_GAIN * tone.at(*clip);
                 r.maxOffSeamError = std::max(r.maxOffSeamError, std::abs(left - expected));
+                if (sinceStart > 0.75 * seconds) r.lateError = std::max(r.lateError, std::abs(left - expected));
                 ++r.checked;
             }
         }
         r.wraps = static_cast<int>(seconds / duration);
+        r.corrections = rig.attachment().playhead().corrections;
+        r.resyncs = rig.attachment().resyncCount();
     }
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -1288,6 +1294,29 @@ TEST(AudioSyncTest, ALoopWrapAfterPaddingFadesIn) {
     EXPECT_LE(r.maxStep, seamStepBound(tone));
     EXPECT_GT(r.checked, RATE);
     EXPECT_LT(r.maxOffSeamError, PAN_GAIN * tone.naturalStep() * 0.6 + 1e-3);
+}
+
+// A clip that is not a whole number of samples long: each pass is a sample longer or
+// shorter as the fraction adds up, so after 60 wraps the sound is still on the clock to
+// within half a sample (whole-sample passes slipped 0.37 samples a wrap: 22 samples,
+// ~0.46 ms, by the end, which the check below sees).
+TEST(AudioSyncTest, LoopPassesOfAFractionalLengthDoNotSlip) {
+    Tone tone;
+    tone.seconds = 0.3;
+    const double duration = (std::round(0.15 * RATE) + 0.37) / RATE;
+    const SeamResult r = playLooped(tone, duration, 60.5 * duration, "fraction");
+    std::printf("[ SEAM     ] fraction: %d wraps, max error off the seams %.5f (last quarter %.5f) "
+                "over %d samples, %llu corrections, %llu resyncs\n",
+                r.wraps, r.maxOffSeamError, r.lateError, r.checked,
+                static_cast<unsigned long long>(r.corrections), static_cast<unsigned long long>(r.resyncs));
+    EXPECT_GE(r.wraps, 60);
+    EXPECT_GT(r.checked, RATE * 5);
+    // Within half a sample of the clock (the rounding of one pass), start and end alike.
+    const double halfSample = PAN_GAIN * tone.naturalStep() * 0.5 + 1e-3;
+    EXPECT_LT(r.maxOffSeamError, halfSample);
+    EXPECT_LT(r.lateError, halfSample);
+    EXPECT_EQ(r.corrections, 0u) << "no drift to slew out";
+    EXPECT_EQ(r.resyncs, 1u) << "only the first line-up";
 }
 
 // ---- CPU cost (run by hand: --gtest_also_run_disabled_tests) ---------------------

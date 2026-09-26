@@ -54,6 +54,11 @@ struct AudioAttachment::DecodeState {
     bool endPublished = false;
     int64_t clipFrame = 0;     // clip position (in frames) of the next queued frame
     int64_t legEndFrame = std::numeric_limits<int64_t>::max();
+    // Loop: the clip length in frames, unrounded, and which pass is being queued. Pass
+    // k spans frames round(k * L) to round((k + 1) * L) of the leg, so the rounding
+    // never accumulates across wraps (whole-frame passes slipped a fraction a wrap).
+    double legFramesExact = 0.0;
+    int64_t passIndex = 0;
     uint64_t segmentStart = 0; // buffer position of the current run's first sample
     bool loop = false;
     bool haveSegment = false;
@@ -289,8 +294,10 @@ void AudioAttachment::startSegment(const Request& request) {
     d.silence = 0;
     d.adoptPolls = 0;
     d.endPublished = false;
+    d.legFramesExact = request.duration * sampleRate_;
+    d.passIndex = 0;
     d.legEndFrame = request.duration > MIN_CLIP_DURATION
-        ? std::llround(request.duration * sampleRate_)
+        ? std::llround(d.legFramesExact)
         : std::numeric_limits<int64_t>::max();
     d.clipFrame = std::min<int64_t>(std::llround(clip * sampleRate_), d.legEndFrame);
     d.loop = request.loop && request.duration > MIN_CLIP_DURATION;
@@ -446,8 +453,12 @@ void AudioAttachment::endOfPass() {
         return;
     }
     // Loop: run on into the next pass. The timeline stays contiguous, so the wrap needs
-    // no resync. The next pass fades in over the outgoing sound (equal power, same
-    // sample count), starting once this pass's padding and queue are pushed.
+    // no resync. The next pass is a frame longer or shorter where the clip length is
+    // not a whole number of frames. It fades in over the outgoing sound (equal power,
+    // same sample count), starting once this pass's padding and queue are pushed.
+    ++d.passIndex;
+    d.legEndFrame = std::llround(static_cast<double>(d.passIndex + 1) * d.legFramesExact) -
+                    std::llround(static_cast<double>(d.passIndex) * d.legFramesExact);
     const size_t pending = static_cast<size_t>(d.silence) + (d.queue.size() - d.queueOffset) / CHANNELS;
     d.crossfade.arm(d.seamTail.data(), d.seamTailFrames, d.lastQueued, pending,
                     static_cast<size_t>(d.legEndFrame));
