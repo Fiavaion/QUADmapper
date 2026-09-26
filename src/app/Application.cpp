@@ -346,7 +346,17 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         QuadManager& qm = scene->getQuadManager();
         std::unordered_map<UUID, UUID> quadRemap;  // saved quad id -> fresh live quad id
         for (size_t i = 0; i < sd.quads.size(); ++i) {
-            Quad* nq = qm.createQuad(sd.quads[i].getName());
+            // Keep the saved id so anything addressing a quad by id (OSC, MIDI mappings)
+            // still finds it after a reload; mint a fresh one only for a missing or
+            // clashing id.
+            Quad* nq = nullptr;
+            const UUID savedQuadId = sd.quads[i].getId();
+            if (!savedQuadId.isNull() && quadRemapAllScenes.count(savedQuadId) == 0) {
+                auto adopted = std::make_unique<Quad>(savedQuadId);
+                adopted->setName(sd.quads[i].getName());
+                nq = qm.insertQuad(std::move(adopted), SIZE_MAX);
+            }
+            if (!nq) nq = qm.createQuad(sd.quads[i].getName());
             quadRemap[sd.quads[i].getId()] = nq->getId();
             quadRemapAllScenes[sd.quads[i].getId()] = nq->getId();
             applyQuadData(sd.quads[i], nq);
