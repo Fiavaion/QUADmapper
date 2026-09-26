@@ -247,6 +247,9 @@ SyncStats measure(const std::vector<Block>& blocks, double latency, const Refere
     return stats;
 }
 
+// Real time the offline rig lets the decode thread have before giving up on it.
+const auto DECODER_WAIT_LIMIT = std::chrono::seconds(30);
+
 // Simulated time: a 60 Hz control frame (attachment update) and a 10 ms device
 // callback that runs `skewPpm` fast or slow against the wall clock.
 class OfflineRig {
@@ -258,7 +261,11 @@ public:
         attachment_ = std::make_unique<AudioAttachment>(path, mixer_);
         base_ = Clock::now();
         // Probing happens on the decode thread; wait for it like the app's frames would.
-        for (int i = 0; i < 400 && attachment_->state() == AudioAttachmentState::Probing; ++i) {
+        // The deadline only guards a hang: simulated time does not move while waiting,
+        // so a loaded machine (ctest -j) just waits longer (TD-23).
+        const auto deadline = std::chrono::steady_clock::now() + DECODER_WAIT_LIMIT;
+        while (attachment_->state() == AudioAttachmentState::Probing &&
+               std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     }
@@ -329,7 +336,8 @@ private:
 
     void waitForDecoder() {
         callbacksSinceWait_ = 0;
-        for (int i = 0; i < 2000 && !attachment_->isDecoderIdle(); ++i) {
+        const auto deadline = std::chrono::steady_clock::now() + DECODER_WAIT_LIMIT;
+        while (!attachment_->isDecoderIdle() && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }

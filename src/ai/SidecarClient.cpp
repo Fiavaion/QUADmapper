@@ -232,8 +232,12 @@ struct SidecarClient::Impl {
     }
 
     void killLaunched() {
-        // Closing the job handle terminates the child (KILL_ON_JOB_CLOSE).
+        // Terminate the child and wait for it to exit, so its port is closed when
+        // stop() returns (closing the job alone kills asynchronously; it would also
+        // kill it, KILL_ON_JOB_CLOSE).
         if (job) {
+            TerminateJobObject(job, 1);
+            if (process) WaitForSingleObject(process, 5000);
             CloseHandle(job);
             job = nullptr;
         }
