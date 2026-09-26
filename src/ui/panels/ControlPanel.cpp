@@ -42,6 +42,14 @@ void activityLight(double lastActivity, double now) {
     ImGui::SameLine();
 }
 
+// The last message a target declined (a locked clip's transport), wrapped: it holds a UUID.
+void refusedNote(const control::ControlDispatcher& d) {
+    if (d.lastRefused().empty()) return;
+    ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+    ImGui::TextWrapped("Refused: %s", d.lastRefused().c_str());
+    ImGui::PopStyleColor();
+}
+
 bool containsIgnoreCase(const std::string& text, const char* needle) {
     if (!needle[0]) return true;
     std::string a = text;
@@ -180,14 +188,17 @@ bool ControlPanel::renderOsc(control::ExternalControl& control, ControlPreferenc
         for (const auto& address : d.recentUnknown()) ImGui::TextColored(kBad, "%s", address.c_str());
         ImGui::TreePop();
     }
+    refusedNote(d);
     if (ImGui::TreeNode("Address reference")) {
         ImGui::BulletText("/qm/blackout  [0|1, none = toggle]");
+        ImGui::BulletText("/qm/timeline/play | pause | restart  (the master timeline)");
         ImGui::BulletText("/qm/scene/take n  (n = 1, 2, ...)");
         ImGui::BulletText("/qm/scene/<id or name>/take");
         ImGui::BulletText("/qm/quad/<id or name>/opacity 0..1");
         ImGui::BulletText("/qm/quad/<id or name>/visible 0|1");
         ImGui::BulletText("/qm/source/<id or name>/play | pause | restart");
         ImGui::BulletText("/qm/source/<id or name>/speed 0.1..4");
+        ImGui::TextDisabled("A source locked to the master timeline refuses its own transport.");
         ImGui::TextDisabled("Names match without case; a shared name uses the first match.");
         ImGui::TreePop();
     }
@@ -234,6 +245,7 @@ bool ControlPanel::renderMidi(control::ExternalControl& control, ControlPreferen
     activityLight(d.lastMidiTime(), now);
     if (d.lastMidi().empty()) ImGui::TextDisabled("No MIDI received yet");
     else                      ImGui::Text("Last: %s", d.lastMidi().c_str());
+    refusedNote(d);
     return changed;
 }
 

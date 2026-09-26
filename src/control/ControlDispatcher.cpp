@@ -27,6 +27,11 @@ double ControlDispatcher::lastActivity(const std::string& canonicalPath) const {
     return it == activity_.end() ? -1.0 : it->second;
 }
 
+void ControlDispatcher::noteRefused(const std::string& address, const std::string& reason) {
+    lastRefused_ = address + ": " + reason;
+    if (warnedRefused_.insert(address).second) Logger::warning("Control: {} refused ({})", address, reason);
+}
+
 MidiMode ControlDispatcher::defaultMode(MidiControlType type, TargetKind kind) {
     switch (kind) {
         case TargetKind::Bool:

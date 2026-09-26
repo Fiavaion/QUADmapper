@@ -21,8 +21,14 @@ namespace quadmapper {
 //         texturePath is still written (absolute) so 3.0 readers keep file media.
 //   3.2 = additive per-scene "objects" (3D meshes by path) + per-output "projector"
 //         (lens, pose, calibration points) (ADR-052); older readers ignore both.
-//   3.3 = additive "control": {"midi": [...]} MIDI mappings (ADR-048), written only
-//         when a show has mappings; older readers ignore it, a missing one = none.
+//   3.3 = (still written as 3.2.0 until the bump) additive, all ignored by older
+//         readers:
+//         - "control": {"midi": [...]} MIDI mappings (ADR-048), written only when a
+//           show has mappings; a missing one = none.
+//         - sources[].transport.timelineLocked (ADR-050 §3); missing = unlocked.
+//         - a file source whose file is gone is kept, flagged missing, with its
+//           references and path (PRD §4.1.8), so saving writes it back unchanged;
+//           older readers dropped it.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;

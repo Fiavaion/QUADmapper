@@ -7,7 +7,9 @@
 // loads the file at its new place and rebinds everything that used it, then tries its
 // missing neighbours in the same folder. The matching rules are in MediaRelocation.hpp.
 
+#include "ControlBindings.hpp"
 #include "EditorState.hpp"
+#include "MediaAssign.hpp"
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
 #include "media/MediaLibrary.hpp"
@@ -90,8 +92,37 @@ inline std::string absoluteMediaPath(const std::filesystem::path& path) {
     return (ec ? path : abs.lexically_normal()).string();
 }
 
-// Load newPath in place of a missing source and rebind every quad and object that used
-// it. Returns why the file was not accepted, or empty once it was. The file may have
+// Move everything that referenced the missing source missingId (loaded from oldPath)
+// onto the live source newId at newPath: quads, objects, the media paths undo steps
+// re-bind from, and MIDI mappings aimed at it (load keeps them on the missing id).
+// isVideo makes newId the Video Player's source when it has none.
+inline void rebindMissingSource(EditorState& es, const UUID& missingId, const std::string& oldPath,
+                                const UUID& newId, const std::string& newPath, bool isVideo) {
+    for (const auto& scene : es.scenes) {
+        if (!scene) continue;
+        for (const auto& quad : scene->getQuadManager().getQuads()) {
+            if (quad->getTexture().mediaId != missingId) continue;
+            quad->getTexture().mediaId = newId;
+            es.quadTexturePaths[quad->getId()] = newPath;
+        }
+        for (const auto& object : scene->getObjects()) {
+            if (object && object->getTexture().mediaId == missingId) object->getTexture().mediaId = newId;
+        }
+    }
+    // Quads only an undo step holds re-bind from their media path once restored.
+    for (auto& [quadId, quadPath] : es.quadTexturePaths) {
+        if (quadPath == oldPath) quadPath = newPath;
+    }
+    const std::unordered_map<UUID, UUID> moved{{missingId, newId}};
+    for (auto& mapping : es.midiMappings) {
+        mapping.target = remapTargetPath(mapping.target, "source", moved);
+    }
+    if (isVideo && es.activeVideoSourceId.isNull()) es.activeVideoSourceId = newId;
+    es.missingSources.erase(missingId);
+}
+
+// Load newPath in place of a missing source and rebind everything that used it.
+// Returns why the file was not accepted, or empty once it was. The file may have
 // another extension or type than the one it replaces; it is accepted only if it loads.
 inline std::string relocateMissingSource(EditorState& es, SourceManager& sm, const UUID& missingId,
                                          const std::filesystem::path& newPath) {
@@ -112,31 +143,9 @@ inline std::string relocateMissingSource(EditorState& es, SourceManager& sm, con
 
     // A clip opened here plays as it was saved (or loops from the start, as on assign).
     // One already open elsewhere keeps its own playback.
-    if (auto* playable = sm.getSourceAs<PlayableSource>(id); playable && !alreadyOpen) {
-        if (original.transport) {
-            playable->setLoopMode(original.transport->loopMode);
-            playable->setSpeed(original.transport->speed);
-        }
-        if (!original.transport || original.transport->playing) playable->play();
-    }
+    if (!alreadyOpen) applySavedTransport(sm, id, original.transport);
 
-    for (const auto& scene : es.scenes) {
-        if (!scene) continue;
-        for (const auto& quad : scene->getQuadManager().getQuads()) {
-            if (quad->getTexture().mediaId != missingId) continue;
-            quad->getTexture().mediaId = id;
-            es.quadTexturePaths[quad->getId()] = path;
-        }
-        for (const auto& object : scene->getObjects()) {
-            if (object && object->getTexture().mediaId == missingId) object->getTexture().mediaId = id;
-        }
-    }
-    // Quads only an undo step holds re-bind from their media path once restored.
-    for (auto& [quadId, quadPath] : es.quadTexturePaths) {
-        if (quadPath == original.path) quadPath = path;
-    }
-    if (isVideo && es.activeVideoSourceId.isNull()) es.activeVideoSourceId = id;
-    es.missingSources.erase(missingId);
+    rebindMissingSource(es, missingId, original.path, id, path, isVideo);
     return {};
 }
 

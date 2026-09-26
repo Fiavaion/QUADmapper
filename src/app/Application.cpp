@@ -108,15 +108,6 @@ static std::optional<ProceduralType> proceduralTypeOf(SourceType type) {
     }
 }
 
-static Project::TransportData transportOf(const PlayableSource& p) {
-    Project::TransportData t;
-    t.playing = (p.getPlaybackState() == PlaybackState::PLAYING);
-    t.loopMode = p.getLoopMode();
-    t.speed = p.getSpeed();
-    t.timelineLocked = p.isTimelineLocked();
-    return t;
-}
-
 // Describe a live source as a "sources" entry; nullopt for kinds .qmap cannot hold.
 static std::optional<Project::SourceData> describeSource(SourceManager& sm, const UUID& id) {
     TextureSource* src = sm.getSource(id);
@@ -153,13 +144,7 @@ static UUID createSourceFrom(SourceManager& sm, const Project::SourceData& d) {
     if (d.kind == "image") return sm.getOrCreateImageSource(d.path);
     if (d.kind == "video" || d.kind == "hap") {
         const UUID id = sm.getOrCreateVideoSource(d.path);  // probes HAP itself
-        auto* playable = dynamic_cast<PlayableSource*>(sm.getSource(id));
-        if (playable && d.transport) {
-            playable->setLoopMode(d.transport->loopMode);
-            playable->setSpeed(d.transport->speed);
-            if (d.transport->playing) playable->play();
-            if (d.transport->timelineLocked) sm.setTimelineLocked(id, true);
-        }
+        applySavedTransport(sm, id, d.transport);
         return id;
     }
     if (d.kind == "procedural") {
@@ -316,14 +301,21 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
     // A file that could not be opened stays referenced under one missing-source id per
     // path: the saved id, unless a live source (the media bin's) already has it.
     std::unordered_map<std::string, UUID> missingByPath;
+    std::unordered_map<UUID, UUID> missingRemap;  // saved source id -> missing-source id
     auto missingIdFor = [&](Project::SourceData src) {
+        const UUID savedId = src.id;
         auto it = missingByPath.find(src.path);
-        if (it != missingByPath.end()) return it->second;
-        if (src.id.isNull() || sm->hasSource(src.id)) src.id = UUID::generate();
-        src.missing = true;
-        const UUID id = src.id;
-        missingByPath.emplace(src.path, id);
-        es.missingSources.emplace(id, std::move(src));
+        UUID id;
+        if (it != missingByPath.end()) {
+            id = it->second;
+        } else {
+            if (src.id.isNull() || sm->hasSource(src.id)) src.id = UUID::generate();
+            src.missing = true;
+            id = src.id;
+            missingByPath.emplace(src.path, id);
+            es.missingSources.emplace(id, std::move(src));
+        }
+        if (!savedId.isNull()) missingRemap.emplace(savedId, id);
         return id;
     };
 
@@ -342,7 +334,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         vs.snapToGrid = sd.view.snapToGrid;
 
         QuadManager& qm = scene->getQuadManager();
-        std::unordered_map<UUID, UUID> quadRemap;  // saved quad id -> fresh live quad id
+        std::unordered_map<UUID, UUID> quadRemap;  // saved quad id -> live id (new only on a clash)
         for (size_t i = 0; i < sd.quads.size(); ++i) {
             // Keep the saved id so anything addressing a quad by id (OSC, MIDI mappings)
             // still finds it after a reload; mint a fresh one only for a missing or
@@ -356,7 +348,9 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             }
             if (!nq) nq = qm.createQuad(sd.quads[i].getName());
             quadRemap[sd.quads[i].getId()] = nq->getId();
-            quadRemapAllScenes[sd.quads[i].getId()] = nq->getId();
+            // First wins: a MIDI mapping saved on a duplicated id stays on the quad that
+            // kept it, not the copy that had to be renumbered.
+            quadRemapAllScenes.emplace(sd.quads[i].getId(), nq->getId());
             applyQuadData(sd.quads[i], nq);
 
             // The copied binding still carries the SAVED source id; swap it for the
@@ -423,8 +417,9 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             }
         }
 
-        // Re-apply quad groups onto the live scene. createQuad/createGroup mint fresh
-        // ids, so member + parent references are remapped off the saved ids.
+        // Re-apply quad groups onto the live scene. createGroup mints fresh ids (and a
+        // quad whose saved id clashed got a new one), so member + parent references
+        // are remapped off the saved ids.
         std::unordered_map<UUID, UUID> groupRemap;  // saved group id -> fresh live group id
         for (const QuadGroup& sg : sd.groups) {
             QuadGroup* ng = scene->createGroup(sg.getName());
@@ -490,18 +485,20 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         es.scenes.push_back(std::move(scene));
     }
 
-    // MIDI mappings (ADR-048): quads and sources were just given new live ids (scenes
-    // keep theirs), so saved targets are rewritten onto them. A target whose quad or
+    // MIDI mappings (ADR-048): sources were just given new live ids, and a quad a new
+    // one only if its saved id clashed (scenes keep theirs), so saved targets are
+    // rewritten onto them. A target whose source is missing keeps the missing id
+    // (relocating it remaps the target, see rebindMissingSource); one whose quad or
     // source is gone keeps its saved id and shows as unresolved.
     es.midiMappings.clear();
-    std::unordered_map<UUID, UUID> liveSources;
+    std::unordered_map<UUID, UUID> sourceIds = missingRemap;
     for (const auto& [saved, live] : sourceRemap) {
-        if (!live.isNull()) liveSources.emplace(saved, live);
+        if (!live.isNull()) sourceIds[saved] = live;
     }
     for (const auto& data : project.getMidiMappings()) {
         control::MidiMapping mapping = fromProjectMapping(data);
         mapping.target = remapTargetPath(mapping.target, "quad", quadRemapAllScenes);
-        mapping.target = remapTargetPath(mapping.target, "source", liveSources);
+        mapping.target = remapTargetPath(mapping.target, "source", sourceIds);
         es.midiMappings.push_back(std::move(mapping));
     }
 
@@ -638,8 +635,9 @@ bool Application::initialize(int argc, char* argv[]) {
         m_autoSaveIntervalSec = 60.0 * std::max(1, general.autoSaveIntervalMinutes);
     }
 
-    // The stress harness measures the render/perform path; it opens no ports or devices.
-    if (!m_stressConfig) initializeExternalControl();
+    // The stress and bench harnesses measure the render/perform path; they open no
+    // ports or devices.
+    if (!m_stressConfig && !m_benchConfig) initializeExternalControl();
 
     Logger::info("QUADmapper initialized successfully");
     m_running = true;
@@ -1463,11 +1461,10 @@ void Application::render() {
     // While calibrating, the editor's Esc belongs to calibration: it cancels a pick in
     // progress, else leaves calibration, and never also leaves perform mode (Esc on an
     // output window still does).
-    // A pending MIDI learn takes Esc first: it cancels the learn and nothing else.
+    // Esc also cancels a pending MIDI learn, in the same press.
     if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        if (m_externalControl && m_externalControl->dispatcher().isLearning()) {
-            m_externalControl->dispatcher().cancelLearn();
-        } else if (es.calibratingOutputId.isNull()) {
+        if (m_externalControl) m_externalControl->dispatcher().cancelLearn();
+        if (es.calibratingOutputId.isNull()) {
             m_outputManager->handleEscapeKey();
         } else if (es.calibration.pick != CalibrationSession::Pick::None) {
             es.calibration.cancelPick();
@@ -1710,9 +1707,9 @@ void Application::render() {
 
 // ---- Project lifecycle (TD-02, ADR-046) ----
 // Everything that replaces or writes the project runs here, at a frame boundary
-// (runFrameBoundaryTasks, called from run() before render()), never from inside the
-// ImGui frame: File > Load used to destroy the Scene whose QuadManager& render() was
-// still using. Callers only queue an EditorState::FileAction.
+// (runFrameBoundaryTasks, called from pollFrame() before presentFrame() renders),
+// never from inside the ImGui frame: File > Load used to destroy the Scene whose
+// QuadManager& render() was still using. Callers only queue an EditorState::FileAction.
 
 namespace {
 
@@ -1860,6 +1857,9 @@ void Application::takeSceneByNumber(int number) {
     }
     const SceneTake take = es.takeScene(number, outputs);
     if (take.kind == SceneTake::Kind::None) return;
+    // Takes run inside the frame, after the frame-boundary fit: re-fit now so this
+    // frame's projector output is framed for the scene just put on air.
+    fitProjectorsToOutputs();
 
     const Scene& scene = es.activeScene();
     if (take.kind == SceneTake::Kind::Route) {
@@ -1884,6 +1884,9 @@ void Application::initializeExternalControl() {
     host.takeScene = [this](int number) { m_pendingExternalSceneTakes.push_back(number); };
     host.isBlackout = [this]() { return m_outputManager && m_outputManager->isBlackout(); };
     host.setBlackout = [this](bool on) { if (m_outputManager) m_outputManager->setBlackout(on); };
+    host.refuse = [this](const std::string& address, const std::string& reason) {
+        m_externalControl->dispatcher().noteRefused(address, reason);
+    };
     registerControlTargets(m_externalControl->registry(), host);
 
     PreferencesDialog prefsDialog;
@@ -2111,6 +2114,7 @@ void Application::performNewProject() {
     es.currentTexturePath[0] = '\0';
     es.activeVideoSourceId = UUID();
     es.midiMappings.clear();  // show content; the Control panel's device choices stay
+    dropQueuedSceneTakes();
     if (m_sourceManager) releaseProjectSources(es, *m_sourceManager);
     cancelMissingMediaSearch();
     clearMissingMedia(es);
@@ -2151,6 +2155,7 @@ bool Application::performLoadProject(const std::string& path) {
 
     es.commandHistory.clear();  // before the scenes its commands point into go away
     *m_project = std::move(result.value());
+    dropQueuedSceneTakes();
     cancelMissingMediaSearch();
     syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
@@ -2219,6 +2224,7 @@ void Application::performRestoreRecovery() {
     es.commandHistory.clear();
     *m_project = std::move(result.value());
     m_project->setFilePath(projectPath);  // it belongs to the project, not the autosave
+    dropQueuedSceneTakes();
     cancelMissingMediaSearch();
     syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", projectPath.c_str());
@@ -2719,6 +2725,10 @@ void Application::oneFlashCapturePhoto() {
         Logger::info(msg);
     };
 
+    if (m_outputManager && m_outputManager->isBlackout()) {  // the photo would be black
+        setStatus("One-Flash: Blackout is on - turn it off to capture");
+        return;
+    }
     const std::filesystem::path out =
         std::filesystem::temp_directory_path() / "quadmapper_oneflash_capture.png";
     std::string err;
@@ -2758,6 +2768,12 @@ void Application::runOneFlash(const std::array<std::array<float, 2>, 4>* audienc
         Logger::info(msg);
     };
 
+    // Under blackout the projectors show no pattern, so the camera would photograph
+    // black and the solve would report a detection failure.
+    if (m_outputManager && m_outputManager->isBlackout()) {
+        setStatus("One-Flash: Blackout is on - turn it off to capture");
+        return;
+    }
     if (!m_sidecarClient ||
         (m_sidecarClient->state() != ai::SidecarState::Attached &&
          m_sidecarClient->state() != ai::SidecarState::Launched)) {

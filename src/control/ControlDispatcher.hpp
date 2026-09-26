@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace quadmapper::control {
@@ -51,6 +52,11 @@ public:
     // When a target (by canonical path) was last driven, or < 0.
     double lastActivity(const std::string& canonicalPath) const;
 
+    // A target declined a message (a transport control on a clip locked to the master
+    // timeline). Logs one warning per address and keeps the latest for the panel.
+    void noteRefused(const std::string& address, const std::string& reason);
+    const std::string& lastRefused() const { return lastRefused_; }  // "address: reason"
+
     // Default mode for a freshly learned control (see MidiMapping.hpp).
     static MidiMode defaultMode(MidiControlType type, TargetKind kind);
 
@@ -84,6 +90,8 @@ private:
     std::deque<std::string> recentOsc_;
     std::deque<std::string> recentUnknown_;
     std::string lastMidi_;
+    std::string lastRefused_;
+    std::unordered_set<std::string> warnedRefused_;  // addresses already warned about
     double lastOscTime_ = -1.0;
     double lastMidiTime_ = -1.0;
     std::unordered_map<std::string, double> activity_;

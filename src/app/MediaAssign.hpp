@@ -18,6 +18,7 @@
 #include "project/Project.hpp"
 
 #include <iterator>
+#include <optional>
 #include <string>
 #include <unordered_set>
 
@@ -56,6 +57,37 @@ inline UUID resolveMediaSource(SourceManager& sm, const MediaItem& item, bool& i
 // playable source, FFmpeg-decoded or HAP, plays the same way.
 inline void playAssignedVideo(SourceManager& sm, const UUID& sid) {
     if (auto* playable = sm.getSourceAs<PlayableSource>(sid)) playable->play();
+}
+
+// A clip's transport as .qmap saves it.
+inline Project::TransportData transportOf(const PlayableSource& p) {
+    Project::TransportData t;
+    t.playing = (p.getPlaybackState() == PlaybackState::PLAYING);
+    t.loopMode = p.getLoopMode();
+    t.speed = p.getSpeed();
+    t.timelineLocked = p.isTimelineLocked();
+    return t;
+}
+
+// Put a clip just opened for a saved source into the state it was saved in: loop mode,
+// speed, lock to the master timeline, then playing or paused. Load, relocating a
+// missing file and re-opening a released source all come through here, so none of
+// them can drop part of the transport. With nothing saved (a file older than v3.1)
+// the clip plays, looping, as on assign.
+inline void applySavedTransport(SourceManager& sm, const UUID& id,
+                                const std::optional<Project::TransportData>& transport) {
+    auto* playable = sm.getSourceAs<PlayableSource>(id);
+    if (!playable) return;
+    if (!transport) {
+        playable->play();
+        return;
+    }
+    playable->setLoopMode(transport->loopMode);
+    playable->setSpeed(transport->speed);
+    // Locking sets the clip playing, so the saved play/pause is applied after it.
+    if (transport->timelineLocked) sm.setTimelineLocked(id, true);
+    if (transport->playing) playable->play();
+    else                    playable->pause();
 }
 
 // Resolve a MediaItem to a source, then bind it to the quad. Returns the bound
@@ -109,9 +141,11 @@ inline std::unordered_set<UUID> editorOwnedSources(const EditorState& es) {
 // alive, so orphaned videos and generators stop decoding, rendering and uploading.
 //
 // A quad whose source is gone (a binding restored from an older history, for example)
-// is re-resolved from its saved media path (videos restart playing); if that fails the
-// binding is cleared so it is not retried every frame. A binding to a missing file
-// (EditorState::missingSources) is kept as it is, for the user to relocate.
+// is re-resolved from its saved media path; a video re-opened this way gets back the
+// transport it had when it was released (EditorState::releasedTransports), else plays
+// as on assign. If that fails the binding is cleared so it is not retried every frame.
+// A binding to a missing file (EditorState::missingSources) is kept as it is, for the
+// user to relocate.
 inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
     std::unordered_set<UUID> onScreen;  // bound to a quad that exists right now
     for (const auto& scene : es.scenes) {
@@ -125,8 +159,18 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
             if (pathIt != es.quadTexturePaths.end() && !pathIt->second.empty()) {
                 const std::filesystem::path path = pathIt->second;
                 if (MediaLibrary::getTypeFromExtension(path.extension().string()) == MediaType::VIDEO) {
+                    // A clip already open for another quad keeps its own playback.
+                    const bool alreadyOpen = !sm.findVideoSourceByPath(path).isNull();
                     healed = sm.getOrCreateVideoSource(path);
-                    if (auto* playable = sm.getSourceAs<PlayableSource>(healed)) playable->play();
+                    if (!healed.isNull() && !alreadyOpen) {
+                        std::optional<Project::TransportData> saved;
+                        auto savedIt = es.releasedTransports.find(mediaId);
+                        if (savedIt != es.releasedTransports.end()) {
+                            saved = savedIt->second;
+                            es.releasedTransports.erase(savedIt);
+                        }
+                        applySavedTransport(sm, healed, saved);
+                    }
                 } else {
                     healed = sm.getOrCreateImageSource(path);
                 }
@@ -142,6 +186,14 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
     std::unordered_set<UUID> inUse = referencedMediaIds(es.scenes, es.commandHistory);
     const std::unordered_set<UUID> owned = editorOwnedSources(es);
     inUse.insert(owned.begin(), owned.end());
+    // Remember how each clip about to be released was playing, for a binding that
+    // comes back to it later (the re-open above).
+    for (const UUID& id : sm.getAllSourceIds()) {
+        if (inUse.count(id)) continue;
+        if (const auto* playable = sm.getSourceAs<PlayableSource>(id)) {
+            es.releasedTransports[id] = transportOf(*playable);
+        }
+    }
     sm.releaseUnreferenced(inUse);
     // A missing file nothing refers to any more (its quads deleted beyond undo) is
     // no longer worth relocating or saving.
@@ -178,6 +230,7 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
 // media fresh instead of inheriting live decoders found by path.
 inline void releaseProjectSources(EditorState& es, SourceManager& sm) {
     es.sourcesPausedWhileUnseen.clear();
+    es.releasedTransports.clear();
     sm.releaseUnreferenced(editorOwnedSources(es));
 }
 

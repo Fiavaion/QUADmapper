@@ -209,6 +209,9 @@ struct EditorState {
     // Playing sources paused because only the undo history still holds them (their
     // quad was deleted); resumed if undo puts them back on screen.
     std::unordered_set<UUID> sourcesPausedWhileUnseen;
+    // How each clip was playing when releaseUnusedSources released it, by its old id,
+    // so a binding that comes back to it re-opens it as it was.
+    std::unordered_map<UUID, Project::TransportData> releasedTransports;
     std::string recoveryFilePath;    // != "": "recover unsaved work" modal is up
     std::string recoveryProjectPath; // project that recovery file belongs to ("" = untitled)
 

@@ -3,11 +3,14 @@
 // No GL: the stand-in playable source has zero size, so no texture is created.
 
 #include "app/ControlBindings.hpp"
+#include "FakePlayable.hpp"
 #include "control/ControlDispatcher.hpp"
 #include "ui/dialogs/PreferencesDialog.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 
@@ -15,57 +18,6 @@ using namespace quadmapper;
 using namespace quadmapper::control;
 
 namespace {
-
-class FakePlayable : public PlayableSource {
-public:
-    explicit FakePlayable(std::string name) : name_(std::move(name)) {}
-    const UUID& getId() const override { return id_; }
-    std::string getName() const override { return name_; }
-    SourceType getType() const override { return SourceType::VIDEO_FILE; }
-    std::string getTypeName() const override { return "Fake video"; }
-    bool initialize() override { return true; }
-    void shutdown() override {}
-    bool isReady() const override { return true; }
-    bool update(double) override { return false; }
-    bool hasNewFrame() const override { return false; }
-    const FrameData* getCurrentFrame() const override { return nullptr; }
-    void markFrameConsumed() override {}
-    SourceCapabilities getCapabilities() const override { return {}; }
-    int getWidth() const override { return 0; }
-    int getHeight() const override { return 0; }
-
-    void play() override { state = PlaybackState::PLAYING; ++plays; }
-    void pause() override { state = PlaybackState::PAUSED; ++pauses; }
-    void stop() override { state = PlaybackState::STOPPED; }
-    void togglePlayPause() override {}
-    bool canSeek() const override { return true; }
-    void seek(double t) override { time = t; ++seeks; }
-    void seekProgress(float) override {}
-    PlaybackState getPlaybackState() const override { return state; }
-    double getCurrentTime() const override { return time; }
-    double getDuration() const override { return 10.0; }
-    float getProgress() const override { return 0.0f; }
-    void setSpeed(float s) override { speed = s; }
-    float getSpeed() const override { return speed; }
-    void setLoopMode(LoopMode) override {}
-    LoopMode getLoopMode() const override { return LoopMode::LOOP; }
-    std::string getLoopModeNotice() const override { return {}; }
-    void setTimelineLocked(bool, const PlaybackClock&) override {}
-    bool isTimelineLocked() const override { return false; }
-    void followTimeline(const PlaybackClock&) override {}
-    const PlaybackClock& getClock() const override { return clock_; }
-    PlaybackTimePoint getClockNow() const override { return {}; }
-
-    PlaybackState state = PlaybackState::PAUSED;
-    int plays = 0, pauses = 0, seeks = 0;
-    double time = 5.0;
-    float speed = 1.0f;
-
-private:
-    PlaybackClock clock_;
-    UUID id_ = UUID::generate();
-    std::string name_;
-};
 
 struct AppFixture {
     std::vector<std::unique_ptr<Scene>> scenes;
@@ -102,6 +54,9 @@ struct AppFixture {
         host.takeScene = [this](int n) { takes.push_back(n); };
         host.isBlackout = [this] { return blackout; };
         host.setBlackout = [this](bool on) { blackout = on; };
+        host.refuse = [this](const std::string& address, const std::string& reason) {
+            dispatcher.noteRefused(address, reason);
+        };
         registerControlTargets(registry, host);
         refresh();
     }
@@ -226,8 +181,82 @@ TEST(ControlBindingsTest, OnlyTheExpectedTargetsExist) {
                     action == "restart" || action == "speed")
             << action;
     }
-    // blackout + 2 scene takes + 3 quads x 2 + 1 source x 4
-    EXPECT_EQ(actions.size(), 1u + 2u + 6u + 4u);
+    // blackout + master timeline x 3 + 2 scene takes + 3 quads x 2 + 1 source x 4
+    EXPECT_EQ(actions.size(), 1u + 3u + 2u + 6u + 4u);
+}
+
+TEST(ControlBindingsTest, LockedSourceRefusesItsOwnTransport) {
+    AppFixture fx;
+    fx.clip->play();
+    fx.sources.setTimelineLocked(fx.clipId, true);
+    ASSERT_TRUE(fx.clip->isTimelineLocked());
+    const int plays = fx.clip->plays;
+
+    fx.osc("/qm/source/clip.mp4/pause");
+    fx.osc(path("source", fx.clipId, "restart"));
+    fx.osc("/qm/source/clip.mp4/speed", 2.0f);
+    fx.osc("/qm/source/clip.mp4/play");
+    EXPECT_EQ(fx.clip->state, PlaybackState::PLAYING) << "a refused pause must not freeze it";
+    EXPECT_EQ(fx.clip->pauses, 0);
+    EXPECT_EQ(fx.clip->seeks, 0);
+    EXPECT_EQ(fx.clip->plays, plays);
+    EXPECT_FLOAT_EQ(fx.clip->speed, 1.0f);
+    EXPECT_NE(fx.dispatcher.lastRefused().find(path("source", fx.clipId, "play")), std::string::npos);
+    EXPECT_NE(fx.dispatcher.lastRefused().find("locked to master"), std::string::npos);
+
+    // The same refusal through a MIDI mapping.
+    MidiMapping m;
+    m.type = MidiControlType::Note;
+    m.number = 9;
+    m.target = path("source", fx.clipId, "pause");
+    m.mode = MidiMode::Trigger;
+    fx.mappings.push_back(m);
+    ControlEvent e;
+    e.source = ControlEvent::Source::Midi;
+    e.midi.type = MidiType::NoteOn;
+    e.midi.number = 9;
+    e.midi.value = 100;
+    fx.dispatcher.dispatch(e, fx.mappings, 0.0);
+    EXPECT_EQ(fx.clip->pauses, 0);
+    EXPECT_NE(fx.dispatcher.lastRefused().find(path("source", fx.clipId, "pause")), std::string::npos);
+
+    // Unlocked again, the source's own transport works.
+    fx.sources.setTimelineLocked(fx.clipId, false);
+    fx.osc("/qm/source/clip.mp4/pause");
+    EXPECT_EQ(fx.clip->state, PlaybackState::PAUSED);
+}
+
+TEST(ControlBindingsTest, MasterTimelineTargetsDriveTheMasterClock) {
+    AppFixture fx;
+    const PlaybackClock& master = fx.sources.getMasterTimeline();
+    ASSERT_TRUE(master.running()) << "the master runs from construction";
+    fx.osc("/qm/timeline/pause");
+    EXPECT_FALSE(master.running());
+    fx.osc("/qm/timeline/play");
+    EXPECT_TRUE(master.running());
+    fx.osc("/qm/timeline/pause");
+    fx.osc("/qm/timeline/restart");
+    EXPECT_DOUBLE_EQ(master.position(std::chrono::steady_clock::now()), 0.0);
+    EXPECT_FALSE(master.running()) << "restart keeps play/pause";
+
+    // Offered for MIDI learn, and a learned control drives it.
+    const auto targets = fx.registry.listTargets();
+    for (const char* p : {"/qm/timeline/play", "/qm/timeline/pause", "/qm/timeline/restart"}) {
+        EXPECT_TRUE(std::any_of(targets.begin(), targets.end(),
+                                [p](const ControlRegistry::ListedTarget& t) { return t.path == p; }))
+            << p;
+    }
+    fx.dispatcher.beginLearn("/qm/timeline/play");
+    ControlEvent e;
+    e.source = ControlEvent::Source::Midi;
+    e.midi.type = MidiType::NoteOn;
+    e.midi.number = 12;
+    e.midi.value = 100;
+    fx.dispatcher.dispatch(e, fx.mappings, 0.0);  // learns, does not act
+    ASSERT_EQ(fx.mappings.size(), 1u);
+    EXPECT_FALSE(master.running());
+    fx.dispatcher.dispatch(e, fx.mappings, 1.0);
+    EXPECT_TRUE(master.running());
 }
 
 TEST(ControlBindingsTest, DeletedQuadMakesItsTargetsUnresolvedAndInert) {

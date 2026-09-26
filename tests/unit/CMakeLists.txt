@@ -159,9 +159,11 @@ add_quadmapper_test(test_control
 target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws2_32)
 
 # The application's control targets (app/ControlBindings.hpp) on real scenes, quads and
-# sources, plus the control preferences. No GL context needed.
+# sources, plus the control preferences, and the missing-media relocation logic
+# (app/MissingMedia.hpp). No GL context needed.
 add_quadmapper_test(test_control_app
     control/ControlBindingsTest.cpp
+    app/MissingMediaTest.cpp
 )
 target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_control
     quadmapper_project quadmapper_scene quadmapper_source quadmapper_core)

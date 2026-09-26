@@ -669,7 +669,10 @@ void OutputManager::updatePreviews(const std::vector<std::unique_ptr<Scene>>& sc
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         // Same routing + clean-render + rotation rules as renderToOutputs, but
-        // into the FBO, so the thumbnail shows what the projector shows.
+        // into the FBO, so the thumbnail shows what the projector shows. One
+        // exception: a quad whose media file is missing is drawn with the editor's
+        // checker here (the caller's texture map) where the projector shows black
+        // (MissingMediaLook.hpp), so the operator can see what needs relocating.
         renderer.setOutputRotation(output->getRotation());
         if (blackout_) continue;  // the projector is black, so is its preview
         if (const Scene* scene = sceneForOutput(scenes, output->getId())) {

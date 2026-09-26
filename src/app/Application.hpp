@@ -108,10 +108,16 @@ private:
     void loadProject();   // Load the path typed in the Project tab
 
     void takeSceneByNumber(int number);  // live-show scene take; ignored while calibrating
+    // New, Load and Restore drop takes still queued: they were pressed for the show
+    // that was just replaced and must not put its scene N of the new one on air.
+    void dropQueuedSceneTakes() {
+        m_pendingSceneTakes.clear();
+        m_pendingExternalSceneTakes.clear();
+    }
 
     // ---- External control (ADR-048) ---------------------------------------------
-    // Created at startup (not for the stress harness); OSC/MIDI settings come from the
-    // preferences. processExternalControl() runs at the frame boundary: MIDI hot-plug
+    // Created at startup (not for the stress or bench harness); OSC/MIDI settings come
+    // from the preferences. processExternalControl() runs at the frame boundary: MIDI hot-plug
     // upkeep, then at most ExternalControl::kMaxEventsPerFrame queued events are
     // applied on the main thread, before render() takes any scene references.
     void initializeExternalControl();
@@ -196,8 +202,8 @@ private:
     bool captureCameraFrameToPng(const std::string& pngPath, std::string& error);
 
     // Build the per-frame texture map from m_editorState and push the warped
-    // scene to all enabled output windows.  Called from run() after each main
-    // frame's render()+ImGui+swap so it never runs mid-ImGui-frame.
+    // scene to all enabled output windows.  Called from presentFrame() after the
+    // editor's render()+ImGui+swap so it never runs mid-ImGui-frame.
     void renderToProjectorOutputs();
 
     // Headless perform-mode stress harness (QM-081 H2). Driven by --stress CLI

@@ -5,7 +5,7 @@
 // the bindings are unit-tested without GL or the Application.
 //
 // External control changes live values only: quad opacity/visibility, source
-// transport, scene takes and blackout. It never touches geometry, files or undo,
+// transport, the master timeline, scene takes and blackout. It never touches geometry, files or undo,
 // and every target re-resolves its quad/source by id when it runs, so a target
 // whose quad was deleted does nothing.
 //
@@ -42,6 +42,8 @@ struct ControlBindingHost {
     std::function<void(int number)> takeScene;  // queue a take of scene `number` (1-based)
     std::function<bool()> isBlackout;
     std::function<void(bool on)> setBlackout;
+    // A message a target would not act on: its canonical address and why.
+    std::function<void(const std::string& address, const std::string& reason)> refuse;
 };
 
 namespace control_bindings {
@@ -80,6 +82,22 @@ inline PlayableSource* findPlayable(SourceManager* sources, const std::string& i
     return dynamic_cast<PlayableSource*>(sources->getSource(uuid));
 }
 
+// A clip locked to the master timeline follows it and ignores its own play, pause,
+// seek and speed (ADR-050 §3), and the Video Player greys those out. A transport
+// message for it is refused rather than half-applied (a pause that freezes the
+// projector with no way to resume there); the master is driven by /qm/timeline/*.
+// Returns the clip to drive, or null when there is none or it was refused.
+inline PlayableSource* unlockedPlayable(const ControlBindingHost& host, const std::string& id,
+                                        const char* action) {
+    PlayableSource* p = findPlayable(host.sources, id);
+    if (!p || !p->isTimelineLocked()) return p;
+    if (host.refuse) {
+        host.refuse("/qm/source/" + id + "/" + action,
+                    "locked to master timeline; use /qm/timeline/play, pause or restart");
+    }
+    return nullptr;
+}
+
 }  // namespace control_bindings
 
 inline void registerControlTargets(control::ControlRegistry& registry, const ControlBindingHost& host) {
@@ -100,6 +118,20 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
     registry.addGlobal("/qm/scene/take",
         {"", TargetKind::Index, 1.0f, 1.0e6f, false,
          [host](const std::string&, float n) { if (host.takeScene) host.takeScene(static_cast<int>(n)); },
+         nullptr});
+    // The master timeline every locked clip follows (ADR-050 §3): the same calls as
+    // the menu bar's Timeline Play/Pause and Restart buttons.
+    registry.addGlobal("/qm/timeline/play",
+        {"", TargetKind::Trigger, 0.0f, 1.0f, true,
+         [host](const std::string&, float) { if (host.sources) host.sources->playMasterTimeline(); },
+         nullptr});
+    registry.addGlobal("/qm/timeline/pause",
+        {"", TargetKind::Trigger, 0.0f, 1.0f, true,
+         [host](const std::string&, float) { if (host.sources) host.sources->pauseMasterTimeline(); },
+         nullptr});
+    registry.addGlobal("/qm/timeline/restart",
+        {"", TargetKind::Trigger, 0.0f, 1.0f, true,
+         [host](const std::string&, float) { if (host.sources) host.sources->restartMasterTimeline(); },
          nullptr});
 
     // ---- Scenes ------------------------------------------------------------
@@ -139,19 +171,19 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
     registry.addEntityTarget("source",
         {"play", TargetKind::Trigger, 0.0f, 1.0f, true,
          [host](const std::string& id, float) {
-             if (PlayableSource* p = findPlayable(host.sources, id)) p->play();
+             if (PlayableSource* p = unlockedPlayable(host, id, "play")) p->play();
          },
          nullptr});
     registry.addEntityTarget("source",
         {"pause", TargetKind::Trigger, 0.0f, 1.0f, true,
          [host](const std::string& id, float) {
-             if (PlayableSource* p = findPlayable(host.sources, id)) p->pause();
+             if (PlayableSource* p = unlockedPlayable(host, id, "pause")) p->pause();
          },
          nullptr});
     registry.addEntityTarget("source",
         {"restart", TargetKind::Trigger, 0.0f, 1.0f, true,
          [host](const std::string& id, float) {
-             if (PlayableSource* p = findPlayable(host.sources, id)) {
+             if (PlayableSource* p = unlockedPlayable(host, id, "restart")) {
                  if (p->canSeek()) p->seek(0.0);
                  p->play();
              }
@@ -160,7 +192,7 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
     registry.addEntityTarget("source",
         {"speed", TargetKind::Float, 0.1f, 4.0f, true,
          [host](const std::string& id, float v) {
-             if (PlayableSource* p = findPlayable(host.sources, id)) p->setSpeed(v);
+             if (PlayableSource* p = unlockedPlayable(host, id, "speed")) p->setSpeed(v);
          },
          [host](const std::string& id) -> std::optional<float> {
              const PlayableSource* p = findPlayable(host.sources, id);
@@ -236,9 +268,10 @@ inline control::MidiMapping fromProjectMapping(const Project::MidiMappingData& d
     return m;
 }
 
-// Loading a project gives its quads and sources new live ids (scenes keep theirs),
-// so saved targets are rewritten from saved to live ids. A target whose entity is
-// not in the map (deleted before the save) is kept as it is and stays unresolved.
+// Rewrite a target's `collection` id through savedToLive. Loading a project gives its
+// sources new live ids (and a quad a new one only when its saved id clashes), and
+// relocating a missing file moves its bindings to a new source id. A target whose
+// entity is not in the map is kept as it is (unresolved if the entity is gone).
 inline std::string remapTargetPath(const std::string& path, const std::string& collection,
                                    const std::unordered_map<UUID, UUID>& savedToLive) {
     const std::string prefix = "/qm/" + collection + "/";
