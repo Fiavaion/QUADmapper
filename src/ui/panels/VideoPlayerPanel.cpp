@@ -159,6 +159,19 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         loadVideo(ctx, loadDialogSimpleMode_);
     }
 
+    // Follow the selection: selecting a quad that shows a video makes that video the
+    // panel's clip (its transport, volume and mute). Only on a change, so a clip picked
+    // here by hand is not overridden every frame.
+    Quad* selectedQuad = es.quadManager().getPrimarySelectedQuad();
+    const UUID selectedId = selectedQuad ? selectedQuad->getId() : UUID();
+    if (selectedId != followedQuadId_) {
+        followedQuadId_ = selectedId;
+        const UUID mediaId = selectedQuad ? selectedQuad->getTexture().mediaId : UUID();
+        if (ctx.sourceManager && ctx.sourceManager->getSourceAs<PlayableSource>(mediaId)) {
+            es.activeVideoSourceId = mediaId;
+        }
+    }
+
     if (!es.showVideoPlayer) return;
 
     ImGui::Begin("Video Player");

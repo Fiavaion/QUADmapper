@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/UUID.hpp"
 #include "ui/AsyncFileDialog.hpp"
 
 namespace quadmapper {
@@ -28,6 +29,9 @@ private:
     // The "Load Video..." browser runs off the render thread (QM-088).
     AsyncFileDialog loadDialog_;
     bool loadDialogSimpleMode_ = false;  // UI mode the dialog was opened from
+
+    // The selected quad last seen, so the panel follows a selection change only once.
+    UUID followedQuadId_;
 };
 
 }  // namespace quadmapper
