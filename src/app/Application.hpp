@@ -33,7 +33,7 @@ class Texture;
 class AsyncFileDialog;
 struct EditorState;
 struct MissingMediaItem;
-struct ControlPreferences;
+class PreferencesDialog;
 namespace ai { class SidecarClient; enum class SidecarState; }
 namespace control { class ExternalControl; }
 
@@ -124,6 +124,7 @@ private:
     void initializeExternalControl();
     void processExternalControl();
     void saveControlPreferences();
+    void saveUiModePreference();  // the mode last used is the next session's (ADR-042)
     void drawBlackoutBanner();  // inside the ImGui frame, over the canvas
 
     // ---- Show-safe session (ADR-046 §4) -----------------------------------------
@@ -252,12 +253,15 @@ private:
 
     // External control (ADR-048); null in the stress harness.
     std::unique_ptr<control::ExternalControl> m_externalControl;
-    std::unique_ptr<ControlPreferences> m_controlPrefs;
+
+    // The machine preferences (loaded at startup, saved on every change) and the
+    // Edit > Preferences window that edits them. The Control window and the menu
+    // bar's audio device list change the same copy.
+    std::unique_ptr<PreferencesDialog> m_preferences;
 
     // Sound from video sources (ADR-050 §2): the output device, mixer and each video's
     // audio. The stress harness runs it on miniaudio's silent null device.
     std::unique_ptr<AudioEngine> m_audioEngine;
-    std::string m_savedAudioDevice;  // preference on disk, to notice a new choice
     void applyProjectAudio();        // project master volume/mute -> engine
     void syncAudio();                // each video's sound onto its clock, once per frame
     void saveAudioDevicePreference();
@@ -270,8 +274,7 @@ private:
     bool m_haveCleanBaseline = false;  // m_savedSnapshot captured after the first frame
     std::string m_savedSnapshot;       // editorSnapshot() as of the last save/load/new
     std::string m_autosavedSnapshot;   // editorSnapshot() last written to the autosave
-    bool m_autoSaveEnabled = true;
-    double m_autoSaveIntervalSec = 60.0;
+    bool m_autoSaveEnabled = true;     // false: never this session (the bench), whatever the preferences
     double m_lastAutosaveTime = 0.0;
     std::future<Result<void, Error>> m_autosaveWrite;  // in-flight autosave disk write
     bool m_exitConfirmed = false;      // Exit passed the unsaved-changes check

@@ -296,6 +296,7 @@ struct EditorState {
     bool showResources = true;
     bool showVideoPlayer = true;
     bool showControl = false;  // Window > Control (OSC / MIDI)
+    bool showPreferences = false;  // Edit > Preferences... (Ctrl+,)
 
     // Current selection
     SelectionType currentSelectionType = SelectionType::Quad;

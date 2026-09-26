@@ -6,8 +6,14 @@
 #include "FakePlayable.hpp"
 #include "control/ControlDispatcher.hpp"
 #include "ui/dialogs/PreferencesDialog.hpp"
+#include "app/EditorContext.hpp"
+#include "app/EditorState.hpp"
+
+#include <imgui.h>
+#include <imgui_internal.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -639,4 +645,194 @@ TEST(ControlPreferencesTest, FeedbackSettingsDefaultRoundTripAndRejectBadValues)
     EXPECT_FALSE(c.oscFeedbackUseIds);
     std::error_code ec;
     std::filesystem::remove(file, ec);
+}
+
+// ---- Preferences file (TD-28): only settings the app honours ----------------------
+
+namespace {
+
+struct TempPrefsFile {
+    std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                 ("qm_prefs_" + UUID::generate().toString() + ".json");
+    ~TempPrefsFile() {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+    void write(const char* text) const {
+        std::ofstream out(path, std::ios::binary);
+        out << text;
+    }
+    nlohmann::json read() const {
+        std::ifstream in(path, std::ios::binary);
+        return nlohmann::json::parse(in);
+    }
+};
+
+}  // namespace
+
+TEST(PreferencesFileTest, EverySettingRoundTrips) {
+    TempPrefsFile file;
+    {
+        PreferencesDialog dialog;
+        AppPreferences& p = dialog.getPreferences();
+        p.general.defaultMediaFolder = "D:/show/media";
+        p.general.autoLoadMediaOnStartup = false;
+        p.general.recursiveFolderScan = true;
+        p.general.autoSaveEnabled = false;
+        p.general.autoSaveIntervalMinutes = 12;
+        p.general.uiMode = 1;
+        p.performance.audioDevice = "Speakers (USB Audio)";
+        p.control.oscEnabled = true;
+        p.control.oscPort = 9100;
+        p.control.oscBindAddress = "127.0.0.1";
+        p.control.midiDevices = {"APC mini"};
+        p.control.oscFeedbackEnabled = true;
+        p.control.oscFeedbackHost = "10.0.0.5";
+        p.control.oscFeedbackPort = 9001;
+        p.control.oscFeedbackUseIds = true;
+        ASSERT_TRUE(dialog.saveToFile(file.path.string()));
+    }
+    PreferencesDialog loaded;
+    ASSERT_TRUE(loaded.loadFromFile(file.path.string()));
+    const AppPreferences& p = loaded.getPreferences();
+    EXPECT_EQ(p.general.defaultMediaFolder, "D:/show/media");
+    EXPECT_FALSE(p.general.autoLoadMediaOnStartup);
+    EXPECT_TRUE(p.general.recursiveFolderScan);
+    EXPECT_FALSE(p.general.autoSaveEnabled);
+    EXPECT_EQ(p.general.autoSaveIntervalMinutes, 12);
+    EXPECT_EQ(p.general.uiMode, 1);
+    EXPECT_EQ(p.performance.audioDevice, "Speakers (USB Audio)");
+    EXPECT_TRUE(p.control.oscEnabled);
+    EXPECT_EQ(p.control.oscPort, 9100);
+    EXPECT_EQ(p.control.oscBindAddress, "127.0.0.1");
+    EXPECT_EQ(p.control.midiDevices, std::vector<std::string>{"APC mini"});
+    EXPECT_TRUE(p.control.oscFeedbackEnabled);
+    EXPECT_EQ(p.control.oscFeedbackHost, "10.0.0.5");
+    EXPECT_EQ(p.control.oscFeedbackPort, 9001);
+    EXPECT_TRUE(p.control.oscFeedbackUseIds);
+}
+
+TEST(PreferencesFileTest, DefaultsAreTheShippedBehaviour) {
+    const AppPreferences p;
+    EXPECT_TRUE(p.general.defaultMediaFolder.empty());
+    EXPECT_TRUE(p.general.autoLoadMediaOnStartup);
+    EXPECT_FALSE(p.general.recursiveFolderScan);
+    EXPECT_TRUE(p.general.autoSaveEnabled);
+    EXPECT_EQ(p.general.autoSaveIntervalMinutes, 1);  // ADR-046: at most a minute lost
+    EXPECT_EQ(p.general.uiMode, 0);                   // ADR-042: Simple
+    EXPECT_TRUE(p.performance.audioDevice.empty());
+}
+
+// A file written by an older version carries settings nothing honoured: they load
+// without error, are ignored, and are gone from the next save.
+TEST(PreferencesFileTest, SettingsThisVersionDroppedAreIgnoredAndNotWrittenBack) {
+    TempPrefsFile file;
+    file.write(R"({"version": "1.0",
+        "general": {"defaultProjectPath": "C:/p", "defaultMeshResolution": 16,
+                    "openLastProjectOnStartup": false, "recentProjectsMaxCount": 5,
+                    "mediaFolderBookmarks": ["C:/a"], "createBackupOnSave": false,
+                    "showWelcomeDialog": false, "confirmOnExit": false,
+                    "rememberWindowLayout": false, "themeIndex": 1,
+                    "autoSaveIntervalMinutes": 5, "uiMode": 1, "defaultMediaFolder": "E:/clips"},
+        "performance": {"videoBufferFrames": 60, "videoDecodeThreads": 4,
+                        "enableHardwareDecoding": false, "enableVSync": false,
+                        "targetFrameRate": 30, "textureQuality": 0, "enableMipmaps": false,
+                        "audioBufferSize": 256, "audioSampleRate": 44100,
+                        "outputBufferCount": 3, "enableAdaptiveSync": true,
+                        "audioDevice": "Line Out"},
+        "control": {"oscEnabled": true}})");
+    PreferencesDialog dialog;
+    ASSERT_TRUE(dialog.loadFromFile(file.path.string()));
+    const AppPreferences& p = dialog.getPreferences();
+    EXPECT_EQ(p.general.autoSaveIntervalMinutes, 5);
+    EXPECT_EQ(p.general.uiMode, 1);
+    EXPECT_EQ(p.general.defaultMediaFolder, "E:/clips");
+    EXPECT_EQ(p.performance.audioDevice, "Line Out");
+    EXPECT_TRUE(p.control.oscEnabled);
+
+    ASSERT_TRUE(dialog.saveToFile(file.path.string()));
+    const nlohmann::json saved = file.read();
+    std::vector<std::string> keys;
+    for (const char* section : {"general", "performance", "control"}) {
+        ASSERT_TRUE(saved.contains(section)) << section;
+        for (const auto& item : saved[section].items()) keys.push_back(std::string(section) + "." + item.key());
+    }
+    std::sort(keys.begin(), keys.end());
+    EXPECT_EQ(keys, (std::vector<std::string>{
+                        "control.midiDevices", "control.oscBindAddress", "control.oscEnabled",
+                        "control.oscFeedbackEnabled", "control.oscFeedbackHost", "control.oscFeedbackPort",
+                        "control.oscFeedbackUseIds", "control.oscPort",
+                        "general.autoLoadMediaOnStartup", "general.autoSaveEnabled",
+                        "general.autoSaveIntervalMinutes", "general.defaultMediaFolder",
+                        "general.recursiveFolderScan", "general.uiMode", "performance.audioDevice"}));
+}
+
+TEST(PreferencesFileTest, WrongTypesAndOutOfRangeValuesKeepDefaults) {
+    TempPrefsFile file;
+    for (const char* text :
+         {R"({"version": "1.0", "general": {"autoSaveIntervalMinutes": 0, "uiMode": 2,
+               "autoSaveEnabled": "no", "defaultMediaFolder": 3, "recursiveFolderScan": 1,
+               "autoLoadMediaOnStartup": null}})",
+          R"({"version": "1.0", "general": {"autoSaveIntervalMinutes": 31, "uiMode": -1}})",
+          R"({"version": "1.0", "general": {"autoSaveIntervalMinutes": "5", "uiMode": 1.5}})",
+          R"({"version": "1.0", "general": [1, 2], "performance": "x", "control": 7})"}) {
+        SCOPED_TRACE(text);
+        file.write(text);
+        PreferencesDialog dialog;
+        ASSERT_TRUE(dialog.loadFromFile(file.path.string()));
+        const GeneralPreferences& g = dialog.getPreferences().general;
+        EXPECT_EQ(g.autoSaveIntervalMinutes, 1);
+        EXPECT_EQ(g.uiMode, 0);
+        EXPECT_TRUE(g.autoSaveEnabled);
+        EXPECT_TRUE(g.defaultMediaFolder.empty());
+        EXPECT_FALSE(g.recursiveFolderScan);
+        EXPECT_TRUE(g.autoLoadMediaOnStartup);
+    }
+}
+
+TEST(PreferencesFileTest, AFileThatIsNotPreferencesIsRefusedAndChangesNothing) {
+    TempPrefsFile file;
+    for (const char* text : {"not json", "[1, 2]", R"({"general": {"uiMode": 1}})"}) {
+        SCOPED_TRACE(text);
+        file.write(text);
+        PreferencesDialog dialog;
+        EXPECT_FALSE(dialog.loadFromFile(file.path.string()));
+        EXPECT_EQ(dialog.getPreferences().general.uiMode, 0);
+    }
+    PreferencesDialog missing;
+    EXPECT_FALSE(missing.loadFromFile((file.path.string() + ".absent")));
+}
+
+// The window against real (headless) ImGui: shown only while es.showPreferences is set,
+// and its General tab edits the editor's UI mode directly (Application saves it).
+TEST(PreferencesWindowTest, RendersOnlyWhenOpenAndShowsTheEditorsMode) {
+    ImGuiContext* imgui = ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(1280.0f, 800.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    io.IniFilename = nullptr;
+    unsigned char* pixels = nullptr;
+    int w = 0, h = 0;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
+
+    EditorState es;
+    EditorContext ctx{es, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    PreferencesDialog dialog;
+    auto frame = [&] {
+        ImGui::NewFrame();
+        dialog.render(ctx, nullptr);
+        const bool shown = ImGui::FindWindowByName("Preferences") != nullptr &&
+                           ImGui::FindWindowByName("Preferences")->Active;
+        ImGui::Render();
+        return shown;
+    };
+    EXPECT_FALSE(frame()) << "closed by default";
+    es.showPreferences = true;
+    es.uiMode = EditorState::UiMode::Advanced;
+    EXPECT_TRUE(frame());
+    EXPECT_TRUE(frame());
+    EXPECT_EQ(es.uiMode, EditorState::UiMode::Advanced) << "rendering alone changes nothing";
+    es.showPreferences = false;
+    EXPECT_FALSE(frame());
+    ImGui::DestroyContext(imgui);
 }
