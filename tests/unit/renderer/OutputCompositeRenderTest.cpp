@@ -11,9 +11,15 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+#include "core/GlObjectStats.hpp"
 #include "renderer/Renderer.hpp"
 #include "renderer/Framebuffer.hpp"
+#include "scene/MeshObject.hpp"
+#include "scene/ProjectorCamera.hpp"
 #include "scene/Quad.hpp"
+
+#include <memory>
+#include <vector>
 
 using namespace quadmapper;
 
@@ -65,7 +71,7 @@ bool isBlack(const RGB& c) { return c.r < 50 && c.g < 50 && c.b < 50; }
 }  // namespace
 
 // A 50%-opacity white quad over a blue clear must blend to (~128, ~128, 255). A
-// context without GL_BLEND writes opaque white — the pre-QM-087 output windows.
+// context without GL_BLEND writes opaque white Ã¢â‚¬â€ the pre-QM-087 output windows.
 TEST(OutputCompositeRenderTest, FreshContextRendererBlendsOpacity) {
     GLContext ctx;
     if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
@@ -222,3 +228,69 @@ INSTANTIATE_TEST_SUITE_P(AllQuarterTurns, OutputRotationRenderTest,
                          [](const ::testing::TestParamInfo<Rotation>& info) {
                              return "R" + std::to_string(static_cast<int>(info.param));
                          });
+
+// The Renderer keeps each quad's tessellated mesh on the GPU between draws; it must
+// re-tessellate the moment the geometry changes, or a warp would not show (the
+// vertex-nudge success metric). Moving the corners, then switching to a mesh-edit
+// grid (a different index count), must each redraw where the quad now is.
+TEST(OutputCompositeRenderTest, CachedQuadRedrawsWhereItsGeometryMoved) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    Framebuffer fbo;
+    ASSERT_TRUE(fbo.resize(16, 16));
+    fbo.bind();
+    auto draw = [&](const Quad& quad) {
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        renderer.renderQuad(quad, nullptr);
+    };
+
+    Quad quad = makeQuad(0.0f, 0.0f, 0.5f, 1.0f);  // left half
+    draw(quad);
+    EXPECT_TRUE(isWhite(readPixel(4, 8)));
+    EXPECT_TRUE(isBlack(readPixel(12, 8)));
+
+    quad.getGeometry().setCorners({Vec2(0.5f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f),
+                                   Vec2(0.5f, 1.0f)});  // right half
+    draw(quad);
+    EXPECT_TRUE(isBlack(readPixel(4, 8)));
+    EXPECT_TRUE(isWhite(readPixel(12, 8)));
+
+    quad.getGeometry().setMeshMode(MeshMode::MESH_EDIT);
+    quad.getGeometry().setUniformGrid(2);
+    quad.getGeometry().setMeshVertex(1, 1, Vec2(-0.55f, 0.0f));  // pull the centre left
+    draw(quad);
+    EXPECT_TRUE(isWhite(readPixel(4, 8)));   // the pulled centre now covers the left
+    EXPECT_TRUE(isWhite(readPixel(14, 8)));
+
+    Framebuffer::unbind();
+    renderer.shutdown();
+}
+
+// A quad that stops being drawn (deleted, or its scene no longer shown) gives its GPU
+// mesh back once the renderer has made enough scene passes without it.
+TEST(OutputCompositeRenderTest, UndrawnQuadMeshIsReleased) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    const long vaos = GlObjectStats::vertexArrays();
+    const long buffers = GlObjectStats::vertexBuffers();
+
+    renderer.renderQuad(makeQuad(0.0f, 0.0f, 1.0f, 1.0f), nullptr);
+    EXPECT_EQ(GlObjectStats::vertexArrays(), vaos + 1);
+    EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers + 2);
+
+    const std::vector<std::unique_ptr<MeshObject>> noObjects;
+    for (int pass = 0; pass <= 600; ++pass) {  // scene passes with the quad gone
+        renderer.renderMeshObjects(noObjects, ProjectorCamera{}, {});
+    }
+    EXPECT_EQ(GlObjectStats::vertexArrays(), vaos);
+    EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers);
+
+    renderer.shutdown();
+}

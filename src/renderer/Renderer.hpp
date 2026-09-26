@@ -21,6 +21,7 @@ struct QuadVertex {
 };
 
 struct GpuMesh;  // a MeshObject's cached VAO/VBO/EBO (Renderer.cpp)
+struct GpuQuad;  // a quad's cached tessellation VAO/VBO/EBO (Renderer.cpp)
 
 class Renderer {
 public:
@@ -108,10 +109,13 @@ public:
     Texture* getDefaultTexture() { return &defaultTexture_; }
 
 private:
-    void createQuadBuffers();
     void createOutlineBuffers();
     void createHandleBuffers();
-    void updateQuadBuffers(const Quad& quad);
+    // Fill vertices_/indices_ with the geometry's render mesh.
+    void tessellate(const QuadGeometry& geometry);
+    // The quad's GPU mesh, tessellated and uploaded on first draw or when its
+    // geometry changed since the last upload.
+    const GpuQuad& quadBuffersFor(const Quad& quad);
     void updateOutlineBuffers(const Quad& quad);
     void createDefaultTexture();
 
@@ -134,11 +138,6 @@ private:
     ShaderProgram handleShader_;
     Texture defaultTexture_;
 
-    // OpenGL objects for quad mesh
-    uint32_t quadVAO_ = 0;
-    uint32_t quadVBO_ = 0;
-    uint32_t quadEBO_ = 0;
-
     // OpenGL objects for outline
     uint32_t outlineVAO_ = 0;
     uint32_t outlineVBO_ = 0;
@@ -152,19 +151,22 @@ private:
     uint32_t handleVAO_ = 0;
     uint32_t handleVBO_ = 0;
 
-    // Buffers for mesh data
+    // Tessellation scratch (reused, so re-tessellating allocates nothing)
     std::vector<QuadVertex> vertices_;
     std::vector<uint32_t> indices_;
 
     // Buffers for outline
     std::vector<float> outlineVertices_;
 
-    // 3D objects' GPU meshes by object id. VAOs are per context, like this Renderer.
-    // An entry unused for kMeshCacheIdlePasses renderMeshObjects calls is dropped,
-    // so a deleted object does not keep its buffers.
+    // 3D objects' GPU meshes by object id, and quads' by quad id. VAOs are per
+    // context, like this Renderer. meshPass_ counts scene passes (renderMeshObjects
+    // calls, which every scene render path makes first); an entry unused for
+    // kCacheIdlePasses passes is dropped, so a deleted object or quad does not keep
+    // its buffers.
     std::unordered_map<UUID, std::unique_ptr<GpuMesh>> meshCache_;
+    std::unordered_map<UUID, std::unique_ptr<GpuQuad>> quadCache_;
     uint64_t meshPass_ = 0;
-    static constexpr uint64_t kMeshCacheIdlePasses = 600;
+    static constexpr uint64_t kCacheIdlePasses = 600;
 
     // Editor view transform state (ADR-041). Identity by default so any render path
     // that does not set it (outputs, previews) draws the full frame unchanged.

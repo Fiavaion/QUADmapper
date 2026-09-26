@@ -47,8 +47,7 @@ bool Renderer::initialize() {
         return false;
     }
 
-    // Create buffers
-    createQuadBuffers();
+    // Create buffers (each quad's surface buffers are made on first draw)
     createOutlineBuffers();
     createHandleBuffers();
 
@@ -72,27 +71,13 @@ void Renderer::shutdown() {
     }
 
     meshCache_.clear();
+    quadCache_.clear();
     quadShader_.destroy();
     mesh3dShader_.destroy();
     outlineShader_.destroy();
     handleShader_.destroy();
     defaultTexture_.destroy();
 
-    if (quadVAO_ != 0) {
-        glDeleteVertexArrays(1, &quadVAO_);
-        GlObjectStats::onVertexArrayDestroyed();
-        quadVAO_ = 0;
-    }
-    if (quadVBO_ != 0) {
-        glDeleteBuffers(1, &quadVBO_);
-        GlObjectStats::onVertexBufferDestroyed();
-        quadVBO_ = 0;
-    }
-    if (quadEBO_ != 0) {
-        glDeleteBuffers(1, &quadEBO_);
-        GlObjectStats::onVertexBufferDestroyed();
-        quadEBO_ = 0;
-    }
     if (outlineVAO_ != 0) {
         glDeleteVertexArrays(1, &outlineVAO_);
         GlObjectStats::onVertexArrayDestroyed();
@@ -153,36 +138,85 @@ void Renderer::applyViewUniforms(ShaderProgram& shader) {
     shader.setVec2("u_ViewOffset", viewOffset_);
 }
 
-void Renderer::createQuadBuffers() {
-    // Create VAO
-    glGenVertexArrays(1, &quadVAO_);
-    GlObjectStats::onVertexArrayCreated();
-    glGenBuffers(1, &quadVBO_);
-    GlObjectStats::onVertexBufferCreated();
-    glGenBuffers(1, &quadEBO_);
-    GlObjectStats::onVertexBufferCreated();
+// A quad's tessellated surface on the GPU. VAOs are per context, like the Renderer
+// that owns it. Rebuilt only when the quad's geometry changes, so drawing an
+// unchanged quad costs no tessellation and no buffer upload.
+struct GpuQuad {
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLuint ebo = 0;
+    GLsizei indexCount = 0;
+    QuadGeometry builtFrom;  // the geometry the buffers hold
+    uint64_t lastPass = 0;
 
-    glBindVertexArray(quadVAO_);
+    GpuQuad() {
+        glGenVertexArrays(1, &vao);
+        GlObjectStats::onVertexArrayCreated();
+        glGenBuffers(1, &vbo);
+        GlObjectStats::onVertexBufferCreated();
+        glGenBuffers(1, &ebo);
+        GlObjectStats::onVertexBufferCreated();
 
-    // Setup VBO
-    glBindBuffer(GL_ARRAY_BUFFER, quadVBO_);
-    // Reserve space for max mesh size (65x65 vertices for 64 resolution)
-    glBufferData(GL_ARRAY_BUFFER, 65 * 65 * sizeof(QuadVertex), nullptr, GL_DYNAMIC_DRAW);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, position));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, texCoord));
+        glBindVertexArray(0);
+    }
+    ~GpuQuad() {
+        glDeleteVertexArrays(1, &vao);
+        GlObjectStats::onVertexArrayDestroyed();
+        glDeleteBuffers(1, &vbo);
+        GlObjectStats::onVertexBufferDestroyed();
+        glDeleteBuffers(1, &ebo);
+        GlObjectStats::onVertexBufferDestroyed();
+    }
+    GpuQuad(const GpuQuad&) = delete;
+    GpuQuad& operator=(const GpuQuad&) = delete;
 
-    // Setup EBO
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO_);
-    // Reserve space for max indices (64x64 quads = 64x64x6 indices)
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, 64 * 64 * 6 * sizeof(uint32_t), nullptr, GL_DYNAMIC_DRAW);
+    void upload(const std::vector<QuadVertex>& vertices, const std::vector<uint32_t>& indices) {
+        glBindVertexArray(vao);  // the element-array binding is VAO state
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(QuadVertex)),
+                     vertices.data(), GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices.size() * sizeof(uint32_t)),
+                     indices.data(), GL_DYNAMIC_DRAW);
+        glBindVertexArray(0);
+        indexCount = static_cast<GLsizei>(indices.size());
+    }
+};
 
-    // Position attribute
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, position));
+namespace {
 
-    // TexCoord attribute
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, texCoord));
+// True when two geometries tessellate identically: compares every field
+// tessellate() reads (all of QuadGeometry's state).
+bool sameSurface(const QuadGeometry& a, const QuadGeometry& b) {
+    return a.getMeshMode() == b.getMeshMode() && a.getCorners() == b.getCorners() &&
+           a.isBezierEnabled() == b.isBezierEnabled() &&
+           a.getBezierOffsets() == b.getBezierOffsets() && a.getUCoords() == b.getUCoords() &&
+           a.getVCoords() == b.getVCoords() && a.getMeshVertices() == b.getMeshVertices();
+}
 
-    glBindVertexArray(0);
+}  // namespace
+
+const GpuQuad& Renderer::quadBuffersFor(const Quad& quad) {
+    const QuadGeometry& geometry = quad.getGeometry();
+    std::unique_ptr<GpuQuad>& slot = quadCache_[quad.getId()];
+    const bool fresh = !slot;
+    if (fresh) {
+        slot = std::make_unique<GpuQuad>();
+    }
+    if (fresh || !sameSurface(slot->builtFrom, geometry)) {
+        tessellate(geometry);
+        slot->upload(vertices_, indices_);
+        slot->builtFrom = geometry;
+    }
+    slot->lastPass = meshPass_;
+    return *slot;
 }
 
 void Renderer::createOutlineBuffers() {
@@ -217,9 +251,7 @@ void Renderer::createOutlineBuffers() {
     glBindVertexArray(0);
 }
 
-void Renderer::updateQuadBuffers(const Quad& quad) {
-    const QuadGeometry& geometry = quad.getGeometry();
-
+void Renderer::tessellate(const QuadGeometry& geometry) {
     // Smooth path (ADR-043): a CORNERS_ONLY quad is a projective (or bezier) corner
     // patch — its surface is fully defined by the corners, so render it as a fine
     // N×N tessellation sampled from surfacePoint(). This decouples render density
@@ -254,10 +286,6 @@ void Renderer::updateQuadBuffers(const Quad& quad) {
                 indices_[o++] = tr; indices_[o++] = bl; indices_[o++] = br;
             }
         }
-        glBindBuffer(GL_ARRAY_BUFFER, quadVBO_);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, vertices_.size() * sizeof(QuadVertex), vertices_.data());
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO_);
-        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, indices_.size() * sizeof(uint32_t), indices_.data());
         return;
     }
 
@@ -304,13 +332,6 @@ void Renderer::updateQuadBuffers(const Quad& quad) {
             indices_[indexOffset++] = bottomRight;
         }
     }
-
-    // Upload to GPU
-    glBindBuffer(GL_ARRAY_BUFFER, quadVBO_);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, vertices_.size() * sizeof(QuadVertex), vertices_.data());
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO_);
-    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, indices_.size() * sizeof(uint32_t), indices_.data());
 }
 
 void Renderer::updateOutlineBuffers(const Quad& quad) {
@@ -348,8 +369,7 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
         return;
     }
 
-    // Update mesh buffers with quad geometry
-    updateQuadBuffers(quad);
+    const GpuQuad& gpu = quadBuffersFor(quad);
 
     // Bind shader
     quadShader_.bind();
@@ -360,8 +380,8 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
                          quad.getColorCorrection(), quad.getSoftEdge(), texture);
 
     // Draw
-    glBindVertexArray(quadVAO_);
-    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices_.size()), GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(gpu.vao);
+    glDrawElements(GL_TRIANGLES, gpu.indexCount, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
 
     Texture::unbind();
@@ -578,14 +598,20 @@ void Renderer::renderMeshObjects(const std::vector<std::unique_ptr<MeshObject>>&
     if (!initialized_) {
         return;
     }
+    // Every scene render path starts here, so this is where both GPU caches drop the
+    // entries of objects and quads that stopped being drawn.
     ++meshPass_;
-    for (auto it = meshCache_.begin(); it != meshCache_.end();) {
-        if (meshPass_ - it->second->lastPass > kMeshCacheIdlePasses) {
-            it = meshCache_.erase(it);
-        } else {
-            ++it;
+    auto pruneIdle = [this](auto& cache) {
+        for (auto it = cache.begin(); it != cache.end();) {
+            if (meshPass_ - it->second->lastPass > kCacheIdlePasses) {
+                it = cache.erase(it);
+            } else {
+                ++it;
+            }
         }
-    }
+    };
+    pruneIdle(meshCache_);
+    pruneIdle(quadCache_);
 
     // One depth range for the whole pass, spanning every object's bounding box in
     // the projector's eye space, so depth compares correctly between objects.

@@ -12,21 +12,33 @@ ShaderProgram::~ShaderProgram() {
     destroy();
 }
 
+// Moving a deque keeps its elements in place, so the moved map's keys stay valid.
 ShaderProgram::ShaderProgram(ShaderProgram&& other) noexcept
-    : programId_(other.programId_) {
+    : programId_(other.programId_)
+    , uniformNames_(std::move(other.uniformNames_))
+    , uniformLocations_(std::move(other.uniformLocations_)) {
     other.programId_ = 0;
+    other.uniformLocations_.clear();
+    other.uniformNames_.clear();
 }
 
 ShaderProgram& ShaderProgram::operator=(ShaderProgram&& other) noexcept {
     if (this != &other) {
         destroy();
         programId_ = other.programId_;
+        uniformNames_ = std::move(other.uniformNames_);
+        uniformLocations_ = std::move(other.uniformLocations_);
         other.programId_ = 0;
+        other.uniformLocations_.clear();
+        other.uniformNames_.clear();
     }
     return *this;
 }
 
 bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource) {
+    uniformLocations_.clear();  // locations belong to the program being replaced
+    uniformNames_.clear();
+
     // Compile shaders
     uint32_t vertexShader = compileShader(GL_VERTEX_SHADER, vertexSource);
     if (vertexShader == 0) {
@@ -65,6 +77,8 @@ bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource)
 }
 
 void ShaderProgram::destroy() {
+    uniformLocations_.clear();
+    uniformNames_.clear();
     if (programId_ != 0) {
         glDeleteProgram(programId_);
         GlObjectStats::onShaderProgramDestroyed();
@@ -81,7 +95,15 @@ void ShaderProgram::unbind() {
 }
 
 int ShaderProgram::getUniformLocation(const char* name) const {
-    return glGetUniformLocation(programId_, name);
+    // A program's uniform locations are fixed once it is linked, and every draw sets
+    // a couple of dozen of them, so ask GL only the first time.
+    const auto found = uniformLocations_.find(std::string_view(name));
+    if (found != uniformLocations_.end()) {
+        return found->second;
+    }
+    const int location = glGetUniformLocation(programId_, name);
+    uniformLocations_.emplace(uniformNames_.emplace_back(name), location);
+    return location;
 }
 
 void ShaderProgram::setInt(const char* name, int value) const {

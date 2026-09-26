@@ -60,3 +60,27 @@ add_test(
 set_tests_properties(stress_smoke PROPERTIES
     TIMEOUT 60   # generous wall-clock limit; each cycle budget is 5 s × 5 = 25 s
 )
+
+# ---------------------------------------------------------------------------
+# bench_smoke — the PRD §5 benchmark harness (--bench) runs every scenario briefly
+# and writes a report it can read back (exit 0). Performance targets are NOT
+# asserted here: machines vary. Video scenarios report "skipped" when the default
+# media (D:/testing Videos) is absent. Full runs: see Bench.hpp.
+# ---------------------------------------------------------------------------
+add_test(
+    NAME bench_smoke
+    COMMAND $<TARGET_FILE:QUADmapper>
+        --bench
+        --bench-out=${CMAKE_CURRENT_BINARY_DIR}/bench_smoke.json
+        --bench-seconds=0.5
+        --bench-warmup=0.2
+        --bench-quads=16
+        --bench-videos=2
+        --bench-scenes=3
+        --bench-switch-every=3
+        --bench-latency-samples=3
+        --bench-drift-seconds=1
+)
+set_tests_properties(bench_smoke PROPERTIES
+    TIMEOUT 120
+)

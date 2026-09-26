@@ -4,6 +4,10 @@ add_executable(QUADmapper
     main.cpp
     Application.hpp
     Application.cpp
+    StressHarness.hpp
+    StressHarness.cpp
+    Bench.hpp
+    Bench.cpp
 )
 
 target_link_libraries(QUADmapper

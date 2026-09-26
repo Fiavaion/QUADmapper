@@ -1,8 +1,12 @@
 #pragma once
 
-#include <string>
-#include <cstdint>
 #include <glm/glm.hpp>
+
+#include <cstdint>
+#include <deque>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 
 namespace quadmapper {
 
@@ -43,6 +47,11 @@ public:
 
 private:
     uint32_t programId_ = 0;
+
+    // Uniform locations by name, looked up from GL once per name and program. The
+    // keys view strings owned by uniformNames_ (a deque, so they never move).
+    mutable std::deque<std::string> uniformNames_;
+    mutable std::unordered_map<std::string_view, int> uniformLocations_;
 
     int getUniformLocation(const char* name) const;
     static uint32_t compileShader(uint32_t type, const char* source);

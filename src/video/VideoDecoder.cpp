@@ -175,6 +175,18 @@ public:
             return false;
         }
 
+        // Decode files on two cores. On one core a 20 Mbit/s 1080p H.264 clip takes
+        // 35-60 ms a frame (--bench drift), longer than a frame lasts at 25 fps, so the
+        // picture fell behind the clock; two threads keep it in time. Not a thread per
+        // core: with many simultaneous clips that oversubscribes the CPU and starves
+        // the render thread (16 such clips: 3.7 FPS on one thread, 2.6 on two, 0.8 on
+        // one per core). Live capture stays single-threaded: frame threading would add
+        // frames of latency to a camera.
+        if (!isLive_) {
+            codecCtx_->thread_count = 2;
+            codecCtx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        }
+
         // Open codec
         if (avcodec_open2(codecCtx_, codec, nullptr) < 0) {
             LOG_ERROR("Failed to open codec");
