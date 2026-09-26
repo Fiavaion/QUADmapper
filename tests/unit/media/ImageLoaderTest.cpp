@@ -439,5 +439,18 @@ TEST(ImageLoaderExtensionTest, TiffExtensionsAreSupportedEverywhere) {
     EXPECT_NE(std::find(images.begin(), images.end(), ".tiff"), images.end());
 }
 
+// Every format the loader decodes is classed as an image by the media library, so
+// relocation, drag-drop and import accept it (TD-24 removed the IMAGE fallback).
+TEST(ImageLoaderExtensionTest, EveryLoaderFormatIsAMediaLibraryImage) {
+    for (const char* ext : {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".psd", ".hdr",
+                            ".pic", ".ppm", ".pgm", ".tif", ".tiff"}) {
+        ASSERT_TRUE(ImageLoader::isSupported(std::filesystem::path("a") += ext)) << ext;
+        EXPECT_EQ(MediaLibrary::getTypeFromExtension(ext), MediaType::IMAGE) << ext;
+    }
+    for (const std::string& ext : MediaLibrary::getSupportedImageExtensions()) {
+        EXPECT_TRUE(ImageLoader::isSupported(std::filesystem::path("a") += ext)) << ext;
+    }
+}
+
 } // namespace test
 } // namespace quadmapper

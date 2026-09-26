@@ -387,8 +387,9 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                 if (sm) {
                     const std::filesystem::path mediaPath = texturePath;
                     const std::string ext = mediaPath.extension().string();
+                    const std::optional<MediaType> type = MediaLibrary::getTypeFromExtension(ext);
                     UUID sid;
-                    if (MediaLibrary::getTypeFromExtension(ext) == MediaType::VIDEO) {
+                    if (type == MediaType::VIDEO) {
                         sid = sm->getOrCreateVideoSource(mediaPath);
                         if (!sid.isNull()) {
                             es.activeVideoSourceId = sid;  // panel controls it
@@ -396,9 +397,9 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                             // (looping, the default) as on assign, not a paused first frame.
                             if (auto* video = sm->getSourceAs<PlayableSource>(sid)) video->play();
                         }
-                    } else {
+                    } else if (type == MediaType::IMAGE) {
                         sid = sm->getOrCreateImageSource(mediaPath);
-                    }
+                    }  // any other file is not opened; it is kept as missing below
                     if (!sid.isNull()) nq->getTexture().mediaId = sid;
                 }
             }
@@ -411,6 +412,8 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                 es.quadTexturePaths[nq->getId()] = src.path;
             } else if (!texturePath.empty()) {
                 // Pre-v3.1 binding by path alone: saved from now on as a sources entry.
+                // A file that is neither image nor video is kept as an image reference
+                // for the user to relocate (the sources schema has no "unknown" kind).
                 Project::SourceData src;
                 src.kind = MediaLibrary::getTypeFromExtension(
                                std::filesystem::path(texturePath).extension().string()) ==
