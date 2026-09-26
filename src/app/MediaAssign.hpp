@@ -7,6 +7,7 @@
 // IMAGE source even for videos. This single point fixes that and is reused everywhere.
 
 #include "EditorState.hpp"
+#include "core/FileSystem.hpp"
 #include "core/UUID.hpp"
 #include "core/Types.hpp"          // MediaType
 #include "media/MediaItem.hpp"
@@ -104,7 +105,7 @@ inline UUID assignMediaToQuad(EditorState& es, SourceManager* sm, Project* proje
     if (sid.isNull()) return UUID();
 
     bindSourceToQuad(es, project, quad, sid,
-                     item.hasPath() ? item.getPath().string() : std::string(), isVideo);
+                     item.hasPath() ? utf8FromPath(item.getPath()) : std::string(), isVideo);
     if (isVideo) playAssignedVideo(*sm, sid);
     return sid;
 }
@@ -161,9 +162,9 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
             auto pathIt = es.quadTexturePaths.find(quad->getId());
             UUID healed;
             if (pathIt != es.quadTexturePaths.end() && !pathIt->second.empty()) {
-                const std::filesystem::path path = pathIt->second;
+                const std::filesystem::path path = pathFromUtf8(pathIt->second);
                 const std::optional<MediaType> type =
-                    MediaLibrary::getTypeFromExtension(path.extension().string());
+                    MediaLibrary::getTypeFromExtension(utf8FromPath(path.extension()));
                 if (type == MediaType::VIDEO) {
                     // A clip already open for another quad keeps its own playback.
                     const bool alreadyOpen = !sm.findVideoSourceByPath(path).isNull();

@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include "core/FileSystem.hpp"
 #include "video/VideoDecoder.hpp"
 #include "TestClips.hpp"
 
@@ -143,6 +144,26 @@ TEST(VideoDecoderOrientation, DecodedFramesAreStoredTopRowFirst) {
         return sum / (frame.width * 3);
     };
     EXPECT_LT(rowMean(0) + 30.0, rowMean(frame.height - 1));
+}
+
+// FFmpeg opens a clip in a folder named outside the ANSI code page (it takes UTF-8).
+TEST(VideoDecoderPaths, OpensClipInNonAsciiFolder) {
+    const fs::path folder = fs::temp_directory_path() /
+                            pathFromUtf8(u8"qm_decoder_\u00fc \u65e5\u672c \u0416");
+    std::error_code ec;
+    fs::create_directories(folder, ec);
+    const fs::path path = folder / pathFromUtf8(u8"\u0416.mkv");
+    if (!writeClip(path, 12)) {
+        fs::remove_all(folder, ec);
+        GTEST_SKIP() << "FFmpeg cannot write the test clip";
+    }
+    VideoDecoder decoder;
+    const bool opened = decoder.open(path);
+    const bool decoded = opened && decoder.decodeNextFrame().isValid();
+    decoder.close();
+    fs::remove_all(folder, ec);
+    EXPECT_TRUE(opened);
+    EXPECT_TRUE(decoded);
 }
 
 INSTANTIATE_TEST_SUITE_P(Containers, VideoDecoderSeek,

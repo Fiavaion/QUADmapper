@@ -1,9 +1,12 @@
 #include "Texture.hpp"
+#include "core/FileSystem.hpp"
 #include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
 #include <glad/glad.h>
 
 #include <stb_image.h>
+
+#include <limits>
 
 // BCn internal-format tokens (ADR-044). Not present in our pinned GLAD 3.3
 // loader header (they are extension tokens), so define the stable constants
@@ -104,12 +107,23 @@ bool Texture::loadFromFile(const std::filesystem::path& path) {
     // Top row first: quads sample v = 0 at their top edge, so the image shows upright.
     stbi_set_flip_vertically_on_load_thread(false);
 
-    // Load image data
+    // Read through the wide path: stbi_load() opens its filename in the ANSI code page,
+    // so an install folder with non-ASCII characters would fail.
+    auto bytes = FileSystem::readBinaryFile(path);
+    if (!bytes || bytes.value().empty() ||
+        bytes.value().size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        Logger::error("Failed to load texture: {} - cannot read file", utf8FromPath(path));
+        return false;
+    }
     int width, height, channels;
-    unsigned char* data = stbi_load(path.string().c_str(), &width, &height, &channels, 0);
+    unsigned char* data =
+        stbi_load_from_memory(bytes.value().data(), static_cast<int>(bytes.value().size()),
+                              &width, &height, &channels, 0);
 
     if (!data) {
-        Logger::error("Failed to load texture: {} - {}", path.string(), stbi_failure_reason());
+        const char* reason = stbi_failure_reason();
+        Logger::error("Failed to load texture: {} - {}", utf8FromPath(path),
+                      reason ? reason : "unknown");
         return false;
     }
 
@@ -118,7 +132,7 @@ bool Texture::loadFromFile(const std::filesystem::path& path) {
 
     if (result) {
         Logger::debug("Texture loaded: {} ({}x{}, {} channels)",
-                     path.filename().string(), width, height, channels);
+                     utf8FromPath(path.filename()), width, height, channels);
     }
 
     return result;

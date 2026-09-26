@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include "core/FileSystem.hpp"
 #include "source/HapFileSource.hpp"
 #include "video/FrameSelection.hpp"
 #include "video/PlaybackClock.hpp"
@@ -114,6 +115,29 @@ protected:
 };
 
 }  // namespace
+
+// The HAP demuxer opens a clip in a folder named outside the ANSI code page.
+TEST(HapFileSourcePaths, OpensClipInNonAsciiFolder) {
+    const fs::path folder = fs::temp_directory_path() /
+                            pathFromUtf8(u8"qm_hap_\u00fc \u65e5\u672c \u0416");
+    std::error_code ec;
+    fs::create_directories(folder, ec);
+    const fs::path path = folder / pathFromUtf8(u8"\u0416.mov");
+    if (!testclips::writeHapClip(path, FRAMES, FPS)) {
+        fs::remove_all(folder, ec);
+        GTEST_SKIP() << "FFmpeg cannot write HAP";
+    }
+    bool initialized = false;
+    std::string name;
+    {
+        HapFileSource source(path);
+        initialized = source.initialize();
+        name = source.getName();
+    }
+    fs::remove_all(folder, ec);
+    EXPECT_TRUE(initialized);
+    EXPECT_EQ(name, u8"\u0416.mov");
+}
 
 TEST_F(HapPlayback, LoopShowsTheFirstFramesAfterEachWrap) {
     source_->setLoopMode(LoopMode::LOOP);

@@ -22,9 +22,9 @@ MediaItem* MediaLibrary::addItem(const std::filesystem::path& path) {
         return nullptr;
     }
 
-    const std::optional<MediaType> type = getTypeFromExtension(path.extension().string());
+    const std::optional<MediaType> type = getTypeFromExtension(utf8FromPath(path.extension()));
     if (!type) {
-        Logger::warning("Not an image or video file QUADmapper can open: {}", path.string());
+        Logger::warning("Not an image or video file QUADmapper can open: {}", utf8FromPath(path));
         return nullptr;
     }
 
@@ -86,7 +86,7 @@ int MediaLibrary::scanFolder(const std::filesystem::path& folder, bool recursive
             return;
         }
 
-        std::string ext = entry.path().extension().string();
+        std::string ext = utf8FromPath(entry.path().extension());
         if (isExtensionSupported(ext) && !hasPath(entry.path())) {
             if (addItem(entry.path())) {
                 count++;

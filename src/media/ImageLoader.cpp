@@ -1,4 +1,5 @@
 #include "ImageLoader.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 #include <stb_image.h>
 
@@ -20,7 +21,7 @@ namespace quadmapper {
 namespace {
 
 std::string lowercaseExtension(const std::filesystem::path& path) {
-    std::string ext = path.extension().string();
+    std::string ext = utf8FromPath(path.extension());
     std::transform(ext.begin(), ext.end(), ext.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return ext;
@@ -29,6 +30,19 @@ std::string lowercaseExtension(const std::filesystem::path& path) {
 bool isTiff(const std::filesystem::path& path) {
     const std::string ext = lowercaseExtension(path);
     return ext == ".tif" || ext == ".tiff";
+}
+
+// stbi_load() opens its filename in the ANSI code page, so a non-ASCII folder fails.
+// Read the bytes through the wide path and decode from memory instead.
+unsigned char* stbiLoadPath(const std::filesystem::path& path, int* width, int* height,
+                            int* channels, int desiredChannels) {
+    auto bytes = FileSystem::readBinaryFile(path);
+    if (!bytes || bytes.value().empty() ||
+        bytes.value().size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return nullptr;
+    }
+    return stbi_load_from_memory(bytes.value().data(), static_cast<int>(bytes.value().size()),
+                                 width, height, channels, desiredChannels);
 }
 
 std::string hresultText(HRESULT hr) {
@@ -80,7 +94,7 @@ std::vector<uint8_t> convertRgba(const std::vector<uint8_t>& rgba, size_t pixelC
 // keeps RGBA.
 Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desiredChannels) {
     using Microsoft::WRL::ComPtr;
-    const std::string name = path.filename().string();
+    const std::string name = utf8FromPath(path.filename());
     auto fail = [&name](const std::string& reason) {
         return Err<ImageData>("Failed to decode TIFF '" + name + "': " + reason);
     };
@@ -147,13 +161,13 @@ Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desired
 Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
     // Check if file exists
     if (!std::filesystem::exists(path)) {
-        return Err<ImageData>("File not found: " + path.string());
+        return Err<ImageData>("File not found: " + utf8FromPath(path));
     }
 
     if (isTiff(path)) {
         auto result = loadTiff(path, 0);
         if (result.isError()) {
-            Logger::error("Failed to load image: {} - {}", path.string(), result.error().message);
+            Logger::error("Failed to load image: {} - {}", utf8FromPath(path), result.error().message);
         }
         return result;
     }
@@ -164,11 +178,11 @@ Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
 
     // Load image data
     int width, height, channels;
-    unsigned char* data = stbi_load(path.string().c_str(), &width, &height, &channels, 0);
+    unsigned char* data = stbiLoadPath(path, &width, &height, &channels, 0);
 
     if (!data) {
         const char* reason = stbi_failure_reason();
-        Logger::error("Failed to load image: {} - {}", path.string(), reason ? reason : "unknown");
+        Logger::error("Failed to load image: {} - {}", utf8FromPath(path), reason ? reason : "unknown");
         return Err<ImageData>("Failed to load image: " + std::string(reason ? reason : "unknown"));
     }
 
@@ -186,7 +200,7 @@ Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
     stbi_image_free(data);
 
     Logger::debug("Image loaded: {} ({}x{}, {} channels)",
-                  path.filename().string(), width, height, channels);
+                  utf8FromPath(path.filename()), width, height, channels);
 
     return Ok(std::move(result));
 }
@@ -197,7 +211,7 @@ Result<ImageData, Error> ImageLoader::loadWithChannels(
 {
     // Check if file exists
     if (!std::filesystem::exists(path)) {
-        return Err<ImageData>("File not found: " + path.string());
+        return Err<ImageData>("File not found: " + utf8FromPath(path));
     }
 
     // Validate desired channels
@@ -215,11 +229,7 @@ Result<ImageData, Error> ImageLoader::loadWithChannels(
 
     // Load with requested channel count (0 = auto-detect)
     int width, height, channels;
-    unsigned char* data = stbi_load(
-        path.string().c_str(),
-        &width, &height, &channels,
-        desiredChannels
-    );
+    unsigned char* data = stbiLoadPath(path, &width, &height, &channels, desiredChannels);
 
     if (!data) {
         const char* reason = stbi_failure_reason();

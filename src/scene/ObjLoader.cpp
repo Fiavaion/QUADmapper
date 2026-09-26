@@ -1,4 +1,5 @@
 #include "ObjLoader.hpp"
+#include "core/FileSystem.hpp"
 
 #include <charconv>
 #include <cmath>
@@ -71,15 +72,15 @@ bool resolveIndex(std::string_view s, size_t count, int& out) {
 }  // namespace
 
 Result<MeshData, Error> loadObj(const fs::path& path) {
-    const std::string name = path.filename().string();
+    const std::string name = utf8FromPath(path.filename());
     std::error_code sizeError;
     const std::uintmax_t bytes = fs::file_size(path, sizeError);
-    if (sizeError) return Err<MeshData>("Cannot open OBJ file: " + path.string());
+    if (sizeError) return Err<MeshData>("Cannot open OBJ file: " + utf8FromPath(path));
     if (bytes > kMaxFileBytes) {
         return Err<MeshData>(name + ": file is too large to import (over 512 MB)");
     }
     std::ifstream in(path, std::ios::binary);
-    if (!in) return Err<MeshData>("Cannot open OBJ file: " + path.string());
+    if (!in) return Err<MeshData>("Cannot open OBJ file: " + utf8FromPath(path));
 
     std::vector<Vec3> positions;
     std::vector<Vec2> texcoords;

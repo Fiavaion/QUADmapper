@@ -2,11 +2,13 @@
 // every historical format still loading.
 
 #include <gtest/gtest.h>
+#include "core/FileSystem.hpp"
 #include "project/MediaRelocation.hpp"
 #include "project/ProjectSerializer.hpp"
 #include "project/Project.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadGeometry.hpp"
+#include "scene/ObjLoader.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -606,6 +608,67 @@ TEST_F(ProjectPersistenceTest, ObjectWithTransformAndMediaRoundTrips) {
     EXPECT_TRUE(o.texture.flipV);
     EXPECT_FALSE(o.visible);
     EXPECT_FLOAT_EQ(o.opacity, 0.25f);
+}
+
+// A show folder named outside the ANSI code page: the model holds UTF-8, the .qmap
+// stores it as UTF-8 (relative to the project), and every path resolves after reload.
+TEST_F(ProjectPersistenceTest, NonAsciiMediaPathsRoundTripAndResolve) {
+    const fs::path show = dir_ / pathFromUtf8(u8"\u00fc \u65e5\u672c \u0416");
+    const fs::path image = show / pathFromUtf8(u8"\u0416") / pathFromUtf8(u8"b\u00fchne.png");
+    const fs::path video = show / pathFromUtf8(u8"\u0416") / pathFromUtf8(u8"\u65e5\u672c.mp4");
+    const fs::path model = show / pathFromUtf8(u8"\u0416") / pathFromUtf8(u8"\u0416.obj");
+    touch(image);
+    touch(video);
+    std::ofstream(model, std::ios::binary) << "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+
+    Project::SourceData img;
+    img.id = UUID::generate();
+    img.kind = "image";
+    img.path = utf8FromPath(image);
+    Project project = projectWithBoundQuad(img, utf8FromPath(image));
+    Project::SourceData vid;
+    vid.id = UUID::generate();
+    vid.kind = "video";
+    vid.path = utf8FromPath(video);
+    project.getSources().push_back(vid);
+    Project::ObjectData object;
+    object.id = UUID::generate();
+    object.name = u8"S\u00e4ule";
+    object.path = utf8FromPath(model);
+    object.texture.mediaId = vid.id;
+    project.getScenes()[0].objects.push_back(object);
+    const fs::path file = show / pathFromUtf8(u8"\u0416 show.qmap");
+
+    auto saved = ProjectSerializer::save(project, file);
+    ASSERT_TRUE(saved.isSuccess()) << saved.error().message;
+
+    const auto json = nlohmann::json::parse(slurp(file));
+    EXPECT_EQ(json["sources"][0]["path"], std::string(u8"\u0416/b\u00fchne.png"));
+    EXPECT_EQ(json["sources"][1]["path"], std::string(u8"\u0416/\u65e5\u672c.mp4"));
+    EXPECT_EQ(json["scenes"][0]["objects"][0]["path"], std::string(u8"\u0416/\u0416.obj"));
+    EXPECT_EQ(json["scenes"][0]["quads"][0]["texturePath"], utf8FromPath(image));
+
+    auto loaded = ProjectSerializer::load(file);
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const Project& p = loaded.value();
+    EXPECT_EQ(p.getFilePath(), utf8FromPath(file));
+    ASSERT_EQ(p.getSources().size(), 2u);
+    const fs::path expected[] = {image, video};
+    for (size_t i = 0; i < 2; ++i) {
+        const Project::SourceData& s = p.getSources()[i];
+        EXPECT_FALSE(s.missing) << s.path;
+        EXPECT_EQ(s.path, utf8FromPath(expected[i]));
+        EXPECT_TRUE(fs::equivalent(pathFromUtf8(s.path), expected[i]));
+    }
+    ASSERT_EQ(p.getScenes()[0].texturePaths.size(), 1u);
+    EXPECT_EQ(p.getScenes()[0].texturePaths[0], utf8FromPath(image));
+    ASSERT_EQ(p.getScenes()[0].objects.size(), 1u);
+    const Project::ObjectData& o = p.getScenes()[0].objects[0];
+    EXPECT_EQ(o.name, u8"S\u00e4ule");
+    EXPECT_FALSE(o.missing);
+    EXPECT_EQ(o.path, utf8FromPath(model));
+    auto mesh = loadObj(pathFromUtf8(o.path));
+    EXPECT_TRUE(mesh.isSuccess()) << mesh.error().message;
 }
 
 TEST_F(ProjectPersistenceTest, ObjectMediaNotInSourcesIsDropped) {

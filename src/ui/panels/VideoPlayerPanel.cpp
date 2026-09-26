@@ -11,6 +11,7 @@
 #include "scene/QuadManager.hpp"
 #include "source/SourceManager.hpp"
 #include "source/VideoFileSource.hpp"
+#include "core/FileSystem.hpp"
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include "project/Project.hpp"
@@ -122,7 +123,7 @@ void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
     if (es.videoPath[0] == '\0' || !ctx.sourceManager) return;
 
     // Deduped: loading a file that is already a source reuses it (one decode).
-    UUID sid = ctx.sourceManager->getOrCreateVideoSource(es.videoPath);
+    UUID sid = ctx.sourceManager->getOrCreateVideoSource(pathFromUtf8(es.videoPath));
     if (sid.isNull()) {
         snprintf(es.statusMessage, sizeof(es.statusMessage),
                  "Failed to load video: %s", es.videoPath);
@@ -338,7 +339,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
                     // Centralized bind (ADR-042 P2): records the path so the assignment
                     // persists in the .qmap; load re-creates the source and re-binds.
                     bindSourceToQuad(es, ctx.project, *selected, es.activeVideoSourceId,
-                                     ctx.sourceManager->getSourcePath(es.activeVideoSourceId).string(),
+                                     utf8FromPath(ctx.sourceManager->getSourcePath(es.activeVideoSourceId)),
                                      /*isVideo=*/true);
                 }
             }

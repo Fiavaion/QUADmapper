@@ -1,6 +1,5 @@
 #include "FileSystem.hpp"
 #include <fstream>
-#include <algorithm>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -10,6 +9,14 @@
 #endif
 
 namespace quadmapper {
+
+std::filesystem::path pathFromUtf8(const std::string& utf8) {
+    return std::filesystem::u8path(utf8);
+}
+
+std::string utf8FromPath(const std::filesystem::path& path) {
+    return path.u8string();
+}
 
 Result<std::string, Error> FileSystem::readFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::in);
@@ -149,16 +156,6 @@ Result<void, Error> FileSystem::createDirectory(const std::filesystem::path& pat
         return Err("Failed to create directory: " + ec.message());
     }
     return Ok();
-}
-
-std::string FileSystem::getExtension(const std::filesystem::path& path) {
-    auto ext = path.extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    return ext;
-}
-
-std::string FileSystem::getStem(const std::filesystem::path& path) {
-    return path.stem().string();
 }
 
 std::filesystem::path FileSystem::makeRelative(const std::filesystem::path& path,

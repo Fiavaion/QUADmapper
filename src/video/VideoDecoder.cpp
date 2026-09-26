@@ -2,6 +2,7 @@
 #include "DecodeBackoff.hpp"
 #include "FrameSelection.hpp"
 #include "PlaybackClock.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 
 #ifdef QUADMAPPER_HAS_FFMPEG
@@ -198,7 +199,8 @@ public:
         close();
         options_ = options;
 
-        std::string pathStr = path.string();
+        // FFmpeg takes UTF-8 file names on Windows; path::string() is the ANSI code page.
+        const std::string pathStr = utf8FromPath(path);
 
         // Open input file
         if (avformat_open_input(&formatCtx_, pathStr.c_str(), nullptr, nullptr) < 0) {

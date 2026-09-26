@@ -1,10 +1,11 @@
 #include "VideoFileSource.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 
 namespace quadmapper {
 
 VideoFileSource::VideoFileSource(const std::filesystem::path& path, const DecodeOptions& options)
-    : name_(path.filename().string())
+    : name_(utf8FromPath(path.filename()))
     , path_(path)
     , options_(options)
     , player_(std::make_unique<VideoPlayer>())
@@ -21,7 +22,7 @@ bool VideoFileSource::initialize() {
     }
 
     if (!player_->load(path_, options_)) {
-        Logger::error("VideoFileSource: Failed to load '{}'", path_.string());
+        Logger::error("VideoFileSource: Failed to load '{}'", utf8FromPath(path_));
         return false;
     }
 

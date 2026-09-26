@@ -10,6 +10,7 @@
 #include "ControlBindings.hpp"
 #include "EditorState.hpp"
 #include "MediaAssign.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
 #include "media/MediaLibrary.hpp"
@@ -89,7 +90,7 @@ inline std::vector<MissingMediaItem> collectMissingMedia(const EditorState& es) 
 inline std::string absoluteMediaPath(const std::filesystem::path& path) {
     std::error_code ec;
     const std::filesystem::path abs = std::filesystem::absolute(path, ec);
-    return (ec ? path : abs.lexically_normal()).string();
+    return utf8FromPath(ec ? path : abs.lexically_normal());
 }
 
 // Move everything that referenced the missing source missingId (loaded from oldPath)
@@ -130,13 +131,15 @@ inline std::string relocateMissingSource(EditorState& es, SourceManager& sm, con
     if (missing == es.missingSources.end()) return "It is no longer missing.";
     const Project::SourceData original = missing->second;
     const std::string path = absoluteMediaPath(newPath);
+    const std::filesystem::path file = pathFromUtf8(path);
 
-    const std::optional<MediaType> type = MediaLibrary::getTypeFromExtension(newPath.extension().string());
+    const std::optional<MediaType> type =
+        MediaLibrary::getTypeFromExtension(utf8FromPath(newPath.extension()));
     if (!type) return "Not an image or video file QUADmapper can open.";
     const bool isVideo = (*type == MediaType::VIDEO);
-    const bool alreadyOpen = !(isVideo ? sm.findVideoSourceByPath(path)
-                                       : sm.findImageSourceByPath(path)).isNull();
-    const UUID id = isVideo ? sm.getOrCreateVideoSource(path) : sm.getOrCreateImageSource(path);
+    const bool alreadyOpen = !(isVideo ? sm.findVideoSourceByPath(file)
+                                       : sm.findImageSourceByPath(file)).isNull();
+    const UUID id = isVideo ? sm.getOrCreateVideoSource(file) : sm.getOrCreateImageSource(file);
     if (id.isNull()) return "The file could not be loaded.";
 
     // A clip opened here plays as it was saved (or loops from the start, as on assign).
@@ -192,7 +195,7 @@ inline int locateMissingMedia(EditorState& es, SourceManager* sm, Project* proje
     int resolved = 1;
     const std::filesystem::path folder = newPath.parent_path();
     for (const MissingMediaItem& other : collectMissingMedia(es)) {
-        const std::filesystem::path sibling = relocate::findSibling(folder, other.path);
+        const std::filesystem::path sibling = relocate::findSibling(folder, pathFromUtf8(other.path));
         if (!sibling.empty() && noteRelocation(es, other, relocateMissingItem(es, sm, other, sibling))) {
             ++resolved;
         }
@@ -206,7 +209,7 @@ inline int relocateMissingFromIndex(EditorState& es, SourceManager* sm, Project*
                                     const relocate::FolderIndex& index) {
     int resolved = 0;
     for (const MissingMediaItem& item : collectMissingMedia(es)) {
-        const std::filesystem::path found = relocate::findInIndex(index, item.path);
+        const std::filesystem::path found = relocate::findInIndex(index, pathFromUtf8(item.path));
         if (!found.empty() && noteRelocation(es, item, relocateMissingItem(es, sm, item, found))) {
             ++resolved;
         }
