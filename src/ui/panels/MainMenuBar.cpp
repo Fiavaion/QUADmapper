@@ -10,9 +10,11 @@
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "source/SourceManager.hpp"
+#include "audio/AudioEngine.hpp"
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <chrono>
 
 #ifdef _WIN32
@@ -33,6 +35,76 @@ void openUrl(const char* url) {
 }  // namespace
 
 namespace quadmapper {
+
+namespace {
+
+constexpr ImVec4 AUDIO_WARNING_COLOR(1.0f, 0.45f, 0.35f, 1.0f);
+
+const char* outputProblem(const AudioEngine& audio) {
+    switch (audio.outputState()) {
+        case AudioOutputState::Failed: return "No audio output";
+        case AudioOutputState::Lost:   return "Audio device lost";
+        default:                       return nullptr;
+    }
+}
+
+}  // namespace
+
+void MainMenuBar::renderAudioDevices(AudioEngine& audio, bool menu, bool& listOpen) {
+    // Enumerating asks the OS, so only when a list is opened, not every frame.
+    if (!listOpen) audioDevices_ = audio.listDevices();
+    listOpen = true;
+    const std::string& preferred = audio.preferredDevice();
+    auto entry = [&](const char* label, const std::string& name) {
+        const bool selected = preferred == name;
+        const bool chosen = menu ? ImGui::MenuItem(label, nullptr, selected)
+                                 : ImGui::Selectable(label, selected);
+        // Choosing the current device again reopens it: how a lost device recovers.
+        if (chosen) audio.selectDevice(name);
+    };
+    entry("System default", std::string());
+    for (const std::string& name : audioDevices_) entry(name.c_str(), name);
+    if (!preferred.empty() &&
+        std::find(audioDevices_.begin(), audioDevices_.end(), preferred) == audioDevices_.end()) {
+        ImGui::TextDisabled("%s (not connected)", preferred.c_str());
+    }
+}
+
+void MainMenuBar::renderAudioStrip(EditorContext& ctx, AudioEngine& audio) {
+    ImGui::TextDisabled("Audio:");
+    const bool muted = audio.masterMuted();
+    if (muted) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.25f, 0.2f, 1.0f));
+    if (ImGui::Button(muted ? "Muted##master" : "Mute##master")) {
+        audio.setMasterMuted(!muted);
+        if (ctx.project) ctx.project->setModified(true);
+    }
+    if (muted) ImGui::PopStyleColor();
+    ImGui::SetItemTooltip(muted ? "All sound is muted: click to unmute" : "Mute all sound");
+
+    float percent = audio.masterVolume() * 100.0f;
+    ImGui::SetNextItemWidth(90.0f);
+    if (ImGui::SliderFloat("##master volume", &percent, 0.0f, 100.0f, "Vol %.0f%%")) {
+        audio.setMasterVolume(percent / 100.0f);
+        if (ctx.project) ctx.project->setModified(true);
+    }
+    ImGui::SetItemTooltip("Master volume of every video's sound (Ctrl+click to type a value)");
+
+    const char* problem = outputProblem(audio);
+    const std::string active = audio.activeDeviceName();
+    const std::string preview = problem ? problem : (active.empty() ? "No output" : active);
+    ImGui::SetNextItemWidth(160.0f);
+    if (problem) ImGui::PushStyleColor(ImGuiCol_Text, AUDIO_WARNING_COLOR);
+    const bool open = ImGui::BeginCombo("##audio output", preview.c_str());
+    if (problem) ImGui::PopStyleColor();
+    if (open) {
+        renderAudioDevices(audio, /*menu=*/false, audioComboOpen_);
+        ImGui::EndCombo();
+    } else {
+        audioComboOpen_ = false;
+    }
+    ImGui::SetItemTooltip(problem ? "Sound is off: pick an output device to resume"
+                                  : "Output device for sound (saved in the preferences)");
+}
 
 void MainMenuBar::render(EditorContext& ctx) {
     EditorState& es = ctx.es;
@@ -136,7 +208,28 @@ void MainMenuBar::render(EditorContext& ctx) {
         if (ImGui::MenuItem("Blackout", "Ctrl+B", blackout, ctx.outputManager != nullptr)) {
             ctx.outputManager->toggleBlackout();
         }
+        if (ctx.audio) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("Mute Audio", nullptr, ctx.audio->masterMuted())) {
+                ctx.audio->setMasterMuted(!ctx.audio->masterMuted());
+                if (ctx.project) ctx.project->setModified(true);
+            }
+            float percent = ctx.audio->masterVolume() * 100.0f;
+            ImGui::SetNextItemWidth(140.0f);
+            if (ImGui::SliderFloat("Master Volume", &percent, 0.0f, 100.0f, "%.0f%%")) {
+                ctx.audio->setMasterVolume(percent / 100.0f);
+                if (ctx.project) ctx.project->setModified(true);
+            }
+            if (ImGui::BeginMenu("Audio Output")) {
+                renderAudioDevices(*ctx.audio, /*menu=*/true, audioMenuOpen_);
+                ImGui::EndMenu();
+            } else {
+                audioMenuOpen_ = false;
+            }
+        }
         ImGui::EndMenu();
+    } else {
+        audioMenuOpen_ = false;
     }
 
     if (ImGui::BeginMenu("AI")) {
@@ -228,6 +321,11 @@ void MainMenuBar::render(EditorContext& ctx) {
         const int minutes = static_cast<int>(seconds / 60.0);
         ImGui::Text("%02d:%04.1f", minutes, seconds - minutes * 60.0);
         ImGui::SetItemTooltip("Master timeline position");
+    }
+
+    if (ctx.audio) {
+        ImGui::Separator();
+        renderAudioStrip(ctx, *ctx.audio);
     }
 
     // Reset all playheads (available in both modes) — restart every video (and its

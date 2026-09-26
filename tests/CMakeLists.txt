@@ -84,3 +84,22 @@ add_test(
 set_tests_properties(bench_smoke PROPERTIES
     TIMEOUT 120
 )
+# stress_audio_smoke — ADR-050 §2: a video with sound, re-created every cycle, so its
+# audio attachment (decoder thread, mixer input) is built and freed ten times under the
+# working-set bound, on the silent null audio device. Needs the local test media.
+set(QM_AUDIO_STRESS_MEDIA "D:/testing Videos/keying woman.mp4")
+if(EXISTS "${QM_AUDIO_STRESS_MEDIA}")
+    add_test(
+        NAME stress_audio_smoke
+        COMMAND $<TARGET_FILE:QUADmapper>
+            --stress
+            --cycles=10
+            --outputs=1
+            --frames-per-cycle=30
+            --hidden
+            --source=video
+            --audio-churn
+            "--media=${QM_AUDIO_STRESS_MEDIA}"
+    )
+    set_tests_properties(stress_audio_smoke PROPERTIES TIMEOUT 120)
+endif()

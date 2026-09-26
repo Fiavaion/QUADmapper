@@ -10,6 +10,7 @@ class MediaLibrary;
 class SourceManager;
 class OutputManager;
 class Renderer;
+class AudioEngine;
 
 // Per-frame bundle of the editor's live state (EditorState) plus the
 // Application-owned manager pointers. Built once per frame in
@@ -25,6 +26,7 @@ struct EditorContext {
     OutputManager* outputManager;
     Renderer*      renderer;
     GLFWwindow*    window;
+    AudioEngine*   audio = nullptr;  // set where a panel shows sound controls (ADR-050)
 };
 
 }  // namespace quadmapper

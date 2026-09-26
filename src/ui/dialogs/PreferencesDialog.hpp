@@ -59,6 +59,7 @@ struct PerformancePreferences {
     // Audio
     int audioBufferSize = 512;  // samples
     int audioSampleRate = 48000;
+    std::string audioDevice;    // output device name; empty = the system default (ADR-050)
 
     // Output
     int outputBufferCount = 2;  // double or triple buffering

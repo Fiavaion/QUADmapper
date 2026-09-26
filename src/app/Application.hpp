@@ -27,6 +27,7 @@ class Project;
 class FolderWatcher;
 class ThumbnailCache;
 class SourceManager;
+class AudioEngine;
 class Quad;
 class Texture;
 class AsyncFileDialog;
@@ -252,6 +253,14 @@ private:
     // External control (ADR-048); null in the stress harness.
     std::unique_ptr<control::ExternalControl> m_externalControl;
     std::unique_ptr<ControlPreferences> m_controlPrefs;
+
+    // Sound from video sources (ADR-050 §2): the output device, mixer and each video's
+    // audio. The stress harness runs it on miniaudio's silent null device.
+    std::unique_ptr<AudioEngine> m_audioEngine;
+    std::string m_savedAudioDevice;  // preference on disk, to notice a new choice
+    void applyProjectAudio();        // project master volume/mute -> engine
+    void syncAudio();                // each video's sound onto its clock, once per frame
+    void saveAudioDevicePreference();
 
     // State
     bool m_running = false;

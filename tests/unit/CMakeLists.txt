@@ -58,8 +58,18 @@ add_quadmapper_test(test_audio
     audio/AudioSourceTest.cpp
     audio/AudioMixerTest.cpp
     audio/AudioDeviceTest.cpp
+    audio/AudioDriftControllerTest.cpp
+    audio/SyncedAudioSourceTest.cpp
 )
 target_link_libraries(test_audio PRIVATE quadmapper_audio quadmapper_core)
+
+# Audio from video kept on the playback clock (ADR-050 §2): real decode, real mixer path,
+# the app's clock mapping (app/SourceAudio.hpp). Media tests skip without D:	esting Videos.
+add_quadmapper_test(test_audio_sync
+    audio/AudioSyncTest.cpp
+)
+target_link_libraries(test_audio_sync PRIVATE quadmapper_audio quadmapper_source quadmapper_video
+    quadmapper_scene quadmapper_core)
 
 # Input module tests
 add_quadmapper_test(test_input

@@ -237,6 +237,21 @@ public:
 
     // Why playback is failing (decode errors), or empty while it is healthy.
     virtual std::string getErrorMessage() const { return {}; }
+
+    // --- Audio (ADR-050 §2) ---
+
+    // Volume (0-1) and mute of the source's sound. Plain values the app's audio engine
+    // applies every frame; saved with the transport. A source without audio keeps them.
+    void setAudioVolume(float volume) {
+        audioVolume_ = (volume >= 0.0f) ? (volume <= 1.0f ? volume : 1.0f) : 0.0f;  // NaN -> 0
+    }
+    float getAudioVolume() const { return audioVolume_; }
+    void setAudioMuted(bool muted) { audioMuted_ = muted; }
+    bool isAudioMuted() const { return audioMuted_; }
+
+private:
+    float audioVolume_ = 1.0f;
+    bool audioMuted_ = false;
 };
 
 } // namespace quadmapper

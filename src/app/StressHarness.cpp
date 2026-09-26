@@ -4,6 +4,9 @@
 #include "Application.hpp"
 #include "EditorState.hpp"
 #include "TextureResolve.hpp"
+#include "SourceAudio.hpp"
+#include "../audio/AudioEngine.hpp"
+#include "../audio/AudioMixer.hpp"
 #include "../core/GlObjectStats.hpp"
 #include "../core/Logger.hpp"
 #include "../output/OutputManager.hpp"
@@ -61,6 +64,8 @@ bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
         config().capture = arg + 10;
     } else if (std::strncmp(arg, "--media=", 8) == 0) {
         config().media = arg + 8;
+    } else if (std::strcmp(arg, "--audio-churn") == 0) {
+        config().audioChurn = true;
     } else {
         return false;
     }
@@ -201,6 +206,7 @@ int Application::runStress(const StressConfig& cfg) {
     // Returns false if the cycle exceeded cfg.cycleTimeoutMs or the pause/resume
     // recovery check fails (LESSON-BUG-006 repro).
     bool pauseResumeWedge = false;
+    bool audioLeak = false;  // --audio-churn: a replaced source kept its audio
     // QM-087 frame pacing: wall-clock time of the steady frame loop (enter/exit
     // transitions excluded), accumulated over the measured cycles only.
     bool measurePacing = false;
@@ -209,6 +215,20 @@ int Application::runStress(const StressConfig& cfg) {
     auto runCycle = [&]() -> bool {
         const double cycleStart = glfwGetTime();
         const double budgetSec  = cfg.cycleTimeoutMs / 1000.0;
+
+        // Audio churn: a fresh video source (and so a fresh audio attachment) per cycle.
+        // The first sync after the removal frees the old attachment.
+        if (cfg.audioChurn && needsMedia) {
+            m_sourceManager->removeSource(sourceId);
+            sourceId = m_sourceManager->createVideoSource(cfg.media);
+            playable = m_sourceManager->getSourceAs<PlayableSource>(sourceId);
+            if (!playable) {
+                Logger::error("[STRESS] Audio churn: could not re-create '{}'", cfg.media);
+                return false;
+            }
+            playable->play();
+            quad->getTexture().mediaId = sourceId;
+        }
 
         if (cfg.hidden) {
             // --hidden: call the same enter/exit path so the per-output Renderer
@@ -298,6 +318,7 @@ int Application::runStress(const StressConfig& cfg) {
             double dt  = now - t;
             t = now;
             m_sourceManager->updateAll(dt);
+            syncAudio();
 
             // Mirror run(): present the (vsync'd) editor window, then the outputs,
             // so the measured frame time includes the real swap chain.
@@ -313,6 +334,17 @@ int Application::runStress(const StressConfig& cfg) {
         }
 
         m_outputManager->exitPerformMode();
+        if (cfg.audioChurn && m_audioEngine) {
+            // Only this cycle's source may have audio: the replaced ones were freed.
+            const size_t attachments = m_audioEngine->attachmentCount();
+            const size_t inputs = m_audioEngine->mixer().getSourceCount();
+            Logger::info("[STRESS] Audio: {} attachment(s), {} mixer input(s)", attachments, inputs);
+            if (attachments > 1 || inputs > 1) {
+                Logger::error("[STRESS] STRESS FAIL (audio) — replaced sources kept their audio");
+                audioLeak = true;
+                return false;
+            }
+        }
         return true;
     };
 
@@ -321,7 +353,7 @@ int Application::runStress(const StressConfig& cfg) {
     if (!runCycle()) {
         if (pauseResumeWedge) {
             Logger::error("[STRESS] STRESS FAIL (pause-resume wedge) — warm-up cycle failed.");
-        } else {
+        } else if (!audioLeak) {
             Logger::error("[STRESS] STRESS FAIL (wedge) — warm-up cycle exceeded {}ms budget.",
                           cfg.cycleTimeoutMs);
         }
@@ -348,7 +380,7 @@ int Application::runStress(const StressConfig& cfg) {
             // runCycle returns false for two reasons:
             // (a) wall-clock budget exceeded (anyWedge), OR
             // (b) pause-resume recovery check failed (pauseResumeWedge, already logged).
-            if (!pauseResumeWedge) {
+            if (!pauseResumeWedge && !audioLeak) {
                 Logger::error("[STRESS] STRESS FAIL (wedge) — cycle {} exceeded {}ms budget.",
                               c + 1, cfg.cycleTimeoutMs);
                 anyWedge = true;
@@ -432,7 +464,7 @@ int Application::runStress(const StressConfig& cfg) {
                       "after pause/resume (LESSON-BUG-006 repro).");
     }
 
-    if (anyLeak || anyWedge || wsExceeded || pauseResumeWedge) {
+    if (anyLeak || anyWedge || wsExceeded || pauseResumeWedge || audioLeak) {
         return 1;
     }
 

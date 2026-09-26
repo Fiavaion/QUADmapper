@@ -29,6 +29,8 @@ namespace quadmapper {
 //         - a file source whose file is gone is kept, flagged missing, with its
 //           references and path (PRD §4.1.8), so saving writes it back unchanged;
 //           older readers dropped it.
+//         - "audio": {masterVolume, masterMuted} and sources[].transport.volume /
+//           muted (ADR-050 §5); missing = full volume, not muted.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
@@ -763,6 +765,8 @@ static nlohmann::json serializeSource(const Project::SourceData& s, const fs::pa
                 {"loopMode", loopModeName(s.transport->loopMode)},
                 {"speed", s.transport->speed},
                 {"timelineLocked", s.transport->timelineLocked},
+                {"volume", s.transport->volume},
+                {"muted", s.transport->muted},
             };
         }
     } else if (s.kind == "procedural") {
@@ -805,6 +809,13 @@ static std::optional<Project::SourceData> deserializeSource(const nlohmann::json
             // Additive (ADR-050): older files have no lock and play on their own clocks.
             if (t.contains("timelineLocked") && t["timelineLocked"].is_boolean()) {
                 transport.timelineLocked = t["timelineLocked"].get<bool>();
+            }
+            // Additive (ADR-050 §5): older files play at full volume, unmuted.
+            if (t.contains("volume") && t["volume"].is_number()) {
+                transport.volume = std::clamp(readFiniteFloat(t["volume"]), 0.0f, 1.0f);
+            }
+            if (t.contains("muted") && t["muted"].is_boolean()) {
+                transport.muted = t["muted"].get<bool>();
             }
             s.transport = transport;
         }
@@ -940,6 +951,26 @@ static void loadControl(const nlohmann::json& json, Project& project) {
     if (skipped > 0) Logger::warning("Project: skipped {} malformed MIDI mapping(s)", skipped);
 }
 
+// ---- Show sound (ADR-050 §5) -------------------------------------------------
+// "audio": {"masterVolume": 0-1, "masterMuted": bool}. Missing or malformed fields keep
+// the defaults (full volume, not muted), so older files play as they always did.
+
+static nlohmann::json serializeAudio(const Project::AudioData& audio) {
+    return {{"masterVolume", audio.masterVolume}, {"masterMuted", audio.masterMuted}};
+}
+
+static void loadAudio(const nlohmann::json& json, Project& project) {
+    if (!json.contains("audio") || !json["audio"].is_object()) return;
+    const auto& a = json["audio"];
+    Project::AudioData& audio = project.getAudio();
+    if (a.contains("masterVolume") && a["masterVolume"].is_number()) {
+        audio.masterVolume = std::clamp(readFiniteFloat(a["masterVolume"]), 0.0f, 1.0f);
+    }
+    if (a.contains("masterMuted") && a["masterMuted"].is_boolean()) {
+        audio.masterMuted = a["masterMuted"].get<bool>();
+    }
+}
+
 // Resolve each quad's and object's mediaId against the sources table (ADR-046). A
 // reference to an id the table does not hold is cleared, so a quad falls back to its
 // absolute texturePath (the path every v1/v2/v3.0 file loads by) and an object shows
@@ -1053,6 +1084,7 @@ static void loadProjectModel(const nlohmann::json& json, Project& project,
     }
     resolveQuadSources(project);
     loadControl(json, project);
+    loadAudio(json, project);
 
     flattenScenesToFlat(project);
 }
@@ -1106,6 +1138,7 @@ static nlohmann::json buildProjectJson(const Project& project, const fs::path& b
             }
             json["control"] = {{"midi", midiJson}};
         }
+        json["audio"] = serializeAudio(project.getAudio());
         return json;
     }
 

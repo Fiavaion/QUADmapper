@@ -84,6 +84,15 @@ public:
         LoopMode loopMode = LoopMode::LOOP;
         float speed = 1.0f;
         bool timelineLocked = false;  // follows the master timeline (ADR-050)
+        float volume = 1.0f;          // the source's sound, 0-1 (ADR-050 §2)
+        bool muted = false;
+    };
+
+    // Show-wide sound (.qmap "audio", ADR-050 §5). The output device is a machine
+    // preference, not part of the show.
+    struct AudioData {
+        float masterVolume = 1.0f;
+        bool masterMuted = false;
     };
 
     struct SourceData {
@@ -153,6 +162,8 @@ public:
     const std::vector<SourceData>& getSources() const { return sources_; }
     std::vector<MidiMappingData>& getMidiMappings() { return midiMappings_; }
     const std::vector<MidiMappingData>& getMidiMappings() const { return midiMappings_; }
+    AudioData& getAudio() { return audio_; }
+    const AudioData& getAudio() const { return audio_; }
 
 private:
     std::string name_;
@@ -166,6 +177,7 @@ private:
     std::vector<OutputData> outputs_;
     std::vector<SourceData> sources_;
     std::vector<MidiMappingData> midiMappings_;
+    AudioData audio_;
 };
 
 } // namespace quadmapper

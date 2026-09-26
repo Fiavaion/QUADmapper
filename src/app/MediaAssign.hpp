@@ -66,11 +66,13 @@ inline Project::TransportData transportOf(const PlayableSource& p) {
     t.loopMode = p.getLoopMode();
     t.speed = p.getSpeed();
     t.timelineLocked = p.isTimelineLocked();
+    t.volume = p.getAudioVolume();
+    t.muted = p.isAudioMuted();
     return t;
 }
 
 // Put a clip just opened for a saved source into the state it was saved in: loop mode,
-// speed, lock to the master timeline, then playing or paused. Load, relocating a
+// speed, sound (volume, mute), lock to the master timeline, then playing or paused. Load, relocating a
 // missing file and re-opening a released source all come through here, so none of
 // them can drop part of the transport. With nothing saved (a file older than v3.1)
 // the clip plays, looping, as on assign.
@@ -84,6 +86,8 @@ inline void applySavedTransport(SourceManager& sm, const UUID& id,
     }
     playable->setLoopMode(transport->loopMode);
     playable->setSpeed(transport->speed);
+    playable->setAudioVolume(transport->volume);
+    playable->setAudioMuted(transport->muted);
     // Locking sets the clip playing, so the saved play/pause is applied after it.
     if (transport->timelineLocked) sm.setTimelineLocked(id, true);
     if (transport->playing) playable->play();

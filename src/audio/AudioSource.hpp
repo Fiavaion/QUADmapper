@@ -3,155 +3,91 @@
 #include "core/UUID.hpp"
 #include "AudioBuffer.hpp"
 #include <atomic>
-#include <cmath>
+#include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace quadmapper {
 
+// What the mixer tells each source about the callback it is rendering.
+struct AudioRenderContext {
+    int64_t wallNs = 0;          // std::chrono::steady_clock time of the callback, in ns
+    double outputLatency = 0.0;  // seconds from this callback until its first frame is heard
+    int sampleRate = 48000;
+};
+
 /**
- * @brief Audio source with volume and mute controls
+ * @brief One input of the mixer, with volume, mute and pan
  *
- * Represents an audio source that can be mixed. Contains volume,
- * mute, and pan controls applied during mixing.
+ * Controls are atomics the control thread sets and the audio callback reads. The
+ * mixer calls render() on the real-time thread: it pulls stereo frames (pull(); the
+ * base class reads its AudioBuffer as interleaved stereo) and applies the gains,
+ * ramping from the last callback's gains to the new ones across the buffer so a
+ * volume, mute or pan change never clicks.
+ *
+ * Sources are shared (std::shared_ptr) and registered with the mixer by address, so
+ * they are neither copyable nor movable.
  */
 class AudioSource {
 public:
-    /**
-     * @brief Construct an audio source with a unique ID
-     */
     AudioSource();
-
-    /**
-     * @brief Construct an audio source with a specific ID
-     * @param sourceId Unique identifier for this source
-     */
     explicit AudioSource(const UUID& sourceId);
+    virtual ~AudioSource();
 
-    ~AudioSource();
-
-    // Non-copyable, movable
     AudioSource(const AudioSource&) = delete;
     AudioSource& operator=(const AudioSource&) = delete;
-    AudioSource(AudioSource&&) noexcept;
-    AudioSource& operator=(AudioSource&&) noexcept;
 
-    /**
-     * @brief Get the unique source ID
-     */
     const UUID& getId() const { return sourceId_; }
 
-    /**
-     * @brief Get/set the source name for display
-     */
     const std::string& getName() const { return name_; }
     void setName(const std::string& name) { name_ = name; }
 
-    // --- Volume Controls (QM-030) ---
+    // --- Volume, mute, pan (control thread) ---
 
-    /**
-     * @brief Get the current volume (0.0 to 1.0)
-     */
     float getVolume() const { return volume_.load(); }
+    void setVolume(float volume);          // clamped to 0..1; NaN counts as 0
+    float getVolumeDb() const;             // -60..0 dB
+    void setVolumeDb(float db);            // clamped to -60..0 dB
 
-    /**
-     * @brief Set the volume (0.0 to 1.0, clamped)
-     */
-    void setVolume(float volume);
-
-    /**
-     * @brief Get the volume in decibels (-inf to 0 dB)
-     */
-    float getVolumeDb() const;
-
-    /**
-     * @brief Set the volume from decibels (-60 dB to 0 dB)
-     */
-    void setVolumeDb(float db);
-
-    /**
-     * @brief Check if source is muted
-     */
     bool isMuted() const { return muted_.load(); }
-
-    /**
-     * @brief Set mute state
-     */
     void setMuted(bool muted) { muted_ = muted; }
-
-    /**
-     * @brief Toggle mute state
-     * @return New mute state
-     */
     bool toggleMute();
 
-    /**
-     * @brief Get the stereo pan (-1.0 left to 1.0 right)
-     */
     float getPan() const { return pan_.load(); }
+    void setPan(float pan);                // -1 left .. 1 right
 
-    /**
-     * @brief Set the stereo pan (-1.0 to 1.0)
-     */
-    void setPan(float pan);
-
-    // --- Source State ---
-
-    /**
-     * @brief Check if source is enabled (can produce audio)
-     */
+    // A disabled source is skipped by the mixer altogether (it does not consume).
     bool isEnabled() const { return enabled_.load(); }
-
-    /**
-     * @brief Set enabled state
-     */
     void setEnabled(bool enabled) { enabled_ = enabled; }
 
-    /**
-     * @brief Get the effective volume (volume * !muted * enabled)
-     */
-    float getEffectiveVolume() const;
-
-    /**
-     * @brief Get left channel gain (considers volume, mute, pan)
-     */
-    float getLeftGain() const;
-
-    /**
-     * @brief Get right channel gain (considers volume, mute, pan)
-     */
+    float getEffectiveVolume() const;      // volume, or 0 while muted or disabled
+    float getLeftGain() const;             // effective volume with constant-power pan
     float getRightGain() const;
 
-    // --- Audio Buffer ---
+    // --- Samples ---
 
-    /**
-     * @brief Set the audio buffer for this source
-     * @param buffer Shared pointer to audio buffer (source does not own)
-     */
-    void setBuffer(std::shared_ptr<AudioBuffer> buffer) { buffer_ = buffer; }
-
-    /**
-     * @brief Get the associated audio buffer
-     */
+    void setBuffer(std::shared_ptr<AudioBuffer> buffer) { buffer_ = std::move(buffer); }
     std::shared_ptr<AudioBuffer> getBuffer() const { return buffer_; }
 
     /**
-     * @brief Read samples from the source's buffer, applying volume/mute
-     * @param output Output buffer for stereo interleaved samples
-     * @param frameCount Number of stereo frames to read
-     * @param channels Number of channels in source (for deinterleaving)
-     * @return Number of frames actually read
+     * @brief Render `frameCount` stereo frames into `output` (real-time thread)
+     *
+     * Every frame of `output` is written (silence where the source has nothing).
+     * No lock, no allocation.
      */
-    size_t readSamples(float* output, size_t frameCount, int channels);
+    void render(float* output, size_t frameCount, const AudioRenderContext& context);
 
-    // Constants
     static constexpr float MIN_VOLUME = 0.0f;
     static constexpr float MAX_VOLUME = 1.0f;
     static constexpr float MIN_VOLUME_DB = -60.0f;
     static constexpr float MAX_VOLUME_DB = 0.0f;
     static constexpr float MIN_PAN = -1.0f;
     static constexpr float MAX_PAN = 1.0f;
+
+protected:
+    // Fill all `frameCount` stereo frames of `output` (real-time thread). The base
+    // reads interleaved stereo from the buffer and pads with silence.
+    virtual void pull(float* output, size_t frameCount, const AudioRenderContext& context);
 
 private:
     UUID sourceId_;
@@ -164,12 +100,9 @@ private:
 
     std::shared_ptr<AudioBuffer> buffer_;
 
-    // Pre-allocated scratch buffer for readSamples(); avoids heap allocation
-    // on the RT audio callback. Grown (at most once per block size change) in
-    // readSamples() before any audio data is touched, never inside the hot
-    // per-frame loop. The audio thread is the sole writer and reader, so no
-    // synchronisation is needed.
-    mutable std::vector<float> readBuffer_;
+    // Gains the last render() ended on; audio thread only. Negative = not rendered yet.
+    float lastLeftGain_ = -1.0f;
+    float lastRightGain_ = -1.0f;
 };
 
 } // namespace quadmapper

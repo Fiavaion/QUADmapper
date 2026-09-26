@@ -2,7 +2,11 @@
 #include "audio/AudioMixer.hpp"
 #include "audio/AudioSource.hpp"
 #include "audio/AudioBuffer.hpp"
+#include "audio/AudioDevice.hpp"
+#include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <vector>
 #include <thread>
 #include <chrono>
 
@@ -242,23 +246,6 @@ TEST_F(AudioMixerTest, StartAndStop) {
     }
 }
 
-// --- Move Semantics Tests ---
-
-TEST_F(AudioMixerTest, MoveConstruction) {
-    // Create a new mixer for this test to avoid using the fixture mixer
-    auto testMixer = std::make_unique<AudioMixer>();
-    testMixer->setMasterVolume(0.7f);
-    testMixer->setMasterMuted(true);
-
-    // Note: Sources are part of impl, which gets moved
-    AudioMixer moved(std::move(*testMixer));
-
-    EXPECT_FLOAT_EQ(moved.getMasterVolume(), 0.7f);
-    EXPECT_TRUE(moved.isMasterMuted());
-
-    // Don't use testMixer after move - it's in moved-from state
-}
-
 // --- Thread Safety Tests ---
 
 TEST_F(AudioMixerTest, ConcurrentSourceAccess) {
@@ -308,6 +295,141 @@ TEST_F(AudioMixerTest, VolumeConstants) {
     EXPECT_FLOAT_EQ(AudioMixer::MAX_VOLUME, 1.0f);
     EXPECT_FLOAT_EQ(AudioMixer::MIN_VOLUME_DB, -60.0f);
     EXPECT_FLOAT_EQ(AudioMixer::MAX_VOLUME_DB, 0.0f);
+}
+
+// --- Mixing (renderOffline drives the same path as the device callback) ---
+
+namespace {
+
+// A source whose every sample is `level` (both channels).
+std::shared_ptr<AudioSource> constantSource(float level, size_t frames) {
+    auto buffer = std::make_shared<AudioBuffer>(frames * 2);
+    std::vector<float> samples(frames * 2, level);
+    buffer->push(samples.data(), samples.size());
+    auto source = std::make_shared<AudioSource>();
+    source->setBuffer(buffer);
+    source->setPan(-1.0f);  // hard left: left gain = volume, right = 0
+    return source;
+}
+
+}  // namespace
+
+TEST_F(AudioMixerTest, RenderOfflineMixesSourcesAndAppliesTheMasterVolume) {
+    auto a = constantSource(0.25f, 4096);
+    auto b = constantSource(0.25f, 4096);
+    mixer->addSource(a);
+    mixer->addSource(b);
+    mixer->setMasterVolume(0.5f);
+    std::vector<float> out(512 * 2);
+    mixer->renderOffline(out.data(), 512, 0);  // first block starts at the set gains
+    EXPECT_NEAR(out[0], 0.25f, 1e-5);          // (0.25 + 0.25) x 0.5, left only
+    EXPECT_NEAR(out[1], 0.0f, 1e-6);
+    EXPECT_NEAR(out[511 * 2], 0.25f, 1e-5);
+}
+
+TEST_F(AudioMixerTest, MutedSourcesAndMasterStillConsumeSoTheyStayInStep) {
+    auto source = constantSource(0.5f, 4096);
+    mixer->addSource(source);
+    mixer->setMasterMuted(true);
+    source->setMuted(true);
+    std::vector<float> out(512 * 2);
+    mixer->renderOffline(out.data(), 512, 0);
+    for (float v : out) ASSERT_EQ(v, 0.0f);
+    EXPECT_EQ(source->getBuffer()->available(), (4096u - 512u) * 2u);
+}
+
+TEST_F(AudioMixerTest, VolumeChangesRampAcrossOneBufferInsteadOfStepping) {
+    auto source = constantSource(1.0f, 8192);
+    mixer->addSource(source);
+    std::vector<float> out(512 * 2);
+    mixer->renderOffline(out.data(), 512, 0);
+    ASSERT_NEAR(out[1022], 1.0f, 1e-5);
+
+    source->setVolume(0.0f);  // a mute-sized jump in one go
+    mixer->renderOffline(out.data(), 512, 0);
+    float largestStep = 0.0f;
+    float previous = 1.0f;
+    for (size_t i = 0; i < 512; ++i) {
+        largestStep = std::max(largestStep, std::abs(out[i * 2] - previous));
+        previous = out[i * 2];
+    }
+    EXPECT_NEAR(out[511 * 2], 0.0f, 1e-5);
+    EXPECT_LT(largestStep, 1.0f / 512.0f + 1e-5f);  // a straight ramp, no step
+
+    mixer->setMasterVolume(0.0f);  // master ramps the same way
+    source->setVolume(1.0f);
+    mixer->renderOffline(out.data(), 512, 0);
+    EXPECT_NEAR(out[511 * 2], 0.0f, 1e-5);
+}
+
+// removeSource() returns only once the callback cannot reach the source, so its owner
+// may free it at once; and the source's last reference is dropped on the control
+// thread, never in the callback. Hammered against a real (null backend) device thread.
+TEST_F(AudioMixerTest, ARemovedSourceIsNeverRenderedAgainAndDiesOnTheControlThread) {
+    struct Tracked : AudioSource {
+        std::atomic<bool> removed{false};
+        std::atomic<int>* violations = nullptr;
+        std::atomic<int>* renders = nullptr;
+        std::thread::id* diedOn = nullptr;
+        ~Tracked() override { *diedOn = std::this_thread::get_id(); }
+        void pull(float* out, size_t frames, const AudioRenderContext&) override {
+            if (removed.load()) ++*violations;
+            ++*renders;
+            std::fill(out, out + frames * 2, 0.0f);
+        }
+    };
+
+    AudioDevice device;
+    ASSERT_TRUE(device.initialize(/*nullBackend=*/true));
+    ASSERT_TRUE(mixer->initialize(&device));
+    ASSERT_TRUE(mixer->start());
+
+    std::atomic<int> violations{0};
+    std::atomic<int> renders{0};
+    int wrongThread = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    int cycles = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::thread::id diedOn;
+        {
+            auto source = std::make_shared<Tracked>();
+            source->violations = &violations;
+            source->renders = &renders;
+            source->diedOn = &diedOn;
+            mixer->addSource(source);
+            std::this_thread::sleep_for(std::chrono::microseconds(500 + (cycles % 7) * 700));
+            ASSERT_TRUE(mixer->removeSource(source->getId()));
+            source->removed = true;
+        }  // last reference dropped here
+        if (diedOn != std::this_thread::get_id()) ++wrongThread;
+        ++cycles;
+    }
+    mixer->shutdown();  // before `device`, whose context the device was opened on
+    EXPECT_GT(renders.load(), 50);  // the device thread really was mixing
+    EXPECT_GT(cycles, 100);
+    EXPECT_EQ(violations.load(), 0);
+    EXPECT_EQ(wrongThread, 0);
+}
+
+TEST_F(AudioMixerTest, NullBackendReportsItsDeviceAndLatency) {
+    AudioDevice device;
+    ASSERT_TRUE(device.initialize(true));
+    ASSERT_TRUE(mixer->initialize(&device));
+    EXPECT_FALSE(mixer->getDeviceName().empty());
+    EXPECT_GT(mixer->getOutputLatency(), 0.0);
+    EXPECT_LT(mixer->getOutputLatency(), 0.5);
+    ASSERT_TRUE(mixer->start());
+    EXPECT_FALSE(mixer->isDeviceLost());
+    mixer->stop();  // a requested stop is not a lost device
+    EXPECT_FALSE(mixer->isDeviceLost());
+    mixer->shutdown();
+}
+
+TEST_F(AudioMixerTest, OpeningAnUnknownDeviceIdFails) {
+    AudioDevice device;
+    ASSERT_TRUE(device.initialize(true));
+    EXPECT_FALSE(mixer->initialize(&device, "no-such-device"));
+    EXPECT_FALSE(mixer->isInitialized());
 }
 
 } // namespace test

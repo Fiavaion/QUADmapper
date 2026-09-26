@@ -34,6 +34,10 @@ struct StressConfig {
     // on resume (MultiMon LESSON-BUG-006 repro). 0 = disabled.
     int  pauseAfter     = 0;
     std::string capture = "";  // "" = disabled
+    // ADR-050 §2: with --source=video, replace the video source at the start of every
+    // cycle, so its audio attachment (decoder thread, mixer input) is created and freed
+    // each cycle under the working-set bound. Audio runs on the silent null device.
+    bool audioChurn     = false;
 };
 
 // Consume one command-line argument if it is a --stress flag (the first one seen

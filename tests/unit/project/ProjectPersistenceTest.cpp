@@ -363,6 +363,76 @@ TEST_F(ProjectPersistenceTest, TimelineLockIsAdditiveAndPingPongLoads) {
     EXPECT_FALSE(odd.getSources()[0].transport->timelineLocked);
 }
 
+// ADR-050 §5: a source's volume / mute and the show's master volume / mute round-trip.
+TEST_F(ProjectPersistenceTest, AudioVolumesAndMutesRoundTrip) {
+    const fs::path clip = dir_ / "clip.mp4";
+    touch(clip);
+    Project::SourceData src;
+    src.id = UUID::generate();
+    src.kind = "video";
+    src.path = clip.string();
+    src.transport = Project::TransportData{};
+    src.transport->volume = 0.35f;
+    src.transport->muted = true;
+    Project project = projectWithBoundQuad(src, clip.string());
+    project.getAudio().masterVolume = 0.6f;
+    project.getAudio().masterMuted = true;
+    const fs::path file = dir_ / "loud.qmap";
+
+    ASSERT_TRUE(ProjectSerializer::save(project, file).isSuccess());
+    auto loaded = ProjectSerializer::load(file);
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const auto& s = loaded.value().getSources()[0];
+    ASSERT_TRUE(s.transport.has_value());
+    EXPECT_FLOAT_EQ(s.transport->volume, 0.35f);
+    EXPECT_TRUE(s.transport->muted);
+    EXPECT_FLOAT_EQ(loaded.value().getAudio().masterVolume, 0.6f);
+    EXPECT_TRUE(loaded.value().getAudio().masterMuted);
+}
+
+// Files written before audio carry none of the fields: full volume, unmuted, so an old
+// show plays exactly as it did, now with its sound. Malformed values are ignored (and
+// out-of-range ones clamped) rather than failing the load.
+TEST_F(ProjectPersistenceTest, AudioFieldsAreAdditive) {
+    ProjectSerializer serializer;
+    Project::SourceData src;
+    src.id = UUID::generate();
+    src.kind = "video";
+    src.path = (dir_ / "clip.mp4").string();
+    src.transport = Project::TransportData{};
+    auto json = nlohmann::json::parse(serializer.serialize(projectWithBoundQuad(src, src.path)));
+    auto& transport = json["sources"][0]["transport"];
+    EXPECT_FLOAT_EQ(transport["volume"].get<float>(), 1.0f);
+    EXPECT_EQ(transport["muted"], false);
+    EXPECT_FLOAT_EQ(json["audio"]["masterVolume"].get<float>(), 1.0f);
+    EXPECT_EQ(json["audio"]["masterMuted"], false);
+
+    transport.erase("volume");  // as an older build wrote it
+    transport.erase("muted");
+    json.erase("audio");
+    Project old;
+    ASSERT_TRUE(serializer.deserialize(json.dump(), old).isSuccess());
+    EXPECT_FLOAT_EQ(old.getSources()[0].transport->volume, 1.0f);
+    EXPECT_FALSE(old.getSources()[0].transport->muted);
+    EXPECT_FLOAT_EQ(old.getAudio().masterVolume, 1.0f);
+    EXPECT_FALSE(old.getAudio().masterMuted);
+
+    transport["volume"] = 4.0f;
+    transport["muted"] = "yes";
+    json["audio"] = {{"masterVolume", -3.0}, {"masterMuted", 1}};
+    Project odd;
+    ASSERT_TRUE(serializer.deserialize(json.dump(), odd).isSuccess());
+    EXPECT_FLOAT_EQ(odd.getSources()[0].transport->volume, 1.0f);
+    EXPECT_FALSE(odd.getSources()[0].transport->muted);
+    EXPECT_FLOAT_EQ(odd.getAudio().masterVolume, 0.0f);
+    EXPECT_FALSE(odd.getAudio().masterMuted);
+
+    json["audio"] = "loud";  // not an object
+    Project wrong;
+    ASSERT_TRUE(serializer.deserialize(json.dump(), wrong).isSuccess());
+    EXPECT_FLOAT_EQ(wrong.getAudio().masterVolume, 1.0f);
+}
+
 TEST_F(ProjectPersistenceTest, CameraSourceRoundTrips) {
     ProjectSerializer serializer;
     Project::SourceData src;

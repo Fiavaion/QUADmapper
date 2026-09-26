@@ -45,6 +45,9 @@
 #include "../ui/panels/MediaBinPanel.hpp"
 #include "../ui/panels/QuadListPanel.hpp"
 #include "../ui/dialogs/PreferencesDialog.hpp"
+#include "../audio/AudioEngine.hpp"
+#include "../audio/AudioMixer.hpp"
+#include "SourceAudio.hpp"
 #include "../video/VideoPlayer.hpp"
 
 #include <glad/glad.h>
@@ -802,6 +805,19 @@ bool Application::initializeComponents() {
     // Create source manager for texture sources (procedural, video, image)
     m_sourceManager = std::make_unique<SourceManager>();
 
+    // Sound (ADR-050 §2): the preferred output device, else the system default. A
+    // device that will not open is logged and the app runs silent. The stress harness
+    // uses the silent null device so it exercises the audio path without making sound.
+    {
+        PreferencesDialog prefsDialog;
+        prefsDialog.loadPreferences();
+        m_savedAudioDevice = prefsDialog.getPreferences().performance.audioDevice;
+        AudioEngine::Options audioOptions;
+        audioOptions.nullBackend = m_stressConfig.has_value() || m_benchConfig.has_value();
+        m_audioEngine = std::make_unique<AudioEngine>(audioOptions);
+        m_audioEngine->open(m_savedAudioDevice);
+    }
+
     // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed here but not
     // started — the user enables it on demand from the AI menu. We resolve the
     // sidecar script next to the working dir or the repo root; if it is missing,
@@ -1164,6 +1180,8 @@ void Application::render() {
     // main thread / main GL context, once per frame, before any quad is drawn.
     if (m_sourceManager) {
         m_sourceManager->updateAll(static_cast<double>(deltaTime));
+        // Each video's sound follows the clock it just advanced (ADR-050 §2).
+        syncAudio();
     }
 
     // On-canvas viewport: render every quad to the main GL framebuffer + the
@@ -1283,7 +1301,9 @@ void Application::render() {
         EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
+        ctx.audio = m_audioEngine.get();
         es.mainMenuBar.render(ctx);
+        saveAudioDevicePreference();
     }
 
     // Persist a UI-mode change to preferences (ADR-042). Static cache avoids a disk
@@ -1667,6 +1687,7 @@ void Application::render() {
         EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
+        ctx.audio = m_audioEngine.get();
         es.videoPlayerPanel.render(ctx);
     }
 
@@ -1887,6 +1908,10 @@ void Application::initializeExternalControl() {
     host.refuse = [this](const std::string& address, const std::string& reason) {
         m_externalControl->dispatcher().noteRefused(address, reason);
     };
+    host.getMasterVolume = [this]() { return m_audioEngine ? m_audioEngine->masterVolume() : 1.0f; };
+    host.setMasterVolume = [this](float v) { if (m_audioEngine) m_audioEngine->setMasterVolume(v); };
+    host.isMasterMuted = [this]() { return m_audioEngine && m_audioEngine->masterMuted(); };
+    host.setMasterMuted = [this](bool on) { if (m_audioEngine) m_audioEngine->setMasterMuted(on); };
     registerControlTargets(m_externalControl->registry(), host);
 
     PreferencesDialog prefsDialog;
@@ -2139,6 +2164,7 @@ void Application::performNewProject() {
     }
 
     *m_project = Project();
+    applyProjectAudio();  // full volume, unmuted
     es.projectPath[0] = '\0';
     markProjectClean();
     postStatus(es, "New project created");
@@ -2158,6 +2184,7 @@ bool Application::performLoadProject(const std::string& path) {
     dropQueuedSceneTakes();
     cancelMissingMediaSearch();
     syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
+    applyProjectAudio();
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
     markProjectClean();
     const size_t missing = collectMissingMedia(es).size();
@@ -2227,6 +2254,7 @@ void Application::performRestoreRecovery() {
     dropQueuedSceneTakes();
     cancelMissingMediaSearch();
     syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
+    applyProjectAudio();
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", projectPath.c_str());
     // The restored work is not in the project file yet: keep it "unsaved", and say so.
     m_savedSnapshot.clear();
@@ -2238,6 +2266,36 @@ void Application::performRestoreRecovery() {
 
 void Application::buildEditorProject(Project& out) {
     syncEditorToProject(*m_editorState, m_outputManager.get(), m_sourceManager.get(), out);
+    if (m_audioEngine) {
+        out.getAudio().masterVolume = m_audioEngine->masterVolume();
+        out.getAudio().masterMuted = m_audioEngine->masterMuted();
+    }
+}
+
+// Once per frame after the sources advance (ADR-050 §2). Heard: sources of the active
+// scene and of scenes on enabled outputs; the rest are gated silent, still in step.
+void Application::syncAudio() {
+    if (!m_audioEngine || !m_sourceManager || !m_editorState || !m_outputManager) return;
+    const EditorState& es = *m_editorState;
+    syncSourceAudio(*m_audioEngine, *m_sourceManager,
+                    audibleSourceIds(es.scenes, es.activeSceneId, enabledOutputIds(m_outputManager->getOutputs())));
+}
+
+void Application::applyProjectAudio() {
+    if (!m_audioEngine || !m_project) return;
+    m_audioEngine->setMasterVolume(m_project->getAudio().masterVolume);
+    m_audioEngine->setMasterMuted(m_project->getAudio().masterMuted);
+}
+
+// The output device is a machine preference (ADR-050 §5): written when the user picks
+// another one in the menu bar's audio menu.
+void Application::saveAudioDevicePreference() {
+    if (!m_audioEngine || m_audioEngine->preferredDevice() == m_savedAudioDevice) return;
+    m_savedAudioDevice = m_audioEngine->preferredDevice();
+    PreferencesDialog prefsDialog;
+    prefsDialog.loadPreferences();
+    prefsDialog.getPreferences().performance.audioDevice = m_savedAudioDevice;
+    prefsDialog.savePreferences();
 }
 
 // What counts as an unsaved change: the show's content, not where the viewport is
@@ -2868,6 +2926,7 @@ void Application::shutdown() {
 
     // Cleanup components in reverse order of creation
     m_externalControl.reset(); // joins the OSC thread, closes MIDI devices
+    m_audioEngine.reset();     // stops every video's audio, then closes the device
     m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
     m_inputManager.reset();
     m_outputManager.reset();

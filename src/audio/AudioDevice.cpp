@@ -18,14 +18,17 @@ public:
         shutdown();
     }
 
-    bool initialize() {
+    bool initialize(bool nullBackend) {
         if (initialized_) {
             return true;
         }
 
         // Initialize miniaudio context for device enumeration
         ma_context_config contextConfig = ma_context_config_init();
-        ma_result result = ma_context_init(nullptr, 0, &contextConfig, &context_);
+        const ma_backend nullOnly[] = {ma_backend_null};
+        ma_result result = nullBackend
+            ? ma_context_init(nullOnly, 1, &contextConfig, &context_)
+            : ma_context_init(nullptr, 0, &contextConfig, &context_);
 
         if (result != MA_SUCCESS) {
             LOG_ERROR("Failed to initialize audio context: {}", static_cast<int>(result));
@@ -70,6 +73,7 @@ public:
         }
 
         devices_.clear();
+        deviceIds_.clear();
 
         ma_device_info* playbackDevices;
         ma_uint32 playbackCount;
@@ -212,6 +216,13 @@ public:
         return true;
     }
 
+    std::string findDeviceIdByName(const std::string& name) const {
+        for (const auto& device : devices_) {
+            if (device.name == name) return device.id;
+        }
+        return {};
+    }
+
     // Get the native device ID for a given device index
     const ma_device_id* getNativeDeviceId(const std::string& deviceId) const {
         if (deviceId.empty()) {
@@ -253,7 +264,7 @@ AudioDevice::~AudioDevice() = default;
 AudioDevice::AudioDevice(AudioDevice&&) noexcept = default;
 AudioDevice& AudioDevice::operator=(AudioDevice&&) noexcept = default;
 
-bool AudioDevice::initialize() { return impl_->initialize(); }
+bool AudioDevice::initialize(bool nullBackend) { return impl_->initialize(nullBackend); }
 void AudioDevice::shutdown() { impl_->shutdown(); }
 bool AudioDevice::isInitialized() const { return impl_->isInitialized(); }
 
@@ -263,6 +274,9 @@ AudioDeviceInfo AudioDevice::getDefaultDevice() const { return impl_->getDefault
 AudioDeviceInfo AudioDevice::getSelectedDevice() const { return impl_->getSelectedDevice(); }
 bool AudioDevice::selectDevice(const std::string& deviceId) { return impl_->selectDevice(deviceId); }
 bool AudioDevice::selectDefaultDevice() { return impl_->selectDefaultDevice(); }
+std::string AudioDevice::findDeviceIdByName(const std::string& name) const { return impl_->findDeviceIdByName(name); }
+void* AudioDevice::nativeContext() { return impl_->getContext(); }
+const void* AudioDevice::nativeDeviceId(const std::string& deviceId) const { return impl_->getNativeDeviceId(deviceId); }
 
 int AudioDevice::getSampleRate() const { return impl_->getSampleRate(); }
 bool AudioDevice::setSampleRate(int sampleRate) { return impl_->setSampleRate(sampleRate); }

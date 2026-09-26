@@ -27,6 +27,8 @@ struct AppFixture {
     std::vector<MidiMapping> mappings;
     std::vector<int> takes;
     bool blackout = false;
+    float masterVolume = 1.0f;
+    bool masterMuted = false;
     FakePlayable* clip = nullptr;
     UUID clipId;
     Quad* left = nullptr;
@@ -57,6 +59,10 @@ struct AppFixture {
         host.refuse = [this](const std::string& address, const std::string& reason) {
             dispatcher.noteRefused(address, reason);
         };
+        host.getMasterVolume = [this] { return masterVolume; };
+        host.setMasterVolume = [this](float v) { masterVolume = v; };
+        host.isMasterMuted = [this] { return masterMuted; };
+        host.setMasterMuted = [this](bool on) { masterMuted = on; };
         registerControlTargets(registry, host);
         refresh();
     }
@@ -130,6 +136,54 @@ TEST(ControlBindingsTest, SourceTransportThroughPlayableSource) {
     EXPECT_FLOAT_EQ(fx.clip->speed, 0.5f);
 }
 
+// ADR-050 §2: a source's sound (the Video Player's volume and mute) and the master.
+TEST(ControlBindingsTest, SourceVolumeAndMuteThroughPlayableSource) {
+    AppFixture fx;
+    fx.osc("/qm/source/clip.mp4/volume", 0.4f);
+    EXPECT_FLOAT_EQ(fx.clip->getAudioVolume(), 0.4f);
+    fx.osc(path("source", fx.clipId, "volume"), 3.0f);  // clamped to the target's range
+    EXPECT_FLOAT_EQ(fx.clip->getAudioVolume(), 1.0f);
+    fx.osc("/qm/source/clip.mp4/volume", -1.0f);
+    EXPECT_FLOAT_EQ(fx.clip->getAudioVolume(), 0.0f);
+
+    fx.osc("/qm/source/clip.mp4/mute", 1.0f);
+    EXPECT_TRUE(fx.clip->isAudioMuted());
+    fx.osc("/qm/source/clip.mp4/mute");  // no argument toggles
+    EXPECT_FALSE(fx.clip->isAudioMuted());
+    fx.osc("/qm/source/clip.mp4/mute", 0.0f);
+    EXPECT_FALSE(fx.clip->isAudioMuted());
+
+    // MIDI CC 0-127 sweeps the volume.
+    MidiMapping m;
+    m.type = MidiControlType::CC;
+    m.number = 7;
+    m.target = path("source", fx.clipId, "volume");
+    m.mode = MidiMode::Value;
+    fx.mappings = {m};
+    ControlEvent e;
+    e.source = ControlEvent::Source::Midi;
+    e.midi.type = MidiType::ControlChange;
+    e.midi.number = 7;
+    e.midi.value = 127;
+    fx.dispatcher.dispatch(e, fx.mappings, 0.0);
+    EXPECT_FLOAT_EQ(fx.clip->getAudioVolume(), 1.0f);
+    e.midi.value = 0;
+    fx.dispatcher.dispatch(e, fx.mappings, 0.0);
+    EXPECT_FLOAT_EQ(fx.clip->getAudioVolume(), 0.0f);
+}
+
+TEST(ControlBindingsTest, MasterVolumeAndMute) {
+    AppFixture fx;
+    fx.osc("/qm/master/volume", 0.25f);
+    EXPECT_FLOAT_EQ(fx.masterVolume, 0.25f);
+    fx.osc("/qm/master/volume", 5.0f);
+    EXPECT_FLOAT_EQ(fx.masterVolume, 1.0f);
+    fx.osc("/qm/master/mute", 1.0f);
+    EXPECT_TRUE(fx.masterMuted);
+    fx.osc("/qm/master/mute");
+    EXPECT_FALSE(fx.masterMuted);
+}
+
 TEST(ControlBindingsTest, ExternalControlNeverTouchesGeometry) {
     AppFixture fx;
     fx.left->getGeometry().setCorner(2, Vec2(0.9f, 0.8f));
@@ -178,11 +232,13 @@ TEST(ControlBindingsTest, OnlyTheExpectedTargetsExist) {
     for (const auto& action : actions) {
         EXPECT_TRUE(action == "blackout" || action == "take" || action == "opacity" ||
                     action == "visible" || action == "play" || action == "pause" ||
-                    action == "restart" || action == "speed")
+                    action == "restart" || action == "speed" || action == "volume" ||
+                    action == "mute")
             << action;
     }
-    // blackout + master timeline x 3 + 2 scene takes + 3 quads x 2 + 1 source x 4
-    EXPECT_EQ(actions.size(), 1u + 3u + 2u + 6u + 4u);
+    // blackout + master timeline x 3 + master volume/mute + 2 scene takes + 3 quads x 2
+    // + 1 source x 6
+    EXPECT_EQ(actions.size(), 1u + 3u + 2u + 2u + 6u + 6u);
 }
 
 TEST(ControlBindingsTest, LockedSourceRefusesItsOwnTransport) {
@@ -367,6 +423,30 @@ TEST(ControlPreferencesTest, RoundTripsThroughThePreferencesFile) {
     EXPECT_EQ(c.oscPort, 9001);
     EXPECT_EQ(c.oscBindAddress, "127.0.0.1");
     EXPECT_EQ(c.midiDevices, (std::vector<std::string>{"APC mini", "nanoKONTROL2"}));
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+// The audio output device is a machine preference beside the control ones (ADR-050).
+TEST(AudioPreferencesTest, OutputDeviceRoundTripsAndDefaultsToTheSystemDevice) {
+    EXPECT_TRUE(PerformancePreferences{}.audioDevice.empty());  // empty = system default
+    const auto file = std::filesystem::temp_directory_path() /
+                      ("qm_audio_prefs_" + UUID::generate().toString() + ".json");
+    {
+        PreferencesDialog dialog;
+        dialog.getPreferences().performance.audioDevice = "Speakers (USB Audio)";
+        ASSERT_TRUE(dialog.saveToFile(file.string()));
+    }
+    PreferencesDialog loaded;
+    ASSERT_TRUE(loaded.loadFromFile(file.string()));
+    EXPECT_EQ(loaded.getPreferences().performance.audioDevice, "Speakers (USB Audio)");
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << R"({"version": "1.0", "performance": {"audioDevice": 7}})";
+    }
+    PreferencesDialog odd;
+    ASSERT_TRUE(odd.loadFromFile(file.string()));
+    EXPECT_TRUE(odd.getPreferences().performance.audioDevice.empty());
     std::error_code ec;
     std::filesystem::remove(file, ec);
 }

@@ -845,6 +845,9 @@ Result<void, Error> PreferencesDialog::loadFromFile(const std::string& path) {
             if (perf.contains("audioSampleRate")) {
                 preferences_.performance.audioSampleRate = perf["audioSampleRate"];
             }
+            if (perf.contains("audioDevice") && perf["audioDevice"].is_string()) {
+                preferences_.performance.audioDevice = perf["audioDevice"].get<std::string>();
+            }
             if (perf.contains("outputBufferCount")) {
                 preferences_.performance.outputBufferCount = perf["outputBufferCount"];
             }
@@ -924,6 +927,7 @@ Result<void, Error> PreferencesDialog::saveToFile(const std::string& path) const
     perf["enableMipmaps"] = preferences_.performance.enableMipmaps;
     perf["audioBufferSize"] = preferences_.performance.audioBufferSize;
     perf["audioSampleRate"] = preferences_.performance.audioSampleRate;
+    perf["audioDevice"] = preferences_.performance.audioDevice;
     perf["outputBufferCount"] = preferences_.performance.outputBufferCount;
     perf["enableAdaptiveSync"] = preferences_.performance.enableAdaptiveSync;
     root["performance"] = perf;

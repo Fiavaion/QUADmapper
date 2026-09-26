@@ -4,173 +4,172 @@
 #include <miniaudio.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
-#include <memory>
+#include <mutex>
+#include <thread>
 
 namespace quadmapper {
 
-// Forward declaration
-class AudioMixerImpl;
+namespace {
 
-// miniaudio callback function - must be at file scope
-static void audioDataCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount);
+using SourceList = std::vector<AudioSource*>;
 
-// Convenience alias for the published source list type.
-using SourceList = std::vector<std::shared_ptr<AudioSource>>;
+// Frames mixed per inner pass; a device callback of any size is mixed in passes.
+constexpr size_t MIX_CHUNK_FRAMES = 1024;
+// 10 ms periods at 48 kHz, miniaudio's low-latency default.
+constexpr uint32_t PERIOD_FRAMES = 480;
+// How long removeSource() waits for a callback to finish before it gives up on
+// freeing the old array (it is then kept until shutdown instead).
+constexpr auto CALLBACK_WAIT_LIMIT = std::chrono::seconds(1);
+
+int64_t steadyNowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+void dataCallback(ma_device* device, void* output, const void* input, ma_uint32 frameCount);
+void notificationCallback(const ma_device_notification* notification);
+
+}  // namespace
 
 class AudioMixerImpl {
 public:
     explicit AudioMixerImpl(AudioMixer* owner)
         : owner_(owner)
-    {
-        // Publish an empty snapshot so the audio thread always has a valid ptr.
-        std::atomic_store_explicit(&sourcesSnapshot_,
-                                   std::make_shared<SourceList>(),
-                                   std::memory_order_release);
-    }
+        , scratch_(MIX_CHUNK_FRAMES * AudioMixer::CHANNELS)
+        , rtSources_(new SourceList()) {}
 
     ~AudioMixerImpl() {
         shutdown();
+        delete rtSources_.load();
+        for (SourceList* list : quarantinedLists_) delete list;
+        delete rtCallback_.load();
     }
 
-    bool initialize(AudioDevice* device) {
-        if (initialized_) {
-            return true;
-        }
+    bool initialize(AudioDevice* device, const std::string& deviceId) {
+        if (initialized_) return true;
 
-        // Get device settings
+        ma_device_config config = ma_device_config_init(ma_device_type_playback);
+        config.playback.format = ma_format_f32;
+        config.playback.channels = AudioMixer::CHANNELS;
+        config.sampleRate = AudioMixer::SAMPLE_RATE;
+        config.periodSizeInFrames = PERIOD_FRAMES;
+        config.dataCallback = dataCallback;
+        config.notificationCallback = notificationCallback;
+        config.pUserData = this;
+
+        ma_context* context = nullptr;
         if (device && device->isInitialized()) {
-            sampleRate_ = device->getSampleRate();
-            channels_ = device->getChannels();
-            bufferSizeFrames_ = device->getBufferSizeFrames();
-        } else {
-            sampleRate_ = AudioDevice::DEFAULT_SAMPLE_RATE;
-            channels_ = AudioDevice::DEFAULT_CHANNELS;
-            bufferSizeFrames_ = AudioDevice::DEFAULT_BUFFER_FRAMES;
+            context = static_cast<ma_context*>(device->nativeContext());
+            if (!deviceId.empty()) {
+                const void* nativeId = device->nativeDeviceId(deviceId);
+                if (!nativeId) {
+                    LOG_ERROR("Audio device '{}' is not available", deviceId);
+                    return false;
+                }
+                config.playback.pDeviceID = static_cast<const ma_device_id*>(nativeId);
+            }
         }
 
-        // Configure device
-        ma_device_config deviceConfig = ma_device_config_init(ma_device_type_playback);
-        deviceConfig.playback.format = ma_format_f32;
-        deviceConfig.playback.channels = static_cast<ma_uint32>(channels_);
-        deviceConfig.sampleRate = static_cast<ma_uint32>(sampleRate_);
-        deviceConfig.periodSizeInFrames = bufferSizeFrames_;
-        deviceConfig.dataCallback = audioDataCallback;
-        deviceConfig.pUserData = this;
-
-        // Initialize device
-        ma_result result = ma_device_init(nullptr, &deviceConfig, &maDevice_);
+        const ma_result result = ma_device_init(context, &config, &device_);
         if (result != MA_SUCCESS) {
-            LOG_ERROR("Failed to initialize audio playback device: {}", static_cast<int>(result));
+            LOG_ERROR("Failed to open the audio playback device: {} ({})",
+                      ma_result_description(result), static_cast<int>(result));
             return false;
         }
 
-        // Allocate mix buffer
-        mixBuffer_.resize(static_cast<size_t>(bufferSizeFrames_) * channels_);
-        tempBuffer_.resize(static_cast<size_t>(bufferSizeFrames_) * channels_);
-
+        char name[MA_MAX_DEVICE_NAME_LENGTH + 1] = {};
+        ma_device_get_name(&device_, ma_device_type_playback, name, sizeof(name), nullptr);
+        deviceName_ = name;
+        const double internalRate = device_.playback.internalSampleRate > 0
+            ? static_cast<double>(device_.playback.internalSampleRate)
+            : static_cast<double>(AudioMixer::SAMPLE_RATE);
+        periodFrames_ = device_.playback.internalPeriodSizeInFrames;
+        // Estimate: the device's whole buffer (period x periods) is queued ahead of
+        // the frames a callback writes. The exact figure depends on the driver.
+        latency_.store(static_cast<double>(device_.playback.internalPeriodSizeInFrames) *
+                       static_cast<double>(device_.playback.internalPeriods) / internalRate);
+        lost_ = false;
         initialized_ = true;
-        LOG_INFO("Audio mixer initialized: {} Hz, {} channels, {} buffer frames",
-                 sampleRate_, channels_, bufferSizeFrames_);
+        LOG_INFO("Audio output '{}' opened: {} Hz ({} Hz native), period {} x {} frames, "
+                 "~{} ms output latency",
+                 deviceName_, AudioMixer::SAMPLE_RATE, device_.playback.internalSampleRate,
+                 device_.playback.internalPeriodSizeInFrames, device_.playback.internalPeriods,
+                 static_cast<int>(latency_.load() * 1000.0 + 0.5));
         return true;
     }
 
     void shutdown() {
-        if (!initialized_) {
-            return;
-        }
-
+        if (!initialized_) return;
         stop();
-        ma_device_uninit(&maDevice_);
-
-        mixBuffer_.clear();
-        tempBuffer_.clear();
+        ma_device_uninit(&device_);  // no callback runs after this
         initialized_ = false;
-
-        LOG_INFO("Audio mixer shutdown");
+        deviceName_.clear();
+        latency_.store(0.0);
+        // Nothing can reach quarantined arrays or sources any more.
+        for (SourceList* list : quarantinedLists_) delete list;
+        quarantinedLists_.clear();
+        quarantinedSources_.clear();
+        LOG_INFO("Audio output closed");
     }
 
-    bool isInitialized() const {
-        return initialized_;
-    }
+    bool isInitialized() const { return initialized_; }
 
     bool start() {
-        if (!initialized_) {
-            return false;
-        }
-
-        if (playing_) {
-            return true;
-        }
-
-        ma_result result = ma_device_start(&maDevice_);
+        if (!initialized_) return false;
+        if (playing_) return true;
+        stopRequested_ = false;
+        lost_ = false;
+        const ma_result result = ma_device_start(&device_);
         if (result != MA_SUCCESS) {
-            LOG_ERROR("Failed to start audio playback: {}", static_cast<int>(result));
+            LOG_ERROR("Failed to start audio playback: {}", ma_result_description(result));
             return false;
         }
-
         playing_ = true;
-        LOG_INFO("Audio playback started");
         return true;
     }
 
     void stop() {
-        if (!initialized_ || !playing_) {
-            return;
-        }
-
-        ma_device_stop(&maDevice_);
+        if (!initialized_ || !playing_) return;
+        stopRequested_ = true;
+        ma_device_stop(&device_);  // returns after the last callback finished
         playing_ = false;
-        LOG_INFO("Audio playback stopped");
     }
 
-    bool isPlaying() const {
-        return playing_;
-    }
+    bool isPlaying() const { return playing_; }
+    bool isDeviceLost() const { return lost_.load(); }
+    std::string getDeviceName() const { return deviceName_; }
+    double getOutputLatency() const { return latency_.load(); }
+    uint32_t getBufferSizeFrames() const { return periodFrames_; }
 
-    // --- Source management (control thread) ---
+    // --- Sources (control thread) ---
 
     void addSource(std::shared_ptr<AudioSource> source) {
         if (!source) return;
-
-        {
-            std::lock_guard<std::mutex> lock(sourcesMutex_);
-            sources_.push_back(source);
-            LOG_DEBUG("Added audio source: {}", source->getId().toString());
-        }
-        publishSnapshot();
+        std::lock_guard<std::mutex> lock(sourcesMutex_);
+        sources_.push_back(std::move(source));
+        publishLocked({});
     }
 
     bool removeSource(const UUID& sourceId) {
-        bool removed = false;
-        {
-            std::lock_guard<std::mutex> lock(sourcesMutex_);
-
-            auto it = std::find_if(sources_.begin(), sources_.end(),
-                [&sourceId](const std::shared_ptr<AudioSource>& s) {
-                    return s->getId() == sourceId;
-                });
-
-            if (it != sources_.end()) {
-                sources_.erase(it);
-                removed = true;
-                LOG_DEBUG("Removed audio source: {}", sourceId.toString());
-            }
-        }
-        if (removed) publishSnapshot();
-        return removed;
+        std::lock_guard<std::mutex> lock(sourcesMutex_);
+        auto it = std::find_if(sources_.begin(), sources_.end(),
+                               [&](const std::shared_ptr<AudioSource>& s) { return s->getId() == sourceId; });
+        if (it == sources_.end()) return false;
+        std::vector<std::shared_ptr<AudioSource>> removed{std::move(*it)};
+        sources_.erase(it);
+        publishLocked(std::move(removed));
+        return true;
     }
 
     std::shared_ptr<AudioSource> getSource(const UUID& sourceId) {
         std::lock_guard<std::mutex> lock(sourcesMutex_);
-
         auto it = std::find_if(sources_.begin(), sources_.end(),
-            [&sourceId](const std::shared_ptr<AudioSource>& s) {
-                return s->getId() == sourceId;
-            });
-
-        return (it != sources_.end()) ? *it : nullptr;
+                               [&](const std::shared_ptr<AudioSource>& s) { return s->getId() == sourceId; });
+        return it != sources_.end() ? *it : nullptr;
     }
 
     std::vector<std::shared_ptr<AudioSource>> getSources() const {
@@ -184,257 +183,218 @@ public:
     }
 
     void clearSources() {
-        {
-            std::lock_guard<std::mutex> lock(sourcesMutex_);
-            sources_.clear();
-            LOG_DEBUG("Cleared all audio sources");
-        }
-        publishSnapshot();
+        std::lock_guard<std::mutex> lock(sourcesMutex_);
+        std::vector<std::shared_ptr<AudioSource>> removed = std::move(sources_);
+        sources_.clear();
+        publishLocked(std::move(removed));
     }
-
-    int getSampleRate() const { return sampleRate_; }
-    int getChannels() const { return channels_; }
-    uint32_t getBufferSizeFrames() const { return bufferSizeFrames_; }
 
     void setMixCallback(AudioMixerCallback callback) {
-        // Publish new callback atomically so the RT thread sees it without locking.
-        // Wrapping in shared_ptr lets the audio thread grab a reference-counted
-        // copy without any mutex; the old shared_ptr is released by the control
-        // thread after the store, never by the RT callback.
-        auto ptr = callback
-            ? std::make_shared<AudioMixerCallback>(std::move(callback))
-            : std::shared_ptr<AudioMixerCallback>{};
-        std::atomic_store_explicit(&callbackPtr_, ptr, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(sourcesMutex_);
+        AudioMixerCallback* fresh = callback ? new AudioMixerCallback(std::move(callback)) : nullptr;
+        AudioMixerCallback* old = rtCallback_.exchange(fresh, std::memory_order_seq_cst);
+        if (waitForCallbackToFinish()) {
+            delete old;
+        } else {
+            quarantinedCallbacks_.emplace_back(old);
+        }
     }
 
-    // --- Audio callback — runs on the miniaudio RT thread ---
+    // --- Mixing (real-time thread, or the caller of renderOffline) ---
 
-    void processAudio(float* output, size_t frameCount) {
-        // Clear output buffer
-        std::memset(output, 0, frameCount * channels_ * sizeof(float));
+    void processAudio(float* output, size_t frameCount, int64_t wallNs) {
+        if (frameCount == 0) return;
+        // Odd while mixing. seq_cst pairs with the control thread's exchange + load in
+        // publishLocked(): either this load sees the new array, or the control thread
+        // sees the odd count and waits for the even one.
+        callbackSequence_.fetch_add(1, std::memory_order_seq_cst);
+        const SourceList* sources = rtSources_.load(std::memory_order_seq_cst);
 
-        // Get master volume and mute state (both std::atomic — no lock needed).
-        float masterVol = owner_->getMasterVolume();
-        bool masterMuted = owner_->isMasterMuted();
+        std::memset(output, 0, frameCount * AudioMixer::CHANNELS * sizeof(float));
+        AudioRenderContext context;
+        context.sampleRate = AudioMixer::SAMPLE_RATE;
+        context.outputLatency = latency_.load(std::memory_order_relaxed);
 
-        if (masterMuted || masterVol <= 0.0f) {
-            return;  // Silence when muted
+        for (size_t done = 0; done < frameCount;) {
+            const size_t chunk = std::min(MIX_CHUNK_FRAMES, frameCount - done);
+            context.wallNs = wallNs + static_cast<int64_t>(
+                static_cast<double>(done) * 1e9 / AudioMixer::SAMPLE_RATE);
+            float* out = output + done * AudioMixer::CHANNELS;
+            for (AudioSource* source : *sources) {
+                if (!source->isEnabled()) continue;
+                // Every enabled source renders, muted or not, so it keeps consuming
+                // and stays in step with its clock.
+                source->render(scratch_.data(), chunk, context);
+                const size_t samples = chunk * AudioMixer::CHANNELS;
+                for (size_t i = 0; i < samples; ++i) out[i] += scratch_[i];
+            }
+            done += chunk;
         }
 
-        // Acquire the published source-list snapshot.
-        // This is an atomic load (two compare-and-swap ops on the ref-count) —
-        // no mutex, no heap allocation.  The snapshot is an immutable vector;
-        // the control thread never mutates it in place, only publishes a new one.
-        auto snapshot = std::atomic_load_explicit(&sourcesSnapshot_,
-                                                  std::memory_order_acquire);
-
-        // Mix all sources
-        for (auto& source : *snapshot) {
-            if (!source || !source->isEnabled()) {
-                continue;
-            }
-
-            auto buffer = source->getBuffer();
-            if (!buffer || buffer->isEmpty()) {
-                continue;
-            }
-
-            // Read samples from source (applies source volume/pan).
-            // readSamples() uses a pre-allocated member buffer — no heap alloc.
-            size_t framesRead = source->readSamples(tempBuffer_.data(), frameCount, channels_);
-            if (framesRead == 0) {
-                continue;
-            }
-
-            // Mix into output
-            size_t sampleCount = framesRead * channels_;
-            for (size_t i = 0; i < sampleCount; ++i) {
-                output[i] += tempBuffer_[i];
-            }
+        // Master gain, ramped across the buffer like the per-source gains.
+        const float target = owner_->isMasterMuted() ? 0.0f : owner_->getMasterVolume();
+        if (lastMasterGain_ < 0.0f) lastMasterGain_ = target;
+        const float span = target - lastMasterGain_;
+        const float count = static_cast<float>(frameCount);
+        for (size_t i = 0; i < frameCount; ++i) {
+            const float gain = lastMasterGain_ + span * (static_cast<float>(i + 1) / count);
+            float* frame = output + i * AudioMixer::CHANNELS;
+            frame[0] = std::clamp(frame[0] * gain, -1.0f, 1.0f);
+            frame[1] = std::clamp(frame[1] * gain, -1.0f, 1.0f);
         }
+        lastMasterGain_ = target;
 
-        // Apply master volume
-        if (masterVol < 1.0f) {
-            size_t sampleCount = frameCount * channels_;
-            for (size_t i = 0; i < sampleCount; ++i) {
-                output[i] *= masterVol;
-            }
+        if (const AudioMixerCallback* tap = rtCallback_.load(std::memory_order_acquire)) {
+            (*tap)(output, frameCount, wallNs);
         }
+        callbackSequence_.fetch_add(1, std::memory_order_release);
+    }
 
-        // Clamp output to [-1.0, 1.0] to prevent clipping
-        size_t sampleCount = frameCount * channels_;
-        for (size_t i = 0; i < sampleCount; ++i) {
-            output[i] = std::clamp(output[i], -1.0f, 1.0f);
-        }
-
-        // Invoke mix callback if one is set.
-        // Acquire the shared_ptr atomically — two atomic ref-count ops, no lock.
-        auto cb = std::atomic_load_explicit(&callbackPtr_, std::memory_order_acquire);
-        if (cb && *cb) {
-            (*cb)(output, frameCount, channels_);
+    // miniaudio stops and restarts a device it reroutes (the system default changed,
+    // or the default device was unplugged): only a stop that is not followed by a
+    // start, and was not asked for, is a lost device.
+    void onNotification(ma_device_notification_type type) {
+        switch (type) {
+            case ma_device_notification_type_stopped:
+                if (!stopRequested_.load()) lost_ = true;
+                break;
+            case ma_device_notification_type_started:
+            case ma_device_notification_type_rerouted:
+                lost_ = false;
+                break;
+            default:
+                break;
         }
     }
 
 private:
-    // Publish a new immutable snapshot of sources_ to the audio thread.
-    // Must be called after every mutation of sources_, with sourcesMutex_ already
-    // released (or still held — the atomic store is safe either way).
-    void publishSnapshot() {
-        std::shared_ptr<SourceList> snap;
-        {
-            std::lock_guard<std::mutex> lock(sourcesMutex_);
-            snap = std::make_shared<SourceList>(sources_);
+    // Swap in an array built from sources_ and free the old one once the callback
+    // cannot hold it. `removed` keeps just-removed sources alive until then, so their
+    // last reference is always dropped here, on the control thread.
+    void publishLocked(std::vector<std::shared_ptr<AudioSource>> removed) {
+        auto* fresh = new SourceList();
+        fresh->reserve(sources_.size());
+        for (const auto& source : sources_) fresh->push_back(source.get());
+        SourceList* old = rtSources_.exchange(fresh, std::memory_order_seq_cst);
+        if (waitForCallbackToFinish()) {
+            delete old;
+        } else {
+            LOG_WARNING("Audio callback did not return within 1 s; keeping removed sources until shutdown");
+            quarantinedLists_.push_back(old);
+            for (auto& source : removed) quarantinedSources_.push_back(std::move(source));
         }
-        // Release store: the audio thread will see the new vector contents
-        // after it performs its acquire load on sourcesSnapshot_.
-        std::atomic_store_explicit(&sourcesSnapshot_, snap, std::memory_order_release);
+    }
+
+    // If a mix is running now, wait for it to end. A mix that starts later loads the
+    // array published before this call.
+    bool waitForCallbackToFinish() const {
+        const uint64_t sequence = callbackSequence_.load(std::memory_order_seq_cst);
+        if ((sequence & 1u) == 0) return true;
+        const auto deadline = std::chrono::steady_clock::now() + CALLBACK_WAIT_LIMIT;
+        while (callbackSequence_.load(std::memory_order_acquire) == sequence) {
+            if (std::chrono::steady_clock::now() > deadline) return false;
+            std::this_thread::yield();
+        }
+        return true;
     }
 
     AudioMixer* owner_;
-    ma_device maDevice_{};
+    ma_device device_{};
     bool initialized_ = false;
     bool playing_ = false;
+    std::atomic<bool> stopRequested_{false};
+    std::atomic<bool> lost_{false};
+    std::string deviceName_;
+    std::atomic<double> latency_{0.0};
+    uint32_t periodFrames_ = PERIOD_FRAMES;
 
-    int sampleRate_ = AudioDevice::DEFAULT_SAMPLE_RATE;
-    int channels_ = AudioDevice::DEFAULT_CHANNELS;
-    uint32_t bufferSizeFrames_ = AudioDevice::DEFAULT_BUFFER_FRAMES;
-
-    // Authoritative source list — mutated only by the control thread under sourcesMutex_.
+    // Control side: owners of the registered sources.
     std::vector<std::shared_ptr<AudioSource>> sources_;
     mutable std::mutex sourcesMutex_;
 
-    // Immutable snapshot published to the audio thread via atomic shared_ptr ops.
-    // The audio thread reads this without any lock; the control thread swaps it
-    // under no lock (the atomic store provides the necessary memory ordering).
-    std::shared_ptr<SourceList> sourcesSnapshot_;
+    // Audio side: what the callback reads.
+    std::vector<float> scratch_;
+    float lastMasterGain_ = -1.0f;
+    std::atomic<SourceList*> rtSources_;
+    std::atomic<AudioMixerCallback*> rtCallback_{nullptr};
+    std::atomic<uint64_t> callbackSequence_{0};
 
-    std::vector<float> mixBuffer_;
-    std::vector<float> tempBuffer_;
-
-    // Mix callback published atomically so the RT thread can read it without locking.
-    std::shared_ptr<AudioMixerCallback> callbackPtr_;
+    // Kept alive when a callback overran the wait (never expected).
+    std::vector<SourceList*> quarantinedLists_;
+    std::vector<std::shared_ptr<AudioSource>> quarantinedSources_;
+    std::vector<std::unique_ptr<AudioMixerCallback>> quarantinedCallbacks_;
 };
 
-// miniaudio callback function
-static void audioDataCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
-    (void)pInput;  // Unused for playback
+namespace {
 
-    auto* impl = static_cast<AudioMixerImpl*>(pDevice->pUserData);
-    if (impl) {
-        impl->processAudio(static_cast<float*>(pOutput), static_cast<size_t>(frameCount));
+void dataCallback(ma_device* device, void* output, const void* /*input*/, ma_uint32 frameCount) {
+    if (auto* impl = static_cast<AudioMixerImpl*>(device->pUserData)) {
+        impl->processAudio(static_cast<float*>(output), frameCount, steadyNowNs());
     }
 }
 
-// Public interface implementation
+void notificationCallback(const ma_device_notification* notification) {
+    if (!notification || !notification->pDevice) return;
+    auto* impl = static_cast<AudioMixerImpl*>(notification->pDevice->pUserData);
+    if (impl) impl->onNotification(notification->type);
+}
+
+}  // namespace
+
+// --- Public interface ---
+
 AudioMixer::AudioMixer()
-    : impl_(std::make_unique<AudioMixerImpl>(this))
-{}
+    : impl_(std::make_unique<AudioMixerImpl>(this)) {}
 
-AudioMixer::~AudioMixer() = default;
-
-AudioMixer::AudioMixer(AudioMixer&& other) noexcept
-    : impl_(std::move(other.impl_))
-    , masterVolume_(other.masterVolume_.load())
-    , masterMuted_(other.masterMuted_.load())
-{
+AudioMixer::~AudioMixer() {
+    impl_->shutdown();  // the callback reads the master volume members below
 }
 
-AudioMixer& AudioMixer::operator=(AudioMixer&& other) noexcept {
-    if (this != &other) {
-        impl_ = std::move(other.impl_);
-        masterVolume_ = other.masterVolume_.load();
-        masterMuted_ = other.masterMuted_.load();
-    }
-    return *this;
+bool AudioMixer::initialize(AudioDevice* device, const std::string& deviceId) {
+    return impl_->initialize(device, deviceId);
 }
-
-bool AudioMixer::initialize(AudioDevice* device) {
-    return impl_->initialize(device);
-}
-
-void AudioMixer::shutdown() {
-    impl_->shutdown();
-}
-
-bool AudioMixer::isInitialized() const {
-    return impl_->isInitialized();
-}
-
-bool AudioMixer::start() {
-    return impl_->start();
-}
-
-void AudioMixer::stop() {
-    impl_->stop();
-}
-
-bool AudioMixer::isPlaying() const {
-    return impl_->isPlaying();
-}
+void AudioMixer::shutdown() { impl_->shutdown(); }
+bool AudioMixer::isInitialized() const { return impl_->isInitialized(); }
+bool AudioMixer::start() { return impl_->start(); }
+void AudioMixer::stop() { impl_->stop(); }
+bool AudioMixer::isPlaying() const { return impl_->isPlaying(); }
+bool AudioMixer::isDeviceLost() const { return impl_->isDeviceLost(); }
+std::string AudioMixer::getDeviceName() const { return impl_->getDeviceName(); }
+double AudioMixer::getOutputLatency() const { return impl_->getOutputLatency(); }
+uint32_t AudioMixer::getBufferSizeFrames() const { return impl_->getBufferSizeFrames(); }
 
 void AudioMixer::setMasterVolume(float volume) {
-    masterVolume_ = std::clamp(volume, MIN_VOLUME, MAX_VOLUME);
+    masterVolume_ = std::isfinite(volume) ? std::clamp(volume, MIN_VOLUME, MAX_VOLUME) : MIN_VOLUME;
 }
 
 float AudioMixer::getMasterVolumeDb() const {
-    float vol = masterVolume_.load();
-    if (vol <= 0.0f) {
-        return MIN_VOLUME_DB;
-    }
-    float db = 20.0f * std::log10(vol);
-    return std::max(db, MIN_VOLUME_DB);
+    const float vol = masterVolume_.load();
+    if (vol <= 0.0f) return MIN_VOLUME_DB;
+    return std::max(20.0f * std::log10(vol), MIN_VOLUME_DB);
 }
 
 void AudioMixer::setMasterVolumeDb(float db) {
     db = std::clamp(db, MIN_VOLUME_DB, MAX_VOLUME_DB);
-    float linear = std::pow(10.0f, db / 20.0f);
-    masterVolume_ = linear;
+    masterVolume_ = std::pow(10.0f, db / 20.0f);
 }
 
 bool AudioMixer::toggleMasterMute() {
-    bool newState = !masterMuted_.load();
+    const bool newState = !masterMuted_.load();
     masterMuted_ = newState;
     return newState;
 }
 
-void AudioMixer::addSource(std::shared_ptr<AudioSource> source) {
-    impl_->addSource(source);
-}
+void AudioMixer::addSource(std::shared_ptr<AudioSource> source) { impl_->addSource(std::move(source)); }
+bool AudioMixer::removeSource(const UUID& sourceId) { return impl_->removeSource(sourceId); }
+std::shared_ptr<AudioSource> AudioMixer::getSource(const UUID& sourceId) { return impl_->getSource(sourceId); }
+std::vector<std::shared_ptr<AudioSource>> AudioMixer::getSources() const { return impl_->getSources(); }
+size_t AudioMixer::getSourceCount() const { return impl_->getSourceCount(); }
+void AudioMixer::clearSources() { impl_->clearSources(); }
+void AudioMixer::setMixCallback(AudioMixerCallback callback) { impl_->setMixCallback(std::move(callback)); }
 
-bool AudioMixer::removeSource(const UUID& sourceId) {
-    return impl_->removeSource(sourceId);
-}
-
-std::shared_ptr<AudioSource> AudioMixer::getSource(const UUID& sourceId) {
-    return impl_->getSource(sourceId);
-}
-
-std::vector<std::shared_ptr<AudioSource>> AudioMixer::getSources() const {
-    return impl_->getSources();
-}
-
-size_t AudioMixer::getSourceCount() const {
-    return impl_->getSourceCount();
-}
-
-void AudioMixer::clearSources() {
-    impl_->clearSources();
-}
-
-int AudioMixer::getSampleRate() const {
-    return impl_->getSampleRate();
-}
-
-int AudioMixer::getChannels() const {
-    return impl_->getChannels();
-}
-
-uint32_t AudioMixer::getBufferSizeFrames() const {
-    return impl_->getBufferSizeFrames();
-}
-
-void AudioMixer::setMixCallback(AudioMixerCallback callback) {
-    impl_->setMixCallback(std::move(callback));
+void AudioMixer::renderOffline(float* output, size_t frameCount, int64_t wallNs) {
+    if (!output || frameCount == 0 || impl_->isPlaying()) return;
+    impl_->processAudio(output, frameCount, wallNs);
 }
 
 } // namespace quadmapper

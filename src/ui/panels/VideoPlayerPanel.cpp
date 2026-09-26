@@ -3,6 +3,10 @@
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
 #include "app/MediaAssign.hpp"
+#include "app/SourceAudio.hpp"
+#include "audio/AudioEngine.hpp"
+#include "output/OutputManager.hpp"
+#include "output/OutputWindow.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "source/SourceManager.hpp"
@@ -59,6 +63,46 @@ void loopModeSelector(PlayableSource& video, Project* project, float width) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.3f, 1.0f));
         ImGui::TextWrapped("Ping-Pong is playing as Loop: %s", notice.c_str());
         ImGui::PopStyleColor();
+    }
+}
+
+// The source's sound (ADR-050 §2): mute and volume, and why it is silent when it is.
+void audioControls(PlayableSource& video, const UUID& id, EditorContext& ctx, float width) {
+    AudioEngine* audio = ctx.audio;
+    Project* project = ctx.project;
+    const SourceAudioStatus status = audio ? audio->status(id) : SourceAudioStatus::None;
+    if (status == SourceAudioStatus::NoAudio) {
+        ImGui::TextDisabled("No audio stream");
+        return;
+    }
+    if (status != SourceAudioStatus::Ready) {
+        ImGui::TextDisabled("Audio: opening...");
+        return;
+    }
+    bool muted = video.isAudioMuted();
+    if (ImGui::Checkbox("Mute##source audio", &muted)) {
+        video.setAudioMuted(muted);
+        if (project) project->setModified(true);
+    }
+    ImGui::SetItemTooltip("Mute this video's sound");
+    ImGui::SameLine();
+    float percent = video.getAudioVolume() * 100.0f;
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::SliderFloat("Volume##source audio", &percent, 0.0f, 100.0f, "%.0f%%")) {
+        video.setAudioVolume(percent / 100.0f);
+        if (project) project->setModified(true);
+    }
+    ImGui::SetItemTooltip("This video's volume (the menu bar's master volume applies on top)");
+    if (const char* reason = audioSilenceReason(video)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", reason);
+        ImGui::SetItemTooltip("Sound plays only at 1x forward; it resumes in step at 1x");
+    } else if (ctx.outputManager &&
+               !audibleSourceIds(ctx.es.scenes, ctx.es.activeSceneId,
+                                 enabledOutputIds(ctx.outputManager->getOutputs()))
+                    .count(id)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Silent: not in the active or a live scene");
+        ImGui::SetItemTooltip("Heard only while a scene using it is the active scene or is assigned "
+                              "to an enabled output; it stays in step meanwhile");
     }
 }
 
@@ -161,6 +205,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
             ImGui::SameLine();
             if (ImGui::Button("1x")) video->setSpeed(1.0f);
             ImGui::EndDisabled();
+            audioControls(*video, es.activeVideoSourceId, ctx, 120.0f);
             showPlaybackError(*video);
         } else {
             ImGui::TextDisabled("No video loaded");
@@ -252,6 +297,10 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         ImGui::EndDisabled();
 
         loopModeSelector(*video, ctx.project, ImGui::CalcItemWidth());
+
+        ImGui::Separator();
+        ImGui::Text("Audio:");
+        audioControls(*video, es.activeVideoSourceId, ctx, ImGui::CalcItemWidth() - 70.0f);
 
         ImGui::Separator();
 

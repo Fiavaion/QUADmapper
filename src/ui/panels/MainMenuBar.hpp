@@ -1,10 +1,13 @@
 #pragma once
 
 #include <functional>
+#include <string>
+#include <vector>
 
 namespace quadmapper {
 
 struct EditorContext;
+class AudioEngine;
 
 // Renders the application main menu bar (File / Edit / Window).
 // Does NOT inherit from Panel — it is always shown and manages its own
@@ -37,6 +40,18 @@ public:
     void render(EditorContext& ctx);
 
 private:
+    // Master sound (ADR-050 §2): mute, volume and the output device, beside the master
+    // timeline so the show's transport and sound live in one strip.
+    void renderAudioStrip(EditorContext& ctx, AudioEngine& audio);
+    // Output-device choices; `menu` renders menu items, otherwise combo entries.
+    // `listOpen` is that list's was-open-last-frame flag: the devices are enumerated
+    // once when it opens, not every frame.
+    void renderAudioDevices(AudioEngine& audio, bool menu, bool& listOpen);
+
+    std::vector<std::string> audioDevices_;
+    bool audioComboOpen_ = false;  // the strip's device combo
+    bool audioMenuOpen_ = false;   // Output > Audio Output
+
     BoolQuery       aiActiveQuery_;
     ProjectCallback onEnableAi_;
     ProjectCallback onDetectSurface_;

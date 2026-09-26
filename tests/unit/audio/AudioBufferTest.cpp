@@ -1,17 +1,15 @@
 #include <gtest/gtest.h>
 #include "audio/AudioBuffer.hpp"
+#include <atomic>
 #include <thread>
 #include <vector>
-#include <atomic>
 
 namespace quadmapper {
 namespace test {
 
 class AudioBufferTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-        buffer = std::make_unique<AudioBuffer>(1024);
-    }
+    void SetUp() override { buffer = std::make_unique<AudioBuffer>(1024); }
 
     std::unique_ptr<AudioBuffer> buffer;
 };
@@ -21,236 +19,163 @@ TEST_F(AudioBufferTest, DefaultState) {
     EXPECT_FALSE(buffer->isFull());
     EXPECT_EQ(buffer->available(), 0u);
     EXPECT_EQ(buffer->capacity(), 1024u);
-    EXPECT_FALSE(buffer->isEndOfStream());
+    EXPECT_EQ(buffer->freeSpace(), 1024u);
+    EXPECT_EQ(buffer->writePosition(), 0u);
+    EXPECT_EQ(buffer->readPosition(), 0u);
 }
 
 TEST_F(AudioBufferTest, PushAndRead) {
     std::vector<float> samples = {0.1f, 0.2f, 0.3f, 0.4f};
 
-    EXPECT_TRUE(buffer->push(samples.data(), samples.size(), 0.0));
+    EXPECT_TRUE(buffer->push(samples.data(), samples.size()));
     EXPECT_FALSE(buffer->isEmpty());
     EXPECT_EQ(buffer->available(), 4u);
 
     std::vector<float> output(4);
-    size_t read = buffer->read(output.data(), 4, 2);
-
-    EXPECT_EQ(read, 4u);
+    EXPECT_EQ(buffer->read(output.data(), 4), 4u);
     EXPECT_TRUE(buffer->isEmpty());
-    EXPECT_FLOAT_EQ(output[0], 0.1f);
-    EXPECT_FLOAT_EQ(output[1], 0.2f);
-    EXPECT_FLOAT_EQ(output[2], 0.3f);
-    EXPECT_FLOAT_EQ(output[3], 0.4f);
+    EXPECT_EQ(output, samples);
 }
 
 TEST_F(AudioBufferTest, PartialRead) {
     std::vector<float> samples = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f};
-    buffer->push(samples.data(), samples.size(), 0.0);
+    buffer->push(samples.data(), samples.size());
 
     std::vector<float> output(4);
-    size_t read = buffer->read(output.data(), 4, 2);
-
-    EXPECT_EQ(read, 4u);
+    EXPECT_EQ(buffer->read(output.data(), 4), 4u);
     EXPECT_EQ(buffer->available(), 2u);
 }
 
 TEST_F(AudioBufferTest, ReadMoreThanAvailable) {
     std::vector<float> samples = {0.1f, 0.2f};
-    buffer->push(samples.data(), samples.size(), 0.0);
+    buffer->push(samples.data(), samples.size());
 
     std::vector<float> output(10);
-    size_t read = buffer->read(output.data(), 10, 2);
-
-    EXPECT_EQ(read, 2u);
+    EXPECT_EQ(buffer->read(output.data(), 10), 2u);
     EXPECT_TRUE(buffer->isEmpty());
 }
 
 TEST_F(AudioBufferTest, ReadFromEmpty) {
     std::vector<float> output(4);
-    size_t read = buffer->read(output.data(), 4, 2);
-
-    EXPECT_EQ(read, 0u);
+    EXPECT_EQ(buffer->read(output.data(), 4), 0u);
 }
 
-TEST_F(AudioBufferTest, PushToFull) {
+TEST_F(AudioBufferTest, PushToFullIsAllOrNothing) {
     std::vector<float> samples(1024, 0.5f);
-    EXPECT_TRUE(buffer->push(samples.data(), samples.size(), 0.0));
+    EXPECT_TRUE(buffer->push(samples.data(), samples.size()));
     EXPECT_TRUE(buffer->isFull());
 
-    // Push to full buffer should fail
     std::vector<float> moreSamples = {0.1f, 0.2f};
-    EXPECT_FALSE(buffer->push(moreSamples.data(), moreSamples.size(), 0.0));
+    EXPECT_FALSE(buffer->push(moreSamples.data(), moreSamples.size()));
+    EXPECT_EQ(buffer->available(), 1024u);
 }
 
-TEST_F(AudioBufferTest, WrapAround) {
-    // Fill half the buffer
-    std::vector<float> first(600, 0.1f);
-    buffer->push(first.data(), first.size(), 0.0);
+TEST_F(AudioBufferTest, WrapAroundKeepsOrder) {
+    std::vector<float> first(600);
+    for (size_t i = 0; i < first.size(); ++i) first[i] = static_cast<float>(i);
+    buffer->push(first.data(), first.size());
 
-    // Read most of it
     std::vector<float> output(500);
-    buffer->read(output.data(), 500, 2);
+    buffer->read(output.data(), 500);
 
-    // Push more data that wraps around
-    std::vector<float> second(800, 0.2f);
-    EXPECT_TRUE(buffer->push(second.data(), second.size(), 0.0));
+    std::vector<float> second(800);
+    for (size_t i = 0; i < second.size(); ++i) second[i] = 1000.0f + static_cast<float>(i);
+    EXPECT_TRUE(buffer->push(second.data(), second.size()));
     EXPECT_EQ(buffer->available(), 100u + 800u);
 
-    // Read all
-    std::vector<float> allOutput(900);
-    size_t read = buffer->read(allOutput.data(), 900, 2);
-    EXPECT_EQ(read, 900u);
+    std::vector<float> all(900);
+    EXPECT_EQ(buffer->read(all.data(), 900), 900u);
+    EXPECT_FLOAT_EQ(all[0], 500.0f);
+    EXPECT_FLOAT_EQ(all[99], 599.0f);
+    EXPECT_FLOAT_EQ(all[100], 1000.0f);
+    EXPECT_FLOAT_EQ(all[899], 1799.0f);
     EXPECT_TRUE(buffer->isEmpty());
 }
 
-TEST_F(AudioBufferTest, Clear) {
-    std::vector<float> samples = {0.1f, 0.2f, 0.3f, 0.4f};
-    buffer->push(samples.data(), samples.size(), 0.0);
-
-    buffer->clear();
-
-    EXPECT_TRUE(buffer->isEmpty());
-    EXPECT_EQ(buffer->available(), 0u);
+TEST_F(AudioBufferTest, PositionsCountEverySample) {
+    std::vector<float> samples(300, 0.0f);
+    std::vector<float> output(300);
+    for (int i = 0; i < 10; ++i) {
+        ASSERT_TRUE(buffer->push(samples.data(), samples.size()));
+        ASSERT_EQ(buffer->read(output.data(), output.size()), 300u);
+    }
+    // Positions never wrap: they name a sample of the stream for good.
+    EXPECT_EQ(buffer->writePosition(), 3000u);
+    EXPECT_EQ(buffer->readPosition(), 3000u);
 }
 
-TEST_F(AudioBufferTest, EndOfStream) {
-    EXPECT_FALSE(buffer->isEndOfStream());
+TEST_F(AudioBufferTest, DiscardToSkipsForwardOnly) {
+    std::vector<float> samples(100);
+    for (size_t i = 0; i < samples.size(); ++i) samples[i] = static_cast<float>(i);
+    buffer->push(samples.data(), samples.size());
 
-    buffer->signalEndOfStream();
+    buffer->discardTo(40);
+    EXPECT_EQ(buffer->readPosition(), 40u);
+    EXPECT_EQ(buffer->available(), 60u);
 
-    EXPECT_TRUE(buffer->isEndOfStream());
+    buffer->discardTo(10);  // never moves back
+    EXPECT_EQ(buffer->readPosition(), 40u);
 
-    buffer->resetEndOfStream();
+    float next = -1.0f;
+    ASSERT_EQ(buffer->read(&next, 1), 1u);
+    EXPECT_FLOAT_EQ(next, 40.0f);
 
-    EXPECT_FALSE(buffer->isEndOfStream());
-}
-
-TEST_F(AudioBufferTest, GetCurrentPTS) {
-    EXPECT_DOUBLE_EQ(buffer->getCurrentPTS(), -1.0);  // Empty buffer
-
-    std::vector<float> samples = {0.1f, 0.2f, 0.3f, 0.4f};
-    buffer->push(samples.data(), samples.size(), 2.5);
-
-    EXPECT_DOUBLE_EQ(buffer->getCurrentPTS(), 2.5);
-}
-
-TEST_F(AudioBufferTest, PushNullPointer) {
-    EXPECT_TRUE(buffer->push(nullptr, 10, 0.0));  // Should handle gracefully
+    buffer->discardTo(5000);  // clamped to what has been pushed
+    EXPECT_EQ(buffer->readPosition(), 100u);
     EXPECT_TRUE(buffer->isEmpty());
 }
 
-TEST_F(AudioBufferTest, PushZeroCount) {
-    std::vector<float> samples = {0.1f};
-    EXPECT_TRUE(buffer->push(samples.data(), 0, 0.0));
-    EXPECT_TRUE(buffer->isEmpty());
-}
-
-TEST_F(AudioBufferTest, ReadNullPointer) {
+TEST_F(AudioBufferTest, NullAndEmptyArgumentsAreHarmless) {
+    EXPECT_TRUE(buffer->push(nullptr, 10));
     std::vector<float> samples = {0.1f, 0.2f};
-    buffer->push(samples.data(), samples.size(), 0.0);
+    EXPECT_TRUE(buffer->push(samples.data(), 0));
+    EXPECT_TRUE(buffer->isEmpty());
 
-    EXPECT_EQ(buffer->read(nullptr, 10, 2), 0u);
-    EXPECT_EQ(buffer->available(), 2u);  // Data still there
-}
-
-TEST_F(AudioBufferTest, ReadZeroCount) {
-    std::vector<float> samples = {0.1f, 0.2f};
-    buffer->push(samples.data(), samples.size(), 0.0);
-
+    buffer->push(samples.data(), samples.size());
     std::vector<float> output(10);
-    EXPECT_EQ(buffer->read(output.data(), 0, 2), 0u);
+    EXPECT_EQ(buffer->read(nullptr, 10), 0u);
+    EXPECT_EQ(buffer->read(output.data(), 0), 0u);
     EXPECT_EQ(buffer->available(), 2u);
 }
 
-// Thread safety tests
-TEST_F(AudioBufferTest, ConcurrentPushAndRead) {
-    auto largeBuffer = std::make_unique<AudioBuffer>(100000);
-    std::atomic<size_t> totalPushed{0};
-    std::atomic<size_t> totalRead{0};
+// One producer and one consumer, as the decode thread and the audio callback run it:
+// every sample arrives once, in order.
+TEST_F(AudioBufferTest, ConcurrentPushAndReadKeepsEverySampleInOrder) {
+    AudioBuffer ring(4096);
+    constexpr size_t TOTAL = 200000;
     std::atomic<bool> done{false};
+    size_t mismatches = 0;
+    size_t received = 0;
 
-    // Producer thread
     std::thread producer([&]() {
-        std::vector<float> samples(1000, 0.5f);
-        for (int i = 0; i < 50; ++i) {
-            while (!largeBuffer->push(samples.data(), samples.size(), 0.0)) {
-                std::this_thread::yield();
-            }
-            totalPushed += samples.size();
+        std::vector<float> chunk(700);
+        size_t next = 0;
+        while (next < TOTAL) {
+            const size_t n = std::min(chunk.size(), TOTAL - next);
+            for (size_t i = 0; i < n; ++i) chunk[i] = static_cast<float>((next + i) % 100000);
+            while (!ring.push(chunk.data(), n)) std::this_thread::yield();
+            next += n;
         }
         done = true;
     });
 
-    // Consumer thread
     std::thread consumer([&]() {
-        std::vector<float> output(500);
-        while (!done || !largeBuffer->isEmpty()) {
-            size_t read = largeBuffer->read(output.data(), output.size(), 2);
-            totalRead += read;
-            if (read == 0) {
-                std::this_thread::yield();
+        std::vector<float> output(512);
+        while (!done || !ring.isEmpty()) {
+            const size_t n = ring.read(output.data(), output.size());
+            for (size_t i = 0; i < n; ++i) {
+                if (output[i] != static_cast<float>((received + i) % 100000)) ++mismatches;
             }
+            received += n;
+            if (n == 0) std::this_thread::yield();
         }
     });
 
     producer.join();
     consumer.join();
-
-    EXPECT_EQ(totalPushed.load(), totalRead.load());
+    EXPECT_EQ(received, TOTAL);
+    EXPECT_EQ(mismatches, 0u);
 }
 
-TEST_F(AudioBufferTest, BlockingPush) {
-    auto smallBuffer = std::make_unique<AudioBuffer>(100);
-    std::vector<float> samples(60, 0.5f);
-
-    // Fill buffer partially
-    smallBuffer->push(samples.data(), samples.size(), 0.0);
-
-    // Start a thread that will read after a delay
-    std::thread reader([&]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        std::vector<float> output(50);
-        smallBuffer->read(output.data(), output.size(), 2);
-    });
-
-    // This should block until reader makes space
-    std::vector<float> moreSamples(50, 0.6f);
-    bool result = smallBuffer->pushBlocking(moreSamples.data(), moreSamples.size(), 0.0, 1000);
-
-    reader.join();
-    EXPECT_TRUE(result);
-}
-
-TEST_F(AudioBufferTest, BlockingPushTimeout) {
-    auto smallBuffer = std::make_unique<AudioBuffer>(100);
-    std::vector<float> samples(100, 0.5f);
-    smallBuffer->push(samples.data(), samples.size(), 0.0);
-
-    // Try to push to full buffer with short timeout
-    std::vector<float> moreSamples(10, 0.6f);
-    bool result = smallBuffer->pushBlocking(moreSamples.data(), moreSamples.size(), 0.0, 50);
-
-    EXPECT_FALSE(result);  // Should timeout
-}
-
-TEST_F(AudioBufferTest, BlockingReadTimeout) {
-    std::vector<float> output(10);
-    size_t read = buffer->readBlocking(output.data(), 10, 2, 50);
-
-    EXPECT_EQ(read, 0u);  // Should timeout on empty buffer
-}
-
-TEST_F(AudioBufferTest, BlockingReadEndOfStream) {
-    std::thread signaler([&]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        buffer->signalEndOfStream();
-    });
-
-    std::vector<float> output(10);
-    size_t read = buffer->readBlocking(output.data(), 10, 2, 1000);
-
-    signaler.join();
-    EXPECT_EQ(read, 0u);  // Should return when EOS signaled
-}
-
-} // namespace test
-} // namespace quadmapper
+}  // namespace test
+}  // namespace quadmapper

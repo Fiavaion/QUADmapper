@@ -253,41 +253,10 @@ TEST_F(AudioSourceTest, BufferIsShared) {
 
     // Fill buffer through the original shared_ptr
     std::vector<float> samples = {0.1f, 0.2f, 0.3f, 0.4f};
-    buffer->push(samples.data(), samples.size(), 0.0);
+    buffer->push(samples.data(), samples.size());
 
     // Should see data through source's buffer reference
     EXPECT_EQ(source->getBuffer()->available(), 4u);
-}
-
-// --- Move Semantics Tests ---
-
-TEST_F(AudioSourceTest, MoveConstruction) {
-    source->setName("Original");
-    source->setVolume(0.7f);
-    source->setMuted(true);
-    source->setPan(-0.3f);
-    UUID originalId = source->getId();
-
-    AudioSource moved(std::move(*source));
-
-    EXPECT_EQ(moved.getId(), originalId);
-    EXPECT_EQ(moved.getName(), "Original");
-    EXPECT_FLOAT_EQ(moved.getVolume(), 0.7f);
-    EXPECT_TRUE(moved.isMuted());
-    EXPECT_FLOAT_EQ(moved.getPan(), -0.3f);
-}
-
-TEST_F(AudioSourceTest, MoveAssignment) {
-    source->setName("Original");
-    source->setVolume(0.7f);
-    UUID originalId = source->getId();
-
-    AudioSource target;
-    target = std::move(*source);
-
-    EXPECT_EQ(target.getId(), originalId);
-    EXPECT_EQ(target.getName(), "Original");
-    EXPECT_FLOAT_EQ(target.getVolume(), 0.7f);
 }
 
 } // namespace test

@@ -5,15 +5,12 @@
 // the bindings are unit-tested without GL or the Application.
 //
 // External control changes live values only: quad opacity/visibility, source
-// transport, the master timeline, scene takes and blackout. It never touches geometry, files or undo,
+// transport and sound, the master timeline, the master sound, scene takes and blackout.
+// It never touches geometry, files or undo,
 // and every target re-resolves its quad/source by id when it runs, so a target
 // whose quad was deleted does nothing.
 //
-// Adding a target is one registration below. Audio (ADR-050) adds, in
-// registerControlTargets():
-//   registry.addEntityTarget("source", {"volume", TargetKind::Float, 0.0f, 1.0f, true, apply, read});
-//   registry.addGlobal("/qm/master/volume", {"", TargetKind::Float, 0.0f, 1.0f, true, apply, read});
-//   registry.addGlobal("/qm/master/mute", {"", TargetKind::Bool, 0.0f, 1.0f, true, apply, read});
+// Adding a target is one registration below.
 
 #include "../control/ControlRegistry.hpp"
 #include "../control/MidiMapping.hpp"
@@ -44,6 +41,11 @@ struct ControlBindingHost {
     std::function<void(bool on)> setBlackout;
     // A message a target would not act on: its canonical address and why.
     std::function<void(const std::string& address, const std::string& reason)> refuse;
+    // Master sound (ADR-050 §2), kept by the app's audio engine.
+    std::function<float()> getMasterVolume;
+    std::function<void(float volume)> setMasterVolume;
+    std::function<bool()> isMasterMuted;
+    std::function<void(bool muted)> setMasterMuted;
 };
 
 namespace control_bindings {
@@ -112,6 +114,21 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
          [host](const std::string&) -> std::optional<float> {
              if (!host.isBlackout) return std::nullopt;
              return host.isBlackout() ? 1.0f : 0.0f;
+         }});
+    // Master sound (ADR-050 §2).
+    registry.addGlobal("/qm/master/volume",
+        {"", TargetKind::Float, 0.0f, 1.0f, true,
+         [host](const std::string&, float v) { if (host.setMasterVolume) host.setMasterVolume(v); },
+         [host](const std::string&) -> std::optional<float> {
+             if (!host.getMasterVolume) return std::nullopt;
+             return host.getMasterVolume();
+         }});
+    registry.addGlobal("/qm/master/mute",
+        {"", TargetKind::Bool, 0.0f, 1.0f, true,
+         [host](const std::string&, float v) { if (host.setMasterMuted) host.setMasterMuted(v >= 0.5f); },
+         [host](const std::string&) -> std::optional<float> {
+             if (!host.isMasterMuted) return std::nullopt;
+             return host.isMasterMuted() ? 1.0f : 0.0f;
          }});
     // /qm/scene/take i n: the nth scene, the same path as the 1-9 keys. OSC only (a
     // MIDI control binds to a particular scene's take instead).
@@ -197,6 +214,25 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
          [host](const std::string& id) -> std::optional<float> {
              const PlayableSource* p = findPlayable(host.sources, id);
              return p ? std::optional<float>(p->getSpeed()) : std::nullopt;
+         }});
+    // The source's sound (ADR-050 §2): what its Video Player volume slider and mute set.
+    registry.addEntityTarget("source",
+        {"volume", TargetKind::Float, 0.0f, 1.0f, true,
+         [host](const std::string& id, float v) {
+             if (PlayableSource* p = findPlayable(host.sources, id)) p->setAudioVolume(v);
+         },
+         [host](const std::string& id) -> std::optional<float> {
+             const PlayableSource* p = findPlayable(host.sources, id);
+             return p ? std::optional<float>(p->getAudioVolume()) : std::nullopt;
+         }});
+    registry.addEntityTarget("source",
+        {"mute", TargetKind::Bool, 0.0f, 1.0f, true,
+         [host](const std::string& id, float v) {
+             if (PlayableSource* p = findPlayable(host.sources, id)) p->setAudioMuted(v >= 0.5f);
+         },
+         [host](const std::string& id) -> std::optional<float> {
+             const PlayableSource* p = findPlayable(host.sources, id);
+             return p ? std::optional<float>(p->isAudioMuted() ? 1.0f : 0.0f) : std::nullopt;
          }});
 }
 
