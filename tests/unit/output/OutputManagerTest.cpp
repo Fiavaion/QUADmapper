@@ -1018,20 +1018,32 @@ TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
     ASSERT_EQ(direct.size(), copied.size());
     size_t differing = 0;
     size_t lit = 0;
+    size_t translucent = 0;
+    size_t directTranslucent = 0;
     for (size_t i = 0; i < direct.size(); i += 4) {
         if (direct[i] != copied[i] || direct[i + 1] != copied[i + 1] ||
             direct[i + 2] != copied[i + 2]) {
             ++differing;
+        }
+        // The frame is opaque: the preview draws it blended by its alpha, so alpha
+        // below 1 where a quad is translucent would darken the preview.
+        if (copied[i + 3] != 255) {
+            ++translucent;
+        }
+        if (direct[i + 3] != 255) {
+            ++directTranslucent;  // plain SRC_ALPHA blending leaves alpha below 1 there
         }
         if (direct[i] > 8 || direct[i + 1] > 8 || direct[i + 2] > 8) {
             ++lit;
         }
     }
     EXPECT_EQ(differing, 0u) << "of " << direct.size() / 4 << " pixels";
+    EXPECT_EQ(translucent, 0u) << "frame pixels with alpha below 255";
     if (param.blackout) {
         EXPECT_EQ(lit, 0u);  // the projector is black, and so is its frame
     } else {
         EXPECT_GT(lit, direct.size() / 4 / 3);  // the scene covers much of the frame
+        EXPECT_GT(directTranslucent, 0u) << "the scene must blend, or alpha is not covered";
     }
 
     editorRenderer.shutdown();
@@ -1098,6 +1110,98 @@ TEST(RenderOnceTest, UnroutedOutputIsBlackAndDeletedOutputLosesItsFrame) {
 
     renderer.shutdown();
     manager.shutdown();
+}
+
+// The frames are drawn after the panels, so the Preview tab has already recorded a
+// frame's texture when a resize (F11, a resolution change) happens in the same frame:
+// the texture must keep its name, or ImGui would sample a deleted one.
+TEST(RenderOnceTest, ResizedFrameKeepsItsTextureName) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* output = manager.createOutput("Resized");
+    ASSERT_NE(output, nullptr);
+    glfwSetWindowSize(output->getGLFWwindow(), 32, 32);
+    glfwMakeContextCurrent(gl.win);
+
+    std::vector<std::unique_ptr<Scene>> scenes;
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    manager.renderOutputFrames(scenes, textures, renderer);
+    const Framebuffer* frame = manager.outputFrame(output->getId());
+    ASSERT_NE(frame, nullptr);
+    const GLuint texture = frame->colorTexture();
+    const long framebuffers = GlObjectStats::framebuffers();
+    const long allTextures = GlObjectStats::textures();
+
+    glfwSetWindowSize(output->getGLFWwindow(), 48, 40);
+    int w = 0, h = 0;
+    glfwGetFramebufferSize(output->getGLFWwindow(), &w, &h);
+    ASSERT_TRUE(w != 32 || h != 32) << "the window did not resize";
+    manager.renderOutputFrames(scenes, textures, renderer);
+    frame = manager.outputFrame(output->getId());
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(frame->width(), w);
+    EXPECT_EQ(frame->height(), h);
+    EXPECT_EQ(frame->colorTexture(), texture);
+    EXPECT_EQ(glIsTexture(texture), GL_TRUE);
+    EXPECT_EQ(GlObjectStats::framebuffers(), framebuffers);
+    EXPECT_EQ(GlObjectStats::textures(), allTextures);
+
+    renderer.shutdown();
+    manager.shutdown();
+}
+
+// Inspector "Destroy Window" then "Create Window": the copier's framebuffer object is
+// freed in the dying context, and the new window makes its own instead of binding the
+// dead context's name (GL_INVALID_OPERATION, and nothing shown).
+TEST(RenderOnceTest, DestroyedOutputWindowFreesItsCopierAndARecreatedOneWorks) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* output = manager.createOutput("Recreated");
+    ASSERT_NE(output, nullptr);
+    glfwSetWindowSize(output->getGLFWwindow(), 32, 32);
+    glfwMakeContextCurrent(gl.win);
+
+    std::vector<std::unique_ptr<Scene>> scenes;
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    manager.renderOutputFrames(scenes, textures, renderer);
+    const Framebuffer* frame = manager.outputFrame(output->getId());
+    ASSERT_NE(frame, nullptr);
+    glFinish();
+
+    auto copyInOutputContext = [&] {
+        output->makeContextCurrent();
+        while (glGetError() != GL_NO_ERROR) {}
+        const bool copied = output->frameCopy().copy(*frame, frame->width(), frame->height());
+        const GLenum error = glGetError();
+        glfwMakeContextCurrent(gl.win);
+        return copied && error == GL_NO_ERROR;
+    };
+
+    const long framebuffersBefore = GlObjectStats::framebuffers();
+    ASSERT_TRUE(copyInOutputContext());
+    EXPECT_EQ(GlObjectStats::framebuffers(), framebuffersBefore + 1);
+
+    output->destroy();
+    EXPECT_EQ(GlObjectStats::framebuffers(), framebuffersBefore) << "copier not freed";
+    EXPECT_EQ(glfwGetCurrentContext(), gl.win) << "the caller's context must stay current";
+
+    ASSERT_TRUE(output->create(gl.win).isSuccess());
+    EXPECT_TRUE(copyInOutputContext());
+    EXPECT_EQ(GlObjectStats::framebuffers(), framebuffersBefore + 1);
+
+    renderer.shutdown();
+    manager.shutdown();
+    EXPECT_EQ(GlObjectStats::framebuffers(), framebuffersBefore - 1) << "frame and copier freed";
 }
 
 } // namespace test

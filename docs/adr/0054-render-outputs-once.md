@@ -20,6 +20,7 @@ The output windows already share the editor's GL context.
 1. **Draw each output's scene once per frame, into a colour texture owned in the shared context.**
    - Each output window draws that texture as one fullscreen quad. Output rotation and blackout apply at this step.
    - The output preview panel shows the same texture. A preview therefore costs one textured draw and shows exactly what the projector shows, including black for missing media. The editor canvas keeps the magenta checker for missing media.
+   - The frames are drawn in `render()` after every edit the frame makes (canvas, shortcuts, scene takes, panels), just before `ImGui::Render()`, so an edit reaches the projector in the frame that made it; `--bench=sameFrame` checks this by readback.
    - The pixel result on a projector must be identical to today's. A readback test compares the old path with the new one; if the outputs use MSAA, the render target uses it too and is resolved.
 2. **Cut the per-draw cost.**
    - Cache uniform values per program and skip unchanged uploads, or move each quad's uniforms into a uniform block updated only when the quad changes; the implementer picks whichever measures faster.

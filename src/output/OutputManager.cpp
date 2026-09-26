@@ -57,12 +57,6 @@ void OutputManager::shutdown() {
         exitPerformMode();
     }
 
-    // Each output's copier dies in its own context, before its window closes.
-    for (auto& output : outputs_) {
-        releaseFrameCopy(*output);
-    }
-    frameCopies_.clear();
-
     // The frames and the fence live in the main context.
     if (mainWindow_ != nullptr) {
         GLFWwindow* previousContext = glfwGetCurrentContext();
@@ -130,9 +124,7 @@ void OutputManager::deleteOutput(const UUID& id) {
     if (it != outputs_.end()) {
         std::string name = (*it)->getName();
 
-        // Its copier dies in its own context before the window goes; its frame in
-        // the main context.
-        releaseFrameCopy(**it);
+        // Its frame dies in the main context (its copier goes with its window).
         if (frames_.count(id) != 0 && mainWindow_ != nullptr) {
             GLFWwindow* previousContext = glfwGetCurrentContext();
             glfwMakeContextCurrent(mainWindow_);
@@ -642,6 +634,16 @@ void OutputManager::renderFrames(Renderer& renderer,
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
     GLint prevViewport[4] = {0, 0, 0, 0};
     glGetIntegerv(GL_VIEWPORT, prevViewport);
+    GLint prevBlend[4] = {GL_ONE, GL_ZERO, GL_ONE, GL_ZERO};
+    glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlend[0]);
+    glGetIntegerv(GL_BLEND_DST_RGB, &prevBlend[1]);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlend[2]);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlend[3]);
+
+    // Colour blends as on the projector; alpha keeps the clear's 1, so the preview,
+    // which ImGui draws blended by the texture's alpha, is not darkened where quads
+    // are translucent.
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
 
     // Drop the frames of outputs that no longer exist.
     for (auto it = frames_.begin(); it != frames_.end();) {
@@ -680,6 +682,8 @@ void OutputManager::renderFrames(Renderer& renderer,
 
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
     glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+    glBlendFuncSeparate(static_cast<GLenum>(prevBlend[0]), static_cast<GLenum>(prevBlend[1]),
+                        static_cast<GLenum>(prevBlend[2]), static_cast<GLenum>(prevBlend[3]));
 
     // The output contexts wait for this on the GPU before copying the frames.
     if (framesDrawn_ != nullptr) {
@@ -732,11 +736,7 @@ void OutputManager::presentOutputs() {
             if (framesDrawn_ != nullptr) {
                 glWaitSync(framesDrawn_, 0, GL_TIMEOUT_IGNORED);
             }
-            auto& copier = frameCopies_[output->getId()];
-            if (!copier) {
-                copier = std::make_unique<FrameCopy>();
-            }
-            shown = copier->copy(*frame, width, height);
+            shown = output->frameCopy().copy(*frame, width, height);
         }
         if (!shown) {
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -759,20 +759,6 @@ void OutputManager::presentOutputs() {
     // A presented, non-minimised projector paces the loop and the editor swaps
     // without waiting. Otherwise the editor is vsync'd as before.
     setEditorSwapInterval(holder >= 0 ? 0 : 1);
-}
-
-void OutputManager::releaseFrameCopy(OutputWindow& output) {
-    auto it = frameCopies_.find(output.getId());
-    if (it == frameCopies_.end()) {
-        return;
-    }
-    if (output.isCreated()) {
-        GLFWwindow* previousContext = glfwGetCurrentContext();
-        output.makeContextCurrent();
-        it->second->destroy();
-        glfwMakeContextCurrent(previousContext);
-    }
-    frameCopies_.erase(it);
 }
 
 void OutputManager::setEditorSwapInterval(int interval) {

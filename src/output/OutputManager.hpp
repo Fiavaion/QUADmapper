@@ -353,8 +353,10 @@ public:
      * output's projector camera (ADR-052), then its quads in z-order, clean (no
      * selection or editor handles), turned by the output's rotation (QM-087).
      * With no assigned scene, or during blackout, the frame is black. The target is
-     * the output window's framebuffer size. Restores the framebuffer binding and
-     * viewport; leaves the renderer's rotation at R0 for the editor canvas.
+     * the output window's framebuffer size. The frame is opaque (alpha 1 everywhere,
+     * translucent quads blend colour only), so the preview can draw it blended.
+     * Restores the framebuffer binding, viewport and blend function; leaves the
+     * renderer's rotation at R0 for the editor canvas.
      * @param scenes    The project's scenes (read-only); each may target one output
      * @param textures  Map of quad/object UUID -> Texture* (pointers owned by EditorState)
      */
@@ -416,9 +418,6 @@ private:
     // resolution while it has no window or the window is minimised.
     static IVec2 frameSize(const OutputWindow& output);
 
-    // Destroy an output's FrameCopy in that output's context (before its window goes).
-    void releaseFrameCopy(OutputWindow& output);
-
     // The monitor the editor window's centre is on; the primary monitor if the
     // editor is off every monitor (e.g. minimised), -1 if unknown.
     int editorMonitorIndex() const;
@@ -453,10 +452,6 @@ private:
     // in the MAIN GL context and are destroyed in shutdown()/deleteOutput() with it
     // current; their colour textures are shared with the output contexts.
     std::unordered_map<UUID, std::unique_ptr<Framebuffer>> frames_;
-
-    // Per-output copiers keyed by output UUID. Each lives in THAT output's context
-    // (framebuffer objects are not shared), created on the output's first present.
-    std::unordered_map<UUID, std::unique_ptr<FrameCopy>> frameCopies_;
 
     // Signalled when the frames drawn by renderFrames are complete; each output
     // context waits on it on the GPU before copying (a change made in one context is

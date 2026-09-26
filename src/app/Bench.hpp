@@ -10,7 +10,7 @@ namespace quadmapper {
 // --bench-prefixed so it never collides with the --stress sub-flags.
 //
 //   --bench[=LIST]            scenarios, comma-separated: quads256, videos16,
-//                             sceneSwitch, latency, drift (default: all)
+//                             sceneSwitch, latency, drift, sameFrame (default: all)
 //   --bench-out=PATH          JSON report file (also printed to stdout); the log
 //                             goes to PATH.log
 //   --bench-seconds=S         measured seconds per scenario (after warm-up)
@@ -24,7 +24,7 @@ namespace quadmapper {
 //   --bench-videos=N          simultaneous video sources in videos16
 //   --bench-media=PATH        video file for videos16 / drift
 //   --bench-hap-media=PATH    HAP file for the videos16 HAP case ("" = skip)
-//   --bench-scenes=N          scenes cycled by sceneSwitch
+//   --bench-scenes=N          scenes cycled by sceneSwitch (2-9: taken by keys 1-9)
 //   --bench-switch-every=K    frames between scene switches
 //   --bench-latency-samples=N nudges measured by latency
 //   --bench-drift-seconds=S   playback length of the drift scenario

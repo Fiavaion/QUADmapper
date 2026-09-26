@@ -9,6 +9,7 @@
 #include "../control/ExternalControl.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
+#include "../core/GlObjectStats.hpp"
 #include "../project/Project.hpp"
 #include "../project/ProjectSerializer.hpp"
 #include "../scene/Scene.hpp"
@@ -1188,11 +1189,6 @@ void Application::render() {
         es.viewportEditor.render(ctx);
     }
 
-    // Draw each projector's frame once (ADR-054), after this frame's edits: the
-    // output windows copy these after the editor's swap, and the Resources >
-    // Preview tab shows the same textures.
-    renderProjectorFrames();
-
     // Create dockspace over the entire viewport
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -1689,6 +1685,16 @@ void Application::render() {
     // Unsaved-changes / recovery modals (ADR-046); drawn last so they sit on top.
     renderSessionDialogs();
 
+    if (m_benchInFrameEdit) m_benchInFrameEdit();
+
+    // Draw each projector's frame once (ADR-054), after every edit this frame made:
+    // the canvas, the shortcuts, scene takes (keys 1-9, OSC/MIDI), blackout and every
+    // panel, so each reaches the projector in the frame it was made (PRD: scene switch
+    // < 16 ms). The output windows copy these after the editor's swap; the Preview tab
+    // recorded the same textures above and ImGui samples them below, so it shows this
+    // frame's image (a resize keeps the texture names, see Framebuffer::resize).
+    renderProjectorFrames();
+
     // Finalize ImGui rendering
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -1854,8 +1860,9 @@ void Application::takeSceneByNumber(int number) {
     }
     const SceneTake take = es.takeScene(number, outputs);
     if (take.kind == SceneTake::Kind::None) return;
-    // Takes run inside the frame, after the frame-boundary fit: re-fit now so this
-    // frame's projector output is framed for the scene just put on air.
+    // Takes run inside render(), after the frame-boundary fit and before this frame's
+    // projector frames are drawn: re-fit now so those frames are framed for the scene
+    // just put on air.
     fitProjectorsToOutputs();
 
     const Scene& scene = es.activeScene();
@@ -2917,16 +2924,30 @@ void Application::shutdown() {
     m_audioEngine.reset();     // stops every video's audio, then closes the device
     m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
     m_outputManager.reset();
-    m_thumbnailCache.reset();  // Clear GL textures before context destroyed
-    if (m_editorState) {
-        m_editorState->missingPatternTexture.reset();
-        m_editorState->missingBlackTexture.reset();
-    }
-    if (m_editorState) m_editorState->calibrationPanel.releaseGlResources();
+
+    // Everything below owns GL objects in the editor's context, so it goes while that
+    // context is still alive and current (glfwTerminate below destroys it).
+    glfwMakeContextCurrent(m_window);
+    // Sources after the audio engine: each video's audio is freed once the mixer can no
+    // longer reach it; then the decode and copier threads stop and the textures, YUV
+    // planes and pixel buffers are deleted.
+    m_sourceManager.reset();
+    m_thumbnailCache.reset();
+    // Quad textures, missing-media looks, the calibration view, media-bin thumbnails.
+    m_editorState.reset();
+    m_calibTexture.reset();
     m_renderer.reset();
     m_folderWatcher.reset();  // Stop watching before destroying media library
     m_mediaLibrary.reset();
     m_project.reset();
+
+    // Anything counted still alive now would be deleted after its context is gone.
+    const GlObjectStats::Snapshot alive = GlObjectStats::Snapshot::capture();
+    if (alive.textures != 0 || alive.framebuffers != 0 || alive.vertexArrays != 0 ||
+        alive.vertexBuffers != 0 || alive.shaderPrograms != 0) {
+        Logger::warning("GL objects still alive at context teardown:\n{}",
+                        alive.diff(GlObjectStats::Snapshot{}));
+    }
 
     // Shutdown ImGui
     ImGui_ImplOpenGL3_Shutdown();

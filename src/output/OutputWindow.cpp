@@ -1,5 +1,6 @@
 #include "OutputWindow.hpp"
 #include "core/Logger.hpp"
+#include "renderer/Framebuffer.hpp"  // glad, before GLFW
 #include <GLFW/glfw3.h>
 #include <algorithm>
 
@@ -29,6 +30,7 @@ OutputWindow::OutputWindow(OutputWindow&& other) noexcept
     , window_(other.window_)
     , shareContext_(other.shareContext_)
     , swapInterval_(other.swapInterval_)
+    , frameCopy_(std::move(other.frameCopy_))
     , position_(other.position_)
     , savedWindowedPos_(other.savedWindowedPos_)
     , savedWindowedSize_(other.savedWindowedSize_)
@@ -57,6 +59,7 @@ OutputWindow& OutputWindow::operator=(OutputWindow&& other) noexcept {
         window_ = other.window_;
         shareContext_ = other.shareContext_;
         swapInterval_ = other.swapInterval_;
+        frameCopy_ = std::move(other.frameCopy_);
         position_ = other.position_;
         savedWindowedPos_ = other.savedWindowedPos_;
         savedWindowedSize_ = other.savedWindowedSize_;
@@ -148,11 +151,25 @@ Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
 void OutputWindow::destroy() {
     if (window_ != nullptr) {
         LOG_DEBUG("Destroying OutputWindow '{}'", name_);
+        if (frameCopy_) {
+            // Its framebuffer object belongs to this context: free it there, first.
+            GLFWwindow* previous = glfwGetCurrentContext();
+            glfwMakeContextCurrent(window_);
+            frameCopy_.reset();
+            glfwMakeContextCurrent(previous != window_ ? previous : nullptr);
+        }
         glfwDestroyWindow(window_);
         window_ = nullptr;
         shareContext_ = nullptr;
         swapInterval_ = -1;
     }
+}
+
+FrameCopy& OutputWindow::frameCopy() {
+    if (!frameCopy_) {
+        frameCopy_ = std::make_unique<FrameCopy>();
+    }
+    return *frameCopy_;
 }
 
 void OutputWindow::show() {

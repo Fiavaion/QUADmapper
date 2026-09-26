@@ -21,8 +21,9 @@ public:
     Framebuffer(const Framebuffer&) = delete;
     Framebuffer& operator=(const Framebuffer&) = delete;
 
-    // Allocate (or reallocate, if the size changed) the FBO + color texture.
-    // Returns true if the framebuffer is complete and ready to use.
+    // Allocate the FBO + color texture, or give them a new size (same GL names, so
+    // colorTexture() is unchanged by a resize). Returns true if the framebuffer is
+    // complete and ready to use.
     bool resize(int width, int height);
 
     // Bind for drawing and set the GL viewport to the framebuffer's size.

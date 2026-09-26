@@ -15,31 +15,37 @@ bool Framebuffer::resize(int width, int height) {
         return true;  // already the right size
     }
 
-    destroy();
+    const bool created = fbo_ == 0;
+    if (created) {
+        glGenTextures(1, &color_);
+        GlObjectStats::onTextureCreated();
+        glGenRenderbuffers(1, &depth_);
+        glGenFramebuffers(1, &fbo_);
+        GlObjectStats::onFramebufferCreated();
+    }
     width_ = width;
     height_ = height;
 
-    glGenTextures(1, &color_);
-    GlObjectStats::onTextureCreated();
+    // A new size re-specifies the storage of the same objects: the colour texture
+    // keeps its name, so a draw already recorded with it (an ImGui::Image of an
+    // output frame) samples the resized texture instead of a deleted one.
     glBindTexture(GL_TEXTURE_2D, color_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glGenRenderbuffers(1, &depth_);
     glBindRenderbuffer(GL_RENDERBUFFER, depth_);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width_, height_);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
-    glGenFramebuffers(1, &fbo_);
-    GlObjectStats::onFramebufferCreated();
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           color_, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
+    if (created) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               color_, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
+    }
 
     bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);

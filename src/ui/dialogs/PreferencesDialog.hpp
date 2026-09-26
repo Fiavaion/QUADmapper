@@ -76,7 +76,8 @@ struct AppPreferences {
  * The application's preferences (the one copy the app reads) and the Edit >
  * Preferences window that edits them.
  *
- * Every change in the window is applied at once and saved; the media-library
+ * Every change in the window is applied at once and saved (a slider once, on
+ * release, not on every frame of the drag); the media-library
  * settings are read at startup, which the window says. The Control tab edits the
  * same ControlPreferences as the Control window, and the Audio tab switches the same
  * engine as the menu bar's device list, so all of them always agree.
@@ -94,9 +95,12 @@ public:
     const AppPreferences& getPreferences() const { return preferences_; }
     AppPreferences& getPreferences() { return preferences_; }
 
-    /** Load from / save to the default config file. */
+    /** Load from / save to the config file (the default one unless setConfigPath). */
     Result<void, Error> loadPreferences();
     Result<void, Error> savePreferences();
+
+    /** Use another config file than AppPreferences::getDefaultConfigPath() (tests). */
+    void setConfigPath(std::filesystem::path path) { configPath_ = std::move(path); }
 
     /**
      * Load from a specific file. Values of the wrong type or out of range are skipped
@@ -113,8 +117,10 @@ private:
     bool renderAudioTab(AudioEngine* audio);
     bool renderControlTab(control::ExternalControl* control);
     void save();
+    std::filesystem::path configPath() const;
 
     AppPreferences preferences_;
+    std::filesystem::path configPath_;          // empty = the default config file
 
     AsyncFileDialog folderDialog_;              // media folder Browse, off the render thread
     ControlSettingsEditor controlSettings_;     // OSC / MIDI settings, as in the Control window

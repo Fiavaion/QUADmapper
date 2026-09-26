@@ -202,8 +202,9 @@ private:
 
     // Draw every output's frame (its routed scene, or the armed One-Flash pattern)
     // into the OutputManager's render targets (ADR-054). Called from render() after
-    // the canvas edits, so the frames include them; presentFrame() then shows them
-    // on the outputs after the editor's swap.
+    // every edit of the frame (canvas, shortcuts, scene takes, panels), just before
+    // ImGui::Render(), so the frames include them; presentFrame() then shows them on
+    // the outputs after the editor's swap.
     void renderProjectorFrames();
 
     // Headless perform-mode stress harness (QM-081 H2). Driven by --stress CLI
@@ -215,6 +216,9 @@ private:
     // shows in code, drives the real frame path and prints a JSON report.
     int runBench(const BenchConfig& cfg);
     friend class BenchRunner;
+    // Bench only (null otherwise): an edit render() makes where the panels make
+    // theirs, after all of them and before the projector frames are drawn.
+    std::function<void()> m_benchInFrameEdit;
 
     // Window
     GLFWwindow* m_window = nullptr;

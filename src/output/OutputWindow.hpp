@@ -4,15 +4,18 @@
 #include "core/Types.hpp"
 #include "core/Result.hpp"
 #include "scene/ProjectorCamera.hpp"
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
-#include <functional>
 
 // Forward declare GLFW types
 struct GLFWwindow;
 struct GLFWmonitor;
 
 namespace quadmapper {
+
+class FrameCopy;
 
 /**
  * Common resolution presets for output windows.
@@ -192,6 +195,12 @@ public:
     // Get the underlying GLFW window (for advanced use)
     GLFWwindow* getGLFWwindow() const { return window_; }
 
+    // Copies the output's frame onto this window (ADR-054). Framebuffer objects are
+    // not shared between contexts, so the window owns its copier: made on first use
+    // (call with this window's context current), freed by destroy() in this context,
+    // so a window created again never reuses a dead context's object.
+    FrameCopy& frameCopy();
+
     // Keyboard callback support for perform mode
     using KeyCallback = std::function<void(int key, int scancode, int action, int mods)>;
 
@@ -242,6 +251,7 @@ private:
     GLFWwindow* window_ = nullptr;
     GLFWwindow* shareContext_ = nullptr;
     int swapInterval_ = -1;  // -1 = never set (driver default)
+    std::unique_ptr<FrameCopy> frameCopy_;  // lives in window_'s context
 
     // Window position (saved for fullscreen toggle)
     IVec2 position_ = IVec2(100, 100);

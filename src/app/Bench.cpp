@@ -1,7 +1,9 @@
 // Headless PRD §5 performance benchmark (--bench). Builds synthetic shows in code,
 // drives the app's real frame (pollFrame + presentFrame: editor canvas, output
 // frames, ImGui, editor swap, projector outputs) and reports JSON. It measures; it never
-// asserts thresholds, because machines vary. See Bench.hpp for the flags.
+// asserts thresholds, because machines vary. The one exception is sameFrame, a
+// correctness check: an edit missing from its own frame's projector image is reported
+// as an error, which fails bench_smoke. See Bench.hpp for the flags.
 
 #include "Bench.hpp"
 #include "Application.hpp"
@@ -11,6 +13,7 @@
 #include "../core/Logger.hpp"
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
+#include "../renderer/Framebuffer.hpp"
 #include "../scene/Quad.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../scene/Scene.hpp"
@@ -26,6 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -99,7 +103,7 @@ bool parseBenchArg(const char* arg, std::optional<BenchConfig>& cfg) {
     } else if ((v = value("--bench-hap-media="))) {
         config().hapMedia = v;
     } else if ((v = value("--bench-scenes="))) {
-        config().scenes = std::max(2, std::atoi(v));
+        config().scenes = std::clamp(std::atoi(v), 2, 9);  // taken with keys 1-9
     } else if ((v = value("--bench-switch-every="))) {
         config().switchEvery = std::max(2, std::atoi(v));
     } else if ((v = value("--bench-latency-samples="))) {
@@ -264,6 +268,7 @@ private:
     bool showOutputs(int count);
     void applyVsync();
     UUID outputId(int index) { return outputs().getOutputs()[static_cast<size_t>(index)]->getId(); }
+    GLFWkeyfun editorKeyCallback();
     std::vector<UUID> proceduralSet(int variant);
     void fillQuadGrid(Scene& scene, int count, const std::vector<UUID>& media, bool variety);
     json outputInfo(int count);
@@ -274,6 +279,7 @@ private:
     json runSceneSwitch();
     json runLatency();
     json runDrift();
+    json runSameFrame();
     int verifyReport();
 
     Application& app_;
@@ -365,6 +371,15 @@ void BenchRunner::applyVsync() {
     glfwMakeContextCurrent(app_.m_window);
     glfwSwapInterval(0);
     glfwMakeContextCurrent(previous);
+}
+
+// The editor window's GLFW key callback (ImGui's, which chains to the app's): calling
+// it is the path a real key press takes inside glfwPollEvents. Null if none is set.
+GLFWkeyfun BenchRunner::editorKeyCallback() {
+    GLFWwindow* window = app_.m_window;
+    const GLFWkeyfun callback = glfwSetKeyCallback(window, nullptr);
+    glfwSetKeyCallback(window, callback);
+    return callback;
 }
 
 // Four full-HD procedural sources; `variant` picks which pattern leads, so scenes
@@ -653,12 +668,14 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
     return r;
 }
 
-// (c) Scene switch through the user's path (ScenePanel: make the scene active and
-// route it to the projector), timed from the request to the swap that shows it.
+// (c) Scene switch through the live-show path: the scene's number key, delivered
+// through the editor window's key callback as a real press is and taken inside
+// render() (US-008: scene N goes to the projector the active scene is on). Timed from
+// the key press to the swap of that frame; sameFrame checks that the frame shows it.
 json BenchRunner::runSceneSwitch() {
     json r;
     r["name"] = "sceneSwitch";
-    r["target"] = "scene switch < 16 ms (request -> first presented output frame)";
+    r["target"] = "scene switch < 16 ms (scene key press -> first presented output frame)";
     resetShow();
     if (!showOutputs(cfg_.outputs)) return json{{"name", "sceneSwitch"}, {"error", "output creation failed"}};
 
@@ -680,6 +697,12 @@ json BenchRunner::runSceneSwitch() {
     }
     es().setActiveScene(sceneIds.front());
     const UUID projector = outputId(0);
+    GLFWwindow* window = app_.m_window;
+    const GLFWkeyfun keyCallback = editorKeyCallback();
+    if (!keyCallback) {
+        r["error"] = "no key callback on the editor window";
+        return r;
+    }
 
     step();
     applyVsync();
@@ -695,12 +718,13 @@ json BenchRunner::runSceneSwitch() {
         const bool doSwitch = (++frame % cfg_.switchEvery) == 0;
         Clock::time_point requested;
         const size_t next = (current + 1) % sceneIds.size();
+        const int key = GLFW_KEY_1 + static_cast<int>(next);  // scene next+1
         const Frame f = step([&]() {
             if (!doSwitch) return;
             requested = Clock::now();
-            es().setActiveScene(sceneIds[next]);
-            es().assignSceneToOutput(sceneIds[next], projector);
+            keyCallback(window, key, glfwGetKeyScancode(key), GLFW_PRESS, 0);
         });
+        if (doSwitch) keyCallback(window, key, glfwGetKeyScancode(key), GLFW_RELEASE, 0);
         const double period = ms(lastPresented, f.presented);
         lastPresented = f.presented;
         if (!doSwitch) {
@@ -757,8 +781,7 @@ json BenchRunner::runLatency() {
     es().currentSelectionType = EditorState::SelectionType::Quad;
 
     GLFWwindow* window = app_.m_window;
-    const GLFWkeyfun keyCallback = glfwSetKeyCallback(window, nullptr);
-    glfwSetKeyCallback(window, keyCallback);
+    const GLFWkeyfun keyCallback = editorKeyCallback();
     if (!keyCallback) {
         r["error"] = "no key callback on the editor window";
         return r;
@@ -917,6 +940,126 @@ json BenchRunner::runDrift() {
     return r;
 }
 
+// (f) Same-frame edits, a correctness check rather than a measurement: an edit made
+// during render() must be in the projector frame drawn in that same frame. The
+// projector's frame is read back right after the frame that made the edit, for a scene
+// take by its number key (taken inside render(), as a real press is) and for a quad
+// opacity change made where the panels make theirs (the Inspector's slider). Any miss
+// is an error, so bench_smoke fails.
+json BenchRunner::runSameFrame() {
+    json r;
+    r["name"] = "sameFrame";
+    r["target"] = "an edit made during a frame is in that frame's projector image";
+    resetShow();
+    if (!showOutputs(1)) return json{{"name", "sameFrame"}, {"error", "output creation failed"}};
+
+    // Scene 1, on the projector: one plain (white) quad over the whole canvas.
+    // Scene 2: empty, so the projector is black.
+    Scene& lit = es().activeScene();
+    Quad* quad = lit.getQuadManager().createQuad("Bench white");
+    quad->getGeometry().setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f),
+                                    Vec2(0.0f, 1.0f)});
+    es().addScene("Bench black");
+    const UUID projector = outputId(0);
+    es().assignSceneToOutput(lit.getId(), projector);
+    es().setActiveScene(lit.getId());
+    GLFWwindow* window = app_.m_window;
+    const GLFWkeyfun keyCallback = editorKeyCallback();
+    if (!keyCallback) {
+        r["error"] = "no key callback on the editor window";
+        return r;
+    }
+
+    // The centre pixel (RGBA) of the projector's current frame; -1s if unreadable.
+    Framebuffer probe;
+    FrameCopy copy;
+    auto centre = [&]() {
+        std::array<int, 4> rgba{-1, -1, -1, -1};
+        const Framebuffer* frame = outputs().outputFrame(projector);
+        if (!frame || !probe.resize(frame->width(), frame->height())) return rgba;
+        GLint viewport[4] = {0, 0, 0, 0};
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        probe.bind();
+        if (copy.copy(*frame, frame->width(), frame->height())) {
+            unsigned char px[4] = {0, 0, 0, 0};
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(frame->width() / 2, frame->height() / 2, 1, 1, GL_RGBA,
+                         GL_UNSIGNED_BYTE, px);
+            rgba = {px[0], px[1], px[2], px[3]};
+        }
+        Framebuffer::unbind();
+        if (scissor) glEnable(GL_SCISSOR_TEST);
+        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        return rgba;
+    };
+    auto isGrey = [](const std::array<int, 4>& px, int value) {
+        return std::abs(px[0] - value) <= 2 && std::abs(px[1] - value) <= 2 &&
+               std::abs(px[2] - value) <= 2;
+    };
+    // Scene N by its key, pressed where OS input lands; the frame that takes it.
+    auto takeScene = [&](int number, Clock::time_point& pressed) {
+        const int key = GLFW_KEY_0 + number;
+        const Frame f = step([&]() {
+            pressed = Clock::now();
+            keyCallback(window, key, glfwGetKeyScancode(key), GLFW_PRESS, 0);
+        });
+        keyCallback(window, key, glfwGetKeyScancode(key), GLFW_RELEASE, 0);
+        return f;
+    };
+    // One frame whose render() sets the quad's opacity where the panels act.
+    auto opacityFrame = [&](float opacity) {
+        app_.m_benchInFrameEdit = [quad, opacity]() { quad->setOpacity(opacity); };
+        step();
+        app_.m_benchInFrameEdit = nullptr;
+    };
+
+    step();
+    applyVsync();
+    for (int i = 0; i < 3; ++i) step();
+    const std::array<int, 4> white = centre();
+    if (white[0] < 200 || !isGrey(white, white[0])) {
+        r["error"] = "the lit scene's quad is not in the projector frame";
+        return r;
+    }
+
+    const int rounds = 3;
+    long takesMissed = 0, opacityMissed = 0, notOpaque = 0;
+    std::vector<double> takeToOutput;
+    for (int i = 0; i < rounds && !aborted_; ++i) {
+        for (int number : {2, 1}) {
+            Clock::time_point pressed;
+            const Frame f = takeScene(number, pressed);
+            const std::array<int, 4> px = centre();
+            if (isGrey(px, number == 2 ? 0 : white[0])) {
+                takeToOutput.push_back(ms(pressed, f.presented));
+            } else {
+                ++takesMissed;
+            }
+        }
+        for (float opacity : {0.5f, 1.0f}) {
+            opacityFrame(opacity);
+            const std::array<int, 4> px = centre();
+            if (!isGrey(px, static_cast<int>(std::lround(white[0] * opacity)))) ++opacityMissed;
+            if (px[3] != 255) ++notOpaque;  // the preview draws the frame blended by alpha
+        }
+    }
+
+    r["rounds"] = rounds;
+    r["scene_takes_missing_their_frame"] = takesMissed;
+    r["opacity_edits_missing_their_frame"] = opacityMissed;
+    r["frame_pixels_not_opaque"] = notOpaque;
+    r["take_key_to_output_present_ms"] = summarize(takeToOutput);
+    const bool ok = !aborted_ && takesMissed == 0 && opacityMissed == 0 && notOpaque == 0;
+    if (!ok) {
+        r["error"] = "an edit made during a frame was not in that frame's projector image "
+                     "(or the frame was not opaque)";
+    }
+    r["pass"] = ok;
+    return r;
+}
+
 int BenchRunner::run() {
     EditorState& e = es();
     // Deterministic and side-effect free: default dock layout (no imgui.ini read or
@@ -978,6 +1121,7 @@ int BenchRunner::run() {
     if (cfg_.wants("sceneSwitch")) record(runSceneSwitch());
     if (cfg_.wants("latency")) record(runLatency());
     if (cfg_.wants("drift")) record(runDrift());
+    if (cfg_.wants("sameFrame")) record(runSameFrame());
     report["scenarios"] = scenarios;
 
     // Renderers drop a deleted quad's GPU mesh after 600 idle scene passes (one or

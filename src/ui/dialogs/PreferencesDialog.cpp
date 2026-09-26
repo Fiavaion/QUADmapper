@@ -157,10 +157,10 @@ bool PreferencesDialog::renderGeneralTab(EditorContext& ctx) {
     changed |= ImGui::Checkbox("Save unsaved work to a recovery file", &general.autoSaveEnabled);
     ImGui::BeginDisabled(!general.autoSaveEnabled);
     ImGui::SetNextItemWidth(200.0f);
-    if (ImGui::SliderInt("Every (minutes)", &general.autoSaveIntervalMinutes, MIN_AUTOSAVE_MINUTES,
-                         MAX_AUTOSAVE_MINUTES, "%d", ImGuiSliderFlags_AlwaysClamp)) {
-        changed = true;
-    }
+    // The value applies while it is dragged; the file is written once, on release.
+    ImGui::SliderInt("Every (minutes)", &general.autoSaveIntervalMinutes, MIN_AUTOSAVE_MINUTES,
+                     MAX_AUTOSAVE_MINUTES, "%d", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::IsItemDeactivatedAfterEdit();
     ImGui::EndDisabled();
     appliesNote("Applies now. A crash loses at most this much work.");
 
@@ -249,12 +249,16 @@ void PreferencesDialog::save() {
 
 // ---- File ---------------------------------------------------------------------
 
+std::filesystem::path PreferencesDialog::configPath() const {
+    return configPath_.empty() ? AppPreferences::getDefaultConfigPath() : configPath_;
+}
+
 Result<void, Error> PreferencesDialog::loadPreferences() {
-    return loadFromFile(AppPreferences::getDefaultConfigPath());
+    return loadFromFile(configPath());
 }
 
 Result<void, Error> PreferencesDialog::savePreferences() {
-    return saveToFile(AppPreferences::getDefaultConfigPath());
+    return saveToFile(configPath());
 }
 
 Result<void, Error> PreferencesDialog::loadFromFile(const std::filesystem::path& path) {
@@ -342,7 +346,8 @@ Result<void, Error> PreferencesDialog::saveToFile(const std::filesystem::path& p
     ctl["oscFeedbackUseIds"] = preferences_.control.oscFeedbackUseIds;
     root["control"] = ctl;
 
-    auto result = FileSystem::writeFile(path, root.dump(2));
+    // Atomic: a crash or full disk mid-write leaves the previous file, never half of one.
+    auto result = FileSystem::writeFileAtomic(path, root.dump(2));
     if (result) {
         Logger::info("Saved preferences to {}", path.u8string());
     }
