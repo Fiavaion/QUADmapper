@@ -1,5 +1,6 @@
 #include "AsyncFileDialog.hpp"
 
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 
 #ifdef _WIN32
@@ -10,10 +11,29 @@
 #include <shlobj.h>
 #endif
 
+#include <algorithm>
 #include <chrono>
-#include <cstdio>
+#include <filesystem>
 
 namespace quadmapper {
+
+#ifdef _WIN32
+namespace {
+
+// Request strings are UTF-8 and the W dialogs take UTF-16 (the A dialogs would turn
+// any name outside the ANSI code page into '?'). Length-counted, so the filter's
+// embedded NULs survive.
+std::wstring widen(const std::string& utf8) {
+    if (utf8.empty()) return {};
+    const int size = static_cast<int>(utf8.size());
+    const int len = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), size, nullptr, 0);
+    std::wstring out(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), size, out.data(), len);
+    return out;
+}
+
+}  // namespace
+#endif
 
 AsyncFileDialog::~AsyncFileDialog() {
     if (!worker_.joinable()) return;
@@ -62,29 +82,36 @@ void AsyncFileDialog::run(const Request& request) {
     // The shell dialogs need a single-threaded COM apartment on the thread showing them.
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 
+    // Chosen paths are handed back as UTF-8, like every path string in the app.
     std::vector<std::string> chosen;
+    const std::wstring title = widen(request.title);
     if (request.kind == Kind::PickFolder) {
-        BROWSEINFOA bi = {};
-        bi.lpszTitle = request.title.c_str();
+        BROWSEINFOW bi = {};
+        bi.lpszTitle = title.c_str();
         bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-        if (LPITEMIDLIST pidl = SHBrowseForFolderA(&bi)) {
-            char path[MAX_PATH] = "";
-            if (SHGetPathFromIDListA(pidl, path) && path[0] != '\0') chosen.emplace_back(path);
+        if (LPITEMIDLIST pidl = SHBrowseForFolderW(&bi)) {
+            wchar_t path[MAX_PATH] = L"";
+            if (SHGetPathFromIDListW(pidl, path) && path[0] != L'\0') {
+                chosen.push_back(utf8FromPath(std::filesystem::path(path)));
+            }
             CoTaskMemFree(pidl);
         }
     } else {
+        const std::wstring filter = widen(request.filter);
+        const std::wstring defaultExt = widen(request.defaultExt);
         // Room for a multi-select list (directory + NUL-separated names).
-        std::vector<char> buffer(request.kind == Kind::OpenFiles ? 32768 : MAX_PATH, '\0');
-        snprintf(buffer.data(), buffer.size(), "%s", request.initialPath.c_str());
+        std::vector<wchar_t> buffer(request.kind == Kind::OpenFiles ? 32768 : MAX_PATH, L'\0');
+        const std::wstring initialPath = widen(request.initialPath);
+        initialPath.copy(buffer.data(), std::min(initialPath.size(), buffer.size() - 1));
 
-        OPENFILENAMEA ofn = {};
+        OPENFILENAMEW ofn = {};
         ofn.lStructSize = sizeof(ofn);
         ofn.hwndOwner = nullptr;  // see the class comment
-        ofn.lpstrFilter = request.filter.empty() ? nullptr : request.filter.c_str();
+        ofn.lpstrFilter = filter.empty() ? nullptr : filter.c_str();
         ofn.lpstrFile = buffer.data();
         ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-        ofn.lpstrTitle = request.title.c_str();
-        ofn.lpstrDefExt = request.defaultExt.empty() ? nullptr : request.defaultExt.c_str();
+        ofn.lpstrTitle = title.c_str();
+        ofn.lpstrDefExt = defaultExt.empty() ? nullptr : defaultExt.c_str();
         // OFN_NOCHANGEDIR: the working directory is process-wide, and the render
         // thread's relative resource lookups depend on it.
         ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
@@ -95,19 +122,19 @@ void AsyncFileDialog::run(const Request& request) {
             case Kind::PickFolder: break;
         }
 
-        const BOOL ok = request.kind == Kind::SaveFile ? GetSaveFileNameA(&ofn)
-                                                       : GetOpenFileNameA(&ofn);
+        const BOOL ok = request.kind == Kind::SaveFile ? GetSaveFileNameW(&ofn)
+                                                       : GetOpenFileNameW(&ofn);
         if (ok) {
             // One file: the full path. Several: the directory, then each name, each
             // NUL-terminated, ending with an empty string.
-            const std::string first = buffer.data();
-            const char* next = buffer.data() + first.size() + 1;
-            if (request.kind != Kind::OpenFiles || *next == '\0') {
-                chosen.push_back(first);
+            const std::wstring first = buffer.data();
+            const wchar_t* next = buffer.data() + first.size() + 1;
+            if (request.kind != Kind::OpenFiles || *next == L'\0') {
+                chosen.push_back(utf8FromPath(std::filesystem::path(first)));
             } else {
-                while (*next != '\0') {
-                    const std::string name = next;
-                    chosen.push_back(first + "\\" + name);
+                while (*next != L'\0') {
+                    const std::wstring name = next;
+                    chosen.push_back(utf8FromPath(std::filesystem::path(first) / name));
                     next += name.size() + 1;
                 }
             }

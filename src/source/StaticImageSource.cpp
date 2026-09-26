@@ -1,12 +1,13 @@
 #include "StaticImageSource.hpp"
 #include "media/ImageLoader.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 
 namespace quadmapper {
 
 StaticImageSource::StaticImageSource(const std::filesystem::path& path)
     : path_(path)
-    , name_(path.filename().string())
+    , name_(utf8FromPath(path.filename()))
 {
 }
 
@@ -23,7 +24,7 @@ bool StaticImageSource::initialize() {
     auto result = ImageLoader::load(path_);
     if (!result.isSuccess()) {
         Logger::error("StaticImageSource: Failed to load '{}': {}",
-                      path_.string(), result.error().message);
+                      utf8FromPath(path_), result.error().message);
         return false;
     }
 

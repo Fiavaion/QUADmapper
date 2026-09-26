@@ -20,6 +20,7 @@
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "project/Project.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 #include "core/Types.hpp"
 
@@ -128,7 +129,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 // ADR-040 P2: bind via a (deduped) SourceManager source + mediaId
                 // instead of loading a per-quad Texture into quadTextures.
                 UUID sid = ctx.sourceManager
-                    ? ctx.sourceManager->getOrCreateImageSource(currentTexturePath) : UUID();
+                    ? ctx.sourceManager->getOrCreateImageSource(pathFromUtf8(currentTexturePath)) : UUID();
                 if (!sid.isNull()) {
                     bindSourceToQuad(ctx.es, ctx.project, *selectedQuad, sid,
                                      currentTexturePath, /*isVideo=*/false);
@@ -200,7 +201,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                     UUID sid = assignMediaToQuad(ctx.es, ctx.sourceManager, ctx.project,
                                                  *selectedQuad, *item);
                     if (!sid.isNull()) {
-                        strncpy(currentTexturePath, item->getPath().string().c_str(),
+                        strncpy(currentTexturePath, utf8FromPath(item->getPath()).c_str(),
                                 sizeof(currentTexturePath) - 1);
                         currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
                         Logger::info("Assigned media '{}' to quad '{}'",
@@ -971,7 +972,7 @@ void InspectorPanel::renderMediaProperties(EditorContext& ctx) {
         if (selectedMedia->hasPath()) {
             ImGui::Separator();
             ImGui::Text("File:");
-            ImGui::TextWrapped("%s", selectedMedia->getPath().string().c_str());
+            ImGui::TextWrapped("%s", utf8FromPath(selectedMedia->getPath()).c_str());
         }
 
         // Procedural source parameters

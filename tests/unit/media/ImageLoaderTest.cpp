@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "media/ImageLoader.hpp"
 #include "media/MediaLibrary.hpp"
+#include "core/FileSystem.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -383,6 +384,36 @@ TEST_F(ImageLoaderTiffTest, MissingFileReturnsError) {
     auto result = ImageLoader::load(dir_ / "missing.tif");
     ASSERT_TRUE(result.isError());
     EXPECT_NE(result.error().message.find("not found"), std::string::npos);
+}
+
+// A folder named outside the ANSI code page: stb_image decodes from memory read
+// through the wide path, WIC opens the wide name.
+TEST_F(ImageLoaderTiffTest, LoadsFromNonAsciiFolder) {
+    const std::filesystem::path folder = dir_ / pathFromUtf8(u8"\u00fc \u65e5\u672c \u0416");
+    std::filesystem::create_directories(folder);
+    auto put = [](const std::filesystem::path& path, const std::vector<uint8_t>& bytes) {
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+    };
+    const std::string header = "P6\n3 2\n255\n";
+    std::vector<uint8_t> ppmBytes(header.begin(), header.end());
+    const std::vector<uint8_t> rgb = flatten(SOURCE_3X2);
+    ppmBytes.insert(ppmBytes.end(), rgb.begin(), rgb.end());
+    const std::filesystem::path ppm = folder / pathFromUtf8(u8"b\u00fchne \u0416.ppm");
+    const std::filesystem::path tiff = folder / pathFromUtf8(u8"\u65e5\u672c.tif");
+    put(ppm, ppmBytes);
+    put(tiff, buildTiff({rgb8Page()}));
+
+    for (const auto& path : {ppm, tiff}) {
+        auto result = ImageLoader::load(path);
+        ASSERT_TRUE(result.isSuccess()) << result.error().message;
+        EXPECT_EQ(result.value().width, 3);
+        EXPECT_EQ(result.value().height, 2);
+        auto rgba = ImageLoader::loadWithChannels(path, 4);
+        ASSERT_TRUE(rgba.isSuccess()) << rgba.error().message;
+        EXPECT_EQ(rgba.value().channels, 4);
+    }
 }
 
 TEST_F(ImageLoaderTiffTest, DecodesOnFreshWorkerThread) {

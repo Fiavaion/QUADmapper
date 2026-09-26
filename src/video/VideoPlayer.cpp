@@ -1,5 +1,6 @@
 #include "VideoPlayer.hpp"
 #include "FrameSelection.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 #include <algorithm>
 #include <cmath>
@@ -40,7 +41,7 @@ bool VideoPlayer::load(const std::filesystem::path& path, const DecodeOptions& o
     }
     applyTransport();  // starts background decoding at the clock's position
 
-    LOG_INFO("Loaded video: {}", path.string());
+    LOG_INFO("Loaded video: {}", utf8FromPath(path));
     return true;
 }
 
@@ -267,7 +268,7 @@ void VideoPlayer::checkDuration() {
     const double fps = decoder_->getInfo().frameRate;
     const double halfFrame = fps > 0.0 ? 0.5 / fps : 0.02;
     if (std::abs(end - transport_.clock().duration()) > halfFrame) {
-        LOG_INFO("Video {} ends at {} s, not the declared {} s", path_.filename().string(), end,
+        LOG_INFO("Video {} ends at {} s, not the declared {} s", utf8FromPath(path_.filename()), end,
                  transport_.clock().duration());
         state_.duration = end;
         transport_.setDuration(end);

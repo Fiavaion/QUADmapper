@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "scene/ObjLoader.hpp"
+#include "core/FileSystem.hpp"
 #include "core/UUID.hpp"
 
 #include <glm/glm.hpp>
@@ -167,6 +168,22 @@ TEST_F(ObjLoaderTest, EmptyOrFacelessFileReturnsErr) {
 
 TEST_F(ObjLoaderTest, MissingFileReturnsErr) {
     EXPECT_TRUE(loadObj(dir_ / "absent.obj").isError());
+}
+
+TEST_F(ObjLoaderTest, LoadsFromNonAsciiFolder) {
+    const fs::path folder = dir_ / pathFromUtf8(u8"\u00fc \u65e5\u672c \u0416");
+    fs::create_directories(folder);
+    const fs::path file = folder / pathFromUtf8(u8"\u0416.obj");
+    std::ofstream(file, std::ios::binary) << "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+
+    auto result = loadObj(file);
+    ASSERT_TRUE(result.isSuccess()) << result.error().message;
+    EXPECT_EQ(result.value().indices.size(), 3u);
+
+    // Errors name the file in UTF-8 rather than throwing on the conversion.
+    auto missing = loadObj(folder / pathFromUtf8(u8"\u65e5\u672c.obj"));
+    ASSERT_TRUE(missing.isError());
+    EXPECT_NE(missing.error().message.find(u8"\u65e5\u672c.obj"), std::string::npos);
 }
 
 }  // namespace test

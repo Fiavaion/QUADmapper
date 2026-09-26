@@ -94,7 +94,7 @@ static void glfwErrorCallback(int error, const char* description) {
 static std::string absolutePathString(const std::filesystem::path& path) {
     std::error_code ec;
     const std::filesystem::path abs = std::filesystem::absolute(path, ec);
-    return ec ? path.string() : abs.string();
+    return utf8FromPath(ec ? path : abs);
 }
 
 static std::optional<ProceduralType> proceduralTypeOf(SourceType type) {
@@ -143,9 +143,9 @@ static std::optional<Project::SourceData> describeSource(SourceManager& sm, cons
 
 // Recreate a "sources" entry in the SourceManager; returns the live id (null on failure).
 static UUID createSourceFrom(SourceManager& sm, const Project::SourceData& d) {
-    if (d.kind == "image") return sm.getOrCreateImageSource(d.path);
+    if (d.kind == "image") return sm.getOrCreateImageSource(pathFromUtf8(d.path));
     if (d.kind == "video" || d.kind == "hap") {
-        const UUID id = sm.getOrCreateVideoSource(d.path);  // probes HAP itself
+        const UUID id = sm.getOrCreateVideoSource(pathFromUtf8(d.path));  // probes HAP itself
         applySavedTransport(sm, id, d.transport);
         return id;
     }
@@ -209,7 +209,7 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
             od.id = object.getId();
             od.name = object.getName();
             od.path = object.getSourcePath().empty() ? std::string()
-                                                     : absolutePathString(object.getSourcePath());
+                                                     : absolutePathString(pathFromUtf8(object.getSourcePath()));
             od.transform = object.getTransform();
             od.texture = object.getTexture();
             od.visible = object.isVisible();
@@ -384,8 +384,8 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                 // carrier (P5 serializes mediaId/sources directly).
                 es.quadTexturePaths[nq->getId()] = texturePath;
                 if (sm) {
-                    const std::filesystem::path mediaPath = texturePath;
-                    const std::string ext = mediaPath.extension().string();
+                    const std::filesystem::path mediaPath = pathFromUtf8(texturePath);
+                    const std::string ext = utf8FromPath(mediaPath.extension());
                     const std::optional<MediaType> type = MediaLibrary::getTypeFromExtension(ext);
                     UUID sid;
                     if (type == MediaType::VIDEO) {
@@ -415,7 +415,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                 // for the user to relocate (the sources schema has no "unknown" kind).
                 Project::SourceData src;
                 src.kind = MediaLibrary::getTypeFromExtension(
-                               std::filesystem::path(texturePath).extension().string()) ==
+                               utf8FromPath(pathFromUtf8(texturePath).extension())) ==
                                    MediaType::VIDEO ? "video" : "image";
                 src.path = texturePath;
                 nq->getTexture().mediaId = missingIdFor(std::move(src));
@@ -477,7 +477,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
 
             auto mesh = od.path.empty() ? Err<MeshData>("no mesh file path saved")
                       : od.missing      ? Err<MeshData>("file not found")
-                                        : loadObj(od.path);
+                                        : loadObj(pathFromUtf8(od.path));
             if (mesh) {
                 object->getMesh() = std::move(mesh.value());
             } else {
@@ -567,8 +567,8 @@ static void dropCallback(GLFWwindow* /*window*/, int count, const char** paths) 
 
     int imported = 0;
     for (int i = 0; i < count; i++) {
-        std::filesystem::path filePath(paths[i]);
-        std::string ext = filePath.extension().string();
+        const std::filesystem::path filePath = pathFromUtf8(paths[i]);  // GLFW drops are UTF-8
+        std::string ext = utf8FromPath(filePath.extension());
         if (MediaLibrary::isExtensionSupported(ext)) {
             if (library->addItem(filePath)) {
                 imported++;
@@ -828,7 +828,7 @@ bool Application::initializeComponents() {
             std::filesystem::path candidate = base / rel;
             if (std::filesystem::exists(candidate, ec)) {
                 sidecarCfg.scriptPath =
-                    std::filesystem::weakly_canonical(candidate, ec).string();
+                    utf8FromPath(std::filesystem::weakly_canonical(candidate, ec));
                 break;
             }
         }
@@ -845,7 +845,7 @@ bool Application::initializeComponents() {
 
         if (prefs.general.autoLoadMediaOnStartup &&
             !prefs.general.defaultMediaFolder.empty()) {
-            std::filesystem::path mediaFolder(prefs.general.defaultMediaFolder);
+            const std::filesystem::path mediaFolder = pathFromUtf8(prefs.general.defaultMediaFolder);
             if (std::filesystem::exists(mediaFolder)) {
                 int count = m_mediaLibrary->scanFolder(
                     mediaFolder,
@@ -853,7 +853,7 @@ bool Application::initializeComponents() {
                 );
                 if (count > 0) {
                     Logger::info("Auto-loaded {} media files from {}",
-                                count, mediaFolder.string());
+                                count, utf8FromPath(mediaFolder));
                 }
             }
         }
@@ -865,16 +865,16 @@ bool Application::initializeComponents() {
                 if (isNew) {
                     if (m_mediaLibrary->addItem(path)) {
                         Logger::info("FolderWatcher: Auto-imported new file: {}",
-                                    path.filename().string());
+                                    utf8FromPath(path.filename()));
                     }
                 } else {
                     // File was modified - could reload texture here in the future
                     Logger::debug("FolderWatcher: File modified: {}",
-                                 path.filename().string());
+                                 utf8FromPath(path.filename()));
                 }
             });
             m_folderWatcher->watch(
-                prefs.general.defaultMediaFolder,
+                pathFromUtf8(prefs.general.defaultMediaFolder),
                 prefs.general.recursiveFolderScan
             );
         }
@@ -1729,7 +1729,7 @@ fs::path recoveryDir() {
 fs::path recoveryFileFor(const std::string& projectPath, const char* kind) {
     const std::string suffix = std::string(".") + kind + ".qmap";
     if (projectPath.empty()) return recoveryDir() / ("untitled" + suffix);
-    fs::path p(projectPath);
+    fs::path p = pathFromUtf8(projectPath);
     return p.replace_extension(suffix);
 }
 
@@ -1776,15 +1776,15 @@ std::string missingMediaNote(size_t missing) {
 AsyncFileDialog::Request locateFileRequest(const MissingMediaItem& item) {
     static const char meshFilter[] = "Wavefront OBJ (*.obj)\0*.obj\0All Files (*.*)\0*.*\0";
     static const char mediaFilter[] = "All Files (*.*)\0*.*\0";
-    const fs::path original(item.path);
+    const fs::path original = pathFromUtf8(item.path);
     AsyncFileDialog::Request request;
     request.kind = AsyncFileDialog::Kind::OpenFile;
-    request.title = "Locate " + original.filename().string();
+    request.title = "Locate " + utf8FromPath(original.filename());
     if (item.kind == MissingMediaItem::Kind::Mesh) request.filter.assign(meshFilter, sizeof(meshFilter));
     else                                           request.filter.assign(mediaFilter, sizeof(mediaFilter));
     std::error_code ec;
-    request.initialPath = fs::is_directory(original.parent_path(), ec) ? original.string()
-                                                                        : original.filename().string();
+    request.initialPath = fs::is_directory(original.parent_path(), ec) ? utf8FromPath(original)
+                                                                        : utf8FromPath(original.filename());
     return request;
 }
 
@@ -1809,15 +1809,15 @@ AsyncFileDialog::Request objectFileRequest() {
 // object is in view as soon as it is imported.
 void importObjectFile(EditorState& es, OutputManager* om, Project* project,
                       const std::string& path) {
-    auto mesh = loadObj(path);
+    const std::filesystem::path file = pathFromUtf8(path);
+    auto mesh = loadObj(file);
     if (!mesh) {
         Logger::error("Import 3D object failed: {}", mesh.error().message);
         postStatus(es, "Import failed: " + mesh.error().message);
         return;
     }
     Scene& scene = es.activeScene();
-    const std::filesystem::path file(path);
-    MeshObject* object = scene.createObject(file.stem().string());
+    MeshObject* object = scene.createObject(utf8FromPath(file.stem()));
     object->setSourcePath(absolutePathString(file));
     object->getMesh() = std::move(mesh.value());
 
@@ -2158,7 +2158,7 @@ void Application::performNewProject() {
 
 bool Application::performLoadProject(const std::string& path) {
     EditorState& es = *m_editorState;
-    auto result = ProjectSerializer::load(path);
+    auto result = ProjectSerializer::load(pathFromUtf8(path));
     if (!result) {
         Logger::error("Load failed: {}", result.error().message);
         postStatus(es, "Load failed: " + result.error().message);
@@ -2203,7 +2203,7 @@ bool Application::writeProjectFile(const std::string& path) {
     EditorState& es = *m_editorState;
     const std::string previousFile = m_project->getFilePath();
     buildEditorProject(*m_project);
-    auto result = ProjectSerializer::save(*m_project, path);
+    auto result = ProjectSerializer::save(*m_project, pathFromUtf8(path));
     if (!result) {
         Logger::error("Save failed: {}", result.error().message);
         postStatus(es, "Save failed: " + result.error().message);
@@ -2228,7 +2228,7 @@ void Application::performRestoreRecovery() {
     es.recoveryFilePath.clear();
     es.recoveryProjectPath.clear();
 
-    auto result = ProjectSerializer::load(file);
+    auto result = ProjectSerializer::load(pathFromUtf8(file));
     if (!result) {
         Logger::error("Recovery failed: {}", result.error().message);
         postStatus(es, "Could not restore " + file + ": " + result.error().message);
@@ -2354,7 +2354,7 @@ void Application::autosaveIfDue() {
             std::error_code ec;
             fs::create_directories(file.parent_path(), ec);
             auto result = FileSystem::writeFileAtomic(file, body);
-            if (result) Logger::info("Autosaved to {}", file.string());
+            if (result) Logger::info("Autosaved to {}", utf8FromPath(file));
             return result;
         });
 }
@@ -2373,7 +2373,7 @@ void Application::offerRecovery(const std::string& projectPath) {
     std::error_code ec;
     fs::file_time_type projectTime = fs::file_time_type::min();
     if (!projectPath.empty()) {
-        projectTime = fs::last_write_time(projectPath, ec);
+        projectTime = fs::last_write_time(pathFromUtf8(projectPath), ec);
         if (ec) return;
     }
     // Newest of the autosave and the crash file, if newer than the project itself.
@@ -2388,7 +2388,7 @@ void Application::offerRecovery(const std::string& projectPath) {
         }
     }
     if (best.empty()) return;
-    es.recoveryFilePath = best.string();
+    es.recoveryFilePath = utf8FromPath(best);
     es.recoveryProjectPath = projectPath;
 }
 
@@ -2488,7 +2488,7 @@ void Application::renderMissingMediaDialog() {
                 ImGui::TableNextRow();
 
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(fs::path(item.path).filename().string().c_str());
+                ImGui::TextUnformatted(utf8FromPath(pathFromUtf8(item.path).filename()).c_str());
                 ImGui::PushTextWrapPos(0.0f);
                 ImGui::TextDisabled("%s", item.path.c_str());
                 auto error = es.missingMediaErrors.find(item.path);
@@ -2547,12 +2547,13 @@ void Application::requestLocateMissingMedia(const MissingMediaItem& item) {
     m_onProjectFileChosen = [this, item](const std::string& path) {
         if (path.empty()) return;
         EditorState& state = *m_editorState;
-        const int resolved = locateMissingMedia(state, m_sourceManager.get(), m_project.get(), item, path);
+        const int resolved =
+            locateMissingMedia(state, m_sourceManager.get(), m_project.get(), item, pathFromUtf8(path));
         if (resolved > 0) {
             postStatus(state, "Relocated " + std::to_string(resolved) + " missing file" +
                                   (resolved == 1 ? "" : "s"));
         } else {
-            postStatus(state, "Could not use " + fs::path(path).filename().string());
+            postStatus(state, "Could not use " + utf8FromPath(pathFromUtf8(path).filename()));
         }
     };
 }
@@ -2568,7 +2569,7 @@ void Application::requestMissingMediaSearch() {
         if (folder.empty() || m_mediaSearch.valid()) return;
         m_mediaSearchCancel = false;
         m_mediaSearchFolder = folder;
-        m_mediaSearch = std::async(std::launch::async, [this, root = fs::path(folder)]() {
+        m_mediaSearch = std::async(std::launch::async, [this, root = pathFromUtf8(folder)]() {
             return relocate::indexFolder(root, &m_mediaSearchCancel);
         });
     };
@@ -2607,7 +2608,7 @@ void Application::emergencySave() noexcept {
         fs::create_directories(file.parent_path(), ec);
         auto result = ProjectSerializer::save(p, file);
         if (result) {
-            Logger::warning("Emergency save written to {}", file.string());
+            Logger::warning("Emergency save written to {}", utf8FromPath(file));
         } else {
             Logger::error("Emergency save failed: {}", result.error().message);
         }
@@ -2652,13 +2653,13 @@ void Application::aiDetectSurface() {
     } else {
         imgPath = std::filesystem::temp_directory_path() / "quadmapper_ai_capture.png";
         std::string err;
-        if (!captureCameraFrameToPng(imgPath.string(), err)) {
+        if (!captureCameraFrameToPng(utf8FromPath(imgPath), err)) {
             setStatus("AI: " + err);
             return;
         }
     }
 
-    auto surface = m_sidecarClient->requestSurface(imgPath.string());
+    auto surface = m_sidecarClient->requestSurface(utf8FromPath(imgPath));
     if (!surface) {
         setStatus("AI: detection failed (sidecar error)");
         return;
@@ -2712,7 +2713,7 @@ bool Application::captureCameraFrameToPng(const std::string& pngPath,
         camera.update(0.016);
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
-    const bool captured = camera.captureCurrentFrameToPng(pngPath);
+    const bool captured = camera.captureCurrentFrameToPng(pathFromUtf8(pngPath));
     camera.shutdown();
     if (!captured) {
         error = "camera capture failed (no frame)";
@@ -2777,11 +2778,11 @@ void Application::oneFlashCapturePhoto() {
     const std::filesystem::path out =
         std::filesystem::temp_directory_path() / "quadmapper_oneflash_capture.png";
     std::string err;
-    if (!captureCameraFrameToPng(out.string(), err)) {
+    if (!captureCameraFrameToPng(utf8FromPath(out), err)) {
         setStatus("One-Flash: " + err);
         return;
     }
-    setStatus("One-Flash: captured " + out.string());
+    setStatus("One-Flash: captured " + utf8FromPath(out));
 }
 
 void Application::oneFlashClearPattern() {
@@ -2844,13 +2845,13 @@ void Application::runOneFlash(const std::array<std::array<float, 2>, 4>* audienc
         patternPath = std::filesystem::temp_directory_path() /
                       "quadmapper_oneflash_capture.png";
         std::string err;
-        if (!captureCameraFrameToPng(patternPath.string(), err)) {
+        if (!captureCameraFrameToPng(utf8FromPath(patternPath), err)) {
             setStatus("One-Flash: " + err);
             return;
         }
     }
 
-    auto result = m_sidecarClient->requestOneFlash(patternPath.string(), audienceTarget);
+    auto result = m_sidecarClient->requestOneFlash(utf8FromPath(patternPath), audienceTarget);
     if (!result || result->stub) {
         setStatus("One-Flash: pattern not detected (need the ChArUco visible)");
         return;

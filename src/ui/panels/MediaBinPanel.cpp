@@ -1,4 +1,5 @@
 #include "MediaBinPanel.hpp"
+#include "core/FileSystem.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
 #include "media/ThumbnailCache.hpp"
@@ -42,7 +43,7 @@ MediaBinPanel::MediaBinPanel() : Panel("Media Bin") {
 MediaBinPanel::~MediaBinPanel() = default;
 
 Texture* MediaBinPanel::getVideoThumbnail(const std::filesystem::path& path) {
-    const std::string key = path.string();
+    const std::string key = utf8FromPath(path);
     auto it = videoThumbs_.find(key);
     if (it != videoThumbs_.end()) return it->second.get();
 
@@ -255,7 +256,7 @@ void MediaBinPanel::updateHoverPreview() {
     // SEPARATE source (createVideoSource, not getOrCreate) so it never touches the
     // playback of a video already bound to a quad.
     if (!hoveredVideoThisFrame_.empty()) {
-        UUID sid = sourceManager_->createVideoSource(hoveredVideoThisFrame_);
+        UUID sid = sourceManager_->createVideoSource(pathFromUtf8(hoveredVideoThisFrame_));
         if (!sid.isNull()) {
             hoverPreviewId_ = sid;
             hoverPreviewPath_ = hoveredVideoThisFrame_;
@@ -371,7 +372,7 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
     // record the hover so updateHoverPreview() spins up the dedicated decoder, and
     // draw that live texture instead of the static first frame.
     if (!thumbnailDrawn && item->getType() == MediaType::VIDEO) {
-        const std::string path = item->getPath().string();
+        const std::string path = utf8FromPath(item->getPath());
         if (ImGui::IsItemHovered()) hoveredVideoThisFrame_ = path;
 
         Texture* drawTex = nullptr;
@@ -446,7 +447,7 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
             ImGui::TextDisabled("Type: Procedural (%s)", getProceduralTypeName(item->getProceduralType()));
             ImGui::TextDisabled("Double-click to edit parameters");
         } else {
-            ImGui::TextDisabled("Path: %s", item->getPath().string().c_str());
+            ImGui::TextDisabled("Path: %s", utf8FromPath(item->getPath()).c_str());
             ImGui::TextDisabled("Type: %s", item->getType() == MediaType::VIDEO ? "Video" : "Image");
         }
         ImGui::TextDisabled("Drag to assign to a quad");
@@ -508,7 +509,7 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
             }
 
             if (ImGui::MenuItem("Copy Path")) {
-                ImGui::SetClipboardText(item->getPath().string().c_str());
+                ImGui::SetClipboardText(utf8FromPath(item->getPath()).c_str());
             }
         }
 #endif
@@ -540,9 +541,9 @@ void MediaBinPanel::pollImportDialog() {
     if (!importDialog_.takeResult(chosen)) return;
     for (const std::string& path : chosen) {
         if (importIsFolder_) {
-            mediaLibrary_->scanFolder(std::filesystem::path(path), /*recursive=*/true);
+            mediaLibrary_->scanFolder(pathFromUtf8(path), /*recursive=*/true);
         } else {
-            mediaLibrary_->addItem(std::filesystem::path(path));
+            mediaLibrary_->addItem(pathFromUtf8(path));
         }
     }
 }

@@ -746,11 +746,12 @@ static LoopMode parseLoopMode(const std::string& name) {
 
 // Media paths are written relative to the project directory when they share a root
 // (portable show folders), else absolute. baseDir empty = no project file: absolute.
+// Paths are UTF-8 in the model and on disk.
 static std::string toProjectRelative(const std::string& path, const fs::path& baseDir) {
-    const fs::path p(path);
+    const fs::path p = pathFromUtf8(path);
     if (baseDir.empty() || !p.is_absolute()) return path;
     const fs::path rel = p.lexically_relative(baseDir);
-    return rel.empty() ? path : rel.generic_string();
+    return rel.empty() ? path : rel.generic_u8string();
 }
 
 static nlohmann::json serializeSource(const Project::SourceData& s, const fs::path& baseDir) {
@@ -791,10 +792,10 @@ static std::optional<Project::SourceData> deserializeSource(const nlohmann::json
 
     if (isFileSourceKind(s.kind)) {
         if (!j.contains("path") || !j["path"].is_string()) return std::nullopt;
-        fs::path p(j["path"].get<std::string>());
+        fs::path p = pathFromUtf8(j["path"].get<std::string>());
         if (p.empty()) return std::nullopt;
         if (p.is_relative() && !baseDir.empty()) p = (baseDir / p).lexically_normal();
-        s.path = p.string();
+        s.path = utf8FromPath(p);
         if (s.kind != "image" && j.contains("transport") && j["transport"].is_object()) {
             const auto& t = j["transport"];
             Project::TransportData transport;
@@ -864,9 +865,9 @@ static Project::ObjectData deserializeObject(const nlohmann::json& j, const fs::
                                                                 : "Object";
     // No usable path keeps the object (its transform and media) with an empty mesh.
     if (j.contains("path") && j["path"].is_string()) {
-        fs::path p(j["path"].get<std::string>());
+        fs::path p = pathFromUtf8(j["path"].get<std::string>());
         if (!p.empty() && p.is_relative() && !baseDir.empty()) p = (baseDir / p).lexically_normal();
-        object.path = p.string();
+        object.path = utf8FromPath(p);
     }
     if (j.contains("transform")) {
         const auto& t = checkedArray(j["transform"], 16);
@@ -991,7 +992,7 @@ static void resolveQuadSources(Project& project) {
     for (auto& s : project.getSources()) {
         if (isFileSourceKind(s.kind)) {
             std::error_code ec;
-            s.missing = !fs::exists(s.path, ec);
+            s.missing = !fs::exists(pathFromUtf8(s.path), ec);
         }
         byId[s.id] = &s;
     }
@@ -1004,7 +1005,7 @@ static void resolveQuadSources(Project& project) {
         for (auto& object : scene.objects) {
             resolve(object.texture.mediaId);
             std::error_code ec;
-            object.missing = !object.path.empty() && !fs::exists(object.path, ec);
+            object.missing = !object.path.empty() && !fs::exists(pathFromUtf8(object.path), ec);
         }
     }
 }
@@ -1192,14 +1193,14 @@ Result<std::string, Error> ProjectSerializer::serializeFor(const Project& projec
 }
 
 Result<void, Error> ProjectSerializer::save(const Project& project, const std::filesystem::path& path) {
-    Logger::info("Saving project to: {}", path.string());
+    Logger::info("Saving project to: {}", utf8FromPath(path));
     auto text = serializeFor(project, path);
     if (!text) return Err(text.error().message);
     return FileSystem::writeFileAtomic(path, text.value());
 }
 
 Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path) {
-    Logger::info("Loading project from: {}", path.string());
+    Logger::info("Loading project from: {}", utf8FromPath(path));
 
     auto result = FileSystem::readFile(path);
     if (!result) {
@@ -1217,7 +1218,7 @@ Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path
 
         loadProjectModel(json, project, projectBaseDir(path));
 
-        project.setFilePath(path.string());
+        project.setFilePath(utf8FromPath(path));
         project.setModified(false);
 
         Logger::info("Loaded project '{}' with {} scene(s), {} quads and {} groups",

@@ -7,6 +7,7 @@
 #include "renderer/Texture.hpp"
 #include "renderer/YuvConverter.hpp"
 #include "renderer/GpuCapabilities.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 
 #include <chrono>
@@ -28,7 +29,7 @@ namespace {
 bool isHapContainer(const std::filesystem::path& path) {
 #ifdef QUADMAPPER_HAS_FFMPEG
     AVFormatContext* ctx = nullptr;
-    std::string pathStr = path.string();
+    const std::string pathStr = utf8FromPath(path);  // FFmpeg file names are UTF-8
     if (avformat_open_input(&ctx, pathStr.c_str(), nullptr, nullptr) < 0) {
         return false;
     }
@@ -69,11 +70,11 @@ UUID SourceManager::createImageSource(const std::filesystem::path& path) {
     UUID id = source->getId();
 
     if (!registerSource(std::move(source)).isNull()) {
-        Logger::debug("SourceManager: Created image source for '{}'", path.filename().string());
+        Logger::debug("SourceManager: Created image source for '{}'", utf8FromPath(path.filename()));
         return id;
     }
 
-    Logger::error("SourceManager: Failed to create image source for '{}'", path.string());
+    Logger::error("SourceManager: Failed to create image source for '{}'", utf8FromPath(path));
     return UUID();
 }
 
@@ -123,18 +124,18 @@ UUID SourceManager::createVideoSource(const std::filesystem::path& path) {
     std::unique_ptr<TextureSource> source;
     if (isHapContainer(path)) {
         source = std::make_unique<HapFileSource>(path);
-        Logger::debug("SourceManager: '{}' is HAP — using HapFileSource", path.filename().string());
+        Logger::debug("SourceManager: '{}' is HAP — using HapFileSource", utf8FromPath(path.filename()));
     } else {
         source = std::make_unique<VideoFileSource>(path);
     }
     UUID id = source->getId();
 
     if (!registerSource(std::move(source)).isNull()) {
-        Logger::debug("SourceManager: Created video source for '{}'", path.filename().string());
+        Logger::debug("SourceManager: Created video source for '{}'", utf8FromPath(path.filename()));
         return id;
     }
 
-    Logger::error("SourceManager: Failed to create video source for '{}'", path.string());
+    Logger::error("SourceManager: Failed to create video source for '{}'", utf8FromPath(path));
     return UUID();
 }
 

@@ -4,6 +4,7 @@
 #include "video/FrameSelection.hpp"
 #include "video/PlaybackTransport.hpp"
 #include "video/VideoDecoder.hpp"  // DecodePlan
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 
 #include <algorithm>
@@ -66,7 +67,8 @@ public:
     bool open(const std::filesystem::path& path) {
         close();
 
-        std::string pathStr = path.string();
+        // FFmpeg takes UTF-8 file names on Windows; path::string() is the ANSI code page.
+        const std::string pathStr = utf8FromPath(path);
         if (avformat_open_input(&formatCtx_, pathStr.c_str(), nullptr, nullptr) < 0) {
             Logger::error("HapFileSource: avformat_open_input failed for '{}'", pathStr);
             return false;
@@ -658,7 +660,7 @@ private:
 // --- Public interface ---
 
 HapFileSource::HapFileSource(const std::filesystem::path& path)
-    : name_(path.filename().string())
+    : name_(utf8FromPath(path.filename()))
     , path_(path)
     , impl_(std::make_unique<Impl>())
 {
@@ -673,7 +675,7 @@ bool HapFileSource::initialize() {
         return true;
     }
     if (!impl_->open(path_)) {
-        Logger::error("HapFileSource: Failed to load '{}'", path_.string());
+        Logger::error("HapFileSource: Failed to load '{}'", utf8FromPath(path_));
         return false;
     }
     ready_ = true;

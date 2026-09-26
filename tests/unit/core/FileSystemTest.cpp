@@ -120,6 +120,38 @@ TEST_F(FileSystemAtomicTest, ReplacesTargetByRenameNeverInPlace) {
     EXPECT_EQ(slurp(target), "new save");
 }
 
+// Path strings are UTF-8 (GLFW drops, file dialogs, .qmap, preferences). These names
+// are outside every ANSI code page, where the narrow conversions garble or throw.
+TEST(Utf8PathTest, ConvertsNonAsciiNamesExactlyBothWays) {
+    const std::string utf8 = u8"C:/Show/\u00fc/\u65e5\u672c/\u0416.mp4";
+    const fs::path path = pathFromUtf8(utf8);
+    EXPECT_EQ(path.wstring(), L"C:/Show/\u00fc/\u65e5\u672c/\u0416.mp4");
+    EXPECT_EQ(utf8FromPath(path), utf8);
+    EXPECT_EQ(utf8FromPath(path.filename()), u8"\u0416.mp4");
+    EXPECT_EQ(utf8FromPath(path.extension()), ".mp4");
+    EXPECT_EQ(utf8FromPath(path.parent_path().filename()), u8"\u65e5\u672c");
+    EXPECT_TRUE(pathFromUtf8("").empty());
+    EXPECT_EQ(utf8FromPath(fs::path()), "");
+}
+
+TEST_F(FileSystemAtomicTest, ReadsAndWritesInsideNonAsciiFolder) {
+    const fs::path folder = dir_ / pathFromUtf8(u8"\u00fc \u65e5\u672c \u0416");
+    ASSERT_FALSE(FileSystem::createDirectory(folder).isError());
+    ASSERT_TRUE(FileSystem::isDirectory(folder));
+    const fs::path target = folder / pathFromUtf8(u8"\u0416.qmap");
+
+    ASSERT_FALSE(FileSystem::writeFileAtomic(target, "saved").isError());
+    ASSERT_FALSE(FileSystem::writeFileAtomic(target, "saved again").isError());
+
+    EXPECT_TRUE(FileSystem::exists(target));
+    auto text = FileSystem::readFile(target);
+    ASSERT_TRUE(text.isSuccess()) << text.error().message;
+    EXPECT_EQ(text.value(), "saved again");
+    auto bytes = FileSystem::readBinaryFile(fs::path(target) += ".bak");
+    ASSERT_TRUE(bytes.isSuccess()) << bytes.error().message;
+    EXPECT_EQ(std::string(bytes.value().begin(), bytes.value().end()), "saved");
+}
+
 TEST_F(FileSystemAtomicTest, UnwritableDirectoryReturnsErrAndCreatesNothing) {
     const fs::path target = dir_ / "missing-subdir" / "show.qmap";
 

@@ -9,6 +9,8 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
+#include "core/FileSystem.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
@@ -25,7 +27,7 @@ inline bool writeMpeg2Clip(const std::filesystem::path& path, int gopSize, int f
                            int fps, int64_t startOffsetFrames) {
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MPEG2VIDEO);
     AVFormatContext* fmt = nullptr;
-    if (!codec || avformat_alloc_output_context2(&fmt, nullptr, nullptr, path.string().c_str()) < 0) {
+    if (!codec || avformat_alloc_output_context2(&fmt, nullptr, nullptr, utf8FromPath(path).c_str()) < 0) {
         return false;
     }
     AVCodecContext* enc = avcodec_alloc_context3(codec);
@@ -52,7 +54,7 @@ inline bool writeMpeg2Clip(const std::filesystem::path& path, int gopSize, int f
         ok = avcodec_open2(enc, codec, nullptr) >= 0 &&
              avcodec_parameters_from_context(stream->codecpar, enc) >= 0 &&
              av_frame_get_buffer(frame, 0) >= 0 &&
-             avio_open(&fmt->pb, path.string().c_str(), AVIO_FLAG_WRITE) >= 0 &&
+             avio_open(&fmt->pb, utf8FromPath(path).c_str(), AVIO_FLAG_WRITE) >= 0 &&
              avformat_write_header(fmt, nullptr) >= 0;
     }
 
@@ -99,7 +101,7 @@ inline bool writeMpeg2Clip(const std::filesystem::path& path, int gopSize, int f
 // identify frames by timestamp.
 inline bool writeHapClip(const std::filesystem::path& path, int frameCount, int fps) {
     AVFormatContext* fmt = nullptr;
-    if (avformat_alloc_output_context2(&fmt, nullptr, "mov", path.string().c_str()) < 0) return false;
+    if (avformat_alloc_output_context2(&fmt, nullptr, "mov", utf8FromPath(path).c_str()) < 0) return false;
     AVStream* stream = avformat_new_stream(fmt, nullptr);
     AVPacket* packet = av_packet_alloc();
     bool ok = stream && packet;
@@ -110,7 +112,7 @@ inline bool writeHapClip(const std::filesystem::path& path, int frameCount, int 
         stream->codecpar->width = CLIP_WIDTH;
         stream->codecpar->height = CLIP_HEIGHT;
         stream->time_base = AVRational{1, fps};
-        ok = avio_open(&fmt->pb, path.string().c_str(), AVIO_FLAG_WRITE) >= 0 &&
+        ok = avio_open(&fmt->pb, utf8FromPath(path).c_str(), AVIO_FLAG_WRITE) >= 0 &&
              avformat_write_header(fmt, nullptr) >= 0;
     }
 
