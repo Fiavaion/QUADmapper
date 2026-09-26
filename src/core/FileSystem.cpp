@@ -14,7 +14,7 @@ namespace quadmapper {
 Result<std::string, Error> FileSystem::readFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::in);
     if (!file) {
-        return Err<std::string>("Failed to open file: " + path.string());
+        return Err<std::string>("Failed to open file: " + path.u8string());
     }
 
     std::string content((std::istreambuf_iterator<char>(file)),
@@ -25,12 +25,12 @@ Result<std::string, Error> FileSystem::readFile(const std::filesystem::path& pat
 Result<void, Error> FileSystem::writeFile(const std::filesystem::path& path, const std::string& content) {
     std::ofstream file(path, std::ios::out | std::ios::trunc);
     if (!file) {
-        return Err("Failed to open file for writing: " + path.string());
+        return Err("Failed to open file for writing: " + path.u8string());
     }
 
     file << content;
     if (!file) {
-        return Err("Failed to write to file: " + path.string());
+        return Err("Failed to write to file: " + path.u8string());
     }
 
     return Ok();
@@ -48,7 +48,7 @@ Result<void, Error> FileSystem::writeFileAtomic(const std::filesystem::path& pat
     HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
-        return Err("Failed to open file for writing: " + tmp.string() +
+        return Err("Failed to open file for writing: " + tmp.u8string() +
                    " (error " + std::to_string(GetLastError()) + ")");
     }
     DWORD written = 0;
@@ -59,20 +59,20 @@ Result<void, Error> FileSystem::writeFileAtomic(const std::filesystem::path& pat
     const bool closed = CloseHandle(h) != 0;
     if (!wrote || !flushed || !closed) {
         std::filesystem::remove(tmp, ec);
-        return Err("Failed to write file: " + tmp.string());
+        return Err("Failed to write file: " + tmp.u8string());
     }
 #else
     {
         std::ofstream file(tmp, std::ios::out | std::ios::binary | std::ios::trunc);
         if (!file) {
-            return Err("Failed to open file for writing: " + tmp.string());
+            return Err("Failed to open file for writing: " + tmp.u8string());
         }
         file.write(content.data(), static_cast<std::streamsize>(content.size()));
         file.flush();
         file.close();
         if (file.fail()) {
             std::filesystem::remove(tmp, ec);
-            return Err("Failed to write file: " + tmp.string());
+            return Err("Failed to write file: " + tmp.u8string());
         }
     }
 #endif
@@ -83,7 +83,7 @@ Result<void, Error> FileSystem::writeFileAtomic(const std::filesystem::path& pat
         std::filesystem::copy_file(path, bak, std::filesystem::copy_options::overwrite_existing, ec);
         if (ec) {
             std::filesystem::remove(tmp, ec);
-            return Err("Failed to back up " + path.string() + " before saving");
+            return Err("Failed to back up " + path.u8string() + " before saving");
         }
     }
 
@@ -91,13 +91,13 @@ Result<void, Error> FileSystem::writeFileAtomic(const std::filesystem::path& pat
     if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         const DWORD err = GetLastError();
         std::filesystem::remove(tmp, ec);
-        return Err("Failed to replace " + path.string() + " (error " + std::to_string(err) + ")");
+        return Err("Failed to replace " + path.u8string() + " (error " + std::to_string(err) + ")");
     }
 #else
     std::filesystem::rename(tmp, path, ec);
     if (ec) {
         std::filesystem::remove(tmp, ec);
-        return Err("Failed to replace " + path.string() + ": " + ec.message());
+        return Err("Failed to replace " + path.u8string() + ": " + ec.message());
     }
 #endif
     return Ok();
@@ -106,7 +106,7 @@ Result<void, Error> FileSystem::writeFileAtomic(const std::filesystem::path& pat
 Result<std::vector<uint8_t>, Error> FileSystem::readBinaryFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::in | std::ios::binary);
     if (!file) {
-        return Err<std::vector<uint8_t>>("Failed to open file: " + path.string());
+        return Err<std::vector<uint8_t>>("Failed to open file: " + path.u8string());
     }
 
     file.seekg(0, std::ios::end);
@@ -123,12 +123,12 @@ Result<void, Error> FileSystem::writeBinaryFile(const std::filesystem::path& pat
                                                 const std::vector<uint8_t>& data) {
     std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
     if (!file) {
-        return Err("Failed to open file for writing: " + path.string());
+        return Err("Failed to open file for writing: " + path.u8string());
     }
 
     file.write(reinterpret_cast<const char*>(data.data()), data.size());
     if (!file) {
-        return Err("Failed to write to file: " + path.string());
+        return Err("Failed to write to file: " + path.u8string());
     }
 
     return Ok();

@@ -162,7 +162,9 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
             UUID healed;
             if (pathIt != es.quadTexturePaths.end() && !pathIt->second.empty()) {
                 const std::filesystem::path path = pathIt->second;
-                if (MediaLibrary::getTypeFromExtension(path.extension().string()) == MediaType::VIDEO) {
+                const std::optional<MediaType> type =
+                    MediaLibrary::getTypeFromExtension(path.extension().string());
+                if (type == MediaType::VIDEO) {
                     // A clip already open for another quad keeps its own playback.
                     const bool alreadyOpen = !sm.findVideoSourceByPath(path).isNull();
                     healed = sm.getOrCreateVideoSource(path);
@@ -175,9 +177,9 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
                         }
                         applySavedTransport(sm, healed, saved);
                     }
-                } else {
+                } else if (type == MediaType::IMAGE) {
                     healed = sm.getOrCreateImageSource(path);
-                }
+                }  // any other file cannot be re-opened: the binding clears
             }
             mediaId = healed;
             if (!mediaId.isNull()) onScreen.insert(mediaId);

@@ -91,7 +91,7 @@ std::string controlLabel(const MidiMapping& m) {
 
 }  // namespace
 
-control::OscFeedbackSettings ControlPanel::feedbackSettings(const ControlPreferences& prefs) {
+control::OscFeedbackSettings ControlSettingsEditor::feedbackSettings(const ControlPreferences& prefs) {
     control::OscFeedbackSettings s;
     s.enabled = prefs.oscFeedbackEnabled;
     s.host = prefs.oscFeedbackHost;
@@ -104,14 +104,6 @@ bool ControlPanel::render(EditorContext& ctx, control::ExternalControl& control,
                           ControlPreferences& prefs, double now) {
     EditorState& es = ctx.es;
     if (!es.showControl) return false;
-    if (!editsLoaded_) {
-        portEdit_ = prefs.oscPort;
-        std::snprintf(bindEdit_, sizeof(bindEdit_), "%s", prefs.oscBindAddress.c_str());
-        feedbackReplyEdit_ = prefs.oscFeedbackHost.empty();
-        std::snprintf(feedbackHostEdit_, sizeof(feedbackHostEdit_), "%s", prefs.oscFeedbackHost.c_str());
-        feedbackPortEdit_ = prefs.oscFeedbackPort;
-        editsLoaded_ = true;
-    }
 
     bool changed = false;
     if (!ImGui::Begin("Control", &es.showControl)) {
@@ -133,7 +125,7 @@ bool ControlPanel::render(EditorContext& ctx, control::ExternalControl& control,
     }
 
     if (ImGui::CollapsingHeader("OSC", ImGuiTreeNodeFlags_DefaultOpen)) changed |= renderOsc(control, prefs);
-    if (ImGui::CollapsingHeader("OSC Feedback", ImGuiTreeNodeFlags_DefaultOpen)) changed |= renderFeedback(control, prefs);
+    if (ImGui::CollapsingHeader("OSC Feedback", ImGuiTreeNodeFlags_DefaultOpen)) changed |= settings_.renderFeedback(control, prefs);
     if (ImGui::CollapsingHeader("MIDI", ImGuiTreeNodeFlags_DefaultOpen)) changed |= renderMidi(control, prefs, now);
     if (ImGui::CollapsingHeader("MIDI Learn", ImGuiTreeNodeFlags_DefaultOpen)) renderTargets(control, now);
     if (ImGui::CollapsingHeader("MIDI Mappings", ImGuiTreeNodeFlags_DefaultOpen)) renderMappings(ctx, control, now);
@@ -142,7 +134,23 @@ bool ControlPanel::render(EditorContext& ctx, control::ExternalControl& control,
     return changed;
 }
 
-bool ControlPanel::renderOsc(control::ExternalControl& control, ControlPreferences& prefs) {
+void ControlSettingsEditor::syncEdits(const ControlPreferences& prefs) {
+    if (loaded_ && prefs.oscPort == appliedPort_ && prefs.oscBindAddress == appliedBind_ &&
+        prefs.oscFeedbackHost == appliedFeedbackHost_ && prefs.oscFeedbackPort == appliedFeedbackPort_) {
+        return;
+    }
+    appliedPort_ = portEdit_ = prefs.oscPort;
+    appliedBind_ = prefs.oscBindAddress;
+    std::snprintf(bindEdit_, sizeof(bindEdit_), "%s", prefs.oscBindAddress.c_str());
+    appliedFeedbackHost_ = prefs.oscFeedbackHost;
+    appliedFeedbackPort_ = feedbackPortEdit_ = prefs.oscFeedbackPort;
+    feedbackReplyEdit_ = prefs.oscFeedbackHost.empty();
+    std::snprintf(feedbackHostEdit_, sizeof(feedbackHostEdit_), "%s", prefs.oscFeedbackHost.c_str());
+    loaded_ = true;
+}
+
+bool ControlSettingsEditor::renderOsc(control::ExternalControl& control, ControlPreferences& prefs) {
+    syncEdits(prefs);
     bool changed = false;
     const control::OscServer& osc = control.osc();
 
@@ -165,6 +173,8 @@ bool ControlPanel::renderOsc(control::ExternalControl& control, ControlPreferenc
     if (ImGui::Button("Apply")) {
         prefs.oscPort = portEdit_;
         prefs.oscBindAddress = bindEdit_;
+        appliedPort_ = prefs.oscPort;
+        appliedBind_ = prefs.oscBindAddress;
         changed = true;
         if (prefs.oscEnabled) control.startOsc(prefs.oscBindAddress, prefs.oscPort);
     }
@@ -187,6 +197,12 @@ bool ControlPanel::renderOsc(control::ExternalControl& control, ControlPreferenc
     ImGui::TextWrapped("Enabling OSC opens a UDP port. Windows Firewall asks the first time: allow "
                        "private networks for a controller on your network.");
     ImGui::PopStyleColor();
+    return changed;
+}
+
+bool ControlPanel::renderOsc(control::ExternalControl& control, ControlPreferences& prefs) {
+    const bool changed = settings_.renderOsc(control, prefs);
+    const control::OscServer& osc = control.osc();
 
     const control::ControlDispatcher& d = control.dispatcher();
     ImGui::Text("Packets %llu   malformed %llu   messages %llu",
@@ -232,7 +248,8 @@ bool ControlPanel::renderOsc(control::ExternalControl& control, ControlPreferenc
     return changed;
 }
 
-bool ControlPanel::renderFeedback(control::ExternalControl& control, ControlPreferences& prefs) {
+bool ControlSettingsEditor::renderFeedback(control::ExternalControl& control, ControlPreferences& prefs) {
+    syncEdits(prefs);
     using Status = control::ExternalControl::FeedbackStatus;
     bool changed = false;
 
@@ -268,6 +285,8 @@ bool ControlPanel::renderFeedback(control::ExternalControl& control, ControlPref
     if (ImGui::Button("Apply##feedback")) {
         prefs.oscFeedbackHost = hostWanted;
         prefs.oscFeedbackPort = feedbackPortEdit_;
+        appliedFeedbackHost_ = prefs.oscFeedbackHost;
+        appliedFeedbackPort_ = prefs.oscFeedbackPort;
         changed = true;
         control.setFeedback(feedbackSettings(prefs));
     }
@@ -320,7 +339,7 @@ bool ControlPanel::renderFeedback(control::ExternalControl& control, ControlPref
     return changed;
 }
 
-bool ControlPanel::renderMidi(control::ExternalControl& control, ControlPreferences& prefs, double now) {
+bool ControlSettingsEditor::renderMidiDevices(control::ExternalControl& control, ControlPreferences& prefs) {
     bool changed = false;
     if (ImGui::Button("Refresh")) control.rescanMidi();
     ImGui::SameLine();
@@ -355,7 +374,11 @@ bool ControlPanel::renderMidi(control::ExternalControl& control, ControlPreferen
         }
         ImGui::PopID();
     }
+    return changed;
+}
 
+bool ControlPanel::renderMidi(control::ExternalControl& control, ControlPreferences& prefs, double now) {
+    const bool changed = settings_.renderMidiDevices(control, prefs);
     const control::ControlDispatcher& d = control.dispatcher();
     activityLight(d.lastMidiTime(), now);
     if (d.lastMidi().empty()) ImGui::TextDisabled("No MIDI received yet");

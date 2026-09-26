@@ -22,7 +22,6 @@ namespace quadmapper {
 class Renderer;
 class MediaLibrary;
 class OutputManager;
-class InputManager;
 class Project;
 class FolderWatcher;
 class ThumbnailCache;
@@ -33,7 +32,7 @@ class Texture;
 class AsyncFileDialog;
 struct EditorState;
 struct MissingMediaItem;
-struct ControlPreferences;
+class PreferencesDialog;
 namespace ai { class SidecarClient; enum class SidecarState; }
 namespace control { class ExternalControl; }
 
@@ -74,7 +73,6 @@ public:
     Renderer* getRenderer() const { return m_renderer.get(); }
     MediaLibrary* getMediaLibrary() const { return m_mediaLibrary.get(); }
     OutputManager* getOutputManager() const { return m_outputManager.get(); }
-    InputManager* getInputManager() const { return m_inputManager.get(); }
     Project* getProject() const { return m_project.get(); }
     SourceManager* getSourceManager() const { return m_sourceManager.get(); }
 
@@ -90,7 +88,7 @@ private:
     // One iteration of the interactive loop, in two halves so the headless bench can
     // act between them exactly where OS input lands. pollFrame: delta time, events,
     // frame-boundary tasks; false once a confirmed Exit closed the window.
-    // presentFrame: input, update, render, editor swap, projector outputs; `marks`,
+    // presentFrame: update, render, editor swap, projector outputs; `marks`,
     // when given, receives the time each stage finished.
     struct FrameMarks {
         std::chrono::steady_clock::time_point rendered, editorSwapped, outputsPresented;
@@ -98,7 +96,6 @@ private:
     bool pollFrame(float& deltaTime);
     void presentFrame(float deltaTime, FrameMarks* marks = nullptr);
 
-    void processInput();
     void update(float deltaTime);
     void render();
 
@@ -124,6 +121,7 @@ private:
     void initializeExternalControl();
     void processExternalControl();
     void saveControlPreferences();
+    void saveUiModePreference();  // the mode last used is the next session's (ADR-042)
     void drawBlackoutBanner();  // inside the ImGui frame, over the canvas
 
     // ---- Show-safe session (ADR-046 §4) -----------------------------------------
@@ -227,7 +225,6 @@ private:
     std::unique_ptr<Renderer> m_renderer;
     std::unique_ptr<MediaLibrary> m_mediaLibrary;
     std::unique_ptr<OutputManager> m_outputManager;
-    std::unique_ptr<InputManager> m_inputManager;
     std::unique_ptr<Project> m_project;
     std::unique_ptr<FolderWatcher> m_folderWatcher;
     std::unique_ptr<ThumbnailCache> m_thumbnailCache;
@@ -252,12 +249,15 @@ private:
 
     // External control (ADR-048); null in the stress harness.
     std::unique_ptr<control::ExternalControl> m_externalControl;
-    std::unique_ptr<ControlPreferences> m_controlPrefs;
+
+    // The machine preferences (loaded at startup, saved on every change) and the
+    // Edit > Preferences window that edits them. The Control window and the menu
+    // bar's audio device list change the same copy.
+    std::unique_ptr<PreferencesDialog> m_preferences;
 
     // Sound from video sources (ADR-050 §2): the output device, mixer and each video's
     // audio. The stress harness runs it on miniaudio's silent null device.
     std::unique_ptr<AudioEngine> m_audioEngine;
-    std::string m_savedAudioDevice;  // preference on disk, to notice a new choice
     void applyProjectAudio();        // project master volume/mute -> engine
     void syncAudio();                // each video's sound onto its clock, once per frame
     void saveAudioDevicePreference();
@@ -270,8 +270,7 @@ private:
     bool m_haveCleanBaseline = false;  // m_savedSnapshot captured after the first frame
     std::string m_savedSnapshot;       // editorSnapshot() as of the last save/load/new
     std::string m_autosavedSnapshot;   // editorSnapshot() last written to the autosave
-    bool m_autoSaveEnabled = true;
-    double m_autoSaveIntervalSec = 60.0;
+    bool m_autoSaveEnabled = true;     // false: never this session (the bench), whatever the preferences
     double m_lastAutosaveTime = 0.0;
     std::future<Result<void, Error>> m_autosaveWrite;  // in-flight autosave disk write
     bool m_exitConfirmed = false;      // Exit passed the unsaved-changes check

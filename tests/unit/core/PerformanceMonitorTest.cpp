@@ -6,12 +6,26 @@
 namespace quadmapper {
 namespace test {
 
+// Frame timing runs on a fake clock the test advances by hand, so the numbers are
+// exact however loaded the machine is (TD-23: wall-clock sleeps flaked under ctest -j).
 class PerformanceMonitorTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        monitor_ = std::make_unique<PerformanceMonitor>();
+        monitor_ = std::make_unique<PerformanceMonitor>([this] { return now_; });
     }
 
+    void advanceMs(double ms) {
+        now_ += std::chrono::duration_cast<PerformanceMonitor::Clock::duration>(
+            std::chrono::duration<double, std::milli>(ms));
+    }
+
+    void frameOf(double ms) {
+        monitor_->beginFrame();
+        advanceMs(ms);
+        monitor_->endFrame();
+    }
+
+    PerformanceMonitor::Clock::time_point now_{};
     std::unique_ptr<PerformanceMonitor> monitor_;
 };
 
@@ -21,47 +35,45 @@ TEST_F(PerformanceMonitorTest, InitialStateHasNoFrameHistory) {
 }
 
 TEST_F(PerformanceMonitorTest, FrameTimingRecorded) {
-    monitor_->beginFrame();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    monitor_->endFrame();
+    frameOf(10.0);
 
     const auto& history = monitor_->getFrameTimeHistory();
-    EXPECT_EQ(history.size(), 1);
-    EXPECT_GT(history.back(), 9.0);  // Should be at least 9ms
+    ASSERT_EQ(history.size(), 1u);
+    EXPECT_NEAR(history.back(), 10.0, 1e-6);
+    EXPECT_NEAR(monitor_->getCurrentStats().frameTimeMs, 10.0, 1e-6);
 }
 
 TEST_F(PerformanceMonitorTest, AverageFPSCalculated) {
-    // Simulate a few frames at ~100 fps (10ms each)
-    for (int i = 0; i < 10; ++i) {
-        monitor_->beginFrame();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        monitor_->endFrame();
-    }
+    for (int i = 0; i < 10; ++i) frameOf(10.0);  // 100 fps
 
-    double fps = monitor_->getAverageFPS();
-    EXPECT_GT(fps, 50.0);  // Should be roughly 100 fps, but allow for variance
-    EXPECT_LT(fps, 150.0);
+    EXPECT_NEAR(monitor_->getAverageFrameTime(), 10.0, 1e-6);
+    EXPECT_NEAR(monitor_->getAverageFPS(), 100.0, 1e-4);
+}
+
+TEST_F(PerformanceMonitorTest, AverageMixesFrameTimes) {
+    frameOf(10.0);
+    frameOf(30.0);
+
+    EXPECT_NEAR(monitor_->getAverageFrameTime(), 20.0, 1e-6);
+    EXPECT_NEAR(monitor_->getAverageFPS(), 50.0, 1e-4);
 }
 
 TEST_F(PerformanceMonitorTest, MinMaxFrameTime) {
-    monitor_->beginFrame();
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    monitor_->endFrame();
+    frameOf(5.0);
+    frameOf(20.0);
+    frameOf(10.0);
 
-    monitor_->beginFrame();
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    monitor_->endFrame();
+    EXPECT_NEAR(monitor_->getMinFrameTime(), 5.0, 1e-6);
+    EXPECT_NEAR(monitor_->getMaxFrameTime(), 20.0, 1e-6);
+}
 
-    monitor_->beginFrame();
+TEST_F(PerformanceMonitorTest, DefaultMonitorMeasuresTheRealClock) {
+    // The default time source is the real clock: a sleep can only lengthen a frame.
+    PerformanceMonitor real;
+    real.beginFrame();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    monitor_->endFrame();
-
-    // Wall-clock sleeps are bounded below by the OS timer granularity (Windows default
-    // ~15.6ms), so a 5ms sleep can measure well above 15ms. Assert the min/max *tracking*
-    // relationship rather than exact sub-granularity thresholds, which were flaky.
-    EXPECT_GT(monitor_->getMaxFrameTime(), 15.0);  // the 20ms frame registers as the max
-    EXPECT_GT(monitor_->getMinFrameTime(), 0.0);   // a frame time was recorded
-    EXPECT_LE(monitor_->getMinFrameTime(), monitor_->getMaxFrameTime());
+    real.endFrame();
+    EXPECT_GE(real.getFrameTimeHistory().back(), 9.0);
 }
 
 TEST_F(PerformanceMonitorTest, DrawCallsRecorded) {
@@ -130,17 +142,19 @@ TEST(ScopedTimerTest, MeasuresElapsedTime) {
     EXPECT_GT(elapsed, 9.0);
 }
 
-// Test ScopedSection
 TEST_F(PerformanceMonitorTest, SectionTimingRecorded) {
     monitor_->beginFrame();
-    {
-        monitor_->beginSection("render");
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        monitor_->endSection("render");
-    }
+    monitor_->beginSection("render");
+    advanceMs(5.0);
+    monitor_->endSection("render");
+    monitor_->beginSection("ui");
+    advanceMs(2.0);
+    monitor_->endSection("ui");
     monitor_->endFrame();
 
-    EXPECT_GT(monitor_->getCurrentStats().renderTimeMs, 4.0);
+    EXPECT_NEAR(monitor_->getCurrentStats().renderTimeMs, 5.0, 1e-6);
+    EXPECT_NEAR(monitor_->getCurrentStats().uiTimeMs, 2.0, 1e-6);
+    EXPECT_NEAR(monitor_->getCurrentStats().frameTimeMs, 7.0, 1e-6);
 }
 
 } // namespace test

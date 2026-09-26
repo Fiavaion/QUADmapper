@@ -37,7 +37,6 @@
 #include "../renderer/GpuCapabilities.hpp"
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
-#include "../input/InputManager.hpp"
 #include "../input/VertexKeyboard.hpp"
 #include "../ui/Theme.hpp"
 #include "../ui/AsyncFileDialog.hpp"
@@ -387,8 +386,9 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                 if (sm) {
                     const std::filesystem::path mediaPath = texturePath;
                     const std::string ext = mediaPath.extension().string();
+                    const std::optional<MediaType> type = MediaLibrary::getTypeFromExtension(ext);
                     UUID sid;
-                    if (MediaLibrary::getTypeFromExtension(ext) == MediaType::VIDEO) {
+                    if (type == MediaType::VIDEO) {
                         sid = sm->getOrCreateVideoSource(mediaPath);
                         if (!sid.isNull()) {
                             es.activeVideoSourceId = sid;  // panel controls it
@@ -396,9 +396,9 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                             // (looping, the default) as on assign, not a paused first frame.
                             if (auto* video = sm->getSourceAs<PlayableSource>(sid)) video->play();
                         }
-                    } else {
+                    } else if (type == MediaType::IMAGE) {
                         sid = sm->getOrCreateImageSource(mediaPath);
-                    }
+                    }  // any other file is not opened; it is kept as missing below
                     if (!sid.isNull()) nq->getTexture().mediaId = sid;
                 }
             }
@@ -411,6 +411,8 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                 es.quadTexturePaths[nq->getId()] = src.path;
             } else if (!texturePath.empty()) {
                 // Pre-v3.1 binding by path alone: saved from now on as a sources entry.
+                // A file that is neither image nor video is kept as an image reference
+                // for the user to relocate (the sources schema has no "unknown" kind).
                 Project::SourceData src;
                 src.kind = MediaLibrary::getTypeFromExtension(
                                std::filesystem::path(texturePath).extension().string()) ==
@@ -624,18 +626,14 @@ bool Application::initialize(int argc, char* argv[]) {
         return false;
     }
 
+    // Machine preferences, before the components that read them. No file yet (first
+    // run) or an unreadable one leaves the defaults.
+    m_preferences = std::make_unique<PreferencesDialog>();
+    m_preferences->loadPreferences();
+
     if (!initializeComponents()) {
         Logger::error("Failed to initialize components");
         return false;
-    }
-
-    // Autosave preferences (ADR-046 §4); the interval is stored in minutes.
-    {
-        PreferencesDialog prefsDialog;
-        prefsDialog.loadPreferences();
-        const auto& general = prefsDialog.getPreferences().general;
-        m_autoSaveEnabled = general.autoSaveEnabled;
-        m_autoSaveIntervalSec = 60.0 * std::max(1, general.autoSaveIntervalMinutes);
     }
 
     // The stress and bench harnesses measure the render/perform path; they open no
@@ -809,13 +807,10 @@ bool Application::initializeComponents() {
     // device that will not open is logged and the app runs silent. The stress harness
     // uses the silent null device so it exercises the audio path without making sound.
     {
-        PreferencesDialog prefsDialog;
-        prefsDialog.loadPreferences();
-        m_savedAudioDevice = prefsDialog.getPreferences().performance.audioDevice;
         AudioEngine::Options audioOptions;
         audioOptions.nullBackend = m_stressConfig.has_value() || m_benchConfig.has_value();
         m_audioEngine = std::make_unique<AudioEngine>(audioOptions);
-        m_audioEngine->open(m_savedAudioDevice);
+        m_audioEngine->open(m_preferences->getPreferences().performance.audioDevice);
     }
 
     // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed here but not
@@ -842,9 +837,7 @@ bool Application::initializeComponents() {
 
     // Auto-load media from default folder if configured
     {
-        PreferencesDialog prefsDialog;
-        prefsDialog.loadPreferences();
-        const auto& prefs = prefsDialog.getPreferences();
+        const AppPreferences& prefs = m_preferences->getPreferences();
 
         // UI complexity mode (ADR-042): default Simple; persisted choice wins.
         m_editorState->uiMode = (prefs.general.uiMode == 1)
@@ -930,9 +923,6 @@ bool Application::initializeComponents() {
         }
     }
 
-    // Create input manager
-    m_inputManager = std::make_unique<InputManager>();
-
     Logger::debug("All components initialized");
     return true;
 }
@@ -1011,9 +1001,6 @@ bool Application::pollFrame(float& deltaTime) {
 void Application::presentFrame(float deltaTime, FrameMarks* marks) {
     using Clock = std::chrono::steady_clock;
 
-    // Process input
-    processInput();
-
     // Update
     update(deltaTime);
 
@@ -1055,19 +1042,6 @@ void Application::runAiSelfTest() {
         oneFlashAnamorphic();
     } else {
         aiDetectSurface();
-    }
-}
-
-void Application::processInput() {
-    // Check for escape key to close window
-    if (glfwGetKey(m_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-        // For now, just log - later we'll show a confirmation dialog
-        // glfwSetWindowShouldClose(m_window, true);
-    }
-
-    // Input manager will handle detailed input processing
-    if (m_inputManager) {
-        // m_inputManager->processInput(m_window);
     }
 }
 
@@ -1305,21 +1279,7 @@ void Application::render() {
         es.mainMenuBar.render(ctx);
         saveAudioDevicePreference();
     }
-
-    // Persist a UI-mode change to preferences (ADR-042). Static cache avoids a disk
-    // write every frame; mode toggles are rare. Initialized to the startup mode so
-    // the first frame never re-saves.
-    {
-        static int s_lastUiMode = static_cast<int>(es.uiMode);
-        const int cur = static_cast<int>(es.uiMode);
-        if (cur != s_lastUiMode) {
-            PreferencesDialog d;
-            d.loadPreferences();
-            d.getPreferences().general.uiMode = cur;
-            d.savePreferences();
-            s_lastUiMode = cur;
-        }
-    }
+    saveUiModePreference();
 
     // Viewport zoom/pan overlay + input (ADR-041). The central node is a passthrough
     // hole, so the mouse is over the canvas (not a panel) exactly when it is in the
@@ -1429,6 +1389,12 @@ void Application::render() {
 
     if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
         quadManager.selectAll();
+    }
+
+    // Edit > Preferences. Ctrl+, is no other shortcut's key.
+    if (editingKeys && io.KeyCtrl && !io.KeyShift && !io.KeyAlt &&
+        ImGui::IsKeyPressed(ImGuiKey_Comma, false)) {
+        es.showPreferences = true;
     }
 
     if (editingKeys && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
@@ -1696,9 +1662,21 @@ void Application::render() {
         EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
-        if (es.controlPanel.render(ctx, *m_externalControl, *m_controlPrefs, glfwGetTime())) {
+        if (es.controlPanel.render(ctx, *m_externalControl, m_preferences->getPreferences().control,
+                                   glfwGetTime())) {
             saveControlPreferences();
         }
+    }
+
+    // ============ Preferences (Edit > Preferences..., Ctrl+,) ============
+    {
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        ctx.audio = m_audioEngine.get();
+        m_preferences->render(ctx, m_externalControl.get());
+        saveAudioDevicePreference();  // a device picked in the Audio tab
+        saveUiModePreference();       // a mode picked in the General tab
     }
 
     if (m_outputManager && m_outputManager->isBlackout()) drawBlackoutBanner();
@@ -1897,7 +1875,6 @@ void Application::takeSceneByNumber(int number) {
 
 void Application::initializeExternalControl() {
     m_externalControl = std::make_unique<control::ExternalControl>();
-    m_controlPrefs = std::make_unique<ControlPreferences>();
 
     ControlBindingHost host;
     host.scenes = &m_editorState->scenes;
@@ -1921,13 +1898,10 @@ void Application::initializeExternalControl() {
     host.setMasterMuted = [this](bool on) { if (m_audioEngine) m_audioEngine->setMasterMuted(on); };
     registerControlTargets(m_externalControl->registry(), host);
 
-    PreferencesDialog prefsDialog;
-    prefsDialog.loadPreferences();
-    *m_controlPrefs = prefsDialog.getPreferences().control;
-    m_externalControl->setWantedMidiDevices(m_controlPrefs->midiDevices);
-    m_externalControl->setFeedback(ControlPanel::feedbackSettings(*m_controlPrefs));
-    if (m_controlPrefs->oscEnabled &&
-        !m_externalControl->startOsc(m_controlPrefs->oscBindAddress, m_controlPrefs->oscPort)) {
+    const ControlPreferences& prefs = m_preferences->getPreferences().control;
+    m_externalControl->setWantedMidiDevices(prefs.midiDevices);
+    m_externalControl->setFeedback(ControlSettingsEditor::feedbackSettings(prefs));
+    if (prefs.oscEnabled && !m_externalControl->startOsc(prefs.oscBindAddress, prefs.oscPort)) {
         postStatus(*m_editorState, "OSC input is off: " + m_externalControl->oscError());
     }
 }
@@ -1946,10 +1920,15 @@ void Application::processExternalControl() {
 }
 
 void Application::saveControlPreferences() {
-    PreferencesDialog prefsDialog;
-    prefsDialog.loadPreferences();
-    prefsDialog.getPreferences().control = *m_controlPrefs;
-    prefsDialog.savePreferences();
+    m_preferences->savePreferences();
+}
+
+void Application::saveUiModePreference() {
+    const int mode = m_editorState->uiMode == EditorState::UiMode::Advanced ? 1 : 0;
+    int& saved = m_preferences->getPreferences().general.uiMode;
+    if (mode == saved) return;
+    saved = mode;
+    m_preferences->savePreferences();
 }
 
 void Application::drawBlackoutBanner() {
@@ -2297,14 +2276,12 @@ void Application::applyProjectAudio() {
 }
 
 // The output device is a machine preference (ADR-050 §5): written when the user picks
-// another one in the menu bar's audio menu.
+// another one in the menu bar's audio menu or the Preferences window.
 void Application::saveAudioDevicePreference() {
-    if (!m_audioEngine || m_audioEngine->preferredDevice() == m_savedAudioDevice) return;
-    m_savedAudioDevice = m_audioEngine->preferredDevice();
-    PreferencesDialog prefsDialog;
-    prefsDialog.loadPreferences();
-    prefsDialog.getPreferences().performance.audioDevice = m_savedAudioDevice;
-    prefsDialog.savePreferences();
+    std::string& saved = m_preferences->getPreferences().performance.audioDevice;
+    if (!m_audioEngine || m_audioEngine->preferredDevice() == saved) return;
+    saved = m_audioEngine->preferredDevice();
+    m_preferences->savePreferences();
 }
 
 // What counts as an unsaved change: the show's content, not where the viewport is
@@ -2343,9 +2320,12 @@ void Application::markProjectClean() {
 }
 
 void Application::autosaveIfDue() {
-    if (!m_autoSaveEnabled) return;
+    // Read each tick, so a change in Preferences applies at once (minutes on disk).
+    const GeneralPreferences& general = m_preferences->getPreferences().general;
+    if (!m_autoSaveEnabled || !general.autoSaveEnabled) return;
+    const double interval = 60.0 * std::max(MIN_AUTOSAVE_MINUTES, general.autoSaveIntervalMinutes);
     const double now = glfwGetTime();
-    if (now - m_lastAutosaveTime < m_autoSaveIntervalSec) return;
+    if (now - m_lastAutosaveTime < interval) return;
     m_lastAutosaveTime = now;
 
     // The previous write is still flushing: try again next tick.
@@ -2937,7 +2917,6 @@ void Application::shutdown() {
     m_externalControl.reset(); // joins the OSC thread, closes MIDI devices
     m_audioEngine.reset();     // stops every video's audio, then closes the device
     m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
-    m_inputManager.reset();
     m_outputManager.reset();
     m_thumbnailCache.reset();  // Clear GL textures before context destroyed
     if (m_editorState) {

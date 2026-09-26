@@ -1,13 +1,15 @@
 #include "MediaLibrary.hpp"
+#include "core/Logger.hpp"
 #include <algorithm>
 #include <cctype>
 
 namespace quadmapper {
 
 // Supported file extensions
+// Matches ImageLoader::isSupported.
 static const std::vector<std::string> IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".psd", ".hdr",
-    ".tif", ".tiff"
+    ".pic", ".ppm", ".pgm", ".tif", ".tiff"
 };
 
 static const std::vector<std::string> VIDEO_EXTENSIONS = {
@@ -20,13 +22,15 @@ MediaItem* MediaLibrary::addItem(const std::filesystem::path& path) {
         return nullptr;
     }
 
-    // Determine media type from extension
-    std::string ext = path.extension().string();
-    MediaType type = getTypeFromExtension(ext);
+    const std::optional<MediaType> type = getTypeFromExtension(path.extension().string());
+    if (!type) {
+        Logger::warning("Not an image or video file QUADmapper can open: {}", path.string());
+        return nullptr;
+    }
 
     auto item = std::make_unique<MediaItem>();
     item->setPath(path);
-    item->setType(type);
+    item->setType(*type);
     MediaItem* ptr = item.get();
     items_.push_back(std::move(item));
     return ptr;
@@ -135,7 +139,7 @@ bool MediaLibrary::isExtensionSupported(const std::string& extension) {
     return false;
 }
 
-MediaType MediaLibrary::getTypeFromExtension(const std::string& extension) {
+std::optional<MediaType> MediaLibrary::getTypeFromExtension(const std::string& extension) {
     std::string ext = extension;
     // Add dot if not present
     if (!ext.empty() && ext[0] != '.') {
@@ -145,12 +149,13 @@ MediaType MediaLibrary::getTypeFromExtension(const std::string& extension) {
     std::transform(ext.begin(), ext.end(), ext.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-    // Check video extensions
     for (const auto& vidExt : VIDEO_EXTENSIONS) {
         if (ext == vidExt) return MediaType::VIDEO;
     }
-    // Default to image
-    return MediaType::IMAGE;
+    for (const auto& imgExt : IMAGE_EXTENSIONS) {
+        if (ext == imgExt) return MediaType::IMAGE;
+    }
+    return std::nullopt;
 }
 
 } // namespace quadmapper

@@ -120,7 +120,9 @@ TEST(MissingMediaTest, RelocateRefusesWhatItCannotUse) {
     EXPECT_EQ(relocateMissingSource(fx.es, sm, UUID::generate(), "D:/found/clip.mp4"),
               "It is no longer missing.");
     EXPECT_EQ(relocateMissingSource(fx.es, sm, fx.missingId, "D:/found/notes.txt"),
-              "The file could not be loaded.");
+              "Not an image or video file QUADmapper can open.");
+    EXPECT_EQ(relocateMissingSource(fx.es, sm, fx.missingId, "D:/found/no-extension"),
+              "Not an image or video file QUADmapper can open.");
     EXPECT_EQ(relocateMissingSource(fx.es, sm, fx.missingId, "D:/definitely/not/here.mp4"),
               "The file could not be loaded.");
     EXPECT_EQ(fx.es.missingSources.count(fx.missingId), 1u) << "still missing after a refusal";

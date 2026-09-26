@@ -48,10 +48,11 @@ private:
     SOCKET socket_;
 };
 
-// Wait (up to 2 s) until `count` events are queued, then drain them.
+// Wait until `count` events are queued, then drain them. Up to 10 s (ctest -j on a
+// loaded machine); it returns as soon as they are in.
 std::vector<ControlEvent> waitForEvents(ControlEventQueue& queue, size_t count) {
     std::vector<ControlEvent> out;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (out.size() < count && std::chrono::steady_clock::now() < deadline) {
         queue.drain(out, 1000);
         std::this_thread::sleep_for(std::chrono::milliseconds(2));

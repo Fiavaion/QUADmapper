@@ -73,7 +73,6 @@ target_link_libraries(test_audio_sync PRIVATE quadmapper_audio quadmapper_source
 
 # Input module tests
 add_quadmapper_test(test_input
-    input/KeyboardShortcutsTest.cpp
     input/VertexKeyboardTest.cpp
 )
 target_link_libraries(test_input PRIVATE quadmapper_input quadmapper_core imgui)

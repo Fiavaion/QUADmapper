@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include <process.h>  // _getpid
+
 #include <chrono>
 #include <string>
 #include <thread>
@@ -25,13 +27,18 @@ using quadmapper::ai::SidecarState;
 
 namespace {
 
-// A port unlikely to collide with a developer's running sidecar (default 8765).
-constexpr int kTestPort = 8791;
+// A port unlikely to collide with a developer's running sidecar (default 8765) or
+// another test process's (TD-23): suites running at once, e.g. in several
+// worktrees, each launch a live sidecar, and on one fixed port a client could
+// attach to, or still see, another process's sidecar.
+int liveTestPort() {
+    return 40000 + (_getpid() % 9000);
+}
 
 SidecarConfig liveConfig() {
     SidecarConfig cfg;
     cfg.scriptPath = QM_SIDECAR_SCRIPT;
-    cfg.port = kTestPort;
+    cfg.port = liveTestPort();
     cfg.startupTimeoutMs = 10000;  // first Python start can be slow on Windows
     return cfg;
 }
@@ -64,6 +71,9 @@ TEST(SidecarClientTest, BogusPythonExeFailsButDoesNotThrow) {
     SidecarConfig cfg = liveConfig();
     cfg.pythonExe = "definitely-not-a-real-python-exe-qm056";
     cfg.startupTimeoutMs = 1500;
+    // Its own port (TD-23): on a live round-trip's port, a real sidecar answering
+    // /health under ctest -j let start() attach to it.
+    cfg.port = 8792;
     SidecarClient client(cfg);
 
     EXPECT_FALSE(client.start());
@@ -82,7 +92,12 @@ TEST(SidecarClientTest, StartAsyncResolvesToFailedWithoutBlocking) {
     SidecarClient client(cfg);
 
     client.startAsync();      // returns immediately; worker does the connect
-    for (int i = 0; i < 200 && client.state() == SidecarState::Starting; ++i) {
+    // The worker's only wait is one health probe bounded by WinHTTP timeouts; the
+    // generous deadline only guards against a hang, so a loaded machine cannot
+    // fail the test (TD-23).
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (client.state() == SidecarState::Starting &&
+           std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 

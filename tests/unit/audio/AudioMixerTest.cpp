@@ -387,9 +387,12 @@ TEST_F(AudioMixerTest, ARemovedSourceIsNeverRenderedAgainAndDiesOnTheControlThre
     std::atomic<int> violations{0};
     std::atomic<int> renders{0};
     int wrongThread = 0;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    // A fixed number of cycles, not a time budget: each waits for a callback, and under
+    // ctest -j a 2 s budget ran as few as 88 (TD-23). The deadline only guards a hang.
+    constexpr int CYCLES = 150;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
     int cycles = 0;
-    while (std::chrono::steady_clock::now() < deadline) {
+    while (cycles < CYCLES && std::chrono::steady_clock::now() < deadline) {
         std::thread::id diedOn;
         {
             auto source = std::make_shared<Tracked>();
@@ -406,7 +409,7 @@ TEST_F(AudioMixerTest, ARemovedSourceIsNeverRenderedAgainAndDiesOnTheControlThre
     }
     mixer->shutdown();  // before `device`, whose context the device was opened on
     EXPECT_GT(renders.load(), 50);  // the device thread really was mixing
-    EXPECT_GT(cycles, 100);
+    EXPECT_EQ(cycles, CYCLES);
     EXPECT_EQ(violations.load(), 0);
     EXPECT_EQ(wrongThread, 0);
 }

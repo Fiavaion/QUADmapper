@@ -3,6 +3,7 @@
 #include "MediaItem.hpp"
 #include <vector>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace quadmapper {
@@ -18,7 +19,8 @@ public:
     /**
      * Add a media item from a file path.
      * @param path Path to the media file
-     * @return Pointer to the created item, or nullptr if import failed
+     * @return Pointer to the created item, or nullptr if the path is already in the
+     *         library or is not an image or video file
      */
     MediaItem* addItem(const std::filesystem::path& path);
 
@@ -102,9 +104,9 @@ public:
     /**
      * Determine media type from file extension.
      * @param extension The extension (with or without dot)
-     * @return The media type, or IMAGE as default
+     * @return IMAGE or VIDEO, or nullopt for an extension that is neither
      */
-    static MediaType getTypeFromExtension(const std::string& extension);
+    static std::optional<MediaType> getTypeFromExtension(const std::string& extension);
 
 private:
     std::vector<std::unique_ptr<MediaItem>> items_;

@@ -39,22 +39,33 @@ TEST(TimerTest, ResetClearsElapsed) {
     timer.start();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Bound the post-reset reading by the wall time around it rather than a fixed
+    // 10 ms, which a preempted thread under ctest -j could exceed (TD-23).
+    using Clock = std::chrono::high_resolution_clock;
+    const auto before = Clock::now();
     timer.reset();
+    const double elapsed = timer.elapsedSeconds();
+    const double window = std::chrono::duration<double>(Clock::now() - before).count();
 
-    double elapsed = timer.elapsedSeconds();
-    EXPECT_LT(elapsed, 0.01);
+    EXPECT_GE(elapsed, 0.0);
+    EXPECT_LE(elapsed, window);
+    EXPECT_TRUE(timer.isRunning());
 }
 
 TEST(FrameTimerTest, DeltaTimeCalculation) {
     FrameTimer frameTimer;
 
+    using Clock = std::chrono::high_resolution_clock;
+    const auto before = Clock::now();
     frameTimer.update();
     std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
     frameTimer.update();
+    const double window = std::chrono::duration<double>(Clock::now() - before).count();
 
-    float delta = frameTimer.getDeltaTime();
-    EXPECT_GT(delta, 0.0f);
-    EXPECT_LT(delta, 1.0f); // Should be much less than 1 second
+    // The delta covers the sleep and lies inside the wall time around both updates.
+    const float delta = frameTimer.getDeltaTime();
+    EXPECT_GE(delta, 0.015f);
+    EXPECT_LE(delta, static_cast<float>(window) + 1e-6f);
 }
 
 TEST(FrameTimerTest, FPSCalculation) {

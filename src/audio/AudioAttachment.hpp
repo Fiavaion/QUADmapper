@@ -64,7 +64,9 @@ enum class AudioAttachmentState {
  * in step at once; a Ping-Pong reverse leg pre-rolls the next forward leg.
  *
  * In Loop mode the decode thread cuts or pads each pass to the clip duration and runs
- * straight on into the next, so the wrap is seamless and needs no resync.
+ * straight on into the next, so the wrap needs no resync; the first 5 ms of each new
+ * pass is an equal-power crossfade from the outgoing sound (LoopCrossfade), so the
+ * seam does not click.
  *
  * Destruction order (the teardown the audio thread relies on): the source is removed
  * from the mixer first — removeSource() returns only once no callback can reach it —
@@ -119,6 +121,7 @@ private:
     // Push queued samples, decoding more as the queue empties; returns when the buffer
     // is full, the pass ended or a request arrived.
     void produce();
+    void push(const float* samples, size_t frames);
     void queueFrames(const float* samples, int64_t frames);
     void queueSilence(int64_t frames);
     void endOfPass();

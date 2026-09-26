@@ -131,11 +131,9 @@ inline std::string relocateMissingSource(EditorState& es, SourceManager& sm, con
     const Project::SourceData original = missing->second;
     const std::string path = absoluteMediaPath(newPath);
 
-    const MediaType type = MediaLibrary::getTypeFromExtension(newPath.extension().string());
-    if (type != MediaType::VIDEO && type != MediaType::IMAGE) {
-        return "Not an image or video file QUADmapper can open.";
-    }
-    const bool isVideo = (type == MediaType::VIDEO);
+    const std::optional<MediaType> type = MediaLibrary::getTypeFromExtension(newPath.extension().string());
+    if (!type) return "Not an image or video file QUADmapper can open.";
+    const bool isVideo = (*type == MediaType::VIDEO);
     const bool alreadyOpen = !(isVideo ? sm.findVideoSourceByPath(path)
                                        : sm.findImageSourceByPath(path)).isNull();
     const UUID id = isVideo ? sm.getOrCreateVideoSource(path) : sm.getOrCreateImageSource(path);

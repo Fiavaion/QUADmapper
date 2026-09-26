@@ -183,6 +183,8 @@ void MainMenuBar::render(EditorContext& ctx) {
                 es.beginCalibration(toCalibrate->getId(), toCalibrate->getProjector());
             }
         }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Preferences...", "Ctrl+,")) es.showPreferences = true;
         ImGui::EndMenu();
     }
 
