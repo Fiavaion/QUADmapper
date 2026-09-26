@@ -24,6 +24,14 @@ and never assigns media):
   (`. tests/smoke/qa_lib.ps1`), then `Start-Qa`, `Click`, `Drag`, `Tap`, `Chord`, `Paste`, `Cap`
   (`-Virtual` for all monitors) against the running app; output in `out_qa/`.
 
+- **`drive_3d_smoke.ps1`** — step-by-step helpers for the ADR-052 3D feature (dot-source it; it
+  loads `qa_lib.ps1`). `New-Qm3dAssets` writes a 1-unit cube OBJ with one labelled atlas cell per
+  face (each with an "UP" bar) to `%TEMP%\qm_3d`; `Initialize-Qm3dScene` imports it, assigns the
+  atlas and turns it; `Submit-QaFileDialog` fills native Open/Save dialogs by window message;
+  `Get-QaSilhouette` / `Get-QaModelSilhouette` measure an object's outline corners (for placing
+  calibration points and comparing renders). Its `Tap`/`Chord`/`Click` re-verify the foreground
+  window before every input, because another app on the desktop can steal it mid-run.
+
 The harnesses place the editor window at 0,0 2560x1360 on the primary monitor (a maximized
 window covers the taskbar area here, hiding the bottom of the dock panels); all click points
 are physical pixels for that placement. Older notes below mention maximizing. Both (`SW_MAXIMIZE`) and paste the media path via the clipboard
