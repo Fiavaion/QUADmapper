@@ -76,6 +76,16 @@ public:
     // --- PlayableSource: Loop ---
     void setLoopMode(LoopMode mode) override;
     LoopMode getLoopMode() const override;
+    std::string getLoopModeNotice() const override;
+
+    // --- PlayableSource: Timeline lock ---
+    void setTimelineLocked(bool locked, const PlaybackClock& master) override;
+    bool isTimelineLocked() const override;
+    void followTimeline(const PlaybackClock& master) override;
+
+    // --- PlayableSource: Clock ---
+    const PlaybackClock& getClock() const override;
+    PlaybackTimePoint getClockNow() const override;
 
     // --- PlayableSource: Health ---
     std::string getErrorMessage() const override;
@@ -83,6 +93,8 @@ public:
     // --- Video-specific ---
     const std::filesystem::path& getPath() const { return path_; }
     const VideoInfo& getVideoInfo() const;
+    // The player behind this source (tests inject time and a reverse cache budget).
+    VideoPlayer& getPlayer() { return *player_; }
 
 private:
     void convertVideoFrame(const VideoFrame& videoFrame);

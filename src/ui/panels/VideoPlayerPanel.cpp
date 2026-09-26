@@ -43,6 +43,34 @@ void showPlaybackError(const PlayableSource& video) {
     }
 }
 
+// Once / Loop / Ping-Pong (ADR-050), and why a requested Ping-Pong plays as Loop.
+void loopModeSelector(PlayableSource& video, Project* project, float width) {
+    static const char* const LOOP_MODES[] = {"Once", "Loop", "Ping-Pong"};  // LoopMode order
+    int mode = static_cast<int>(video.getLoopMode());
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::Combo("Loop Mode", &mode, LOOP_MODES, IM_ARRAYSIZE(LOOP_MODES))) {
+        video.setLoopMode(static_cast<LoopMode>(mode));
+        if (project) project->setModified(true);
+    }
+    ImGui::SetItemTooltip("Once stops on the last frame; Loop starts over; Ping-Pong plays "
+                          "back and forth");
+    const std::string notice = video.getLoopModeNotice();
+    if (!notice.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.3f, 1.0f));
+        ImGui::TextWrapped("Ping-Pong is playing as Loop: %s", notice.c_str());
+        ImGui::PopStyleColor();
+    }
+}
+
+// Timeline lock (ADR-050 §3): a locked source follows the master timeline in the menu
+// bar, so its own transport is shown disabled.
+void showLockedNote(const PlayableSource& video) {
+    if (video.isTimelineLocked()) {
+        ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f),
+                           "Locked to the master timeline (menu bar: Timeline Play/Pause/Restart)");
+    }
+}
+
 }  // namespace
 
 void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
@@ -116,14 +144,15 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
 
         if (video) {
             ImGui::Separator();
+            showLockedNote(*video);
+            ImGui::BeginDisabled(video->isTimelineLocked());
             const bool playing = video->getPlaybackState() == PlaybackState::PLAYING;
             if (ImGui::Button(playing ? "Pause" : "Play")) {
                 if (playing) video->pause(); else video->play();
             }
-            bool loop = video->getLoopMode() == LoopMode::LOOP;
-            if (ImGui::Checkbox("Loop", &loop)) {
-                video->setLoopMode(loop ? LoopMode::LOOP : LoopMode::ONCE);
-            }
+            ImGui::EndDisabled();
+            loopModeSelector(*video, ctx.project, 180.0f);
+            ImGui::BeginDisabled(video->isTimelineLocked());
             float speed = video->getSpeed();
             ImGui::SetNextItemWidth(180.0f);
             if (ImGui::SliderFloat("Speed", &speed, 0.1f, 4.0f, "%.1fx")) {
@@ -131,6 +160,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
             }
             ImGui::SameLine();
             if (ImGui::Button("1x")) video->setSpeed(1.0f);
+            ImGui::EndDisabled();
             showPlaybackError(*video);
         } else {
             ImGui::TextDisabled("No video loaded");
@@ -172,7 +202,18 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
 
         ImGui::Separator();
 
-        // Playback controls
+        // Timeline lock: the source follows the master timeline instead of its own clock.
+        bool locked = video->isTimelineLocked();
+        if (ImGui::Checkbox("Lock to master timeline", &locked)) {
+            ctx.sourceManager->setTimelineLocked(es.activeVideoSourceId, locked);
+            if (ctx.project) ctx.project->setModified(true);
+        }
+        ImGui::SetItemTooltip("Follow the master timeline in the menu bar; its time is looped "
+                              "over this clip, so locked videos stay in step");
+        showLockedNote(*video);
+
+        // Playback controls (the master timeline's, while locked)
+        ImGui::BeginDisabled(locked);
         bool playing = video->getPlaybackState() == PlaybackState::PLAYING;
         if (playing) {
             if (ImGui::Button("Pause")) video->pause();
@@ -191,25 +232,26 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         if (ImGui::SliderFloat("Progress", &percent, 0.0f, 100.0f, "%.1f%%")) {
             video->seekProgress(percent / 100.0f);
         }
-        ImGui::Text("Time: %.1f / %.1f s", video->getCurrentTime(), video->getDuration());
+        ImGui::EndDisabled();
+        const bool reversing = video->getClock().direction(video->getClockNow()) < 0 &&
+                               video->getPlaybackState() == PlaybackState::PLAYING;
+        ImGui::Text("Time: %.1f / %.1f s%s", video->getCurrentTime(), video->getDuration(),
+                    reversing ? "  (reverse)" : "");
         showPlaybackError(*video);
 
         ImGui::Separator();
 
         // Speed
+        ImGui::BeginDisabled(locked);
         float speed = video->getSpeed();
         if (ImGui::SliderFloat("Speed", &speed, 0.1f, 4.0f, "%.1fx")) {
             video->setSpeed(speed);
         }
         ImGui::SameLine();
         if (ImGui::Button("1x")) video->setSpeed(1.0f);
+        ImGui::EndDisabled();
 
-        // Loop mode
-        const char* loopModes[] = { "Once", "Loop" };
-        int loopMode = video->getLoopMode() == LoopMode::LOOP ? 1 : 0;
-        if (ImGui::Combo("Loop Mode", &loopMode, loopModes, 2)) {
-            video->setLoopMode(loopMode == 1 ? LoopMode::LOOP : LoopMode::ONCE);
-        }
+        loopModeSelector(*video, ctx.project, ImGui::CalcItemWidth());
 
         ImGui::Separator();
 

@@ -2,11 +2,14 @@
 #include "hap/HapFrameParser.hpp"
 #include "video/DecodeBackoff.hpp"
 #include "video/FrameSelection.hpp"
+#include "video/PlaybackTransport.hpp"
+#include "video/VideoDecoder.hpp"  // DecodePlan
 #include "core/Logger.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <limits>
 #include <mutex>
@@ -38,6 +41,9 @@ GpuCompressedFormat toCompressedFormat(hap::HapTextureFormat fmt) {
     }
 }
 
+// Seeks further back tried when a reverse step lands on or after its bound.
+constexpr int MAX_REVERSE_RETRIES = 20;
+
 } // namespace
 
 /**
@@ -47,6 +53,10 @@ GpuCompressedFormat toCompressedFormat(hap::HapTextureFormat fmt) {
  * demuxed packet's bytes ARE one HAP frame, parsed straight to BCn via
  * hap::parseHapFrame on a background thread and staged as a compressed FrameData
  * for the main thread to upload (no GL here — rendering rule).
+ *
+ * Playback follows a PlaybackTransport (ADR-050). The demux thread walks the clock's
+ * legs: forward legs read packets in order, Ping-Pong's reverse legs seek to each
+ * earlier frame in turn. HAP is intra-only, so reverse playback is frame-exact.
  */
 class HapFileSource::Impl {
 public:
@@ -91,11 +101,17 @@ public:
         // Frame times are relative to the stream start, so pts 0 is the first frame.
         startPts_ = stream->start_time != AV_NOPTS_VALUE ? stream->start_time : 0;
 
-        if (formatCtx_->duration != AV_NOPTS_VALUE) {
+        // The video stream's own duration, when recorded: the clock loops at it, and a
+        // container duration padded by audio would freeze the last frame each pass.
+        if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0) {
+            duration_ = static_cast<double>(stream->duration) * timeBase_;
+        } else if (formatCtx_->duration != AV_NOPTS_VALUE) {
             duration_ = static_cast<double>(formatCtx_->duration) / AV_TIME_BASE;
         } else {
             duration_ = 0.0;
         }
+        const AVRational rate = av_guess_frame_rate(formatCtx_, stream, nullptr);
+        frameSeconds_ = rate.num > 0 && rate.den > 0 ? av_q2d(av_inv_q(rate)) : 1.0 / 30.0;
 
         if (width_ <= 0 || height_ <= 0) {
             Logger::error("HapFileSource: invalid dimensions {}x{} in '{}'", width_, height_, pathStr);
@@ -104,12 +120,14 @@ public:
         }
 
         isOpen_ = true;
-        position_ = 0.0;
         atEnd_ = false;
-        refreshPending_ = true;
+        observedEnd_ = 0.0;
+        endSeen_ = false;
+        durationChecked_ = false;
+        transport_.load(duration_);
         // Demux from the start (bounded by the staging queue) so the first frame is
         // on screen even before play.
-        startThread();
+        applyTransport();
         Logger::info("HapFileSource: demuxing HAP '{}' ({}x{}, {}s)",
                      pathStr, width_, height_, duration_);
         return true;
@@ -128,7 +146,6 @@ public:
         timeBase_ = 0.0;
         startPts_ = 0;
         duration_ = 0.0;
-        position_ = 0.0;
         isOpen_ = false;
         atEnd_ = false;
         refreshPending_ = false;
@@ -142,98 +159,76 @@ public:
     }
     int width() const { return width_; }
     int height() const { return height_; }
-    double duration() const { return duration_; }
+    double duration() const { return transport_.clock().duration(); }
     double position() const { return position_; }
 
-    // --- Playback control (clock lives here; main thread drives update) ---
+    // --- Playback control (the clock lives in the transport; main thread) ---
 
-    void play() {
-        if (!isOpen_) return;
-        if (state_ == PlaybackState::FINISHED) {
-            seek(0.0);
-        }
-        state_ = PlaybackState::PLAYING;
-        startThread();
-    }
-
-    void pause() {
-        if (state_ == PlaybackState::PLAYING) {
-            state_ = PlaybackState::PAUSED;
-        }
-    }
-
-    void stop() {
-        state_ = PlaybackState::STOPPED;
-        seek(0.0);
-    }
-
+    void play() { if (isOpen_) { transport_.play(); applyTransport(); } }
+    void pause() { if (isOpen_) { transport_.pause(); applyTransport(); } }
+    void stop() { if (isOpen_) { transport_.stop(); applyTransport(); } }
     void togglePlayPause() {
-        if (state_ == PlaybackState::PLAYING) pause(); else play();
+        if (transport_.state() == PlaybackState::PLAYING) pause(); else play();
     }
+    void seek(double timeSeconds) { if (isOpen_) { transport_.seek(timeSeconds); applyTransport(); } }
 
-    PlaybackState state() const { return state_; }
+    PlaybackState state() const { return transport_.state(); }
 
-    void setSpeed(float speed) { speed_ = std::clamp(speed, 0.1f, 4.0f); }
-    float speed() const { return speed_; }
+    void setSpeed(float speed) { transport_.setSpeed(speed); }
+    float speed() const { return transport_.speed(); }
 
-    // Ping-pong needs reverse playback, which forward demuxing cannot do; it was only
-    // ever a forward loop, so files that saved it keep looping (QM-088).
-    void setLoopMode(LoopMode mode) { loopMode_ = mode == LoopMode::PING_PONG ? LoopMode::LOOP : mode; }
-    LoopMode loopMode() const { return loopMode_; }
-
-    void seek(double timeSeconds) {
-        if (!isOpen_) return;
-        timeSeconds = std::clamp(timeSeconds, 0.0, duration_ > 0.0 ? duration_ : timeSeconds);
-
-        stopThread();
-
-        if (timeBase_ > 0.0) {
-            int64_t ts = static_cast<int64_t>(timeSeconds / timeBase_) + startPts_;
-            if (av_seek_frame(formatCtx_, videoStreamIndex_, ts, AVSEEK_FLAG_BACKWARD) < 0) {
-                Logger::warning("HapFileSource: seek to {}s failed", timeSeconds);
-            }
-        }
-
-        clearQueue();
-        position_ = timeSeconds;
-        atEnd_ = false;
-        refreshPending_ = true;
-        if (state_ == PlaybackState::FINISHED) {
-            state_ = PlaybackState::PAUSED;
-        }
-        startThread();
+    // HAP frames are all keyframes: Ping-Pong always runs backwards exactly.
+    void setLoopMode(LoopMode mode) {
+        transport_.setLoopMode(mode);
+        if (isOpen_) applyTransport();
     }
+    LoopMode loopMode() const { return transport_.loopMode(); }
+    std::string loopModeNotice() const { return transport_.loopModeNotice(); }
 
-    // Advance the playback clock (while playing) and take the staged frames that are
-    // due; the newest due one is returned in out. Same rule as VideoPlayer::update
-    // (FrameSelection.hpp): never ahead of the clock, late frames dropped.
-    bool update(double deltaTime, FrameData& out) {
+    void setTimelineLocked(bool locked, const PlaybackClock& master) {
+        transport_.setTimelineLocked(locked, master);
+        if (isOpen_) applyTransport();
+    }
+    bool timelineLocked() const { return transport_.timelineLocked(); }
+    void followTimeline(const PlaybackClock& master) { transport_.followTimeline(master); }
+
+    const PlaybackClock& clock() const { return transport_.clock(); }
+    PlaybackTimePoint now() const { return transport_.now(); }
+    void setTimeSource(PlaybackTransport::TimeSource source) { transport_.setTimeSource(std::move(source)); }
+
+    // Take the staged frames that are due on the clock; the newest due one is returned
+    // in out. Same rule as VideoPlayer::update (FrameSelection.hpp): never ahead of the
+    // clock, late frames dropped.
+    bool update(FrameData& out) {
         if (!isOpen_) {
             return false;
         }
+        checkDuration();
+        if (transport_.takeReposition()) reposition();
 
-        const bool playing = state_ == PlaybackState::PLAYING;
-        if (playing) {
-            position_ += deltaTime * static_cast<double>(speed_);
-            if (duration_ > 0.0 && position_ > duration_) {
-                position_ = duration_;
-            }
-        }
-        // At the clip's end take whatever is left, so it drains and loops.
-        const bool clockAtEnd = playing && duration_ > 0.0 && position_ >= duration_;
-        const double target = clockAtEnd ? std::numeric_limits<double>::infinity() : position_;
+        const PlaybackTimePoint now = transport_.now();
+        const PlaybackClock& clock = transport_.clock();
+        const double timeline = clock.timeline(now);
+        const ClipPosition clip = clock.sample(now);
+        const bool playing = transport_.state() == PlaybackState::PLAYING;
+        position_ = clip.position;
 
         size_t taken = 0;
-        {
+        // A paused source holds its frame (see VideoPlayer::update).
+        if (playing || !clock.running() || refreshPending_) {
+            // Once: at the end take whatever is left.
+            const double target = playing && clip.ended ? std::numeric_limits<double>::infinity()
+                                                        : timeline;
             std::lock_guard<std::mutex> lock(queueMutex_);
             taken = popDueFrames(
                 target, !refreshPending_,
-                [this](double& pts) {
+                [this](double& due) {
                     if (frameQueue_.empty()) return false;
-                    pts = frameQueue_.front().pts;
+                    due = frameQueue_.front().due;
                     return true;
                 },
                 [this, &out]() {
+                    shownDue_ = frameQueue_.front().due;
                     out = std::move(frameQueue_.front().data);
                     frameQueue_.pop();
                 });
@@ -243,37 +238,233 @@ public:
             queueCond_.notify_one();
         }
 
-        // End-of-stream handling once the demux thread is drained. Check emptiness
-        // under the lock but call handleEndOfVideo() WITHOUT it — that path joins the
-        // demux thread (via seek), which itself blocks on queueMutex_ (deadlock if held).
-        if (playing && atEnd_ && taken == 0) {
-            bool drained;
-            {
-                std::lock_guard<std::mutex> lock(queueMutex_);
-                drained = frameQueue_.empty();
-            }
-            if (drained) {
-                handleEndOfVideo();
-            }
+        // The clock jumped ahead since the last update (a stall) and nothing staged is
+        // near it: resume demuxing at the clock (see VideoPlayer::update).
+        const bool clockJumped = timeline - lastTimeline_ > RESYNC_LATENESS;
+        lastTimeline_ = timeline;
+        if (playing && clockJumped && !refreshPending_ && shownDue_ < timeline - RESYNC_LATENESS &&
+            !atEnd_ && staleQueue(timeline)) {
+            reposition();
         }
 
+        if (playing && !transport_.timelineLocked()) handleEndOfClip(clip);
         return taken > 0;
     }
 
 private:
     struct StagedFrame {
-        double pts = 0.0;
+        double due = 0.0;  // timeline time at which the frame becomes current
         FrameData data;
     };
 
-    void handleEndOfVideo() {
-        if (loopMode_ == LoopMode::ONCE) {
-            state_ = PlaybackState::FINISHED;
-            return;
+    enum class Phase { Forward, Reverse, Done };
+
+    // What one demux step produced.
+    enum class Step { Frame, Continue, Idle, Failed };
+
+    void applyTransport() {
+        if (transport_.takeReposition()) reposition();
+        position_ = transport_.clock().position(transport_.now());
+    }
+
+    // Nothing staged, or only frames already too late to catch up with.
+    bool staleQueue(double timeline) const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        return frameQueue_.empty() || frameQueue_.front().due < timeline - RESYNC_LATENESS;
+    }
+
+    // Restart the demux thread at the clock's position.
+    void reposition() {
+        stopThread();
+        clearQueue();
+        plan_.timeline = transport_.clock().timeline(transport_.now());
+        lastTimeline_ = plan_.timeline;
+        plan_.duration = transport_.clock().duration();
+        plan_.loopMode = transport_.clock().loopMode();
+        leg_ = legAt(plan_.timeline, plan_.duration, plan_.loopMode);
+        const ClipPosition clip = mapTimeline(plan_.timeline, plan_.duration, plan_.loopMode);
+        if (leg_.direction > 0) {
+            beginForward(clip.position);
+        } else {
+            beginReverse(clip.position + FRAME_DUE_EPSILON, /*knownEnd=*/false);
         }
-        // Re-arm from the start. seek() restarts the demux thread.
-        seek(0.0);
-        play();
+        refreshPending_ = true;
+        startThread();
+    }
+
+    // Only Once reaches an end; Loop and Ping-Pong demux forever.
+    void handleEndOfClip(const ClipPosition& clip) {
+        if (!clip.ended || !atEnd_) return;
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        if (frameQueue_.empty()) transport_.finish();
+    }
+
+    // Once a forward pass reached the end, correct a missing or wrong duration so the
+    // clock wraps where the video really ends (see VideoPlayer::checkDuration).
+    void checkDuration() {
+        if (durationChecked_ || !endSeen_) return;
+        durationChecked_ = true;
+        const double end = observedEnd_;
+        if (std::abs(end - transport_.clock().duration()) > 0.5 * frameSeconds_) {
+            Logger::info("HapFileSource: video ends at {} s, not the declared {} s", end,
+                         transport_.clock().duration());
+            transport_.setDuration(end);
+        }
+    }
+
+    bool planLoops() const {
+        return plan_.loopMode != LoopMode::ONCE && plan_.duration >= MIN_WRAP_DURATION;
+    }
+
+    int64_t toTicks(double seconds) const {
+        return startPts_ + static_cast<int64_t>(std::llround(seconds / timeBase_));
+    }
+
+    double packetPts(const AVPacket* packet) const {
+        if (timeBase_ <= 0.0) return 0.0;
+        if (packet->pts != AV_NOPTS_VALUE) return static_cast<double>(packet->pts - startPts_) * timeBase_;
+        if (packet->dts != AV_NOPTS_VALUE) return static_cast<double>(packet->dts - startPts_) * timeBase_;
+        return 0.0;
+    }
+
+    // Demuxer at the frame on screen at `position` (every HAP frame is a keyframe).
+    void beginForward(double position) {
+        phase_ = Phase::Forward;
+        atEnd_ = false;
+        if (timeBase_ > 0.0 &&
+            av_seek_frame(formatCtx_, videoStreamIndex_, toTicks(position), AVSEEK_FLAG_BACKWARD) < 0) {
+            Logger::warning("HapFileSource: seek to {}s failed", position);
+        }
+    }
+
+    // Reverse from the frame before `bound`. knownEnd: the first frame shown ends at
+    // the clip's end (a leg starting there); otherwise its end is read from the file.
+    void beginReverse(double bound, bool knownEnd) {
+        phase_ = Phase::Reverse;
+        atEnd_ = false;
+        reverseBound_ = std::min(bound, plan_.duration);
+        reverseEnd_ = knownEnd ? plan_.duration : std::numeric_limits<double>::quiet_NaN();
+    }
+
+    void advanceLeg() {
+        leg_ = nextLeg(leg_, plan_.duration, plan_.loopMode);
+        if (leg_.direction > 0) {
+            beginForward(0.0);
+        } else {
+            beginReverse(plan_.duration, /*knownEnd=*/true);
+        }
+    }
+
+    // Read up to the next packet of the video stream. Returns the av_read_frame code.
+    int readVideoPacket(AVPacket* packet) {
+        for (;;) {
+            const int rc = av_read_frame(formatCtx_, packet);
+            if (rc < 0 || packet->stream_index == videoStreamIndex_) return rc;
+            av_packet_unref(packet);
+        }
+    }
+
+    // Parse a HAP packet into a staged frame; false (and a logged reason) if unusable.
+    bool stage(const AVPacket* packet, double pts, StagedFrame& staged, std::string& failure) {
+        // The packet bytes ARE the HAP frame — parse straight to BCn.
+        hap::HapDecodedFrame decoded =
+            hap::parseHapFrame(packet->data, static_cast<size_t>(packet->size));
+        if (!decoded.valid()) {
+            Logger::warning("HapFileSource: parseHapFrame produced an invalid frame; skipping");
+            failure = "HAP frames could not be decoded";
+            return false;
+        }
+        GpuCompressedFormat cf = toCompressedFormat(decoded.format);
+        if (cf == GpuCompressedFormat::None) {
+            Logger::warning("HapFileSource: unsupported HAP texture format; skipping");
+            return false;
+        }
+        if (!decoded.alphaPlane.empty() && !loggedAlphaPlane_) {
+            Logger::warning("HapFileSource: HapQ-Alpha second plane present but deferred (v1) — primary plane only");
+            loggedAlphaPlane_ = true;
+        }
+        staged.data.width = width_;
+        staged.data.height = height_;
+        staged.data.compressedFormat = cf;
+        staged.data.pixels = std::move(decoded.textureData);
+        staged.data.timestamp = static_cast<uint64_t>(std::max(pts, 0.0) * 1000000.0);
+        staged.data.frameNumber = frameCounter_++;
+        return true;
+    }
+
+    Step stepForward(AVPacket* packet, StagedFrame& staged, std::string& failure) {
+        const int rc = readVideoPacket(packet);
+        if (rc == AVERROR_EOF) {
+            endSeen_ = true;  // observedEnd_ now includes the last frame
+            if (leg_.final) {
+                phase_ = Phase::Done;
+                atEnd_ = true;  // idle until a reposition or stop
+                return Step::Idle;
+            }
+            advanceLeg();
+            return Step::Continue;
+        }
+        if (rc < 0) {
+            char err[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(rc, err, sizeof(err));
+            failure = std::string("HAP read failed: ") + err;
+            return Step::Failed;
+        }
+        const double pts = packetPts(packet);
+        observedEnd_ = std::max(observedEnd_.load(), pts + frameSeconds_);
+        // A frame stamped past the clip's end would show after the next pass began.
+        if (planLoops() && pts >= plan_.duration - FRAME_DUE_EPSILON) {
+            av_packet_unref(packet);
+            return Step::Continue;
+        }
+        const bool ok = stage(packet, pts, staged, failure);
+        av_packet_unref(packet);
+        if (!ok) return failure.empty() ? Step::Continue : Step::Failed;
+        staged.due = frameDueTime(leg_, plan_.duration, pts, pts + frameSeconds_);
+        return Step::Frame;
+    }
+
+    // The frame before reverseBound_: seek to it, read it, stage it newest-first.
+    Step stepReverse(AVPacket* packet, StagedFrame& staged, std::string& failure) {
+        if (reverseBound_ <= FRAME_DUE_EPSILON) {  // the first frame was shown
+            advanceLeg();
+            return Step::Continue;
+        }
+        int64_t target = toTicks(reverseBound_) - 1;
+        const int64_t step = std::max<int64_t>(1, std::llround(frameSeconds_ / timeBase_));
+        for (int attempt = 0; attempt <= MAX_REVERSE_RETRIES; ++attempt) {
+            if (stopFlag_) return Step::Idle;
+            if (target < startPts_ ||
+                av_seek_frame(formatCtx_, videoStreamIndex_, target, AVSEEK_FLAG_BACKWARD) < 0) {
+                break;  // nothing earlier
+            }
+            const int rc = readVideoPacket(packet);
+            if (rc < 0) break;
+            const double pts = packetPts(packet);
+            if (pts >= reverseBound_ - FRAME_DUE_EPSILON) {
+                av_packet_unref(packet);  // the demuxer landed late: step further back
+                target -= step << std::min(attempt, 16);
+                continue;
+            }
+            const bool ok = stage(packet, pts, staged, failure);
+            av_packet_unref(packet);
+            double end = reverseEnd_;
+            if (std::isnan(end)) {
+                // Starting mid-leg: this frame lasts until the next one in the file.
+                end = plan_.duration;
+                if (readVideoPacket(packet) >= 0) {
+                    end = std::min(packetPts(packet), plan_.duration);
+                    av_packet_unref(packet);
+                }
+            }
+            reverseBound_ = pts;
+            reverseEnd_ = pts;
+            if (!ok) return failure.empty() ? Step::Continue : Step::Failed;
+            staged.due = frameDueTime(leg_, plan_.duration, pts, std::max(end, pts));
+            return Step::Frame;
+        }
+        reverseBound_ = 0.0;  // no earlier frame found: the leg is over
+        return Step::Continue;
     }
 
     void startThread() {
@@ -318,7 +509,7 @@ private:
         std::swap(frameQueue_, empty);
     }
 
-    // Background thread: demux packets, parse HAP -> BCn, stage compressed frames.
+    // Background thread: produce staged BCn frames in timeline order.
     void demuxLoop() {
         AVPacket* packet = av_packet_alloc();
         if (!packet) {
@@ -327,6 +518,7 @@ private:
         }
 
         DecodeBackoff backoff;
+        int emptyLegs = 0;
         while (!stopFlag_) {
             // Backpressure: wait until there's room in the staging queue.
             {
@@ -337,66 +529,39 @@ private:
             }
             if (stopFlag_) break;
 
-            int rc = av_read_frame(formatCtx_, packet);
-            if (rc < 0) {
-                if (rc == AVERROR_EOF) {
-                    // Idle until a seek or stop restarts the thread.
-                    atEnd_ = true;
-                    std::unique_lock<std::mutex> lock(queueMutex_);
-                    queueCond_.wait_for(lock, std::chrono::milliseconds(10),
-                                        [this]() { return stopFlag_.load(); });
-                } else {
-                    char err[AV_ERROR_MAX_STRING_SIZE] = {0};
-                    av_strerror(rc, err, sizeof(err));
-                    onDemuxFailure(backoff, std::string("HAP read failed: ") + err);
+            StagedFrame staged;
+            std::string failure;
+            const Phase phaseBefore = phase_;
+            const int64_t legBefore = leg_.index;
+            Step step = Step::Idle;
+            switch (phase_) {
+                case Phase::Forward: step = stepForward(packet, staged, failure); break;
+                case Phase::Reverse: step = stepReverse(packet, staged, failure); break;
+                case Phase::Done:    step = Step::Idle; break;
+            }
+
+            if (step == Step::Continue) {
+                // Guard against a clip whose legs never produce a frame.
+                if (leg_.index != legBefore || phase_ != phaseBefore) {
+                    if (++emptyLegs > 3) {
+                        onDemuxFailure(backoff, "HAP clip has no frames to show");
+                        emptyLegs = 0;
+                    }
                 }
                 continue;
             }
-
-            if (packet->stream_index != videoStreamIndex_) {
-                av_packet_unref(packet);
+            if (step == Step::Idle) {
+                std::unique_lock<std::mutex> lock(queueMutex_);
+                queueCond_.wait_for(lock, std::chrono::milliseconds(10),
+                                    [this]() { return stopFlag_.load(); });
+                continue;
+            }
+            if (step == Step::Failed) {
+                onDemuxFailure(backoff, failure);
                 continue;
             }
 
-            // The packet bytes ARE the HAP frame — parse straight to BCn.
-            hap::HapDecodedFrame decoded =
-                hap::parseHapFrame(packet->data, static_cast<size_t>(packet->size));
-
-            double pts = 0.0;
-            if (packet->pts != AV_NOPTS_VALUE && timeBase_ > 0.0) {
-                pts = static_cast<double>(packet->pts - startPts_) * timeBase_;
-            } else if (packet->dts != AV_NOPTS_VALUE && timeBase_ > 0.0) {
-                pts = static_cast<double>(packet->dts - startPts_) * timeBase_;
-            }
-
-            av_packet_unref(packet);
-
-            if (!decoded.valid()) {
-                Logger::warning("HapFileSource: parseHapFrame produced an invalid frame; skipping");
-                onDemuxFailure(backoff, "HAP frames could not be decoded");
-                continue;
-            }
-
-            GpuCompressedFormat cf = toCompressedFormat(decoded.format);
-            if (cf == GpuCompressedFormat::None) {
-                Logger::warning("HapFileSource: unsupported HAP texture format; skipping");
-                continue;
-            }
-
-            if (!decoded.alphaPlane.empty() && !loggedAlphaPlane_) {
-                Logger::warning("HapFileSource: HapQ-Alpha second plane present but deferred (v1) — primary plane only");
-                loggedAlphaPlane_ = true;
-            }
-
-            StagedFrame staged;
-            staged.pts = pts;
-            staged.data.width = width_;
-            staged.data.height = height_;
-            staged.data.compressedFormat = cf;
-            staged.data.pixels = std::move(decoded.textureData);
-            staged.data.timestamp = static_cast<uint64_t>(pts * 1000000.0);
-            staged.data.frameNumber = frameCounter_++;
-
+            emptyLegs = 0;
             backoff.onSuccess();
             {
                 std::lock_guard<std::mutex> lock(queueMutex_);
@@ -418,16 +583,27 @@ private:
     double timeBase_ = 0.0;
     int64_t startPts_ = 0;  // stream start_time, in time_base units
     double duration_ = 0.0;
+    double frameSeconds_ = 1.0 / 30.0;
     bool isOpen_ = false;
 
-    // Playback clock (main thread)
-    double position_ = 0.0;
+    // Playback (main thread)
+    PlaybackTransport transport_;
+    double position_ = 0.0;        // clip position at the last update
     bool refreshPending_ = false;  // an open/seek made the shown frame stale
-    float speed_ = 1.0f;
-    PlaybackState state_ = PlaybackState::STOPPED;
-    LoopMode loopMode_ = LoopMode::LOOP;
+    double shownDue_ = 0.0;        // due time of the frame last taken
+    double lastTimeline_ = 0.0;    // clock timeline at the previous update
     uint64_t frameCounter_ = 0;
     bool loggedAlphaPlane_ = false;
+
+    // Demux plan (demux thread; reposition() sets it up with the thread stopped)
+    DecodePlan plan_;
+    PlaybackLeg leg_;
+    Phase phase_ = Phase::Done;
+    double reverseBound_ = 0.0;  // reverse: the next frame shown is the one before this
+    double reverseEnd_ = 0.0;    // reverse: where that frame's interval ends (NaN: read it)
+    std::atomic<double> observedEnd_{0.0};  // latest frame end read going forward
+    std::atomic<bool> endSeen_{false};      // a forward pass reached the end of the file
+    bool durationChecked_ = false;          // main thread
 
     // Staging queue (background -> main)
     static constexpr size_t kMaxQueued = 8;
@@ -463,9 +639,18 @@ public:
     float speed() const { return 1.0f; }
     void setLoopMode(LoopMode) {}
     LoopMode loopMode() const { return LoopMode::ONCE; }
+    std::string loopModeNotice() const { return {}; }
+    void setTimelineLocked(bool, const PlaybackClock&) {}
+    bool timelineLocked() const { return false; }
+    void followTimeline(const PlaybackClock&) {}
+    const PlaybackClock& clock() const { return clock_; }
+    PlaybackTimePoint now() const { return std::chrono::steady_clock::now(); }
+    void setTimeSource(PlaybackTransport::TimeSource) {}
     void seek(double) {}
-    bool update(double, FrameData&) { return false; }
+    bool update(FrameData&) { return false; }
     std::string lastError() const { return {}; }
+private:
+    PlaybackClock clock_;
 };
 
 #endif // QUADMAPPER_HAS_FFMPEG
@@ -504,12 +689,12 @@ void HapFileSource::shutdown() {
     hasNewFrame_ = false;
 }
 
-bool HapFileSource::update(double deltaTime) {
+bool HapFileSource::update(double /*deltaTime: the playback clock reads the wall clock*/) {
     if (!ready_) {
         return false;
     }
     FrameData staged;
-    if (impl_->update(deltaTime, staged) && staged.isValid()) {
+    if (impl_->update(staged) && staged.isValid()) {
         frame_ = std::move(staged);
         hasNewFrame_ = true;
         return true;
@@ -573,6 +758,21 @@ float HapFileSource::getSpeed() const { return impl_ ? impl_->speed() : 1.0f; }
 
 void HapFileSource::setLoopMode(LoopMode mode) { if (impl_) impl_->setLoopMode(mode); }
 LoopMode HapFileSource::getLoopMode() const { return impl_ ? impl_->loopMode() : LoopMode::ONCE; }
+std::string HapFileSource::getLoopModeNotice() const { return impl_ ? impl_->loopModeNotice() : std::string(); }
+
+void HapFileSource::setTimelineLocked(bool locked, const PlaybackClock& master) {
+    if (impl_) impl_->setTimelineLocked(locked, master);
+}
+bool HapFileSource::isTimelineLocked() const { return impl_ && impl_->timelineLocked(); }
+void HapFileSource::followTimeline(const PlaybackClock& master) {
+    if (impl_) impl_->followTimeline(master);
+}
+
+const PlaybackClock& HapFileSource::getClock() const { return impl_->clock(); }
+PlaybackTimePoint HapFileSource::getClockNow() const { return impl_->now(); }
+void HapFileSource::setTimeSource(std::function<PlaybackTimePoint()> source) {
+    impl_->setTimeSource(std::move(source));
+}
 
 std::string HapFileSource::getErrorMessage() const { return impl_ ? impl_->lastError() : std::string(); }
 

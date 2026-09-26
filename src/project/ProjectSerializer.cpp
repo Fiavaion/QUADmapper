@@ -756,6 +756,7 @@ static nlohmann::json serializeSource(const Project::SourceData& s, const fs::pa
                 {"playing", s.transport->playing},
                 {"loopMode", loopModeName(s.transport->loopMode)},
                 {"speed", s.transport->speed},
+                {"timelineLocked", s.transport->timelineLocked},
             };
         }
     } else if (s.kind == "procedural") {
@@ -794,6 +795,10 @@ static std::optional<Project::SourceData> deserializeSource(const nlohmann::json
             if (t.contains("speed")) {
                 transport.speed = std::clamp(readFiniteFloat(t["speed"]), kMinPlaybackSpeed,
                                              kMaxPlaybackSpeed);
+            }
+            // Additive (ADR-050): older files have no lock and play on their own clocks.
+            if (t.contains("timelineLocked") && t["timelineLocked"].is_boolean()) {
+                transport.timelineLocked = t["timelineLocked"].get<bool>();
             }
             s.transport = transport;
         }

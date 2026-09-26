@@ -117,6 +117,7 @@ static Project::TransportData transportOf(const PlayableSource& p) {
     t.playing = (p.getPlaybackState() == PlaybackState::PLAYING);
     t.loopMode = p.getLoopMode();
     t.speed = p.getSpeed();
+    t.timelineLocked = p.isTimelineLocked();
     return t;
 }
 
@@ -161,6 +162,7 @@ static UUID createSourceFrom(SourceManager& sm, const Project::SourceData& d) {
             playable->setLoopMode(d.transport->loopMode);
             playable->setSpeed(d.transport->speed);
             if (d.transport->playing) playable->play();
+            if (d.transport->timelineLocked) sm.setTimelineLocked(id, true);
         }
         return id;
     }

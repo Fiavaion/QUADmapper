@@ -6,11 +6,7 @@
 #include <gtest/gtest.h>
 
 #include "video/VideoDecoder.hpp"
-
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-}
+#include "TestClips.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -41,78 +37,8 @@ std::string clipName(const testing::TestParamInfo<ClipSpec>& info) {
     return std::string(info.param.extension + 1) + "_gop" + std::to_string(info.param.gopSize);
 }
 
-// Writes FRAME_COUNT frames of MPEG-2 video with two B-frames between references,
-// muxed by file extension. Returns false if the encoder or muxer is unavailable.
 bool writeClip(const fs::path& path, int gopSize) {
-    const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MPEG2VIDEO);
-    AVFormatContext* fmt = nullptr;
-    if (!codec || avformat_alloc_output_context2(&fmt, nullptr, nullptr, path.string().c_str()) < 0) {
-        return false;
-    }
-    AVCodecContext* enc = avcodec_alloc_context3(codec);
-    AVFrame* frame = av_frame_alloc();
-    AVPacket* packet = av_packet_alloc();
-    AVStream* stream = avformat_new_stream(fmt, nullptr);
-
-    bool ok = enc && frame && packet && stream;
-    if (ok) {
-        enc->width = 64;
-        enc->height = 48;
-        enc->pix_fmt = AV_PIX_FMT_YUV420P;
-        enc->time_base = AVRational{1, FPS};
-        enc->framerate = AVRational{FPS, 1};
-        enc->gop_size = gopSize;
-        enc->max_b_frames = 2;
-        if (fmt->oformat->flags & AVFMT_GLOBALHEADER) enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        stream->time_base = enc->time_base;
-
-        frame->format = enc->pix_fmt;
-        frame->width = enc->width;
-        frame->height = enc->height;
-
-        ok = avcodec_open2(enc, codec, nullptr) >= 0 &&
-             avcodec_parameters_from_context(stream->codecpar, enc) >= 0 &&
-             av_frame_get_buffer(frame, 0) >= 0 &&
-             avio_open(&fmt->pb, path.string().c_str(), AVIO_FLAG_WRITE) >= 0 &&
-             avformat_write_header(fmt, nullptr) >= 0;
-    }
-
-    auto encode = [&](AVFrame* input) {
-        if (avcodec_send_frame(enc, input) < 0) return false;
-        while (avcodec_receive_packet(enc, packet) >= 0) {
-            packet->duration = 1;  // one frame; MP4 sizes its edit list from it
-            av_packet_rescale_ts(packet, enc->time_base, stream->time_base);
-            packet->stream_index = stream->index;
-            if (av_interleaved_write_frame(fmt, packet) < 0) return false;
-        }
-        return true;
-    };
-
-    for (int i = 0; ok && i < FRAME_COUNT; ++i) {
-        ok = av_frame_make_writable(frame) >= 0;
-        if (!ok) break;
-        for (int y = 0; y < frame->height; ++y) {
-            for (int x = 0; x < frame->width; ++x) {
-                frame->data[0][y * frame->linesize[0] + x] = static_cast<uint8_t>(x + y + i * 8);
-            }
-        }
-        for (int y = 0; y < frame->height / 2; ++y) {
-            for (int x = 0; x < frame->width / 2; ++x) {
-                frame->data[1][y * frame->linesize[1] + x] = 128;
-                frame->data[2][y * frame->linesize[2] + x] = 128;
-            }
-        }
-        frame->pts = START_OFFSET_FRAMES + i;
-        ok = encode(frame);
-    }
-    ok = ok && encode(nullptr) && av_write_trailer(fmt) >= 0;
-
-    if (fmt->pb) avio_closep(&fmt->pb);
-    av_packet_free(&packet);
-    av_frame_free(&frame);
-    avcodec_free_context(&enc);
-    avformat_free_context(fmt);
-    return ok;
+    return testclips::writeMpeg2Clip(path, gopSize, FRAME_COUNT, FPS, START_OFFSET_FRAMES);
 }
 
 // Decodes until end of stream, returning each frame's pts.

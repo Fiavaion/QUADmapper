@@ -83,6 +83,7 @@ public:
         bool playing = false;
         LoopMode loopMode = LoopMode::LOOP;
         float speed = 1.0f;
+        bool timelineLocked = false;  // follows the master timeline (ADR-050)
     };
 
     struct SourceData {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Types.hpp"
+
 #include <filesystem>
 #include <memory>
 #include <vector>
@@ -22,9 +24,30 @@ struct VideoFrame {
     int width = 0;
     int height = 0;
     double pts = 0.0;             // Presentation timestamp in seconds
+    // Playback-clock timeline time at which this frame becomes current (ADR-050).
+    // Equals pts outside startPlayback(); the queue is always in due order.
+    double due = 0.0;
     int64_t frameNumber = 0;
 
     bool isValid() const { return !data.empty() && width > 0 && height > 0; }
+};
+
+// Memory the backward GOP decoder may hold for Ping-Pong's reverse leg (ADR-050 §4).
+constexpr size_t DEFAULT_REVERSE_CACHE_BYTES = size_t(512) << 20;
+
+/**
+ * @brief What background decoding produces for a clip played through a PlaybackClock
+ *
+ * Frames come out in timeline order for the clock's mapping, each stamped with
+ * VideoFrame::due: Loop decodes the clip again from the start after each pass, and
+ * Ping-Pong's reverse legs decode groups of pictures backwards (seek to the keyframe
+ * before, decode forward into a bounded cache, emit newest first).
+ */
+struct DecodePlan {
+    double timeline = 0.0;               // timeline instant the first frame must cover
+    double duration = 0.0;               // the clock's clip duration (unknown: no wrapping)
+    LoopMode loopMode = LoopMode::ONCE;
+    size_t reverseCacheBytes = DEFAULT_REVERSE_CACHE_BYTES;
 };
 
 /**
@@ -140,6 +163,43 @@ public:
     void startBackgroundDecoding(size_t bufferSize = 8);
 
     /**
+     * @brief Restart background decoding to follow a playback clock (ADR-050)
+     * @param plan Timeline position, clip duration and loop mode to produce frames for
+     * @param bufferSize Number of frames to buffer ahead
+     *
+     * Stops the thread, discards buffered frames and positions the decoder at the
+     * frame the plan's timeline instant shows. Frames then carry VideoFrame::due.
+     */
+    void startPlayback(const DecodePlan& plan, size_t bufferSize = 8);
+
+    /**
+     * @brief Why Ping-Pong could not run backwards within cacheBytes, from the index
+     * @return Empty when the file's keyframe spacing fits (or is unknown until played)
+     */
+    std::string checkReverse(size_t cacheBytes) const;
+
+    /**
+     * @brief Set when a reverse leg could not be decoded within the plan's cache
+     *
+     * Decoding then idles; the player falls back to Loop and restarts the plan.
+     */
+    std::string getReverseError() const;
+
+    /**
+     * @brief Largest amount of decoded frame data the reverse cache has held, in bytes
+     */
+    size_t getReverseCachePeakBytes() const;
+
+    /**
+     * @brief Where the video really ends (last frame's pts + one frame), 0 until known
+     *
+     * Known once a startPlayback() forward pass reaches the end of the stream. Players
+     * use it to correct a container duration that is missing or wrong (Matroska files
+     * whose timestamps start late declare their end time as the duration).
+     */
+    double getObservedEnd() const;
+
+    /**
      * @brief Stop background decoding thread
      */
     void stopBackgroundDecoding();
@@ -151,11 +211,11 @@ public:
     VideoFrame getBufferedFrame();
 
     /**
-     * @brief Peek the presentation time of the next buffered frame
-     * @param pts Receives the front frame's pts in seconds
+     * @brief Peek when the next buffered frame becomes current
+     * @param due Receives the front frame's VideoFrame::due
      * @return false if the buffer is empty
      */
-    bool peekBufferedPts(double& pts) const;
+    bool peekBufferedDue(double& due) const;
 
     /**
      * @brief Check if there are buffered frames available

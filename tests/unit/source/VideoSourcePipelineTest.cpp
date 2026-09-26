@@ -82,7 +82,8 @@ TEST(VideoSourcePipeline, LoadsAdvancesAndUploads) {
 
 // QM-088 / D4: a project load restores a video's transport through the PlayableSource
 // interface (Application::createSourceFrom: setLoopMode, setSpeed, play). The source
-// must then actually play, pace frames by the clock, and map a saved ping-pong to loop.
+// must then actually play, with its clock on the wall clock (ADR-050) and frames never
+// ahead of it; a saved ping-pong is real Ping-Pong again.
 TEST(VideoSourcePipeline, RestoredTransportPlaysAtClockPace) {
     namespace fs = std::filesystem;
     const fs::path video = "D:/testing Videos/greenCrystals_15Sec_4x3.mp4";
@@ -97,12 +98,13 @@ TEST(VideoSourcePipeline, RestoredTransportPlaysAtClockPace) {
 
     playable->setLoopMode(LoopMode::PING_PONG);  // as saved by an old file
     playable->setSpeed(1.0f);
+    const auto started = std::chrono::steady_clock::now();
     playable->play();
-    EXPECT_EQ(playable->getLoopMode(), LoopMode::LOOP);
+    EXPECT_EQ(playable->getLoopMode(), LoopMode::PING_PONG);
+    EXPECT_TRUE(playable->getLoopModeNotice().empty()) << playable->getLoopModeNotice();
     EXPECT_EQ(playable->getPlaybackState(), PlaybackState::PLAYING);
 
-    // 60 updates of 1/60 s = one second of clock. Real time passes too so the decode
-    // thread keeps up; the frame on screen must never be ahead of the clock.
+    // About a second of updates; the frame on screen must never be ahead of the clock.
     for (int i = 0; i < 60; ++i) {
         sm.updateAll(1.0 / 60.0);
         if (const FrameData* frame = playable->getCurrentFrame()) {
@@ -111,10 +113,66 @@ TEST(VideoSourcePipeline, RestoredTransportPlaysAtClockPace) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
-    EXPECT_NEAR(playable->getCurrentTime(), 1.0, 1e-6);
+    sm.updateAll(0.0);
+    // The clock is the wall clock since play(), whatever deltas updateAll was given
+    // (sampled at one instant, so a loaded machine cannot skew the comparison).
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double>(now - started).count();
+    EXPECT_NEAR(playable->getClock().position(now), elapsed, 0.02);
+    EXPECT_LE(playable->getCurrentTime(), elapsed);  // the last update's position
     ASSERT_NE(playable->getCurrentFrame(), nullptr);
     EXPECT_GT(playable->getCurrentFrame()->timestamp, 500000u);  // it advanced
     EXPECT_TRUE(playable->getErrorMessage().empty());
+}
+
+// ADR-050 §3: sources locked to the SourceManager's master timeline follow it through
+// updateAll(), and the Reset Playheads action restarts it.
+TEST(VideoSourcePipeline, LockedSourceFollowsTheMasterTimeline) {
+    namespace fs = std::filesystem;
+    const fs::path video = "D:/testing Videos/greenCrystals_15Sec_4x3.mp4";
+    if (!fs::exists(video)) GTEST_SKIP() << "test video not present";
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";
+
+    SourceManager sm;
+    const UUID id = sm.getOrCreateVideoSource(video);
+    auto* playable = sm.getSourceAs<PlayableSource>(id);
+    ASSERT_NE(playable, nullptr);
+
+    sm.pauseMasterTimeline();
+    sm.restartMasterTimeline();
+    sm.setTimelineLocked(id, true);
+    EXPECT_TRUE(playable->isTimelineLocked());
+    EXPECT_EQ(playable->getPlaybackState(), PlaybackState::PLAYING);
+    sm.updateAll(0.0);
+    EXPECT_NEAR(playable->getCurrentTime(), 0.0, 1e-9);  // master paused at 0
+
+    sm.playMasterTimeline();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    sm.updateAll(0.0);
+    auto now = std::chrono::steady_clock::now();
+    const double masterTime = sm.getMasterTimeline().position(now);
+    EXPECT_GT(masterTime, 0.25);
+    EXPECT_DOUBLE_EQ(playable->getClock().position(now), masterTime);  // master time on the clip
+
+    playable->seek(10.0);  // ignored while locked
+    sm.updateAll(0.0);
+    now = std::chrono::steady_clock::now();
+    EXPECT_DOUBLE_EQ(playable->getClock().position(now), sm.getMasterTimeline().position(now));
+
+    sm.seekAllToStart();  // restarts the master too
+    sm.updateAll(0.0);
+    now = std::chrono::steady_clock::now();
+    EXPECT_LT(sm.getMasterTimeline().position(now), masterTime);
+    EXPECT_DOUBLE_EQ(playable->getClock().position(now), sm.getMasterTimeline().position(now));
+
+    sm.setTimelineLocked(id, false);
+    EXPECT_FALSE(playable->isTimelineLocked());
+    playable->seek(10.0);  // its own transport works again
+    now = std::chrono::steady_clock::now();
+    const double position = playable->getClock().position(now);
+    EXPECT_GE(position, 10.0);
+    EXPECT_LT(position, 10.5);
 }
 
 // A video restored paused must show its first frame, not a black quad.

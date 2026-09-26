@@ -50,7 +50,7 @@ bool VideoFileSource::update(double deltaTime) {
         return false;
     }
 
-    // Update the video player (advances playback)
+    // Takes the frames due on the player's clock (deltaTime is not used for timing)
     bool newFrame = player_->update(deltaTime);
 
     if (newFrame && player_->hasNewFrame()) {
@@ -192,6 +192,30 @@ LoopMode VideoFileSource::getLoopMode() const {
         return player_->getLoopMode();
     }
     return LoopMode::ONCE;
+}
+
+std::string VideoFileSource::getLoopModeNotice() const {
+    return player_ ? player_->getLoopModeNotice() : std::string();
+}
+
+void VideoFileSource::setTimelineLocked(bool locked, const PlaybackClock& master) {
+    if (player_) player_->setTimelineLocked(locked, master);
+}
+
+bool VideoFileSource::isTimelineLocked() const {
+    return player_ && player_->isTimelineLocked();
+}
+
+void VideoFileSource::followTimeline(const PlaybackClock& master) {
+    if (player_) player_->followTimeline(master);
+}
+
+const PlaybackClock& VideoFileSource::getClock() const {
+    return player_->getClock();
+}
+
+PlaybackTimePoint VideoFileSource::getClockNow() const {
+    return player_->now();
 }
 
 std::string VideoFileSource::getErrorMessage() const {

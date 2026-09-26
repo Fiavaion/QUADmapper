@@ -72,17 +72,22 @@ target_link_libraries(test_input PRIVATE quadmapper_input quadmapper_core imgui)
 add_quadmapper_test(test_video
     video/FrameSelectionTest.cpp
     video/DecodeBackoffTest.cpp
+    video/PlaybackClockTest.cpp
+    video/PlaybackTransportTest.cpp
 )
 target_link_libraries(test_video PRIVATE quadmapper_video quadmapper_core)
 
-# VideoDecoder seek/drain tests (QM-091) - encode a tiny B-frame clip with the linked
-# FFmpeg at test time, so they need its headers and libraries directly.
+# Decoding and playback tests (QM-091, ADR-050) - encode tiny clips with the linked
+# FFmpeg at test time (TestClips.hpp), so they need its headers and libraries directly.
 if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
     add_quadmapper_test(test_video_decoder
         video/VideoDecoderSeekTest.cpp
+        video/VideoPlayerPlaybackTest.cpp
+        source/HapPlaybackTest.cpp
+        video/RealMediaPlaybackBench.cpp  # opt-in (DISABLED_), needs local media
     )
     target_include_directories(test_video_decoder PRIVATE ${AVCODEC_INCLUDE_DIR})
-    target_link_libraries(test_video_decoder PRIVATE quadmapper_video quadmapper_core
+    target_link_libraries(test_video_decoder PRIVATE quadmapper_source quadmapper_video quadmapper_core
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY})
 endif()
 

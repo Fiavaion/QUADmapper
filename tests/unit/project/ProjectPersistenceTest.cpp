@@ -319,7 +319,7 @@ TEST_F(ProjectPersistenceTest, VideoTransportRoundTrips) {
     src.id = UUID::generate();
     src.kind = "hap";
     src.path = clip.string();
-    src.transport = Project::TransportData{true, LoopMode::PING_PONG, 2.0f};
+    src.transport = Project::TransportData{true, LoopMode::PING_PONG, 2.0f, true};
     const fs::path file = dir_ / "show.qmap";
 
     ASSERT_TRUE(ProjectSerializer::save(projectWithBoundQuad(src, clip.string()), file).isSuccess());
@@ -332,6 +332,35 @@ TEST_F(ProjectPersistenceTest, VideoTransportRoundTrips) {
     EXPECT_TRUE(s.transport->playing);
     EXPECT_EQ(s.transport->loopMode, LoopMode::PING_PONG);
     EXPECT_FLOAT_EQ(s.transport->speed, 2.0f);
+    EXPECT_TRUE(s.transport->timelineLocked);
+}
+
+// ADR-050 §5: timelineLocked is additive. A transport without it (every file before
+// it) loads unlocked, "pingPong" loads as real Ping-Pong, and a malformed value is
+// ignored rather than failing the load.
+TEST_F(ProjectPersistenceTest, TimelineLockIsAdditiveAndPingPongLoads) {
+    ProjectSerializer serializer;
+    Project::SourceData src;
+    src.id = UUID::generate();
+    src.kind = "video";
+    src.path = (dir_ / "clip.mp4").string();
+    src.transport = Project::TransportData{false, LoopMode::PING_PONG, 1.0f, true};
+    auto json = nlohmann::json::parse(serializer.serialize(projectWithBoundQuad(src, src.path)));
+    auto& transport = json["sources"][0]["transport"];
+    EXPECT_EQ(transport["timelineLocked"], true);
+    EXPECT_EQ(transport["loopMode"], "pingPong");
+
+    transport.erase("timelineLocked");  // as an older build wrote it
+    Project old;
+    ASSERT_TRUE(serializer.deserialize(json.dump(), old).isSuccess());
+    ASSERT_TRUE(old.getSources()[0].transport.has_value());
+    EXPECT_FALSE(old.getSources()[0].transport->timelineLocked);
+    EXPECT_EQ(old.getSources()[0].transport->loopMode, LoopMode::PING_PONG);
+
+    transport["timelineLocked"] = "yes";  // wrong type
+    Project odd;
+    ASSERT_TRUE(serializer.deserialize(json.dump(), odd).isSuccess());
+    EXPECT_FALSE(odd.getSources()[0].transport->timelineLocked);
 }
 
 TEST_F(ProjectPersistenceTest, CameraSourceRoundTrips) {
@@ -773,6 +802,9 @@ TEST(ProjectFixtureTest, V31FixtureKeepsProceduralAndTheMissingVideo) {
     EXPECT_TRUE(loaded.value().getSources()[1].missing);
     EXPECT_FALSE(loaded.value().getSources()[0].missing);
     EXPECT_EQ(loaded.value().getScenes()[0].texturePaths[1], "C:/Shows/media/not-shipped.mp4");
+    for (const auto& source : loaded.value().getSources()) {  // written before timeline lock
+        if (source.transport) EXPECT_FALSE(source.transport->timelineLocked);
+    }
 }
 
 TEST(ProjectFixtureTest, V32FixtureKeepsObjectAndProjector) {

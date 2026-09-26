@@ -2,6 +2,7 @@
 
 #include "VideoDecoder.hpp"
 #include "VideoPlaybackState.hpp"
+#include "PlaybackTransport.hpp"
 #include <filesystem>
 #include <memory>
 #include <functional>
@@ -12,8 +13,9 @@ namespace quadmapper {
 /**
  * @brief High-level video player with playback controls
  *
- * Combines VideoDecoder with playback state management to provide
- * a complete video playback solution.
+ * Combines VideoDecoder with a PlaybackTransport (ADR-050): the clock follows the
+ * wall clock, Loop and Ping-Pong wrap analytically, and the decoder is repositioned
+ * to follow the clock (never the clock restarted to follow the decoder).
  */
 class VideoPlayer {
 public:
@@ -98,14 +100,40 @@ public:
     // --- Loop Control ---
 
     /**
-     * @brief Set loop mode
+     * @brief Set loop mode: Once, Loop or Ping-Pong
+     *
+     * Ping-Pong decodes backwards within the reverse cache; a file whose groups of
+     * pictures do not fit plays as Loop, and getLoopModeNotice() says why.
      */
     void setLoopMode(LoopMode mode);
 
     /**
-     * @brief Get current loop mode
+     * @brief Get the loop mode as requested
      */
     LoopMode getLoopMode() const;
+
+    /**
+     * @brief Why the requested loop mode is not what plays, or empty
+     */
+    const std::string& getLoopModeNotice() const;
+
+    /**
+     * @brief Memory the Ping-Pong reverse leg may use (default 512 MB)
+     */
+    void setReverseCacheBytes(size_t bytes);
+
+    // --- Timeline lock (ADR-050 §3) ---
+
+    /**
+     * @brief Follow the master timeline (position = master time mapped onto this clip)
+     */
+    void setTimelineLocked(bool locked, const PlaybackClock& master);
+    bool isTimelineLocked() const;
+
+    /**
+     * @brief Pick up master pause/resume/restart; call before update() while locked
+     */
+    void followTimeline(const PlaybackClock& master);
 
     // --- State ---
 
@@ -113,6 +141,17 @@ public:
      * @brief Get current playback state
      */
     const VideoPlaybackState& getState() const;
+
+    /**
+     * @brief The playback clock; sample it at now()
+     */
+    const PlaybackClock& getClock() const;
+    PlaybackTimePoint now() const;
+
+    /**
+     * @brief Replace the clock's time source (tests); default std::chrono::steady_clock
+     */
+    void setTimeSource(PlaybackTransport::TimeSource source);
 
     /**
      * @brief Get video info
@@ -129,11 +168,16 @@ public:
      */
     std::string getErrorMessage() const;
 
+    /**
+     * @brief Most decoded frame data the reverse cache has held, in bytes
+     */
+    size_t getReverseCachePeakBytes() const;
+
     // --- Frame Access ---
 
     /**
      * @brief Update the player (call each frame)
-     * @param deltaTime Time since last update in seconds
+     * @param deltaTime Ignored: the playback clock reads the wall clock (ADR-050)
      * @return true if a new frame is ready
      */
     bool update(double deltaTime);
@@ -164,20 +208,27 @@ public:
     void setEndCallback(EndCallback callback);
 
 private:
-    void handleEndOfVideo();
-    void updatePlaybackPosition(double deltaTime);
-    // Pop the buffered frames due at targetPts (see FrameSelection.hpp); returns the count.
-    size_t takeDueFrames(double targetPts, bool haveFrame);
+    // Restart decoding at the clock's position when a transport change asked for it.
+    void applyTransport();
+    void reposition();
+    void handleEndOfClip(const ClipPosition& clip);
+    // Once the decoder has seen the real end, correct a wrong container duration.
+    void checkDuration();
+    void refreshState();
+    // Pop the buffered frames due at target (see FrameSelection.hpp); returns the count.
+    size_t takeDueFrames(double target, bool haveFrame);
 
     std::unique_ptr<VideoDecoder> decoder_;
+    PlaybackTransport transport_;
     VideoPlaybackState state_;
     VideoFrame currentFrame_;
     std::filesystem::path path_;
+    size_t reverseCacheBytes_ = DEFAULT_REVERSE_CACHE_BYTES;
 
     bool hasNewFrame_ = false;
     bool refreshPending_ = false;  // a load/seek made the shown frame stale
-    bool needsSeek_ = false;
-    double seekTarget_ = 0.0;
+    double lastTimeline_ = 0.0;    // clock timeline at the previous update
+    bool durationChecked_ = false; // the decoder's observed end was compared once
 
     EndCallback endCallback_;
 };

@@ -51,7 +51,9 @@ bool isHapContainer(const std::filesystem::path& path) {
 
 } // namespace
 
-SourceManager::SourceManager() = default;
+SourceManager::SourceManager() {
+    masterTimeline_.play(std::chrono::steady_clock::now());
+}
 
 SourceManager::~SourceManager() {
     clear();
@@ -307,6 +309,10 @@ void SourceManager::updateAll(double deltaTime) {
         if (!entry.source || !entry.source->isReady()) {
             continue;
         }
+        auto* playable = dynamic_cast<PlayableSource*>(entry.source.get());
+        if (playable && playable->isTimelineLocked()) {
+            playable->followTimeline(masterTimeline_);
+        }
 
         // Update the source
         bool hasNewFrame = entry.source->update(deltaTime);
@@ -336,6 +342,25 @@ void SourceManager::seekAllToStart() {
         if (auto* playable = dynamic_cast<PlayableSource*>(entry.source.get())) {
             playable->seek(0.0);
         }
+    }
+    restartMasterTimeline();
+}
+
+void SourceManager::playMasterTimeline() {
+    masterTimeline_.play(std::chrono::steady_clock::now());
+}
+
+void SourceManager::pauseMasterTimeline() {
+    masterTimeline_.pause(std::chrono::steady_clock::now());
+}
+
+void SourceManager::restartMasterTimeline() {
+    masterTimeline_.seek(0.0, std::chrono::steady_clock::now());
+}
+
+void SourceManager::setTimelineLocked(const UUID& id, bool locked) {
+    if (auto* playable = getSourceAs<PlayableSource>(id)) {
+        playable->setTimelineLocked(locked, masterTimeline_);
     }
 }
 

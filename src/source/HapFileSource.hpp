@@ -3,6 +3,7 @@
 #include "TextureSource.hpp"
 #include "FrameData.hpp"
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -23,6 +24,9 @@ namespace quadmapper {
  *
  * Threading: demux + parse run on a background thread; the latest decoded BCn
  * frame is staged under a mutex and handed to the main thread (no GL here).
+ *
+ * Playback follows a PlaybackClock (ADR-050); Ping-Pong plays backwards frame-exact
+ * because every HAP frame is a keyframe.
  */
 class HapFileSource : public PlayableSource {
 public:
@@ -79,12 +83,24 @@ public:
     // --- PlayableSource: Loop ---
     void setLoopMode(LoopMode mode) override;
     LoopMode getLoopMode() const override;
+    std::string getLoopModeNotice() const override;
+
+    // --- PlayableSource: Timeline lock ---
+    void setTimelineLocked(bool locked, const PlaybackClock& master) override;
+    bool isTimelineLocked() const override;
+    void followTimeline(const PlaybackClock& master) override;
+
+    // --- PlayableSource: Clock ---
+    const PlaybackClock& getClock() const override;
+    PlaybackTimePoint getClockNow() const override;
 
     // --- PlayableSource: Health ---
     std::string getErrorMessage() const override;
 
     // --- HAP-specific ---
     const std::filesystem::path& getPath() const { return path_; }
+    // Replace the playback clock's time source (tests); default steady_clock.
+    void setTimeSource(std::function<PlaybackTimePoint()> source);
 
 private:
     class Impl;  // FFmpeg + demux thread behind the pimpl (ADR-011)

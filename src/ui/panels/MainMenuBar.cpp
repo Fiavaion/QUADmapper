@@ -13,6 +13,8 @@
 
 #include <imgui.h>
 
+#include <chrono>
+
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -208,13 +210,33 @@ void MainMenuBar::render(EditorContext& ctx) {
         ImGui::SetItemTooltip("Toggle fullscreen output on the projector");
     }
 
+    // Master timeline transport (ADR-050 §3), always visible in both modes: the clock
+    // every "Lock to master" source follows. Here beside Reset Playheads, the other
+    // show-wide transport action, so a locked show is started and stopped in one place.
+    ImGui::Separator();
+    if (ctx.sourceManager) {
+        SourceManager& sm = *ctx.sourceManager;
+        const PlaybackClock& master = sm.getMasterTimeline();
+        ImGui::TextDisabled("Timeline:");
+        if (ImGui::Button(master.running() ? "Pause##timeline" : "Play##timeline")) {
+            if (master.running()) sm.pauseMasterTimeline(); else sm.playMasterTimeline();
+        }
+        ImGui::SetItemTooltip("Play or pause the master timeline that locked videos follow");
+        if (ImGui::Button("Restart##timeline")) sm.restartMasterTimeline();
+        ImGui::SetItemTooltip("Send the master timeline, and every locked video, back to the start");
+        const double seconds = master.position(std::chrono::steady_clock::now());
+        const int minutes = static_cast<int>(seconds / 60.0);
+        ImGui::Text("%02d:%04.1f", minutes, seconds - minutes * 60.0);
+        ImGui::SetItemTooltip("Master timeline position");
+    }
+
     // Reset all playheads (available in both modes) — restart every video (and its
     // synced audio) from the top with one click.
     ImGui::Separator();
     if (ImGui::Button("Reset Playheads")) {
         if (ctx.sourceManager) ctx.sourceManager->seekAllToStart();
     }
-    ImGui::SetItemTooltip("Restart all videos/audio from the beginning");
+    ImGui::SetItemTooltip("Restart all videos/audio and the master timeline from the beginning");
 
     if (ImGui::Button("Report Bug")) {
         openUrl("https://github.com/Fiavaion/Quadmapper/issues/new?template=bug_report.md");

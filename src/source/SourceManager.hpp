@@ -227,8 +227,27 @@ public:
      * @brief Reset every playable source (videos, etc.) to time 0.
      * Drives the "restart all" / reset-playheads button (ADR-042). Video sources
      * carry their own audio, so this also restarts audio-from-video in sync.
+     * Restarts the master timeline too, so timeline-locked sources start over.
      */
     void seekAllToStart();
+
+    // --- Master timeline (ADR-050 §3) ---
+
+    /**
+     * @brief The project's master timeline, which timeline-locked sources follow
+     *
+     * Running from construction. updateAll() passes it to every locked source before
+     * updating it, so a locked source's position is the master time mapped onto its clip.
+     */
+    const PlaybackClock& getMasterTimeline() const { return masterTimeline_; }
+    void playMasterTimeline();
+    void pauseMasterTimeline();
+    void restartMasterTimeline();  // back to 0, keeping play/pause
+
+    /**
+     * @brief Lock or unlock a playable source to the master timeline
+     */
+    void setTimelineLocked(const UUID& id, bool locked);
 
     // --- Callbacks ---
 
@@ -248,6 +267,7 @@ private:
     };
 
     std::unordered_map<UUID, SourceEntry> sources_;
+    PlaybackClock masterTimeline_;
 
     SourceAddedCallback sourceAddedCallback_;
     SourceRemovedCallback sourceRemovedCallback_;

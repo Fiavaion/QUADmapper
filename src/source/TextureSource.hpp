@@ -3,6 +3,7 @@
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include "FrameData.hpp"
+#include "video/PlaybackClock.hpp"
 #include <string>
 #include <cstdint>
 
@@ -207,9 +208,30 @@ public:
 
     // --- Loop ---
 
-    // ONCE or LOOP. PING_PONG is accepted for old project files and plays as LOOP.
+    // ONCE, LOOP or PING_PONG (ADR-050). getLoopMode() returns what was asked for; a
+    // file that cannot play backwards within the reverse cache plays PING_PONG as LOOP
+    // and getLoopModeNotice() says why (empty otherwise).
     virtual void setLoopMode(LoopMode mode) = 0;
     virtual LoopMode getLoopMode() const = 0;
+    virtual std::string getLoopModeNotice() const = 0;
+
+    // --- Timeline lock (ADR-050 §3) ---
+
+    // A locked source's position is the master timeline mapped onto its clip (modulo
+    // its duration, reflected for Ping-Pong); its own seek, stop and speed are ignored.
+    virtual void setTimelineLocked(bool locked, const PlaybackClock& master) = 0;
+    virtual bool isTimelineLocked() const = 0;
+    // Pick up the master's pause, resume or restart; SourceManager calls it every
+    // update for locked sources.
+    virtual void followTimeline(const PlaybackClock& master) = 0;
+
+    // --- Clock ---
+
+    // The source's playback clock, sampled at getClockNow() (std::chrono::steady_clock
+    // unless a test injected time). Position, direction, running state, speed and the
+    // discontinuity count (seeks, wraps, reflections) for anything slaved to playback.
+    virtual const PlaybackClock& getClock() const = 0;
+    virtual PlaybackTimePoint getClockNow() const = 0;
 
     // --- Health ---
 

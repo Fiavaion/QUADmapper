@@ -9,8 +9,10 @@ add_library(quadmapper_video STATIC
     VideoPlayer.cpp
     VideoPlaybackState.hpp
     VideoPlaybackState.cpp
-    TimelineSyncManager.hpp
-    TimelineSyncManager.cpp
+    PlaybackClock.hpp
+    PlaybackClock.cpp
+    PlaybackTransport.hpp
+    PlaybackTransport.cpp
 )
 
 target_include_directories(quadmapper_video
