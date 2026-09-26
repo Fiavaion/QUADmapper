@@ -23,7 +23,8 @@ namespace quadmapper {
 //         (lens, pose, calibration points) (ADR-052); older readers ignore both.
 //   3.3 = additive, all ignored by older readers:
 //         - "control": {"midi": [...]} MIDI mappings (ADR-048), written only when a
-//           show has mappings; a missing one = none.
+//           show has mappings; a missing one = none. A mapping's "bits": 14 (14-bit
+//           CC) is written only for 14; missing = 7.
 //         - sources[].transport.timelineLocked (ADR-050 §3); missing = unlocked.
 //         - a file source whose file is gone is kept, flagged missing, with its
 //           references and path (PRD §4.1.8), so saving writes it back unchanged;
@@ -884,9 +885,10 @@ static Project::ObjectData deserializeObject(const nlohmann::json& j, const fs::
 }
 
 // ---- External control (ADR-048) -------------------------------------------------
-// "control": {"midi": [{device, type, channel, number, target, mode}, ...]}. It is
-// show content, but never worth failing a load for: a malformed block or entry is
-// skipped (logged), the rest of the show loads.
+// "control": {"midi": [{device, type, channel, number, target, mode[, bits]}, ...]}.
+// It is show content, but never worth failing a load for: a malformed block or entry
+// is skipped (logged), the rest of the show loads. "bits" is 7 (the default, not
+// written) or 14, which only a cc 0-31 can be.
 
 static nlohmann::json serializeMidiMapping(const Project::MidiMappingData& m) {
     nlohmann::json j;
@@ -896,6 +898,7 @@ static nlohmann::json serializeMidiMapping(const Project::MidiMappingData& m) {
     j["number"] = m.number;
     j["target"] = m.target;
     j["mode"] = m.mode;
+    if (m.bits == 14) j["bits"] = 14;
     return j;
 }
 
@@ -921,7 +924,15 @@ static std::optional<Project::MidiMappingData> deserializeMidiMapping(const nloh
         return std::nullopt;
     }
     if (!target || target->empty() || (*target)[0] != '/' || !channel || !number) return std::nullopt;
+    int bits = 7;
+    if (j.contains("bits")) {
+        const auto b = intField("bits", 7, 14);
+        if (!b || (*b != 7 && *b != 14)) return std::nullopt;
+        if (*b == 14 && (*type != "cc" || *number > 31)) return std::nullopt;
+        bits = *b;
+    }
     Project::MidiMappingData m;
+    m.bits = bits;
     m.device = stringField("device").value_or("any");
     if (m.device.empty()) m.device = "any";
     m.type = *type;

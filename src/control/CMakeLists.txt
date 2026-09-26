@@ -1,5 +1,5 @@
-# External control (ADR-048): MIDI input via WinMM, OSC 1.0 input via Winsock UDP,
-# the control-target registry and dispatcher. Depends on core only.
+# External control (ADR-048): MIDI input via WinMM, OSC 1.0 input and feedback via
+# Winsock UDP, the control-target registry and dispatcher. Depends on core only.
 
 add_library(quadmapper_control STATIC
     ControlEvent.hpp
@@ -7,6 +7,12 @@ add_library(quadmapper_control STATIC
     ControlEventQueue.cpp
     OscParser.hpp
     OscParser.cpp
+    OscWriter.hpp
+    OscWriter.cpp
+    OscPattern.hpp
+    OscPattern.cpp
+    OscFeedback.hpp
+    OscFeedback.cpp
     OscServer.hpp
     OscServer.cpp
     MidiDecode.hpp

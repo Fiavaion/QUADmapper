@@ -1,5 +1,6 @@
 #include "ControlRegistry.hpp"
 
+#include "OscPattern.hpp"
 #include "core/Logger.hpp"
 
 #include <cctype>
@@ -129,6 +130,82 @@ std::optional<ControlRegistry::Resolved> ControlRegistry::resolve(const std::str
     if (!entity) return std::nullopt;
     return Resolved{action, entity->id,
                     "/qm/" + collection->name + "/" + entity->id + "/" + action->action};
+}
+
+std::vector<ControlRegistry::Resolved> ControlRegistry::resolveAll(const std::string& address) {
+    std::vector<Resolved> found;
+    if (auto literal = resolve(address)) {
+        found.push_back(std::move(*literal));
+        return found;
+    }
+    if (!OscPattern::hasWildcards(address)) return found;
+    const std::optional<OscPattern> pattern = OscPattern::compile(address);
+    if (!pattern) return found;
+
+    for (const auto& [globalPath, target] : globals_) {
+        if (pattern->matches(globalPath)) found.push_back(Resolved{&target, std::string(), globalPath});
+    }
+    if (pattern->partCount() != 4 || !pattern->matchPart(0, "qm")) return found;
+    for (const auto& collection : collections_) {
+        if (!pattern->matchPart(1, collection.name)) continue;
+        std::vector<const ControlTarget*> actions;
+        for (const auto& action : collection.actions) {
+            if (pattern->matchPart(3, action.action)) actions.push_back(&action);
+        }
+        if (actions.empty()) continue;
+        for (const auto& entity : collection.entities) {
+            if (!pattern->matchPart(2, entity.id) && !pattern->matchPart(2, entity.name)) continue;
+            for (const ControlTarget* action : actions) {
+                found.push_back(Resolved{action, entity.id,
+                                         "/qm/" + collection.name + "/" + entity.id + "/" + action->action});
+            }
+        }
+    }
+    return found;
+}
+
+bool ControlRegistry::isValidAddressPart(const std::string& name) {
+    if (name.empty()) return false;
+    for (char c : name) {
+        const auto u = static_cast<unsigned char>(c);
+        if (u <= 0x20 || u >= 0x7F) return false;
+        switch (c) {
+            case '#': case '*': case ',': case '/': case '?':
+            case '[': case ']': case '{': case '}':
+                return false;
+            default:
+                break;
+        }
+    }
+    return true;
+}
+
+std::vector<ControlRegistry::FeedbackTarget> ControlRegistry::feedbackTargets(bool preferNames) const {
+    auto hasFeedback = [](const ControlTarget& t) { return t.read && t.kind != TargetKind::Trigger; };
+    std::vector<FeedbackTarget> list;
+    for (const auto& [path, target] : globals_) {
+        if (hasFeedback(target)) list.push_back({path, path, &target, std::string()});
+    }
+    for (const auto& collection : collections_) {
+        for (const auto& entity : collection.entities) {
+            std::string key = entity.id;
+            if (preferNames && isValidAddressPart(entity.name)) {
+                size_t clashes = 0;
+                for (const auto& other : collection.entities) {
+                    if (equalsIgnoreCase(other.name, entity.name)) ++clashes;
+                    if (equalsIgnoreCase(other.id, entity.name)) ++clashes;
+                }
+                if (clashes == 1) key = entity.name;  // only itself
+            }
+            for (const auto& action : collection.actions) {
+                if (!hasFeedback(action)) continue;
+                list.push_back({"/qm/" + collection.name + "/" + entity.id + "/" + action.action,
+                                "/qm/" + collection.name + "/" + key + "/" + action.action, &action,
+                                entity.id});
+            }
+        }
+    }
+    return list;
 }
 
 std::string ControlRegistry::labelFor(const Collection& collection, const ControlEntity& entity,

@@ -119,6 +119,7 @@ public:
         int number = 0;              // 0-127
         std::string target;          // control path, e.g. /qm/quad/<uuid>/opacity
         std::string mode;            // "trigger" | "toggle" | "momentary" | "value"
+        int bits = 7;                // 14 = a 14-bit CC pair (cc, number 0-31)
     };
 
     const std::string& getName() const { return name_; }

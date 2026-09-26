@@ -723,5 +723,61 @@ TEST(ProjectSerializerControlTest, MalformedControlBlockDoesNotFailTheLoad) {
     }
 }
 
+// 14-bit CC (additive, the format stays 3.3.0): "bits": 14 written only for 14-bit
+// mappings, missing = 7, anything else skips the entry.
+TEST(ProjectSerializerControlTest, FourteenBitMappingsRoundTripAndSevenBitStaysUnchanged) {
+    ProjectSerializer serializer;
+    Project original = sceneProject();
+    Project::MidiMappingData fine;
+    fine.type = "cc";
+    fine.channel = 1;
+    fine.number = 7;
+    fine.target = "/qm/master/volume";
+    fine.mode = "value";
+    fine.bits = 14;
+    Project::MidiMappingData coarse = fine;
+    coarse.number = 8;
+    coarse.bits = 7;
+    original.getMidiMappings() = {fine, coarse};
+
+    const std::string json = serializer.serialize(original);
+    EXPECT_NE(json.find("\"version\": \"3.3.0\""), std::string::npos);
+    size_t bitsFields = 0;
+    for (size_t at = json.find("\"bits\""); at != std::string::npos; at = json.find("\"bits\"", at + 1)) {
+        ++bitsFields;
+    }
+    EXPECT_EQ(bitsFields, 1u) << "only the 14-bit mapping carries the field";
+
+    Project loaded;
+    ASSERT_TRUE(serializer.deserialize(json, loaded).isSuccess());
+    ASSERT_EQ(loaded.getMidiMappings().size(), 2u);
+    EXPECT_EQ(loaded.getMidiMappings()[0].bits, 14);
+    EXPECT_EQ(loaded.getMidiMappings()[0].number, 7);
+    EXPECT_EQ(loaded.getMidiMappings()[1].bits, 7);
+    EXPECT_EQ(serializer.serialize(loaded), json);
+}
+
+TEST(ProjectSerializerControlTest, InvalidBitsSkipTheEntry) {
+    ProjectSerializer serializer;
+    Project project;
+    const std::string json = R"({"version": "3.3.0", "name": "S", "scenes": [],
+        "control": {"midi": [
+            {"type": "cc", "channel": 1, "number": 7, "target": "/qm/x", "mode": "value", "bits": 14},
+            {"type": "cc", "channel": 1, "number": 7, "target": "/qm/x", "mode": "value", "bits": 7},
+            {"type": "cc", "channel": 1, "number": 7, "target": "/qm/x", "mode": "value"},
+            {"type": "cc", "channel": 1, "number": 7, "target": "/qm/x", "mode": "value", "bits": 8},
+            {"type": "cc", "channel": 1, "number": 7, "target": "/qm/x", "mode": "value", "bits": 21},
+            {"type": "cc", "channel": 1, "number": 7, "target": "/qm/x", "mode": "value", "bits": "14"},
+            {"type": "cc", "channel": 1, "number": 7, "target": "/qm/x", "mode": "value", "bits": 14.0},
+            {"type": "cc", "channel": 1, "number": 32, "target": "/qm/x", "mode": "value", "bits": 14},
+            {"type": "note", "channel": 1, "number": 7, "target": "/qm/x", "mode": "value", "bits": 14}
+        ]}})";
+    ASSERT_TRUE(serializer.deserialize(json, project).isSuccess());
+    ASSERT_EQ(project.getMidiMappings().size(), 3u);
+    EXPECT_EQ(project.getMidiMappings()[0].bits, 14);
+    EXPECT_EQ(project.getMidiMappings()[1].bits, 7);
+    EXPECT_EQ(project.getMidiMappings()[2].bits, 7) << "missing = 7";
+}
+
 } // namespace test
 } // namespace quadmapper

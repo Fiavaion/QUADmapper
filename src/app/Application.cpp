@@ -1903,6 +1903,13 @@ void Application::initializeExternalControl() {
     host.scenes = &m_editorState->scenes;
     host.sources = m_sourceManager.get();
     host.takeScene = [this](int number) { m_pendingExternalSceneTakes.push_back(number); };
+    host.activeSceneNumber = [this]() {
+        const EditorState& es = *m_editorState;
+        for (size_t i = 0; i < es.scenes.size(); ++i) {
+            if (es.scenes[i] && es.scenes[i]->getId() == es.activeSceneId) return static_cast<int>(i) + 1;
+        }
+        return 0;
+    };
     host.isBlackout = [this]() { return m_outputManager && m_outputManager->isBlackout(); };
     host.setBlackout = [this](bool on) { if (m_outputManager) m_outputManager->setBlackout(on); };
     host.refuse = [this](const std::string& address, const std::string& reason) {
@@ -1918,6 +1925,7 @@ void Application::initializeExternalControl() {
     prefsDialog.loadPreferences();
     *m_controlPrefs = prefsDialog.getPreferences().control;
     m_externalControl->setWantedMidiDevices(m_controlPrefs->midiDevices);
+    m_externalControl->setFeedback(ControlPanel::feedbackSettings(*m_controlPrefs));
     if (m_controlPrefs->oscEnabled &&
         !m_externalControl->startOsc(m_controlPrefs->oscBindAddress, m_controlPrefs->oscPort)) {
         postStatus(*m_editorState, "OSC input is off: " + m_externalControl->oscError());
@@ -1930,10 +1938,11 @@ void Application::processExternalControl() {
     const double now = glfwGetTime();
     m_externalControl->maintainMidi(now);
     // Names and ids can change with any edit; re-read them when something will use them.
-    if (m_externalControl->hasPendingEvents() || es.showControl) {
+    if (m_externalControl->hasPendingEvents() || es.showControl || m_externalControl->feedbackDue(now)) {
         refreshControlEntities(m_externalControl->registry(), es.scenes, m_sourceManager.get());
     }
     m_externalControl->processEvents(es.midiMappings, now);
+    m_externalControl->updateFeedback(now);
 }
 
 void Application::saveControlPreferences() {

@@ -28,6 +28,7 @@ double ControlDispatcher::lastActivity(const std::string& canonicalPath) const {
 }
 
 void ControlDispatcher::noteRefused(const std::string& address, const std::string& reason) {
+    ++refusals_;
     lastRefused_ = address + ": " + reason;
     if (warnedRefused_.insert(address).second) Logger::warning("Control: {} refused ({})", address, reason);
 }
@@ -97,7 +98,7 @@ std::string ControlDispatcher::describe(const MidiMessage& message, const std::s
 void ControlDispatcher::dispatch(const ControlEvent& event, std::vector<MidiMapping>& mappings,
                                  double now) {
     if (event.source == ControlEvent::Source::Osc) {
-        dispatchOsc(event.osc, now);
+        dispatchOsc(event, now);
     } else {
         // device is NUL-terminated by construction; bound the scan regardless.
         const auto end = std::find(event.device.begin(), event.device.end(), '\0');
@@ -169,13 +170,15 @@ void ControlDispatcher::noteActivity(const ControlRegistry::Resolved& r, double 
 
 // ---- OSC ------------------------------------------------------------------------
 
-void ControlDispatcher::dispatchOsc(const OscMessage& message, double now) {
+void ControlDispatcher::dispatchOsc(const ControlEvent& event, double now) {
+    const OscMessage& message = event.osc;
     ++oscMessages_;
     lastOscTime_ = now;
     pushRecent(recentOsc_, describe(message), kRecentMessages);
 
-    const auto resolved = registry_.resolve(message.address);
-    if (!resolved) {
+    // One target for a plain address, every match for a pattern (/qm/quad/*/opacity).
+    std::vector<ControlRegistry::Resolved> targets = registry_.resolveAll(message.address);
+    if (targets.empty()) {
         ++unknownAddresses_;
         auto it = std::find(recentUnknown_.begin(), recentUnknown_.end(), message.address);
         if (it != recentUnknown_.end()) recentUnknown_.erase(it);
@@ -183,14 +186,33 @@ void ControlDispatcher::dispatchOsc(const OscMessage& message, double now) {
         return;
     }
 
-    const TargetKind kind = resolved->target->kind;
+    // A pattern naming several scene takes (exclusive targets) takes none of them; the
+    // other targets it matched still act.
+    const auto exclusiveCount = std::count_if(targets.begin(), targets.end(),
+                                              [](const auto& r) { return r.target->exclusive; });
+    if (exclusiveCount > 1) {
+        noteRefused(message.address, "matches " + std::to_string(exclusiveCount) +
+                                         " scene takes; address a single scene");
+        targets.erase(std::remove_if(targets.begin(), targets.end(),
+                                     [](const auto& r) { return r.target->exclusive; }),
+                      targets.end());
+        if (targets.empty()) return;
+    }
+
+    // A message some target rejected counts once as a bad argument; the targets that
+    // accepted it still act.
+    bool rejected = false;
     if (message.args.empty()) {
-        if (kind == TargetKind::Float || kind == TargetKind::Index) {
-            ++badArguments_;  // a value target needs its value
-            return;
+        for (const auto& r : targets) {
+            const TargetKind kind = r.target->kind;
+            if (kind == TargetKind::Float || kind == TargetKind::Index) {
+                rejected = true;  // a value target needs its value
+                continue;
+            }
+            fire(r);
+            noteActivity(r, now);  // no hook: the sender does not know the new state
         }
-        fire(*resolved);
-        noteActivity(*resolved, now);
+        if (rejected) ++badArguments_;
         return;
     }
 
@@ -206,11 +228,15 @@ void ControlDispatcher::dispatchOsc(const OscMessage& message, double now) {
             ++badArguments_;
             return;
     }
-    if (!setValue(*resolved, value)) {
-        ++badArguments_;
-        return;
+    for (const auto& r : targets) {
+        if (!setValue(r, value)) {
+            rejected = true;
+            continue;
+        }
+        noteActivity(r, now);
+        if (oscApplied_) oscApplied_(r, value, event.oscSenderIp, event.oscSenderPort);
     }
-    noteActivity(*resolved, now);
+    if (rejected) ++badArguments_;
 }
 
 // ---- MIDI -----------------------------------------------------------------------
@@ -221,8 +247,11 @@ void ControlDispatcher::dispatchMidi(const MidiMessage& message, const std::stri
     lastMidiTime_ = now;
     lastMidi_ = describe(message, device);
 
+    // The second half of a 14-bit pair just learned completes it (and is not applied).
+    if (pendingPair_ && completePair(message, device, mappings, now)) return;
+
     if (learnTarget_) {
-        if (learn(message, device, mappings)) {
+        if (learn(message, device, mappings, now)) {
             if (lastLearnedIndex_ >= 0) {
                 MidiMapping& m = mappings[static_cast<size_t>(lastLearnedIndex_)];
                 m.lastActivity = now;
@@ -239,6 +268,15 @@ void ControlDispatcher::dispatchMidi(const MidiMessage& message, const std::stri
             continue;
         }
         if (mapping.channel != 0 && mapping.channel != message.channel) continue;
+        if (mapping.is14Bit()) {
+            if (message.type != MidiType::ControlChange) continue;
+            if (message.number != mapping.number &&
+                message.number != mapping.number + k14BitLsbOffset) {
+                continue;
+            }
+            applyMapping(mapping, message, now);
+            continue;
+        }
         if (mapping.number != message.number) continue;
         const bool typeMatches =
             (mapping.type == MidiControlType::Note &&
@@ -250,8 +288,79 @@ void ControlDispatcher::dispatchMidi(const MidiMessage& message, const std::stri
     }
 }
 
+bool ControlDispatcher::completePair(const MidiMessage& message, const std::string& device,
+                                     std::vector<MidiMapping>& mappings, double now) {
+    const PendingPair pair = *pendingPair_;
+    if (now - pair.time > k14BitPairSeconds) {
+        pendingPair_.reset();
+        return false;
+    }
+    if (message.type != MidiType::ControlChange || message.channel != pair.channel) return false;
+    if ((device.empty() ? std::string("any") : device) != pair.device) return false;
+
+    int msbNumber = 0;
+    int msbValue = 0;
+    int lsbValue = 0;
+    bool lsbLast = false;  // the LSB is the message completing the pair
+    if (pair.number <= k14BitMaxMsbNumber && message.number == pair.number + k14BitLsbOffset) {
+        msbNumber = pair.number;
+        msbValue = pair.value;
+        lsbValue = message.value;
+        lsbLast = true;
+    } else if (pair.number >= k14BitLsbOffset && pair.number <= k14BitMaxMsbNumber + k14BitLsbOffset &&
+               message.number == pair.number - k14BitLsbOffset) {
+        msbNumber = message.number;
+        msbValue = message.value;
+        lsbValue = pair.value;
+    } else {
+        return false;
+    }
+    pendingPair_.reset();
+
+    // The mapping must still be the one learned (the panel or a project load may
+    // have changed the list since); otherwise the message is handled normally.
+    if (pair.index >= mappings.size()) return false;
+    {
+        const MidiMapping& m = mappings[pair.index];
+        if (m.device != pair.device || m.type != MidiControlType::CC || m.channel != pair.channel ||
+            m.number != pair.number || m.target != pair.target) {
+            return false;
+        }
+    }
+
+    size_t index = pair.index;
+    mappings[index].number = msbNumber;
+    mappings[index].bits = 14;
+    // An LSB learned first, renumbered to its MSB, may now repeat an existing mapping
+    // of that MSB to the same target: keep that one (as 14-bit) and drop this.
+    for (size_t i = 0; i < mappings.size(); ++i) {
+        const MidiMapping& m = mappings[i];
+        if (i == index || m.device != pair.device || m.type != MidiControlType::CC ||
+            m.channel != pair.channel || m.number != msbNumber || m.target != pair.target) {
+            continue;
+        }
+        mappings[i].bits = 14;
+        mappings.erase(mappings.begin() + static_cast<std::ptrdiff_t>(index));
+        index = i > index ? i - 1 : i;
+        break;
+    }
+
+    MidiMapping& m = mappings[index];
+    m.msb = msbValue;
+    m.lsb = lsbValue;
+    m.lsbSinceMsb = lsbLast;
+    m.lsbTime = lsbLast ? now : -1.0;
+    m.ccHigh = msbValue >= 64;
+    m.lastValue = (msbValue << 7) | lsbValue;
+    m.lastActivity = now;
+    lastLearnedIndex_ = static_cast<int>(index);
+    Logger::info("Control: CC {} + {} ch{} is a 14-bit pair -> {}", msbNumber, msbNumber + k14BitLsbOffset,
+                 m.channel, m.target);
+    return true;
+}
+
 bool ControlDispatcher::learn(const MidiMessage& message, const std::string& device,
-                              std::vector<MidiMapping>& mappings) {
+                              std::vector<MidiMapping>& mappings, double now) {
     MidiControlType type;
     switch (message.type) {
         case MidiType::NoteOn:        type = MidiControlType::Note; break;
@@ -279,16 +388,25 @@ bool ControlDispatcher::learn(const MidiMessage& message, const std::string& dev
     mapping.target = resolved->canonicalPath;
     mapping.mode = defaultMode(type, resolved->target->kind);
 
+    // A CC that can be half of a 14-bit pair waits briefly for the other half.
+    auto awaitPair = [&](size_t index) {
+        if (type != MidiControlType::CC || message.number > k14BitMaxMsbNumber + k14BitLsbOffset) return;
+        pendingPair_ = PendingPair{index, mapping.device, mapping.target, mapping.channel,
+                                   mapping.number, message.value, now};
+    };
+
     for (size_t i = 0; i < mappings.size(); ++i) {
         const MidiMapping& m = mappings[i];
         if (m.device == mapping.device && m.type == mapping.type && m.channel == mapping.channel &&
             m.number == mapping.number && m.target == mapping.target) {
             lastLearnedIndex_ = static_cast<int>(i);  // already bound: keep it as it is
+            awaitPair(i);
             return true;
         }
     }
     mappings.push_back(mapping);
     lastLearnedIndex_ = static_cast<int>(mappings.size() - 1);
+    awaitPair(mappings.size() - 1);
     Logger::info("Control: learned {} {} ch{} -> {} ({})", toString(type), mapping.number,
                  mapping.channel, mapping.target, toString(mapping.mode));
     return true;
@@ -297,31 +415,54 @@ bool ControlDispatcher::learn(const MidiMessage& message, const std::string& dev
 void ControlDispatcher::applyMapping(MidiMapping& mapping, const MidiMessage& message, double now) {
     bool press = false;
     bool release = false;
-    int value7 = 0;
+    int value = 0;      // the control's value, 0..full
+    int full = 127;     // 16383 for a 14-bit CC
+    auto edges = [&](int msb) {
+        const bool high = msb >= 64;
+        press = high && !mapping.ccHigh;
+        release = !high && mapping.ccHigh;
+        mapping.ccHigh = high;
+    };
     switch (message.type) {
         case MidiType::NoteOn:
             press = true;
-            value7 = message.value;
+            value = message.value;
             break;
         case MidiType::NoteOff:
             release = true;
-            value7 = 0;
+            value = 0;
             break;
-        case MidiType::ControlChange: {
-            const bool high = message.value >= 64;
-            press = high && !mapping.ccHigh;
-            release = !high && mapping.ccHigh;
-            mapping.ccHigh = high;
-            value7 = message.value;
+        case MidiType::ControlChange:
+            if (!mapping.is14Bit()) {
+                edges(message.value);
+                value = message.value;
+                break;
+            }
+            full = 16383;
+            if (message.number == mapping.number) {  // MSB (see MidiMapping.hpp)
+                const bool keepLsb = mapping.lsbSinceMsb && now - mapping.lsbTime <= k14BitPairSeconds;
+                if (!keepLsb) mapping.lsb = 0;
+                mapping.msb = message.value;
+                mapping.lsbSinceMsb = false;
+                edges(mapping.msb);
+            } else {  // LSB
+                mapping.lsb = message.value;
+                mapping.lsbSinceMsb = true;
+                mapping.lsbTime = now;
+                if (mapping.msb < 0) {  // no MSB yet: nothing to combine it with
+                    mapping.lastActivity = now;
+                    return;
+                }
+            }
+            value = (mapping.msb << 7) | mapping.lsb;
             break;
-        }
         case MidiType::ProgramChange:
             press = true;
-            value7 = 127;
+            value = 127;
             break;
     }
     mapping.lastActivity = now;
-    mapping.lastValue = message.value;
+    mapping.lastValue = mapping.is14Bit() ? value : message.value;
 
     const auto resolved = registry_.resolve(mapping.target);
     if (!resolved) return;  // unresolved (deleted quad/scene): kept, does nothing
@@ -342,12 +483,13 @@ void ControlDispatcher::applyMapping(MidiMapping& mapping, const MidiMessage& me
             if (kind == TargetKind::Trigger) {
                 if (press) { fire(*resolved); acted = true; }
             } else if (kind == TargetKind::Bool) {
-                const bool on = mapping.type == MidiControlType::CC ? value7 >= 64 : !release;
+                const bool on = mapping.type == MidiControlType::CC ? value >= (full + 1) / 2 : !release;
                 setOnOff(*resolved, on);
                 acted = true;
             } else if (kind == TargetKind::Float) {
                 const ControlTarget& t = *resolved->target;
-                acted = setValue(*resolved, t.min + (static_cast<float>(value7) / 127.0f) * (t.max - t.min));
+                const float fraction = static_cast<float>(value) / static_cast<float>(full);
+                acted = setValue(*resolved, t.min + fraction * (t.max - t.min));
             }
             break;
     }

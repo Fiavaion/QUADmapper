@@ -876,6 +876,19 @@ Result<void, Error> PreferencesDialog::loadFromFile(const std::string& path) {
                     if (device.is_string()) control.midiDevices.push_back(device.get<std::string>());
                 }
             }
+            if (ctl.contains("oscFeedbackEnabled") && ctl["oscFeedbackEnabled"].is_boolean()) {
+                control.oscFeedbackEnabled = ctl["oscFeedbackEnabled"].get<bool>();
+            }
+            if (ctl.contains("oscFeedbackHost") && ctl["oscFeedbackHost"].is_string()) {
+                control.oscFeedbackHost = ctl["oscFeedbackHost"].get<std::string>();
+            }
+            if (ctl.contains("oscFeedbackPort") && ctl["oscFeedbackPort"].is_number_integer()) {
+                const long long port = ctl["oscFeedbackPort"].get<long long>();
+                if (port >= 0 && port <= 65535) control.oscFeedbackPort = static_cast<int>(port);
+            }
+            if (ctl.contains("oscFeedbackUseIds") && ctl["oscFeedbackUseIds"].is_boolean()) {
+                control.oscFeedbackUseIds = ctl["oscFeedbackUseIds"].get<bool>();
+            }
         }
 
         savedPreferences_ = preferences_;
@@ -937,6 +950,10 @@ Result<void, Error> PreferencesDialog::saveToFile(const std::string& path) const
     ctl["oscPort"] = preferences_.control.oscPort;
     ctl["oscBindAddress"] = preferences_.control.oscBindAddress;
     ctl["midiDevices"] = preferences_.control.midiDevices;
+    ctl["oscFeedbackEnabled"] = preferences_.control.oscFeedbackEnabled;
+    ctl["oscFeedbackHost"] = preferences_.control.oscFeedbackHost;
+    ctl["oscFeedbackPort"] = preferences_.control.oscFeedbackPort;
+    ctl["oscFeedbackUseIds"] = preferences_.control.oscFeedbackUseIds;
     root["control"] = ctl;
 
     std::string json = root.dump(2);

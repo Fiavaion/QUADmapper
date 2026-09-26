@@ -37,6 +37,7 @@ struct ControlBindingHost {
     std::vector<std::unique_ptr<Scene>>* scenes = nullptr;
     SourceManager* sources = nullptr;
     std::function<void(int number)> takeScene;  // queue a take of scene `number` (1-based)
+    std::function<int()> activeSceneNumber;     // the active scene (1-based), 0 = none
     std::function<bool()> isBlackout;
     std::function<void(bool on)> setBlackout;
     // A message a target would not act on: its canonical address and why.
@@ -135,7 +136,18 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
     registry.addGlobal("/qm/scene/take",
         {"", TargetKind::Index, 1.0f, 1.0e6f, false,
          [host](const std::string&, float n) { if (host.takeScene) host.takeScene(static_cast<int>(n)); },
-         nullptr});
+         nullptr, /*exclusive=*/true});
+    // /qm/scene/active i n: which scene is active, sent as OSC feedback so a radio
+    // button on a control surface follows the show. Setting it takes that scene.
+    registry.addGlobal("/qm/scene/active",
+        {"", TargetKind::Index, 1.0f, 1.0e6f, false,
+         [host](const std::string&, float n) { if (host.takeScene) host.takeScene(static_cast<int>(n)); },
+         [host](const std::string&) -> std::optional<float> {
+             if (!host.activeSceneNumber) return std::nullopt;
+             const int n = host.activeSceneNumber();
+             if (n < 1) return std::nullopt;
+             return static_cast<float>(n);
+         }, /*exclusive=*/true});
     // The master timeline every locked clip follows (ADR-050 §3): the same calls as
     // the menu bar's Timeline Play/Pause and Restart buttons.
     registry.addGlobal("/qm/timeline/play",
@@ -150,6 +162,18 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
         {"", TargetKind::Trigger, 0.0f, 1.0f, true,
          [host](const std::string&, float) { if (host.sources) host.sources->restartMasterTimeline(); },
          nullptr});
+    // Running state of the master timeline: a play/pause toggle whose light follows it.
+    registry.addGlobal("/qm/timeline/running",
+        {"", TargetKind::Bool, 0.0f, 1.0f, true,
+         [host](const std::string&, float v) {
+             if (!host.sources) return;
+             if (v >= 0.5f) host.sources->playMasterTimeline();
+             else           host.sources->pauseMasterTimeline();
+         },
+         [host](const std::string&) -> std::optional<float> {
+             if (!host.sources) return std::nullopt;
+             return host.sources->getMasterTimeline().running() ? 1.0f : 0.0f;
+         }});
 
     // ---- Scenes ------------------------------------------------------------
     registry.addEntityTarget("scene",
@@ -158,7 +182,7 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
              if (!host.scenes || !host.takeScene) return;
              if (const int number = sceneNumber(*host.scenes, id)) host.takeScene(number);
          },
-         nullptr});
+         nullptr, /*exclusive=*/true});
 
     // ---- Quads -------------------------------------------------------------
     registry.addEntityTarget("quad",
@@ -288,6 +312,7 @@ inline Project::MidiMappingData toProjectMapping(const control::MidiMapping& m) 
     d.number = m.number;
     d.target = m.target;
     d.mode = control::toString(m.mode);
+    d.bits = m.bits;
     return d;
 }
 
@@ -301,6 +326,7 @@ inline control::MidiMapping fromProjectMapping(const Project::MidiMappingData& d
     m.number = d.number;
     m.target = d.target;
     m.mode = control::parseMidiMode(d.mode).value_or(control::MidiMode::Trigger);
+    m.bits = d.bits;
     return m;
 }
 

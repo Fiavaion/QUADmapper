@@ -75,6 +75,11 @@ struct ControlPreferences {
     int oscPort = 8000;
     std::string oscBindAddress = "0.0.0.0";  // every interface
     std::vector<std::string> midiDevices;    // input devices opened by name when present
+    // OSC feedback: current values sent back to the controller (off by default).
+    bool oscFeedbackEnabled = false;
+    std::string oscFeedbackHost;             // dotted IPv4; empty = reply to the sender
+    int oscFeedbackPort = 9000;              // 0 = the sender's own port (reply mode only)
+    bool oscFeedbackUseIds = false;          // address entities by UUID, not unique name
 };
 
 /**

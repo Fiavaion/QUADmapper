@@ -19,8 +19,24 @@ enum class MidiControlType { Note, CC, Program };
 //               target fires on press.
 //   Value     - the control's value drives the target: CC 0-127 (or note velocity,
 //               note-off = 0) maps linearly into a Float target's range, >= 64 is on
-//               for a Bool target; a Trigger target fires on press. 7-bit only.
+//               for a Bool target; a Trigger target fires on press. A 14-bit CC
+//               uses its 0-16383 value (on = >= 8192).
 enum class MidiMode { Trigger, Toggle, Momentary, Value };
+
+// 14-bit CC (MIDI 1.0 "high resolution" controllers): controller n (0-31) carries
+// the value's upper 7 bits (MSB) and n + 32 the lower 7 (LSB). A 14-bit mapping's
+// `number` is the MSB controller and it listens to both.
+//   - MSB: kept; the LSB resets to 0 (MIDI 1.0) unless an LSB arrived since the
+//     previous MSB within k14BitPairSeconds (a controller that sends the LSB first);
+//     the value is applied, and press/release edges come from the MSB alone.
+//   - LSB: kept and the value applied, once any MSB has been seen.
+// Both halves of a move normally arrive in the same frame, so only the final value
+// is ever rendered. NRPN/RPN are not decoded.
+// Seconds on the dispatcher's clock (frame time, so a pair split across a frame or
+// two still counts).
+constexpr double k14BitPairSeconds = 0.1;
+constexpr int k14BitMaxMsbNumber = 31;
+constexpr int k14BitLsbOffset = 32;
 
 // One learned binding, saved with the show (.qmap "control": {"midi": [...]}).
 struct MidiMapping {
@@ -30,16 +46,23 @@ struct MidiMapping {
     int number = 0;                 // note / controller / program, 0-127
     std::string target;             // control path, e.g. /qm/quad/<uuid>/opacity
     MidiMode mode = MidiMode::Trigger;
+    int bits = 7;                   // 14 = a 14-bit CC pair (type CC, number 0-31)
 
     // Runtime only (never saved, not part of equality).
-    bool ccHigh = false;            // last CC value was >= 64 (edge detection)
+    bool ccHigh = false;            // last CC value (MSB) was >= 64 (edge detection)
     double lastActivity = -1.0;     // seconds on the caller's clock; < 0 = never
-    int lastValue = -1;             // last 7-bit value seen, -1 = none
+    int lastValue = -1;             // last value seen (7- or 14-bit), -1 = none
+    int msb = -1;                   // 14-bit: last MSB, -1 = none yet
+    int lsb = 0;                    // 14-bit: last LSB
+    bool lsbSinceMsb = false;       // 14-bit: an LSB arrived after the last MSB
+    double lsbTime = -1.0;          // 14-bit: when that LSB arrived
+
+    bool is14Bit() const { return bits == 14 && type == MidiControlType::CC; }
 };
 
 inline bool sameBinding(const MidiMapping& a, const MidiMapping& b) {
     return a.device == b.device && a.type == b.type && a.channel == b.channel &&
-           a.number == b.number && a.target == b.target && a.mode == b.mode;
+           a.number == b.number && a.target == b.target && a.mode == b.mode && a.bits == b.bits;
 }
 
 inline const char* toString(MidiControlType type) {

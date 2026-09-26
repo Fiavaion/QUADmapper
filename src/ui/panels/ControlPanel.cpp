@@ -76,14 +76,29 @@ std::string kindLabel(TargetKind kind, float min, float max) {
 }
 
 std::string controlLabel(const MidiMapping& m) {
-    char text[64];
+    char number[32];
+    if (m.is14Bit()) {  // "CC 7+39 14-bit": the MSB and LSB controllers
+        std::snprintf(number, sizeof(number), "%d+%d 14-bit", m.number, m.number + control::k14BitLsbOffset);
+    } else {
+        std::snprintf(number, sizeof(number), "%d", m.number);
+    }
+    char text[80];
     const char* type = m.type == MidiControlType::Note ? "Note" : m.type == MidiControlType::CC ? "CC" : "Program";
-    if (m.channel == 0) std::snprintf(text, sizeof(text), "%s %d, any ch", type, m.number);
-    else                std::snprintf(text, sizeof(text), "%s %d, ch %d", type, m.number, m.channel);
+    if (m.channel == 0) std::snprintf(text, sizeof(text), "%s %s, any ch", type, number);
+    else                std::snprintf(text, sizeof(text), "%s %s, ch %d", type, number, m.channel);
     return text;
 }
 
 }  // namespace
+
+control::OscFeedbackSettings ControlPanel::feedbackSettings(const ControlPreferences& prefs) {
+    control::OscFeedbackSettings s;
+    s.enabled = prefs.oscFeedbackEnabled;
+    s.host = prefs.oscFeedbackHost;
+    s.port = prefs.oscFeedbackPort;
+    s.useIds = prefs.oscFeedbackUseIds;
+    return s;
+}
 
 bool ControlPanel::render(EditorContext& ctx, control::ExternalControl& control,
                           ControlPreferences& prefs, double now) {
@@ -92,6 +107,9 @@ bool ControlPanel::render(EditorContext& ctx, control::ExternalControl& control,
     if (!editsLoaded_) {
         portEdit_ = prefs.oscPort;
         std::snprintf(bindEdit_, sizeof(bindEdit_), "%s", prefs.oscBindAddress.c_str());
+        feedbackReplyEdit_ = prefs.oscFeedbackHost.empty();
+        std::snprintf(feedbackHostEdit_, sizeof(feedbackHostEdit_), "%s", prefs.oscFeedbackHost.c_str());
+        feedbackPortEdit_ = prefs.oscFeedbackPort;
         editsLoaded_ = true;
     }
 
@@ -115,6 +133,7 @@ bool ControlPanel::render(EditorContext& ctx, control::ExternalControl& control,
     }
 
     if (ImGui::CollapsingHeader("OSC", ImGuiTreeNodeFlags_DefaultOpen)) changed |= renderOsc(control, prefs);
+    if (ImGui::CollapsingHeader("OSC Feedback", ImGuiTreeNodeFlags_DefaultOpen)) changed |= renderFeedback(control, prefs);
     if (ImGui::CollapsingHeader("MIDI", ImGuiTreeNodeFlags_DefaultOpen)) changed |= renderMidi(control, prefs, now);
     if (ImGui::CollapsingHeader("MIDI Learn", ImGuiTreeNodeFlags_DefaultOpen)) renderTargets(control, now);
     if (ImGui::CollapsingHeader("MIDI Mappings", ImGuiTreeNodeFlags_DefaultOpen)) renderMappings(ctx, control, now);
@@ -174,9 +193,10 @@ bool ControlPanel::renderOsc(control::ExternalControl& control, ControlPreferenc
                 static_cast<unsigned long long>(osc.packetsReceived()),
                 static_cast<unsigned long long>(osc.malformedPackets()),
                 static_cast<unsigned long long>(osc.messagesReceived()));
-    ImGui::Text("Unknown addresses %llu   bad arguments %llu   dropped %llu",
+    ImGui::Text("Unknown addresses %llu   bad arguments %llu   refused %llu   dropped %llu",
                 static_cast<unsigned long long>(d.unknownAddresses()),
                 static_cast<unsigned long long>(d.badArguments()),
+                static_cast<unsigned long long>(d.refusals()),
                 static_cast<unsigned long long>(control.queue().droppedCount()));
 
     if (ImGui::TreeNodeEx("Last messages", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -192,16 +212,111 @@ bool ControlPanel::renderOsc(control::ExternalControl& control, ControlPreferenc
     if (ImGui::TreeNode("Address reference")) {
         ImGui::BulletText("/qm/blackout  [0|1, none = toggle]");
         ImGui::BulletText("/qm/timeline/play | pause | restart  (the master timeline)");
+        ImGui::BulletText("/qm/timeline/running 0|1");
+        ImGui::BulletText("/qm/master/volume 0..1,  /qm/master/mute 0|1");
         ImGui::BulletText("/qm/scene/take n  (n = 1, 2, ...)");
+        ImGui::BulletText("/qm/scene/active n  (feedback: the active scene; setting it takes it)");
         ImGui::BulletText("/qm/scene/<id or name>/take");
         ImGui::BulletText("/qm/quad/<id or name>/opacity 0..1");
         ImGui::BulletText("/qm/quad/<id or name>/visible 0|1");
         ImGui::BulletText("/qm/source/<id or name>/play | pause | restart");
         ImGui::BulletText("/qm/source/<id or name>/speed 0.1..4");
+        ImGui::BulletText("/qm/source/<id or name>/volume 0..1,  .../mute 0|1");
+        ImGui::BulletText("/qm/feedback/refresh  (resend every feedback value)");
+        ImGui::TextDisabled("A pattern that matches several scene takes is refused.");
         ImGui::TextDisabled("A source locked to the master timeline refuses its own transport.");
         ImGui::TextDisabled("Names match without case; a shared name uses the first match.");
+        ImGui::TextDisabled("Wildcards ? * [a-z] [!0-9] {a,b} address many: /qm/quad/*/opacity 0");
         ImGui::TreePop();
     }
+    return changed;
+}
+
+bool ControlPanel::renderFeedback(control::ExternalControl& control, ControlPreferences& prefs) {
+    using Status = control::ExternalControl::FeedbackStatus;
+    bool changed = false;
+
+    bool enabled = prefs.oscFeedbackEnabled;
+    if (ImGui::Checkbox("Send feedback to the controller", &enabled)) {
+        prefs.oscFeedbackEnabled = enabled;
+        changed = true;
+        control.setFeedback(feedbackSettings(prefs));
+    }
+    ImGui::SetItemTooltip("Sends current values back when they change (at most 30 per second per "
+                          "address) so faders and buttons follow the show: quad opacity/visible, "
+                          "source speed/volume/mute, master volume/mute, blackout, timeline running "
+                          "and the active scene. Uses the OSC input socket.");
+
+    int mode = feedbackReplyEdit_ ? 0 : 1;
+    ImGui::RadioButton("Reply to sender", &mode, 0);
+    ImGui::SetItemTooltip("Send to the address the last OSC message came from");
+    ImGui::SameLine();
+    ImGui::RadioButton("Fixed host", &mode, 1);
+    feedbackReplyEdit_ = mode == 0;
+    if (!feedbackReplyEdit_) {
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::InputText("Host (IPv4)", feedbackHostEdit_, sizeof(feedbackHostEdit_));
+    }
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("Feedback port", &feedbackPortEdit_, 0, 0);
+    feedbackPortEdit_ = std::clamp(feedbackPortEdit_, 0, 65535);
+    ImGui::SetItemTooltip("The controller's incoming port (TouchOSC's default is 9000). "
+                          "0 = the port the controller sent from (reply mode only).");
+    const std::string hostWanted = feedbackReplyEdit_ ? std::string() : std::string(feedbackHostEdit_);
+    const bool edited = hostWanted != prefs.oscFeedbackHost || feedbackPortEdit_ != prefs.oscFeedbackPort;
+    ImGui::BeginDisabled(!edited);
+    if (ImGui::Button("Apply##feedback")) {
+        prefs.oscFeedbackHost = hostWanted;
+        prefs.oscFeedbackPort = feedbackPortEdit_;
+        changed = true;
+        control.setFeedback(feedbackSettings(prefs));
+    }
+    ImGui::EndDisabled();
+    if (edited) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(not applied)");
+    }
+
+    bool useIds = prefs.oscFeedbackUseIds;
+    if (ImGui::Checkbox("Address by id", &useIds)) {
+        prefs.oscFeedbackUseIds = useIds;
+        changed = true;
+        control.setFeedback(feedbackSettings(prefs));
+    }
+    ImGui::SetItemTooltip("Off: /qm/quad/<name>/opacity when the name is unique and has no spaces "
+                          "or OSC symbols, else the id. On: always the id.");
+
+    switch (control.feedbackStatus()) {
+        case Status::Off:
+            ImGui::TextDisabled("Off");
+            break;
+        case Status::InvalidSettings:
+            ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+            ImGui::TextWrapped("Error: %s", control.feedbackError().c_str());
+            ImGui::PopStyleColor();
+            break;
+        case Status::NeedsOscInput:
+            ImGui::TextColored(kBad, "Needs OSC input on (feedback uses its socket)");
+            break;
+        case Status::WaitingForController:
+            ImGui::TextColored(kLearn, "Waiting for the controller to send a message");
+            break;
+        case Status::Sending:
+            if (const auto destination = control.feedbackDestination()) {
+                ImGui::TextColored(kGood, "Sending to %s", control::OscServer::toString(*destination).c_str());
+            }
+            break;
+    }
+
+    const control::OscServer& osc = control.osc();
+    ImGui::Text("Packets sent %llu   send errors %llu   addresses %zu",
+                static_cast<unsigned long long>(osc.packetsSent()),
+                static_cast<unsigned long long>(osc.sendErrors()), control.feedbackAddressCount());
+    if (!osc.lastSendError().empty()) ImGui::SetItemTooltip("%s", osc.lastSendError().c_str());
+    ImGui::BeginDisabled(control.feedbackStatus() != Status::Sending);
+    if (ImGui::Button("Send all")) control.sendAllFeedback();
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Send every current value again (after reloading a layout on the controller)");
     return changed;
 }
 
@@ -328,7 +443,12 @@ void ControlPanel::renderMappings(EditorContext& ctx, control::ExternalControl& 
         ImGui::TableNextColumn();
         activityLight(m.lastActivity, now);
         ImGui::TextUnformatted(controlLabel(m).c_str());
-        if (m.lastValue >= 0) ImGui::SetItemTooltip("Last value %d", m.lastValue);
+        if (m.lastValue >= 0) {
+            ImGui::SetItemTooltip("Last value %d of %d", m.lastValue, m.is14Bit() ? 16383 : 127);
+        } else if (m.is14Bit()) {
+            ImGui::SetItemTooltip("14-bit: CC %d carries the coarse value, CC %d the fine value",
+                                  m.number, m.number + control::k14BitLsbOffset);
+        }
 
         ImGui::TableNextColumn();
         if (auto label = registry.describe(m.target)) {

@@ -54,6 +54,7 @@ struct AppFixture {
         host.scenes = &scenes;
         host.sources = &sources;
         host.takeScene = [this](int n) { takes.push_back(n); };
+        host.activeSceneNumber = [] { return 1; };
         host.isBlackout = [this] { return blackout; };
         host.setBlackout = [this](bool on) { blackout = on; };
         host.refuse = [this](const std::string& address, const std::string& reason) {
@@ -233,12 +234,124 @@ TEST(ControlBindingsTest, OnlyTheExpectedTargetsExist) {
         EXPECT_TRUE(action == "blackout" || action == "take" || action == "opacity" ||
                     action == "visible" || action == "play" || action == "pause" ||
                     action == "restart" || action == "speed" || action == "volume" ||
-                    action == "mute")
+                    action == "mute" || action == "running")
             << action;
     }
-    // blackout + master timeline x 3 + master volume/mute + 2 scene takes + 3 quads x 2
-    // + 1 source x 6
-    EXPECT_EQ(actions.size(), 1u + 3u + 2u + 2u + 6u + 6u);
+    // blackout + master timeline x 4 + master volume/mute + 2 scene takes + 3 quads x 2
+    // + 1 source x 6 (/qm/scene/take and /qm/scene/active are OSC only)
+    EXPECT_EQ(actions.size(), 1u + 4u + 2u + 2u + 6u + 6u);
+}
+
+// What OSC feedback reports: every value target with a reader, on the addresses a
+// controller would use.
+TEST(ControlBindingsTest, FeedbackCoversEveryValueTarget) {
+    AppFixture fx;
+    std::vector<std::string> addresses;
+    for (const auto& t : fx.registry.feedbackTargets(true)) addresses.push_back(t.address);
+    const std::vector<std::string> expected = {
+        "/qm/blackout", "/qm/master/volume", "/qm/master/mute", "/qm/scene/active", "/qm/timeline/running",
+        "/qm/quad/Left/opacity", "/qm/quad/Left/visible", "/qm/quad/Right/opacity", "/qm/quad/Right/visible",
+        "/qm/quad/Back/opacity", "/qm/quad/Back/visible", "/qm/source/clip.mp4/speed",
+        "/qm/source/clip.mp4/volume", "/qm/source/clip.mp4/mute"};
+    EXPECT_EQ(addresses, expected);
+    for (const auto& t : fx.registry.feedbackTargets(false)) {
+        if (t.entityId.empty()) continue;
+        EXPECT_NE(t.address.find(t.entityId), std::string::npos) << "by id: " << t.address;
+        EXPECT_EQ(t.address, t.canonicalPath);
+    }
+    // Every reader answers on the live show.
+    for (const auto& t : fx.registry.feedbackTargets(true)) {
+        EXPECT_TRUE(t.target->read(t.entityId).has_value()) << t.address;
+    }
+}
+
+TEST(ControlBindingsTest, ActiveSceneReportsAndTakes) {
+    std::vector<std::unique_ptr<Scene>> scenes;
+    ControlRegistry registry;
+    int active = 2;
+    std::vector<int> takes;
+    ControlBindingHost host;
+    host.scenes = &scenes;
+    host.takeScene = [&](int n) { takes.push_back(n); };
+    host.activeSceneNumber = [&] { return active; };
+    registerControlTargets(registry, host);
+    const auto scene = registry.resolve("/qm/scene/active");
+    ASSERT_TRUE(scene.has_value());
+    EXPECT_EQ(scene->target->kind, TargetKind::Index);
+    EXPECT_EQ(scene->target->read(""), std::optional<float>(2.0f));
+    active = 0;
+    EXPECT_FALSE(scene->target->read("").has_value());
+    host.activeSceneNumber = nullptr;  // the registered copy keeps its reader
+    EXPECT_FALSE(scene->target->read("").has_value());
+    ControlRegistry bare;
+    registerControlTargets(bare, ControlBindingHost{});
+    EXPECT_FALSE(bare.resolve("/qm/scene/active")->target->read("").has_value()) << "no host reader";
+    ControlDispatcher dispatcher(registry);
+    std::vector<MidiMapping> none;
+    ControlEvent e;
+    e.source = ControlEvent::Source::Osc;
+    e.osc.address = "/qm/scene/active";
+    OscArg n;
+    n.type = OscArg::Type::Int;
+    n.i = 3;
+    e.osc.args = {n};
+    dispatcher.dispatch(e, none, 0.0);
+    EXPECT_EQ(takes, (std::vector<int>{3}));
+}
+
+TEST(ControlBindingsTest, APatternMatchingSeveralSceneTakesIsRefused) {
+    AppFixture fx;
+    fx.osc("/qm/scene/*/take");
+    EXPECT_TRUE(fx.takes.empty()) << "taking two scenes at once is meaningless";
+    EXPECT_EQ(fx.dispatcher.refusals(), 1u);
+    EXPECT_NE(fx.dispatcher.lastRefused().find("/qm/scene/*/take"), std::string::npos);
+    EXPECT_NE(fx.dispatcher.lastRefused().find("2 scene takes"), std::string::npos);
+    EXPECT_EQ(fx.dispatcher.unknownAddresses(), 0u);
+
+    // /qm/scene/take and /qm/scene/active are both takes too.
+    fx.osc("/qm/scene/*", 2.0f);
+    EXPECT_TRUE(fx.takes.empty());
+    EXPECT_EQ(fx.dispatcher.refusals(), 2u);
+
+    // The other targets a pattern matched still act.
+    fx.osc("/qm/*/*/{take,opacity}", 0.75f);
+    EXPECT_TRUE(fx.takes.empty());
+    EXPECT_FLOAT_EQ(fx.left->getOpacity(), 0.75f);
+    EXPECT_FLOAT_EQ(fx.right->getOpacity(), 0.75f);
+    EXPECT_EQ(fx.dispatcher.refusals(), 3u);
+
+    // A pattern that names one scene takes it.
+    fx.osc("/qm/scene/F*/take");
+    fx.osc("/qm/scene/{opening,nothing}/take");
+    EXPECT_EQ(fx.takes, (std::vector<int>{2, 1}));
+    EXPECT_EQ(fx.dispatcher.refusals(), 3u);
+
+    // Wildcards may fire a trigger on several sources.
+    auto second = std::make_unique<FakePlayable>("clip2.mp4");
+    FakePlayable* clip2 = second.get();
+    fx.sources.registerSource(std::move(second));
+    fx.refresh();
+    const int plays1 = fx.clip->plays;
+    const int plays2 = clip2->plays;
+    fx.osc("/qm/source/*/play");
+    EXPECT_EQ(fx.clip->plays, plays1 + 1);
+    EXPECT_EQ(clip2->plays, plays2 + 1);
+    EXPECT_EQ(fx.dispatcher.refusals(), 3u);
+}
+
+TEST(ControlBindingsTest, TimelineRunningFollowsAndDrivesTheMasterClock) {
+    AppFixture fx;
+    const PlaybackClock& master = fx.sources.getMasterTimeline();
+    const auto running = fx.registry.resolve("/qm/timeline/running");
+    ASSERT_TRUE(running.has_value());
+    EXPECT_EQ(running->target->read(""), std::optional<float>(1.0f));
+    fx.osc("/qm/timeline/running", 0.0f);
+    EXPECT_FALSE(master.running());
+    EXPECT_EQ(running->target->read(""), std::optional<float>(0.0f));
+    fx.osc("/qm/timeline/running");  // no argument toggles
+    EXPECT_TRUE(master.running());
+    fx.osc("/qm/timeline/pause");
+    EXPECT_EQ(running->target->read(""), std::optional<float>(0.0f)) << "follows the other controls";
 }
 
 TEST(ControlBindingsTest, LockedSourceRefusesItsOwnTransport) {
@@ -391,7 +504,16 @@ TEST(ControlBindingsTest, MappingConvertsToAndFromTheProjectDto) {
     const Project::MidiMappingData d = toProjectMapping(m);
     EXPECT_EQ(d.type, "cc");
     EXPECT_EQ(d.mode, "momentary");
+    EXPECT_EQ(d.bits, 7);
     EXPECT_TRUE(sameBinding(fromProjectMapping(d), m));
+
+    m.number = 7;
+    m.bits = 14;
+    const Project::MidiMappingData d14 = toProjectMapping(m);
+    EXPECT_EQ(d14.bits, 14);
+    const MidiMapping back = fromProjectMapping(d14);
+    EXPECT_TRUE(back.is14Bit());
+    EXPECT_TRUE(sameBinding(back, m));
 }
 
 // ---- Preferences (AppPreferences "control") ------------------------------------
@@ -472,6 +594,49 @@ TEST(ControlPreferencesTest, OldFilesAndBadValuesKeepDefaults) {
         EXPECT_EQ(c.oscBindAddress, "0.0.0.0");
         EXPECT_TRUE(c.midiDevices.empty() || c.midiDevices == std::vector<std::string>{"Pad"});
     }
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+}
+
+TEST(ControlPreferencesTest, FeedbackSettingsDefaultRoundTripAndRejectBadValues) {
+    const ControlPreferences defaults;
+    EXPECT_FALSE(defaults.oscFeedbackEnabled);
+    EXPECT_TRUE(defaults.oscFeedbackHost.empty()) << "empty = reply to the sender";
+    EXPECT_EQ(defaults.oscFeedbackPort, 9000);
+    EXPECT_FALSE(defaults.oscFeedbackUseIds);
+
+    const auto file = std::filesystem::temp_directory_path() /
+                      ("qm_control_feedback_" + UUID::generate().toString() + ".json");
+    {
+        PreferencesDialog dialog;
+        ControlPreferences& c = dialog.getPreferences().control;
+        c.oscFeedbackEnabled = true;
+        c.oscFeedbackHost = "192.168.1.20";
+        c.oscFeedbackPort = 0;
+        c.oscFeedbackUseIds = true;
+        ASSERT_TRUE(dialog.saveToFile(file.string()));
+    }
+    {
+        PreferencesDialog loaded;
+        ASSERT_TRUE(loaded.loadFromFile(file.string()));
+        const ControlPreferences& c = loaded.getPreferences().control;
+        EXPECT_TRUE(c.oscFeedbackEnabled);
+        EXPECT_EQ(c.oscFeedbackHost, "192.168.1.20");
+        EXPECT_EQ(c.oscFeedbackPort, 0);
+        EXPECT_TRUE(c.oscFeedbackUseIds);
+    }
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << R"({"version": "1.0", "control": {"oscFeedbackEnabled": 1, "oscFeedbackHost": [],
+                   "oscFeedbackPort": 65536, "oscFeedbackUseIds": "no"}})";
+    }
+    PreferencesDialog odd;
+    ASSERT_TRUE(odd.loadFromFile(file.string()));
+    const ControlPreferences& c = odd.getPreferences().control;
+    EXPECT_FALSE(c.oscFeedbackEnabled);
+    EXPECT_TRUE(c.oscFeedbackHost.empty());
+    EXPECT_EQ(c.oscFeedbackPort, 9000);
+    EXPECT_FALSE(c.oscFeedbackUseIds);
     std::error_code ec;
     std::filesystem::remove(file, ec);
 }

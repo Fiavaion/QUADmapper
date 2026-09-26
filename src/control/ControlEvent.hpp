@@ -48,6 +48,8 @@ struct ControlEvent {
     enum class Source : uint8_t { Osc, Midi };
     Source source = Source::Osc;
     OscMessage osc;           // Source::Osc
+    uint32_t oscSenderIp = 0;    // Source::Osc: sender's IPv4 address, host byte order
+    uint16_t oscSenderPort = 0;  // Source::Osc: sender's UDP port
     MidiMessage midi;         // Source::Midi
     DeviceName device{};      // Source::Midi: NUL-terminated input device name
 };

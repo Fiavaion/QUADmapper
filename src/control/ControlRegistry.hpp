@@ -28,6 +28,9 @@ struct ControlTarget {
     bool learnable = true;           // listed in the Control panel for MIDI learn
     std::function<void(const std::string& entityId, float value)> apply;
     std::function<std::optional<float>(const std::string& entityId)> read;  // optional
+    // At most one at a time (a scene take): an OSC pattern that matches more than one
+    // exclusive target is refused for all of them, since last-wins would be arbitrary.
+    bool exclusive = false;
 };
 
 // Something a path can name: a quad, scene or source.
@@ -47,6 +50,8 @@ struct ControlEntity {
 // Fixed segments match case-insensitively. An entity segment is tried as a UUID
 // first, then as a case-insensitive name; a name shared by several entities uses
 // the first in list order and logs one warning per address.
+// resolveAll() also expands OSC 1.0 address patterns (OscPattern), so
+// /qm/quad/*/opacity names every quad's opacity.
 class ControlRegistry {
 public:
     struct Resolved {
@@ -71,6 +76,31 @@ public:
     const std::vector<ControlEntity>& entities(const std::string& collection) const;
 
     std::optional<Resolved> resolve(const std::string& path);
+
+    // Every target an OSC address names: the one resolve() finds when the address
+    // resolves literally; otherwise, when it holds wildcards, every target the
+    // pattern matches (an entity part matches an entity's UUID or its name), globals
+    // first, then each collection's entities x actions. Empty when nothing matches
+    // or the pattern is malformed.
+    std::vector<Resolved> resolveAll(const std::string& address);
+
+    // A target whose current value is sent back to OSC controllers (feedback): every
+    // Float, Bool or Index target with a `read`, learnable or not.
+    struct FeedbackTarget {
+        std::string canonicalPath;   // the UUID path (stable key)
+        std::string address;         // the address the value is sent to
+        const ControlTarget* target = nullptr;
+        std::string entityId;
+    };
+    // With preferNames, an entity's address uses its name when that name is unique
+    // in its collection (without case, and not another entity's UUID) and a valid
+    // OSC address part, so a controller that sends /qm/quad/Left/opacity is answered
+    // on that address; otherwise the UUID.
+    std::vector<FeedbackTarget> feedbackTargets(bool preferNames) const;
+
+    // Can `name` be one OSC address part as it is (printable ASCII without space
+    // # * , / ? [ ] { })?
+    static bool isValidAddressPart(const std::string& name);
 
     // Every learnable target that exists now, by canonical path, in registration
     // order: globals first, then each collection's entities x actions.

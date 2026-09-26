@@ -158,13 +158,20 @@ target_compile_definitions(test_ai PRIVATE
 )
 
 # External control tests (ADR-048): OSC parser (with fuzzing), UDP server on loopback,
-# MIDI decode and WinMM device handling (no hardware needed), registry, dispatch, learn.
+# MIDI decode and WinMM device handling (no hardware needed), registry, dispatch, learn;
+# OSC writer, address patterns, feedback (coalescing, and end to end over loopback),
+# 14-bit CC.
 add_quadmapper_test(test_control
     control/OscParserTest.cpp
     control/OscServerTest.cpp
     control/MidiTest.cpp
     control/ControlEventQueueTest.cpp
     control/ControlDispatchTest.cpp
+    control/OscWriterTest.cpp
+    control/OscPatternTest.cpp
+    control/OscFeedbackTest.cpp
+    control/OscFeedbackLoopbackTest.cpp
+    control/Midi14BitTest.cpp
 )
 target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws2_32)
 
