@@ -193,12 +193,15 @@ TEST_F(ImageLoaderTiffTest, Rgb8MatchesStbOrientationAndChannelOrder) {
         }
     }
 
-    // Both paths flip on load: the source's top-left pixel (red) is the first pixel
-    // of the LAST memory row, and its bottom-left (yellow) starts memory row 0.
-    const uint8_t* topLeft = at(t, 0, t.height - 1);
-    EXPECT_EQ((Rgb{topLeft[0], topLeft[1], topLeft[2]}), SOURCE_3X2[0]);
-    const uint8_t* bottomLeft = at(t, 0, 0);
-    EXPECT_EQ((Rgb{bottomLeft[0], bottomLeft[1], bottomLeft[2]}), SOURCE_3X2[3]);
+    // Both paths store the top row first, like video and procedural frames: the
+    // source's top-left pixel (red) starts memory row 0, its bottom-left (yellow) the
+    // last memory row.
+    for (const ImageData* img : {&t, &s}) {
+        const uint8_t* topLeft = at(*img, 0, 0);
+        EXPECT_EQ((Rgb{topLeft[0], topLeft[1], topLeft[2]}), SOURCE_3X2[0]);
+        const uint8_t* bottomLeft = at(*img, 0, img->height - 1);
+        EXPECT_EQ((Rgb{bottomLeft[0], bottomLeft[1], bottomLeft[2]}), SOURCE_3X2[3]);
+    }
 }
 
 TEST_F(ImageLoaderTiffTest, UppercaseExtensionAndTiffSpellingDecode) {
@@ -226,17 +229,17 @@ TEST_F(ImageLoaderTiffTest, Rgba8KeepsStraightAlpha) {
     const ImageData& img = result.value();
     ASSERT_EQ(img.channels, 4);
 
-    // Source row 0 lands in memory row 1 (flip), channel order R, G, B, A.
-    const uint8_t* p = at(img, 0, 1);
+    // Source row 0 stays in memory row 0, channel order R, G, B, A.
+    const uint8_t* p = at(img, 0, 0);
     EXPECT_EQ((std::array<uint8_t, 4>{p[0], p[1], p[2], p[3]}),
               (std::array<uint8_t, 4>{200, 10, 20, 255}));
-    p = at(img, 1, 1);
+    p = at(img, 1, 0);
     EXPECT_EQ((std::array<uint8_t, 4>{p[0], p[1], p[2], p[3]}),
               (std::array<uint8_t, 4>{40, 50, 60, 128}));
-    p = at(img, 0, 0);
+    p = at(img, 0, 1);
     EXPECT_EQ((std::array<uint8_t, 4>{p[0], p[1], p[2], p[3]}),
               (std::array<uint8_t, 4>{70, 80, 90, 64}));
-    p = at(img, 1, 0);
+    p = at(img, 1, 1);
     EXPECT_EQ((std::array<uint8_t, 4>{p[0], p[1], p[2], p[3]}),
               (std::array<uint8_t, 4>{1, 2, 3, 200}));
 }
@@ -281,9 +284,9 @@ TEST_F(ImageLoaderTiffTest, Gray16ConvertsTo8BitRgba) {
     ASSERT_EQ(img.height, 2);
     ASSERT_EQ(img.channels, 4);
 
-    // 16-bit v scales to v/257; top row sits in memory row 1.
+    // 16-bit v scales to v/257; top row sits in memory row 0.
     const uint8_t expected[4] = {0x00, 0xFF, 0x80, 0x40};
-    const int memoryRow[4] = {1, 1, 0, 0};
+    const int memoryRow[4] = {0, 0, 1, 1};
     for (int i = 0; i < 4; ++i) {
         const uint8_t* p = at(img, i % 2, memoryRow[i]);
         EXPECT_NEAR(p[0], expected[i], 1) << "sample " << i;
@@ -308,12 +311,12 @@ TEST_F(ImageLoaderTiffTest, Rgb16ConvertsTo8BitRgba) {
     ASSERT_EQ(img.width, 1);
     ASSERT_EQ(img.height, 2);
     ASSERT_EQ(img.channels, 4);
-    const uint8_t* top = at(img, 0, 1);
+    const uint8_t* top = at(img, 0, 0);
     EXPECT_EQ(top[0], 255);
     EXPECT_EQ(top[1], 0);
     EXPECT_NEAR(top[2], 0x80, 1);
     EXPECT_EQ(top[3], 255);
-    const uint8_t* bottom = at(img, 0, 0);
+    const uint8_t* bottom = at(img, 0, 1);
     EXPECT_EQ(bottom[0], 0);
     EXPECT_EQ(bottom[1], 255);
     EXPECT_EQ(bottom[2], 0);
@@ -328,7 +331,7 @@ TEST_F(ImageLoaderTiffTest, MultiPageLoadsFirstFrame) {
     ASSERT_TRUE(result.isSuccess()) << result.error().message;
     EXPECT_EQ(result.value().width, 3);
     EXPECT_EQ(result.value().height, 2);
-    const uint8_t* topLeft = at(result.value(), 0, 1);
+    const uint8_t* topLeft = at(result.value(), 0, 0);
     EXPECT_EQ((Rgb{topLeft[0], topLeft[1], topLeft[2]}), SOURCE_3X2[0]);
 }
 

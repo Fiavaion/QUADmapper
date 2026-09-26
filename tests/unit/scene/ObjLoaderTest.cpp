@@ -77,13 +77,13 @@ TEST_F(ObjLoaderTest, CubeWithUvsAndNormalsDeduplicatesByTriple) {
     EXPECT_EQ(mesh.normals.size(), 24u);
     EXPECT_EQ(mesh.triangleCount(), 12u);
     EXPECT_EQ(mesh.normals[0], Vec3(0, 0, -1));  // file normals kept as given
-    EXPECT_EQ(mesh.uvs[1], Vec2(0, 1));
+    EXPECT_EQ(mesh.uvs[1], Vec2(0, 0));  // vt 0 1, v flipped
 }
 
-TEST_F(ObjLoaderTest, TextureCoordinatesAreKeptAsAuthored) {
-    // OBJ puts v = 0 at the image bottom, which is how images are uploaded (stb flips on
-    // load), so the loader must not flip v. Flipping it rendered textures upside down
-    // on objects (GUI QA, 2026-09-26).
+TEST_F(ObjLoaderTest, TextureCoordinateVIsFlippedToTopRowFirst) {
+    // OBJ puts v = 0 at the image bottom, but every frame (still, video, camera) is
+    // stored top row first with v = 0 at the image top, so the loader stores 1 - v.
+    // Keeping v as authored left video upside down on objects (GUI QA, 2026-09-26).
     auto result = loadObj(write(
         "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
         "vt 0 0\nvt 1 0\nvt 0 1\n"
@@ -92,8 +92,9 @@ TEST_F(ObjLoaderTest, TextureCoordinatesAreKeptAsAuthored) {
     ASSERT_TRUE(result.isSuccess()) << result.error().message;
     const MeshData& mesh = result.value();
     ASSERT_EQ(mesh.uvs.size(), 3u);
-    EXPECT_EQ(mesh.uvs[0], Vec2(0, 0));
-    EXPECT_EQ(mesh.uvs[2], Vec2(0, 1));
+    EXPECT_EQ(mesh.uvs[0], Vec2(0, 1));
+    EXPECT_EQ(mesh.uvs[1], Vec2(1, 1));
+    EXPECT_EQ(mesh.uvs[2], Vec2(0, 0));
 }
 
 TEST_F(ObjLoaderTest, SharedCornersAreReused) {
@@ -118,7 +119,7 @@ TEST_F(ObjLoaderTest, NegativeIndicesCountBackFromTheLatestElement) {
     ASSERT_EQ(mesh.positions.size(), 3u);
     EXPECT_EQ(mesh.positions[0], Vec3(0, 0, 0));
     EXPECT_EQ(mesh.positions[2], Vec3(0, 1, 0));
-    EXPECT_EQ(mesh.uvs[1], Vec2(1, 0));
+    EXPECT_EQ(mesh.uvs[1], Vec2(1, 1));  // vt 1 0, v flipped
 }
 
 TEST_F(ObjLoaderTest, MixedFaceFormatsLoad) {
@@ -132,7 +133,7 @@ TEST_F(ObjLoaderTest, MixedFaceFormatsLoad) {
     const MeshData& mesh = result.value();
     EXPECT_EQ(mesh.triangleCount(), 2u);
     ASSERT_EQ(mesh.uvs.size(), 4u);  // some corners have uvs: missing ones are (0, 0)
-    EXPECT_EQ(mesh.uvs[3], Vec2(1, 1));
+    EXPECT_EQ(mesh.uvs[3], Vec2(1, 0));  // vt 1 1, v flipped
     ASSERT_EQ(mesh.normals.size(), 4u);  // not every corner has one: all computed
     EXPECT_NEAR(mesh.normals[0].z, 1.0f, 1e-6f);
 }

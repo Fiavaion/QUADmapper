@@ -101,8 +101,8 @@ Texture& Texture::operator=(Texture&& other) noexcept {
 }
 
 bool Texture::loadFromFile(const std::filesystem::path& path) {
-    // Set stb_image to flip vertically (OpenGL expects bottom-left origin)
-    stbi_set_flip_vertically_on_load(true);
+    // Top row first: quads sample v = 0 at their top edge, so the image shows upright.
+    stbi_set_flip_vertically_on_load_thread(false);
 
     // Load image data
     int width, height, channels;

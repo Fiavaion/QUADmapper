@@ -76,8 +76,8 @@ std::vector<uint8_t> convertRgba(const std::vector<uint8_t>& rgba, size_t pixelC
 
 // Decodes the first frame of a TIFF through the Windows Imaging Component (stb_image
 // has no TIFF reader). Every source format (8/16-bit gray, RGB, RGBA, CMYK...) is
-// converted to straight-alpha RGBA, then rows are stored bottom-first to match the stb
-// path's flip-on-load. desiredChannels 0 keeps RGBA.
+// converted to straight-alpha RGBA, top row first like the stb path. desiredChannels 0
+// keeps RGBA.
 Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desiredChannels) {
     using Microsoft::WRL::ComPtr;
     const std::string name = path.filename().string();
@@ -129,13 +129,6 @@ Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desired
                                 static_cast<UINT>(byteCount), rgba.data());
     if (FAILED(hr)) return failHr("pixel data could not be read", hr);
 
-    // WIC rows are top row first; swap them in place into bottom-row-first order.
-    const size_t rowBytes = static_cast<size_t>(stride);
-    for (size_t top = 0, bottom = height - 1; top < bottom; ++top, --bottom) {
-        std::swap_ranges(rgba.begin() + top * rowBytes, rgba.begin() + (top + 1) * rowBytes,
-                         rgba.begin() + bottom * rowBytes);
-    }
-
     ImageData result;
     result.width = static_cast<int>(width);
     result.height = static_cast<int>(height);
@@ -165,8 +158,9 @@ Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
         return result;
     }
 
-    // Set stb_image to flip vertically (OpenGL expects bottom-left origin)
-    stbi_set_flip_vertically_on_load(true);
+    // Top row first, like every other frame source. The flag is per thread so another
+    // stb user elsewhere cannot change it under us.
+    stbi_set_flip_vertically_on_load_thread(false);
 
     // Load image data
     int width, height, channels;
@@ -215,8 +209,9 @@ Result<ImageData, Error> ImageLoader::loadWithChannels(
         return loadTiff(path, desiredChannels);
     }
 
-    // Set stb_image to flip vertically
-    stbi_set_flip_vertically_on_load(true);
+    // Top row first, like every other frame source. The flag is per thread so another
+    // stb user elsewhere cannot change it under us.
+    stbi_set_flip_vertically_on_load_thread(false);
 
     // Load with requested channel count (0 = auto-detect)
     int width, height, channels;

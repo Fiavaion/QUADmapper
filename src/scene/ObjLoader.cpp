@@ -126,9 +126,9 @@ Result<MeshData, Error> loadObj(const fs::path& path) {
                 return fail("expected numbers after 'vt'");
             }
             if (texcoords.size() >= kMaxElements) return fail("too many elements");
-            // Kept as authored: images are loaded bottom-row-first (stb flip on load),
-            // which is exactly OBJ's convention of v = 0 at the image bottom.
-            texcoords.push_back(t);
+            // OBJ puts v = 0 at the image bottom; frames are stored top row first
+            // (v = 0 = image top), so v is flipped here.
+            texcoords.push_back(Vec2(t.x, 1.0f - t.y));
         } else if (kw == "f") {
             if (tokens.size() < 4) return fail("a face needs at least three vertices");
             face.clear();

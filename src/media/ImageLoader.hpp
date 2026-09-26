@@ -33,8 +33,8 @@ struct ImageData {
  * TIF/TIFF decode through the Windows Imaging Component instead: first frame
  * only, always converted to RGBA (4 channels unless others are requested).
  *
- * Images are automatically flipped vertically to match OpenGL's
- * bottom-left origin convention (both decode paths).
+ * Pixels are returned top row first (both decode paths), the same order as
+ * video, camera and procedural frames: texture v = 0 is the image's top.
  */
 class ImageLoader {
 public:

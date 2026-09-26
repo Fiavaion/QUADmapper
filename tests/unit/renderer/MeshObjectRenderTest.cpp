@@ -19,10 +19,14 @@
 #include "renderer/Renderer.hpp"
 #include "renderer/Texture.hpp"
 #include "scene/MeshObject.hpp"
+#include "scene/ObjLoader.hpp"
 #include "scene/ProjectorCamera.hpp"
 #include "scene/Quad.hpp"
+#include "source/StaticImageSource.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -447,6 +451,87 @@ TEST(MeshObjectRenderTest, MeshUploadsOnceAndRebuildsWhenReplaced) {
     EXPECT_TRUE(whiteAtEdge());
     EXPECT_EQ(GlObjectStats::vertexArrays(), vaos);  // old buffers freed, new ones made
     EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers);
+
+    Framebuffer::unbind();
+    renderer.shutdown();
+}
+
+// One orientation convention for every source (GUI QA 2026-09-26: stills showed upside
+// down on quads while video was upright). Frames are stored top row first, so a still
+// loaded from disk equals the buffer a video or procedural source hands over, and it
+// shows upright on a quad and, through OBJ texture coordinates, on an object.
+TEST(MeshObjectRenderTest, StillImagesShowUprightOnQuadsAndObjects) {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "qm_orientation_test";
+    fs::create_directories(dir);
+
+    // 2x2 image, top row red, bottom row green, in the order a video frame stores it.
+    const std::vector<uint8_t> topRowFirst = {255, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 0};
+    const fs::path ppm = dir / "top_red.ppm";
+    {
+        std::ofstream file(ppm, std::ios::binary);
+        file << "P6\n2 2\n255\n";
+        file.write(reinterpret_cast<const char*>(topRowFirst.data()),
+                   static_cast<std::streamsize>(topRowFirst.size()));
+    }
+    // A unit square facing +Z with OBJ's usual texture coordinates (v = 0 at the bottom).
+    const fs::path obj = dir / "square.obj";
+    {
+        std::ofstream file(obj, std::ios::binary);
+        file << "v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\n"
+                "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n"
+                "f 1/1 2/2 3/3 4/4\n";
+    }
+
+    StaticImageSource still(ppm);
+    ASSERT_TRUE(still.initialize());
+    const FrameData* frame = still.getCurrentFrame();
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(frame->channels, 3);
+    EXPECT_EQ(frame->pixels, topRowFirst);  // same memory order as a video frame
+
+    auto mesh = loadObj(obj);
+    ASSERT_TRUE(mesh.isSuccess()) << mesh.error().message;
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    constexpr int W = 64, H = 64;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    Framebuffer fbo;
+    ASSERT_TRUE(fbo.resize(W, H));
+    fbo.bind();
+    Texture texture;
+    ASSERT_TRUE(texture.create(frame->width, frame->height, frame->channels,
+                               frame->pixels.data()));
+
+    // A quad covering the whole output: red on top.
+    Quad quad;
+    quad.getGeometry().setCorners({Vec2(0, 0), Vec2(1, 0), Vec2(1, 1), Vec2(0, 1)});
+    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    renderer.renderQuad(quad, &texture);
+    auto image = readImage(W, H);
+    EXPECT_TRUE(isRed(image[(H / 4) * W + W / 2]));
+    EXPECT_TRUE(isGreen(image[(3 * H / 4) * W + W / 2]));
+
+    // The OBJ square seen from the front: red on its top (+Y) half.
+    const ProjectorCamera cam = ProjectorCamera::framing(Vec3(-0.5f, -0.5f, 0.0f),
+                                                         Vec3(0.5f, 0.5f, 0.0f),
+                                                         ProjectorIntrinsics::fromThrowRatio(1.5f, W, H));
+    std::vector<std::unique_ptr<MeshObject>> objects;
+    objects.push_back(std::make_unique<MeshObject>());
+    objects[0]->getMesh() = mesh.value();
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    renderer.renderMeshObjects(objects, cam, {{objects[0]->getId(), &texture}});
+    image = readImage(W, H);
+    const Vec2 upper = projected(cam, glm::mat4(1.0f), Vec3(0.0f, 0.3f, 0.0f));
+    const Vec2 lower = projected(cam, glm::mat4(1.0f), Vec3(0.0f, -0.3f, 0.0f));
+    EXPECT_TRUE(isRed(image[static_cast<int>(upper.y) * W + static_cast<int>(upper.x)]));
+    EXPECT_TRUE(isGreen(image[static_cast<int>(lower.y) * W + static_cast<int>(lower.x)]));
 
     Framebuffer::unbind();
     renderer.shutdown();

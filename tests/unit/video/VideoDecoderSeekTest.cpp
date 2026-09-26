@@ -194,6 +194,31 @@ TEST_P(VideoDecoderSeek, SeekToEndShowsLastFrame) {
     EXPECT_TRUE(decoder_.isAtEnd());
 }
 
+// Decoded frames are stored top row first, the convention every source shares (stills
+// included) so texture v = 0 is the picture's top. The clip's luma grows with y, so the
+// first stored row must be darker than the last.
+TEST(VideoDecoderOrientation, DecodedFramesAreStoredTopRowFirst) {
+    const fs::path path = fs::temp_directory_path() / "qm_decoder_orientation.mkv";
+    if (!writeClip(path, 12)) GTEST_SKIP() << "FFmpeg cannot write " << path;
+    VideoDecoder decoder;
+    ASSERT_TRUE(decoder.open(path));
+    const VideoFrame frame = decoder.decodeNextFrame();
+    decoder.close();
+    std::error_code ec;
+    fs::remove(path, ec);
+    ASSERT_TRUE(frame.isValid());
+    ASSERT_EQ(frame.data.size(), static_cast<size_t>(frame.width) * frame.height * 3);
+
+    auto rowMean = [&](int row) {
+        double sum = 0.0;
+        for (int i = 0; i < frame.width * 3; ++i) {
+            sum += frame.data[static_cast<size_t>(row) * frame.width * 3 + i];
+        }
+        return sum / (frame.width * 3);
+    };
+    EXPECT_LT(rowMean(0) + 30.0, rowMean(frame.height - 1));
+}
+
 INSTANTIATE_TEST_SUITE_P(Containers, VideoDecoderSeek,
                          testing::Values(ClipSpec{".ts", 12},
                                          ClipSpec{".ts", 300},  // whole clip is one GOP

@@ -156,7 +156,7 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     }
 
     // Load through ImageLoader so every image format (TIFF included) thumbnails, always
-    // as RGBA stored bottom row first.
+    // as RGBA stored top row first.
     auto loaded = ImageLoader::loadWithChannels(filePath, 4);
     if (!loaded.isSuccess()) {
         Logger::debug("ThumbnailCache: Failed to load image: {}", filePath.filename().string());
@@ -181,13 +181,12 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     thumbWidth = std::max(1, thumbWidth);
     thumbHeight = std::max(1, thumbHeight);
 
-    // Simple nearest-neighbor resize. The source is bottom row first but the bin draws
-    // thumbnails with UV (0,0) at the top, so thumbnail rows are written top row first.
+    // Simple nearest-neighbor resize, top row first (the bin draws UV (0,0) at the top).
     unsigned char* thumbData = new unsigned char[thumbWidth * thumbHeight * 4];
     for (int y = 0; y < thumbHeight; ++y) {
         for (int x = 0; x < thumbWidth; ++x) {
             int srcX = (x * width) / thumbWidth;
-            int srcY = height - 1 - (y * height) / thumbHeight;
+            int srcY = (y * height) / thumbHeight;
             int srcIdx = (srcY * width + srcX) * 4;
             int dstIdx = (y * thumbWidth + x) * 4;
 
