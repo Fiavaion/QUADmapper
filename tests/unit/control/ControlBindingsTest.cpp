@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 
@@ -802,6 +803,46 @@ TEST(PreferencesFileTest, AFileThatIsNotPreferencesIsRefusedAndChangesNothing) {
     PreferencesDialog missing;
     EXPECT_FALSE(missing.loadFromFile((file.path.string() + ".absent")));
 }
+
+// A user name outside the ANSI code page (TD follow-up): the path stays wide end to
+// end, so the file is written where asked and reads back.
+TEST(PreferencesFileTest, APathOutsideTheAnsiCodePageWorks) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                      (L"qm_prefs_\u00fc\u65e5\u672c\u0416_" +
+                                       std::filesystem::path(UUID::generate().toString()).wstring());
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path file = dir / L"pr\u00e9f\u00e9rences.json";
+    {
+        PreferencesDialog dialog;
+        dialog.getPreferences().general.defaultMediaFolder = u8"D:/Vid\u00e9os/\u65e5\u672c";
+        ASSERT_TRUE(dialog.saveToFile(file));
+    }
+    EXPECT_TRUE(std::filesystem::exists(file));
+    PreferencesDialog loaded;
+    ASSERT_TRUE(loaded.loadFromFile(file));
+    EXPECT_EQ(loaded.getPreferences().general.defaultMediaFolder, u8"D:/Vid\u00e9os/\u65e5\u672c");
+    // First run: no file yet. Refused, never thrown (its name goes into the message).
+    PreferencesDialog firstRun;
+    EXPECT_FALSE(firstRun.loadFromFile(dir / L"\u65e5\u672c.json"));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+#ifdef _WIN32
+TEST(PreferencesFileTest, DefaultPathIsUnderRoamingAppData) {
+    // %APPDATA% is the Roaming AppData folder, read wide (no windows.h here: its UUID
+    // clashes with quadmapper::UUID).
+    wchar_t* appData = nullptr;
+    size_t length = 0;
+    ASSERT_EQ(_wdupenv_s(&appData, &length, L"APPDATA"), 0);
+    ASSERT_NE(appData, nullptr);
+    const std::filesystem::path expected = std::filesystem::path(appData) / L"QUADmapper" / L"preferences.json";
+    std::free(appData);
+    EXPECT_TRUE(std::filesystem::equivalent(AppPreferences::getDefaultConfigPath().parent_path(),
+                                            expected.parent_path()));
+    EXPECT_EQ(AppPreferences::getDefaultConfigPath().filename(), expected.filename());
+}
+#endif
 
 // The window against real (headless) ImGui: shown only while es.showPreferences is set,
 // and its General tab edits the editor's UI mode directly (Application saves it).

@@ -4,6 +4,7 @@
 #include "ui/AsyncFileDialog.hpp"
 #include "ui/panels/ControlPanel.hpp"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -66,7 +67,9 @@ struct AppPreferences {
     PerformancePreferences performance;
     ControlPreferences control;
 
-    static std::string getDefaultConfigPath();
+    // <Roaming AppData>/QUADmapper/preferences.json (XDG config elsewhere), built as a
+    // wide path so a user name outside the ANSI code page works. Creates the folder.
+    static std::filesystem::path getDefaultConfigPath();
 };
 
 /**
@@ -99,10 +102,10 @@ public:
      * Load from a specific file. Values of the wrong type or out of range are skipped
      * (the current value stays), as are keys this version no longer has.
      */
-    Result<void, Error> loadFromFile(const std::string& path);
+    Result<void, Error> loadFromFile(const std::filesystem::path& path);
 
     /** Save to a specific file. */
-    Result<void, Error> saveToFile(const std::string& path) const;
+    Result<void, Error> saveToFile(const std::filesystem::path& path) const;
 
 private:
     // Each returns true when a preference changed (then saved).

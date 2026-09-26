@@ -54,40 +54,31 @@ void appliesNote(const char* text) {
 
 }  // namespace
 
-std::string AppPreferences::getDefaultConfigPath() {
-    std::string configDir;
+std::filesystem::path AppPreferences::getDefaultConfigPath() {
+    std::filesystem::path configDir;
 
 #ifdef _WIN32
-    // Get APPDATA path on Windows
     wchar_t* appDataPath = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath))) {
-        std::wstring wpath(appDataPath);
-        configDir = std::string(wpath.begin(), wpath.end());
-        CoTaskMemFree(appDataPath);
+        configDir = std::filesystem::path(appDataPath);  // wide: no code-page narrowing
     } else {
         configDir = ".";
     }
-    configDir += "\\QUADmapper";
+    CoTaskMemFree(appDataPath);  // required even when the call fails; null is a no-op
+    configDir /= "QUADmapper";
 #else
-    // Use XDG config home on Linux/Mac
-    const char* xdgConfig = std::getenv("XDG_CONFIG_HOME");
-    if (xdgConfig) {
+    if (const char* xdgConfig = std::getenv("XDG_CONFIG_HOME")) {
         configDir = xdgConfig;
+    } else if (const char* home = std::getenv("HOME")) {
+        configDir = std::filesystem::path(home) / ".config";
     } else {
-        const char* home = std::getenv("HOME");
-        if (home) {
-            configDir = std::string(home) + "/.config";
-        } else {
-            configDir = ".";
-        }
+        configDir = ".";
     }
-    configDir += "/quadmapper";
+    configDir /= "quadmapper";
 #endif
 
-    // Ensure directory exists
     FileSystem::createDirectory(configDir);
-
-    return configDir + "/preferences.json";
+    return configDir / "preferences.json";
 }
 
 // ---- Window -------------------------------------------------------------------
@@ -264,10 +255,10 @@ Result<void, Error> PreferencesDialog::savePreferences() {
     return saveToFile(AppPreferences::getDefaultConfigPath());
 }
 
-Result<void, Error> PreferencesDialog::loadFromFile(const std::string& path) {
+Result<void, Error> PreferencesDialog::loadFromFile(const std::filesystem::path& path) {
     auto result = FileSystem::readFile(path);
     if (!result) {
-        Logger::warning("Could not load preferences from {}: {}", path, result.error().message);
+        Logger::warning("Could not load preferences from {}: {}", path.u8string(), result.error().message);
         return Result<void, Error>::error(result.error());
     }
 
@@ -316,11 +307,11 @@ Result<void, Error> PreferencesDialog::loadFromFile(const std::string& path) {
         readBool(*ctl, "oscFeedbackUseIds", control.oscFeedbackUseIds);
     }
 
-    Logger::info("Loaded preferences from {}", path);
+    Logger::info("Loaded preferences from {}", path.u8string());
     return Result<void, Error>::success();
 }
 
-Result<void, Error> PreferencesDialog::saveToFile(const std::string& path) const {
+Result<void, Error> PreferencesDialog::saveToFile(const std::filesystem::path& path) const {
     json root;
     root["version"] = "1.0";
 
@@ -351,7 +342,7 @@ Result<void, Error> PreferencesDialog::saveToFile(const std::string& path) const
 
     auto result = FileSystem::writeFile(path, root.dump(2));
     if (result) {
-        Logger::info("Saved preferences to {}", path);
+        Logger::info("Saved preferences to {}", path.u8string());
     }
     return result;
 }
