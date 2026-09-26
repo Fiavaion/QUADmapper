@@ -20,6 +20,7 @@
 #include "../core/Types.hpp"   // Vec2
 #include "../core/UUID.hpp"
 #include "../core/CommandHistory.hpp"
+#include "../project/Project.hpp"
 #include "../scene/CalibrationSession.hpp"
 #include "../scene/Commands.hpp"
 #include "../scene/Scene.hpp"
@@ -177,6 +178,19 @@ struct EditorState {
     std::unordered_set<UUID> sourcesPausedWhileUnseen;
     std::string recoveryFilePath;    // != "": "recover unsaved work" modal is up
     std::string recoveryProjectPath; // project that recovery file belongs to ("" = untitled)
+
+    // ---- Missing media (PRD §4.1.8, see MissingMedia.hpp) ----------------------
+    // File sources that could not be opened when the project loaded, by the id their
+    // quads and objects keep referencing. Saving writes them back as they were; the
+    // Missing Media window relocates them. A 3D object's missing mesh needs no entry:
+    // it is an object with a mesh path and no mesh.
+    std::unordered_map<UUID, Project::SourceData> missingSources;
+    bool showMissingMedia = false;  // the Missing Media window is open
+    std::unordered_map<std::string, std::string> missingMediaErrors;  // path -> last relocate error
+    // Drawn in place of a missing source (MissingMediaLook.hpp), created once on first
+    // use: the checker in the editor and previews, black on projector outputs.
+    std::unique_ptr<Texture> missingPatternTexture;
+    std::unique_ptr<Texture> missingBlackTexture;
 
     // UV test-grid toggle (#2): when on, newly-created quads get a colored UV
     // reference grid texture. seenQuadIds tracks which quads have already been

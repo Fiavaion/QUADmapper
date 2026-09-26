@@ -2,6 +2,7 @@
 
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
+#include "app/MissingMedia.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "project/Project.hpp"
@@ -58,6 +59,10 @@ void MainMenuBar::render(EditorContext& ctx) {
         ImGui::Separator();
         if (ImGui::MenuItem("Import 3D Object (OBJ)...")) {
             es.pendingFileAction = FileAction::ImportObject;
+        }
+        if (ImGui::MenuItem("Relocate Missing Media...", nullptr, false,
+                            !collectMissingMedia(es).empty())) {
+            es.showMissingMedia = true;
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4")) {

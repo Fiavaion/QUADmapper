@@ -2,6 +2,7 @@
 // generateUvTestGridRGBA is a pure function (no GL), so it is tested headlessly.
 
 #include "renderer/UvTestGrid.hpp"
+#include "renderer/MissingMediaLook.hpp"
 
 #include <gtest/gtest.h>
 
@@ -70,4 +71,43 @@ TEST(UvTestGridTest, GridLinesAreWhiteAtCellBoundary) {
 TEST(UvTestGridTest, DegenerateArgsDoNotCrash) {
     EXPECT_EQ(generateUvTestGridRGBA(0, 0).size(), 4u);   // clamped to 1x1
     EXPECT_EQ(generateUvTestGridRGBA(2, 1).size(), 16u);  // 2x2 RGBA
+}
+
+// ---- Missing-media look (PRD §4.1.8, MissingMediaLook.hpp) --------------------------
+
+
+using quadmapper::SurfaceDraw;
+using quadmapper::SurfaceView;
+using quadmapper::chooseSurfaceDraw;
+
+TEST(MissingMediaLookTest, MissingSourceIsBlackOnOutputsAndCheckerInEditor) {
+    // Never white mid-show: whether or not some fallback texture exists.
+    EXPECT_EQ(chooseSurfaceDraw(false, true, SurfaceView::Output), SurfaceDraw::Black);
+    EXPECT_EQ(chooseSurfaceDraw(true, true, SurfaceView::Output), SurfaceDraw::Black);
+    EXPECT_EQ(chooseSurfaceDraw(false, true, SurfaceView::Editor), SurfaceDraw::MissingPattern);
+    EXPECT_EQ(chooseSurfaceDraw(true, true, SurfaceView::Editor), SurfaceDraw::MissingPattern);
+}
+
+TEST(MissingMediaLookTest, PresentMediaIsUnchanged) {
+    for (SurfaceView view : {SurfaceView::Editor, SurfaceView::Output}) {
+        EXPECT_EQ(chooseSurfaceDraw(true, false, view), SurfaceDraw::Texture);
+        EXPECT_EQ(chooseSurfaceDraw(false, false, view), SurfaceDraw::Plain);  // unassigned quad
+    }
+}
+
+TEST(MissingMediaLookTest, PatternIsAnOpaqueMagentaBlackChecker) {
+    const int size = quadmapper::MISSING_PATTERN_SIZE;
+    const int cell = quadmapper::MISSING_PATTERN_CELL;
+    const auto px = quadmapper::generateMissingPatternRGBA();
+    ASSERT_EQ(px.size(), static_cast<size_t>(size) * size * 4);
+    const Px topLeft = at(px, size, 0, 0);
+    EXPECT_EQ(topLeft.r, 255); EXPECT_EQ(topLeft.g, 0); EXPECT_EQ(topLeft.b, 255);
+    const Px nextCell = at(px, size, cell, 0);
+    EXPECT_EQ(nextCell.r, 0); EXPECT_EQ(nextCell.g, 0); EXPECT_EQ(nextCell.b, 0);
+    const Px diagonal = at(px, size, cell, cell);
+    EXPECT_EQ(diagonal.r, 255);
+    EXPECT_EQ(at(px, size, cell - 1, cell - 1).r, 255);  // cell edges are exact
+    for (size_t i = 3; i < px.size(); i += 4) ASSERT_EQ(px[i], 255);
+    EXPECT_TRUE(quadmapper::generateMissingPatternRGBA(0, 8).empty());
+    EXPECT_EQ(quadmapper::generateMissingPatternRGBA(4, 0).size(), 4u * 4u * 4u);  // cell clamps to 1
 }

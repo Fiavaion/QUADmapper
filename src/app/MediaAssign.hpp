@@ -17,6 +17,7 @@
 #include "scene/MediaReferences.hpp"
 #include "project/Project.hpp"
 
+#include <iterator>
 #include <string>
 #include <unordered_set>
 
@@ -107,9 +108,10 @@ inline std::unordered_set<UUID> editorOwnedSources(const EditorState& es) {
 // scene uses, that no undo/redo step can restore, and that the editor does not keep
 // alive, so orphaned videos and generators stop decoding, rendering and uploading.
 //
-// A quad whose source is missing (a binding restored from an older history, for
-// example) is re-resolved from its saved media path (videos restart playing); if that
-// fails the binding is cleared so it is not retried every frame.
+// A quad whose source is gone (a binding restored from an older history, for example)
+// is re-resolved from its saved media path (videos restart playing); if that fails the
+// binding is cleared so it is not retried every frame. A binding to a missing file
+// (EditorState::missingSources) is kept as it is, for the user to relocate.
 inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
     std::unordered_set<UUID> onScreen;  // bound to a quad that exists right now
     for (const auto& scene : es.scenes) {
@@ -117,7 +119,7 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
         for (const auto& quad : scene->getQuadManager().getQuads()) {
             UUID& mediaId = quad->getTexture().mediaId;
             if (!mediaId.isNull() && sm.hasSource(mediaId)) onScreen.insert(mediaId);
-            if (mediaId.isNull() || sm.hasSource(mediaId)) continue;
+            if (mediaId.isNull() || sm.hasSource(mediaId) || es.missingSources.count(mediaId)) continue;
             auto pathIt = es.quadTexturePaths.find(quad->getId());
             UUID healed;
             if (pathIt != es.quadTexturePaths.end() && !pathIt->second.empty()) {
@@ -141,6 +143,11 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
     const std::unordered_set<UUID> owned = editorOwnedSources(es);
     inUse.insert(owned.begin(), owned.end());
     sm.releaseUnreferenced(inUse);
+    // A missing file nothing refers to any more (its quads deleted beyond undo) is
+    // no longer worth relocating or saving.
+    for (auto it = es.missingSources.begin(); it != es.missingSources.end();) {
+        it = inUse.count(it->first) ? std::next(it) : es.missingSources.erase(it);
+    }
 
     // A video kept only so undo can restore its deleted quad should not keep decoding
     // and uploading unseen; pause it, and resume it once undo brings it back.

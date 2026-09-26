@@ -3,6 +3,7 @@
 #include "EditorState.hpp"
 #include "TextureResolve.hpp"
 #include "MediaAssign.hpp"
+#include "MissingMedia.hpp"
 #include "OutputPersistence.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
@@ -181,7 +182,11 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
     project.getSources().clear();
     std::unordered_set<UUID> describedSources;
     auto describeOnce = [&](const UUID& mediaId) {
-        if (sm && !mediaId.isNull() && describedSources.insert(mediaId).second) {
+        if (mediaId.isNull() || !describedSources.insert(mediaId).second) return;
+        // A missing file is written back exactly as it was loaded (PRD §4.1.8).
+        if (auto missing = es.missingSources.find(mediaId); missing != es.missingSources.end()) {
+            project.getSources().push_back(missing->second);
+        } else if (sm) {
             if (auto source = describeSource(*sm, mediaId)) {
                 project.getSources().push_back(std::move(*source));
             }
@@ -247,15 +252,21 @@ static void applyQuadData(const Quad& src, Quad* dst) {
     dst->setSoftEdge(src.getSoftEdge());                // ADR-037
 }
 
-// Returns how many 3D objects' meshes could not be re-imported. Those objects are kept
-// with an empty mesh, so a missing model file never fails the load.
-static int syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
-                               SourceManager* sm) {
+static bool isFileSource(const Project::SourceData& source) {
+    return source.kind == "image" || source.kind == "video" || source.kind == "hap";
+}
+
+// Media and mesh files that cannot be opened never fail the load (PRD §4.1.8): their
+// quads and objects keep the reference (EditorState::missingSources; an object keeps
+// its mesh path with an empty mesh) and collectMissingMedia() lists them to relocate.
+static void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
+                                SourceManager* sm) {
     es.selectedObjectId = UUID();
     es.endCalibration();  // the session's lens and selection belong to the old project
     es.scenes.clear();
     es.quadTextures.clear();
     es.quadTexturePaths.clear();
+    clearMissingMedia(es);
     // Release the previous project's media now (the media bin's own generators stay,
     // so its items remain assignable); a reloaded show then starts fresh decoders
     // rather than inheriting ones found by path.
@@ -288,7 +299,28 @@ static int syncProjectToEditor(EditorState& es, OutputManager* om, const Project
     std::unordered_map<UUID, const Project::SourceData*> savedSources;
     for (const auto& s : project.getSources()) savedSources[s.id] = &s;
     std::unordered_map<UUID, UUID> sourceRemap;
-    int missingMeshes = 0;
+    auto liveSourceFor = [&](const Project::SourceData& src) {
+        auto remapIt = sourceRemap.find(src.id);
+        if (remapIt == sourceRemap.end()) {
+            const UUID live = src.missing ? UUID() : createSourceFrom(*sm, src);
+            remapIt = sourceRemap.emplace(src.id, live).first;
+        }
+        return remapIt->second;
+    };
+
+    // A file that could not be opened stays referenced under one missing-source id per
+    // path: the saved id, unless a live source (the media bin's) already has it.
+    std::unordered_map<std::string, UUID> missingByPath;
+    auto missingIdFor = [&](Project::SourceData src) {
+        auto it = missingByPath.find(src.path);
+        if (it != missingByPath.end()) return it->second;
+        if (src.id.isNull() || sm->hasSource(src.id)) src.id = UUID::generate();
+        src.missing = true;
+        const UUID id = src.id;
+        missingByPath.emplace(src.path, id);
+        es.missingSources.emplace(id, std::move(src));
+        return id;
+    };
 
     for (const auto& sd : project.getScenes()) {
         auto scene = std::make_unique<Scene>(sd.id);
@@ -312,35 +344,34 @@ static int syncProjectToEditor(EditorState& es, OutputManager* om, const Project
 
             // The copied binding still carries the SAVED source id; swap it for the
             // live one. The serializer only leaves a mediaId that resolves in the
-            // sources table, else the quad falls back to texturePath below.
+            // sources table; a source that cannot be opened falls back to texturePath.
             const UUID savedMediaId = nq->getTexture().mediaId;
             nq->getTexture().mediaId = UUID();
             auto savedIt = savedMediaId.isNull() ? savedSources.end()
                                                  : savedSources.find(savedMediaId);
             if (sm && savedIt != savedSources.end()) {
                 const Project::SourceData& src = *savedIt->second;
-                auto remapIt = sourceRemap.find(savedMediaId);
-                if (remapIt == sourceRemap.end()) {
-                    remapIt = sourceRemap.emplace(savedMediaId, createSourceFrom(*sm, src)).first;
-                }
-                if (!remapIt->second.isNull()) {
-                    nq->getTexture().mediaId = remapIt->second;
+                const UUID live = liveSourceFor(src);
+                if (!live.isNull()) {
+                    nq->getTexture().mediaId = live;
                     if (!src.path.empty()) es.quadTexturePaths[nq->getId()] = src.path;
                     if (src.kind == "video" || src.kind == "hap") {
-                        es.activeVideoSourceId = remapIt->second;
+                        es.activeVideoSourceId = live;
                     }
                     continue;
                 }
             }
 
-            if (i < sd.texturePaths.size() && !sd.texturePaths[i].empty()) {
+            const std::string texturePath =
+                i < sd.texturePaths.size() ? sd.texturePaths[i] : std::string();
+            if (!texturePath.empty()) {
                 // ADR-040 P2: route the media through SourceManager (deduped by
                 // path, so the same file on many quads decodes once) and bind the
                 // quad by mediaId. quadTexturePaths is kept as the P2 persistence
                 // carrier (P5 serializes mediaId/sources directly).
-                es.quadTexturePaths[nq->getId()] = sd.texturePaths[i];
+                es.quadTexturePaths[nq->getId()] = texturePath;
                 if (sm) {
-                    const std::filesystem::path mediaPath = sd.texturePaths[i];
+                    const std::filesystem::path mediaPath = texturePath;
                     const std::string ext = mediaPath.extension().string();
                     UUID sid;
                     if (MediaLibrary::getTypeFromExtension(ext) == MediaType::VIDEO) {
@@ -356,6 +387,22 @@ static int syncProjectToEditor(EditorState& es, OutputManager* om, const Project
                     }
                     if (!sid.isNull()) nq->getTexture().mediaId = sid;
                 }
+            }
+
+            // Neither the saved source nor texturePath opened: keep the reference.
+            if (!sm || !nq->getTexture().mediaId.isNull()) continue;
+            if (savedIt != savedSources.end() && isFileSource(*savedIt->second)) {
+                const Project::SourceData& src = *savedIt->second;
+                nq->getTexture().mediaId = missingIdFor(src);
+                es.quadTexturePaths[nq->getId()] = src.path;
+            } else if (!texturePath.empty()) {
+                // Pre-v3.1 binding by path alone: saved from now on as a sources entry.
+                Project::SourceData src;
+                src.kind = MediaLibrary::getTypeFromExtension(
+                               std::filesystem::path(texturePath).extension().string()) ==
+                                   MediaType::VIDEO ? "video" : "image";
+                src.path = texturePath;
+                nq->getTexture().mediaId = missingIdFor(std::move(src));
             }
         }
 
@@ -402,22 +449,21 @@ static int syncProjectToEditor(EditorState& es, OutputManager* om, const Project
                                                        : savedSources.find(od.texture.mediaId);
             if (sm && savedIt != savedSources.end()) {
                 const Project::SourceData& src = *savedIt->second;
-                auto remapIt = sourceRemap.find(src.id);
-                if (remapIt == sourceRemap.end()) {
-                    remapIt = sourceRemap.emplace(src.id, createSourceFrom(*sm, src)).first;
-                }
-                object->getTexture().mediaId = remapIt->second;
-                if (!remapIt->second.isNull() && (src.kind == "video" || src.kind == "hap")) {
-                    es.activeVideoSourceId = remapIt->second;
+                const UUID live = liveSourceFor(src);
+                if (!live.isNull()) {
+                    object->getTexture().mediaId = live;
+                    if (src.kind == "video" || src.kind == "hap") es.activeVideoSourceId = live;
+                } else if (isFileSource(src)) {
+                    object->getTexture().mediaId = missingIdFor(src);
                 }
             }
 
             auto mesh = od.path.empty() ? Err<MeshData>("no mesh file path saved")
+                      : od.missing      ? Err<MeshData>("file not found")
                                         : loadObj(od.path);
             if (mesh) {
                 object->getMesh() = std::move(mesh.value());
             } else {
-                ++missingMeshes;
                 Logger::warning("3D object '{}': mesh not loaded ({})", od.name,
                                 mesh.error().message);
             }
@@ -458,7 +504,6 @@ static int syncProjectToEditor(EditorState& es, OutputManager* om, const Project
             es.currentTexturePath[0] = '\0';
         }
     }
-    return missingMeshes;
 }
 
 // GLFW window close callback: route the close through the deferred Exit action.
@@ -1101,7 +1146,7 @@ void Application::render() {
     // so the Resources > Preview tab shows a live view of every projector. Runs in
     // the main GL context; saves/restores the framebuffer + viewport itself.
     if (m_outputManager && m_renderer) {
-        auto previewTextures = buildQuadTextureMap(es, m_sourceManager.get());
+        auto previewTextures = buildQuadTextureMap(es, m_sourceManager.get(), SurfaceView::Editor);
         m_outputManager->updatePreviews(es.scenes, previewTextures, *m_renderer);
     }
 
@@ -1567,6 +1612,7 @@ void Application::render() {
         ImGui::ShowDemoWindow(&showDemo);
     }
 
+    renderMissingMediaDialog();
     // Unsaved-changes / recovery modals (ADR-046); drawn last so they sit on top.
     renderSessionDialogs();
 
@@ -1645,11 +1691,35 @@ void postStatus(EditorState& es, const std::string& message) {
     es.statusTimer = 4.0f;
 }
 
-// Appended to the load status when 3D objects came back without their mesh.
-std::string missingMeshesNote(int missing) {
+// Appended to the load status when media or mesh files are missing.
+std::string missingMediaNote(size_t missing) {
     if (missing == 0) return std::string();
-    return " (warning: " + std::to_string(missing) + " 3D object mesh" +
-           (missing == 1 ? "" : "es") + " not found; see the log)";
+    return " (warning: " + std::to_string(missing) + " media file" +
+           (missing == 1 ? "" : "s") + " missing)";
+}
+
+// Native file picker for relocating one missing file, pre-filled with its name (and
+// opening in its old folder when that still exists).
+AsyncFileDialog::Request locateFileRequest(const MissingMediaItem& item) {
+    static const char meshFilter[] = "Wavefront OBJ (*.obj)\0*.obj\0All Files (*.*)\0*.*\0";
+    static const char mediaFilter[] = "All Files (*.*)\0*.*\0";
+    const fs::path original(item.path);
+    AsyncFileDialog::Request request;
+    request.kind = AsyncFileDialog::Kind::OpenFile;
+    request.title = "Locate " + original.filename().string();
+    if (item.kind == MissingMediaItem::Kind::Mesh) request.filter.assign(meshFilter, sizeof(meshFilter));
+    else                                           request.filter.assign(mediaFilter, sizeof(mediaFilter));
+    std::error_code ec;
+    request.initialPath = fs::is_directory(original.parent_path(), ec) ? original.string()
+                                                                        : original.filename().string();
+    return request;
+}
+
+AsyncFileDialog::Request searchFolderRequest() {
+    AsyncFileDialog::Request request;
+    request.kind = AsyncFileDialog::Kind::PickFolder;
+    request.title = "Search this folder (and its subfolders) for the missing files";
+    return request;
 }
 
 AsyncFileDialog::Request objectFileRequest() {
@@ -1725,6 +1795,7 @@ void Application::runFrameBoundaryTasks() {
         offerRecovery("");
     }
     processPendingFileAction();
+    pollMissingMediaSearch();
     if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager);
     fitProjectorsToOutputs();
     autosaveIfDue();
@@ -1867,6 +1938,8 @@ void Application::performNewProject() {
     es.currentTexturePath[0] = '\0';
     es.activeVideoSourceId = UUID();
     if (m_sourceManager) releaseProjectSources(es, *m_sourceManager);
+    cancelMissingMediaSearch();
+    clearMissingMedia(es);
 
     // One default scene with one quad, still aimed at the first output. Outputs are
     // hardware setup, not show content, so New keeps them. Their projector calibration is show
@@ -1904,11 +1977,13 @@ bool Application::performLoadProject(const std::string& path) {
 
     es.commandHistory.clear();  // before the scenes its commands point into go away
     *m_project = std::move(result.value());
-    const int missingMeshes =
-        syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
+    cancelMissingMediaSearch();
+    syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
     markProjectClean();
-    postStatus(es, "Project loaded: " + path + missingMeshesNote(missingMeshes));
+    const size_t missing = collectMissingMedia(es).size();
+    es.showMissingMedia = missing > 0;
+    postStatus(es, "Project loaded: " + path + missingMediaNote(missing));
     offerRecovery(path);
     return true;
 }
@@ -1970,13 +2045,15 @@ void Application::performRestoreRecovery() {
     es.commandHistory.clear();
     *m_project = std::move(result.value());
     m_project->setFilePath(projectPath);  // it belongs to the project, not the autosave
-    const int missingMeshes =
-        syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
+    cancelMissingMediaSearch();
+    syncProjectToEditor(es, m_outputManager.get(), *m_project, m_sourceManager.get());
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", projectPath.c_str());
     // The restored work is not in the project file yet: keep it "unsaved", and say so.
     m_savedSnapshot.clear();
     m_project->setModified(true);
-    postStatus(es, "Restored unsaved work from " + file + missingMeshesNote(missingMeshes));
+    const size_t missing = collectMissingMedia(es).size();
+    es.showMissingMedia = missing > 0;
+    postStatus(es, "Restored unsaved work from " + file + missingMediaNote(missing));
 }
 
 void Application::buildEditorProject(Project& out) {
@@ -2142,6 +2219,156 @@ void Application::renderSessionDialogs() {
         }
         ImGui::EndPopup();
     }
+}
+
+// A plain window, not a modal: the unsaved-changes and recovery modals can open over
+// it, and closed it draws nothing, so it never holds the canvas keys.
+void Application::renderMissingMediaDialog() {
+    EditorState& es = *m_editorState;
+    if (!es.showMissingMedia) return;
+    const std::vector<MissingMediaItem> items = collectMissingMedia(es);
+    const bool searching = m_mediaSearch.valid();
+    if (items.empty() && !searching) {
+        es.showMissingMedia = false;  // all found, or the project that had them is gone
+        return;
+    }
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(720.0f, 380.0f), ImGuiCond_Appearing);
+    bool open = true;
+    if (ImGui::Begin("Missing Media##relocate", &open,
+                     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
+        ImGui::TextWrapped("%zu file%s used by this project could not be opened. What uses them "
+                           "shows a magenta checker here and black on the projectors until the "
+                           "file is found. Saving keeps the original paths, so nothing is lost "
+                           "if you skip this.",
+                           items.size(), items.size() == 1 ? "" : "s");
+        const bool busy = searching || (m_projectDialog && m_projectDialog->isBusy());
+        if (searching) ImGui::TextDisabled("Searching %s ...", m_mediaSearchFolder.c_str());
+        ImGui::Spacing();
+
+        const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
+        constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
+                                               ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp;
+        if (ImGui::BeginTable("##missing", 3, tableFlags, ImVec2(0.0f, -footer))) {
+            ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthStretch, 3.0f);
+            ImGui::TableSetupColumn("Used by", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableSetupColumn("##action", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+            for (size_t i = 0; i < items.size(); ++i) {
+                const MissingMediaItem& item = items[i];
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::TableNextRow();
+
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(fs::path(item.path).filename().string().c_str());
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextDisabled("%s", item.path.c_str());
+                auto error = es.missingMediaErrors.find(item.path);
+                if (error != es.missingMediaErrors.end()) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", error->second.c_str());
+                }
+                ImGui::PopTextWrapPos();
+
+                ImGui::TableNextColumn();
+                std::string usedBy;
+                if (item.quadUses > 0) {
+                    usedBy = std::to_string(item.quadUses) + (item.quadUses == 1 ? " quad" : " quads");
+                }
+                if (item.objectUses > 0) {
+                    if (!usedBy.empty()) usedBy += ", ";
+                    usedBy += std::to_string(item.objectUses) +
+                              (item.objectUses == 1 ? " 3D object" : " 3D objects");
+                }
+                if (item.kind == MissingMediaItem::Kind::Mesh) usedBy += " (mesh)";
+                ImGui::TextUnformatted(usedBy.c_str());
+
+                ImGui::TableNextColumn();
+                ImGui::BeginDisabled(busy);
+                if (ImGui::Button("Locate...")) requestLocateMissingMedia(item);
+                ImGui::EndDisabled();
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button("Search Folder...")) requestMissingMediaSearch();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Pick a folder: every missing file with the same name in it,\n"
+                              "or in any folder below it, is relocated.");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Skip")) open = false;
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Keep working without these files. File > Relocate Missing Media...\n"
+                              "reopens this window.");
+        }
+    }
+    ImGui::End();
+    if (!open) es.showMissingMedia = false;
+}
+
+void Application::requestLocateMissingMedia(const MissingMediaItem& item) {
+    EditorState& es = *m_editorState;
+    if (!m_projectDialog) m_projectDialog = std::make_unique<AsyncFileDialog>();
+    if (!m_projectDialog->open(locateFileRequest(item))) {
+        postStatus(es, "Another file dialog is already open");
+        return;
+    }
+    m_onProjectFileChosen = [this, item](const std::string& path) {
+        if (path.empty()) return;
+        EditorState& state = *m_editorState;
+        const int resolved = locateMissingMedia(state, m_sourceManager.get(), m_project.get(), item, path);
+        if (resolved > 0) {
+            postStatus(state, "Relocated " + std::to_string(resolved) + " missing file" +
+                                  (resolved == 1 ? "" : "s"));
+        } else {
+            postStatus(state, "Could not use " + fs::path(path).filename().string());
+        }
+    };
+}
+
+void Application::requestMissingMediaSearch() {
+    EditorState& es = *m_editorState;
+    if (!m_projectDialog) m_projectDialog = std::make_unique<AsyncFileDialog>();
+    if (!m_projectDialog->open(searchFolderRequest())) {
+        postStatus(es, "Another file dialog is already open");
+        return;
+    }
+    m_onProjectFileChosen = [this](const std::string& folder) {
+        if (folder.empty() || m_mediaSearch.valid()) return;
+        m_mediaSearchCancel = false;
+        m_mediaSearchFolder = folder;
+        m_mediaSearch = std::async(std::launch::async, [this, root = fs::path(folder)]() {
+            return relocate::indexFolder(root, &m_mediaSearchCancel);
+        });
+    };
+}
+
+void Application::pollMissingMediaSearch() {
+    if (!m_mediaSearch.valid() ||
+        m_mediaSearch.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return;
+    }
+    const relocate::FolderIndex index = m_mediaSearch.get();
+    EditorState& es = *m_editorState;
+    const size_t missing = collectMissingMedia(es).size();
+    const int resolved = relocateMissingFromIndex(es, m_sourceManager.get(), m_project.get(), index);
+    std::string status = "Found " + std::to_string(resolved) + " of " + std::to_string(missing) +
+                         " missing file" + (missing == 1 ? "" : "s") + " in " + m_mediaSearchFolder;
+    if (index.truncated) status += " (search stopped early: folder too large)";
+    postStatus(es, status);
+}
+
+void Application::cancelMissingMediaSearch() {
+    if (!m_mediaSearch.valid()) return;
+    m_mediaSearchCancel = true;
+    m_mediaSearch.wait();
+    m_mediaSearch = std::future<relocate::FolderIndex>();
 }
 
 void Application::emergencySave() noexcept {
@@ -2435,7 +2662,7 @@ void Application::renderToProjectorOutputs() {
 
     // Resolve every quad's texture (image via SourceManager/mediaId, video via the
     // legacy wrapper) through the shared builder — same map the editor/preview use.
-    auto textures = buildQuadTextureMap(es, m_sourceManager.get());
+    auto textures = buildQuadTextureMap(es, m_sourceManager.get(), SurfaceView::Output);
 
     m_outputManager->renderToOutputs(es.scenes, textures);
 }
@@ -2678,7 +2905,7 @@ int Application::runStress(const StressConfig& cfg) {
             if (!cfg.hidden) {
                 glfwSwapBuffers(m_window);
             }
-            auto textures = buildQuadTextureMap(es, m_sourceManager.get());
+            auto textures = buildQuadTextureMap(es, m_sourceManager.get(), SurfaceView::Output);
             m_outputManager->renderToOutputs(es.scenes, textures);
         }
         if (measurePacing) {
@@ -2823,12 +3050,17 @@ void Application::shutdown() {
 
     Logger::info("Shutting down QUADmapper...");
     finishAutosaveWrite();  // never cut an autosave off mid-write
+    cancelMissingMediaSearch();
 
     // Cleanup components in reverse order of creation
     m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
     m_inputManager.reset();
     m_outputManager.reset();
     m_thumbnailCache.reset();  // Clear GL textures before context destroyed
+    if (m_editorState) {
+        m_editorState->missingPatternTexture.reset();
+        m_editorState->missingBlackTexture.reset();
+    }
     if (m_editorState) m_editorState->calibrationPanel.releaseGlResources();
     m_renderer.reset();
     m_folderWatcher.reset();  // Stop watching before destroying media library

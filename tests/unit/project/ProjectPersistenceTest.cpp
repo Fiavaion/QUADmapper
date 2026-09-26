@@ -2,6 +2,7 @@
 // every historical format still loading.
 
 #include <gtest/gtest.h>
+#include "project/MediaRelocation.hpp"
 #include "project/ProjectSerializer.hpp"
 #include "project/Project.hpp"
 #include "scene/Quad.hpp"
@@ -9,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -157,7 +159,9 @@ TEST_F(ProjectPersistenceTest, MovedShowFolderResolvesRelativeMedia) {
     EXPECT_EQ(p.getScenes()[0].quads[0].getTexture().mediaId, src.id);
 }
 
-TEST_F(ProjectPersistenceTest, MissingRelativeMediaFallsBackToTexturePath) {
+// ---- Missing media (PRD §4.1.8) ---------------------------------------------------
+
+TEST_F(ProjectPersistenceTest, MissingFileSourceKeepsReferenceAndTexturePath) {
     const std::string absolute = (dir_ / "elsewhere" / "backdrop.png").string();
     Project::SourceData src;
     src.id = UUID::generate();
@@ -169,9 +173,127 @@ TEST_F(ProjectPersistenceTest, MissingRelativeMediaFallsBackToTexturePath) {
     auto loaded = ProjectSerializer::load(file);
 
     ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
-    const auto& scene = loaded.value().getScenes()[0];
-    EXPECT_TRUE(scene.quads[0].getTexture().mediaId.isNull());  // unresolvable source
-    EXPECT_EQ(scene.texturePaths[0], absolute);                // absolute fallback kept
+    const Project& p = loaded.value();
+    const auto& scene = p.getScenes()[0];
+    EXPECT_EQ(scene.quads[0].getTexture().mediaId, src.id);  // still bound
+    EXPECT_EQ(scene.texturePaths[0], absolute);              // absolute fallback kept
+    ASSERT_EQ(p.getSources().size(), 1u);
+    EXPECT_TRUE(p.getSources()[0].missing);
+    EXPECT_EQ(fs::path(p.getSources()[0].path), fs::path(src.path).lexically_normal());
+    EXPECT_EQ(p.getQuads()[0].getTexture().mediaId, src.id);  // the flat view agrees
+}
+
+TEST_F(ProjectPersistenceTest, PresentFileSourceIsNotMissing) {
+    const fs::path image = dir_ / "backdrop.png";
+    touch(image);
+    Project::SourceData src;
+    src.id = UUID::generate();
+    src.kind = "image";
+    src.path = image.string();
+    const fs::path file = dir_ / "show.qmap";
+    ASSERT_TRUE(ProjectSerializer::save(projectWithBoundQuad(src, ""), file).isSuccess());
+
+    auto loaded = ProjectSerializer::load(file);
+
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    EXPECT_FALSE(loaded.value().getSources()[0].missing);
+}
+
+TEST_F(ProjectPersistenceTest, NonFileSourcesAreNeverMissing) {
+    Project::SourceData src;
+    src.id = UUID::generate();
+    src.kind = "camera";
+    src.deviceName = "Unplugged Cam";
+    const fs::path file = dir_ / "show.qmap";
+    ASSERT_TRUE(ProjectSerializer::save(projectWithBoundQuad(src, ""), file).isSuccess());
+
+    auto loaded = ProjectSerializer::load(file);
+
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    EXPECT_FALSE(loaded.value().getSources()[0].missing);
+    EXPECT_EQ(loaded.value().getScenes()[0].quads[0].getTexture().mediaId, src.id);
+}
+
+// Loading and saving again without relocating writes every missing path back as it was.
+TEST_F(ProjectPersistenceTest, MissingMediaRoundTripsTheOriginalPaths) {
+    const fs::path file = dir_ / "show.qmap";
+    const std::string doc = R"({"version": "3.2.0", "name": "Show",
+        "sources": [
+          {"id": "4a1b2c3d-0000-4000-8000-0000000000a1", "kind": "image", "path": "media/gone.png"},
+          {"id": "4a1b2c3d-0000-4000-8000-0000000000a2", "kind": "video", "path": "Z:/Shows/gone.mp4",
+           "transport": {"playing": false, "loopMode": "once", "speed": 2.0}}],
+        "scenes": [{"id": "4a1b2c3d-0000-4000-8000-0000000000c1", "name": "S",
+          "quads": [
+            {"id": "4a1b2c3d-0000-4000-8000-000000000001", "name": "A",
+             "textureBinding": {"mediaId": "4a1b2c3d-0000-4000-8000-0000000000a1"}},
+            {"id": "4a1b2c3d-0000-4000-8000-000000000002", "name": "B",
+             "texturePath": "Z:/Shows/gone.mp4",
+             "textureBinding": {"mediaId": "4a1b2c3d-0000-4000-8000-0000000000a2"}}],
+          "objects": [
+            {"id": "4a1b2c3d-0000-4000-8000-0000000000b1", "name": "Prop",
+             "path": "models/gone.obj",
+             "texture": {"mediaId": "4a1b2c3d-0000-4000-8000-0000000000a1"}}]}]})";
+    {
+        std::ofstream(file, std::ios::binary) << doc;
+    }
+
+    auto loaded = ProjectSerializer::load(file);
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const Project& p = loaded.value();
+    ASSERT_EQ(p.getSources().size(), 2u);
+    EXPECT_TRUE(p.getSources()[0].missing);
+    EXPECT_TRUE(p.getSources()[1].missing);
+    EXPECT_TRUE(p.getScenes()[0].objects[0].missing);
+    EXPECT_EQ(p.getScenes()[0].objects[0].texture.mediaId.toString(),
+              "4a1b2c3d-0000-4000-8000-0000000000a1");
+
+    ASSERT_TRUE(ProjectSerializer::save(p, file).isSuccess());
+    const auto json = nlohmann::json::parse(slurp(file));
+    EXPECT_EQ(json["sources"][0]["path"], "media/gone.png");
+    EXPECT_EQ(json["sources"][1]["path"], "Z:/Shows/gone.mp4");
+    EXPECT_EQ(json["sources"][1]["transport"]["loopMode"], "once");
+    EXPECT_FLOAT_EQ(json["sources"][1]["transport"]["speed"].get<float>(), 2.0f);
+    const auto& quads = json["scenes"][0]["quads"];
+    EXPECT_EQ(quads[0]["textureBinding"]["mediaId"], "4a1b2c3d-0000-4000-8000-0000000000a1");
+    EXPECT_EQ(quads[1]["textureBinding"]["mediaId"], "4a1b2c3d-0000-4000-8000-0000000000a2");
+    EXPECT_EQ(quads[1]["texturePath"], "Z:/Shows/gone.mp4");
+    const auto& object = json["scenes"][0]["objects"][0];
+    EXPECT_EQ(object["path"], "models/gone.obj");
+    EXPECT_EQ(object["texture"]["mediaId"], "4a1b2c3d-0000-4000-8000-0000000000a1");
+    // The flag is in memory only: the schema is unchanged.
+    EXPECT_FALSE(json["sources"][0].contains("missing"));
+    EXPECT_FALSE(object.contains("missing"));
+}
+
+TEST_F(ProjectPersistenceTest, ObjectWithMissingMeshKeepsPathAndMedia) {
+    const fs::path present = dir_ / "models" / "here.obj";
+    touch(present);
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    Project::ObjectData gone;
+    gone.id = UUID::generate();
+    gone.path = (dir_ / "models" / "gone.obj").string();
+    Project::ObjectData here;
+    here.id = UUID::generate();
+    here.path = present.string();
+    Project::ObjectData pathless;  // no mesh path at all: nothing to relocate
+    pathless.id = UUID::generate();
+    scene.objects = {gone, here, pathless};
+    project.getScenes().push_back(scene);
+    const fs::path file = dir_ / "show.qmap";
+    ASSERT_TRUE(ProjectSerializer::save(project, file).isSuccess());
+
+    auto loaded = ProjectSerializer::load(file);
+
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const auto& objects = loaded.value().getScenes()[0].objects;
+    ASSERT_EQ(objects.size(), 3u);
+    EXPECT_TRUE(objects[0].missing);
+    EXPECT_EQ(fs::path(objects[0].path), fs::path(gone.path).lexically_normal());
+    EXPECT_FALSE(objects[1].missing);
+    EXPECT_FALSE(objects[2].missing);
+    EXPECT_TRUE(objects[2].path.empty());
 }
 
 TEST_F(ProjectPersistenceTest, V31WithoutSourcesLoadsThroughTexturePath) {
@@ -497,6 +619,90 @@ TEST_F(ProjectPersistenceTest, OlderOutputsGetAnUncalibratedDefaultProjector) {
     EXPECT_TRUE(o.calibrationPoints.empty());
 }
 
+// ---- Relocating missing media (PRD §4.1.8, MediaRelocation.hpp) -------------------
+
+TEST_F(ProjectPersistenceTest, FolderSearchFindsSameNameDirectlyAndRecursively) {
+    touch(dir_ / "clip.mp4");
+    touch(dir_ / "a" / "b" / "deep.png");
+    touch(dir_ / "a" / "other.png");
+
+    const relocate::FolderIndex index = relocate::indexFolder(dir_);
+
+    EXPECT_FALSE(index.truncated);
+    EXPECT_TRUE(fs::equivalent(relocate::findInIndex(index, "C:/old/show/clip.mp4"), dir_ / "clip.mp4"));
+    EXPECT_TRUE(fs::equivalent(relocate::findInIndex(index, "D:/elsewhere/deep.png"),
+                               dir_ / "a" / "b" / "deep.png"));
+    EXPECT_TRUE(relocate::findInIndex(index, "C:/old/absent.png").empty());
+    // The name must match whole: a different extension is a different file.
+    EXPECT_TRUE(relocate::findInIndex(index, "C:/old/clip.mov").empty());
+}
+
+TEST_F(ProjectPersistenceTest, FolderSearchIgnoresFoldersNamedLikeTheFile) {
+    fs::create_directories(dir_ / "clip.mp4");  // a folder, not a file
+    const relocate::FolderIndex index = relocate::indexFolder(dir_);
+    EXPECT_TRUE(relocate::findInIndex(index, "C:/old/clip.mp4").empty());
+}
+
+TEST_F(ProjectPersistenceTest, FolderSearchFirstMatchIsShallowestThenSmallestPath) {
+    touch(dir_ / "z" / "y" / "logo.png");  // deeper: loses to any shallower copy
+    touch(dir_ / "b" / "logo.png");
+    touch(dir_ / "a" / "logo.png");        // same depth as b: smaller path wins
+    touch(dir_ / "m" / "n" / "title.png");
+    touch(dir_ / "title.png");             // directly in the folder: always wins
+
+    const relocate::FolderIndex index = relocate::indexFolder(dir_);
+
+    EXPECT_TRUE(fs::equivalent(relocate::findInIndex(index, "logo.png"), dir_ / "a" / "logo.png"));
+    EXPECT_TRUE(fs::equivalent(relocate::findInIndex(index, "title.png"), dir_ / "title.png"));
+}
+
+#ifdef _WIN32
+TEST_F(ProjectPersistenceTest, FolderSearchIsCaseInsensitiveOnWindows) {
+    touch(dir_ / "Media" / "Intro Clip.MP4");
+    const relocate::FolderIndex index = relocate::indexFolder(dir_);
+    const fs::path found = relocate::findInIndex(index, "C:/Old/intro clip.mp4");
+    ASSERT_FALSE(found.empty());
+    EXPECT_EQ(found.filename().string(), "Intro Clip.MP4");  // the file's real name
+    EXPECT_EQ(relocate::nameKey(L"ABC.Png"), relocate::nameKey(L"abc.pNG"));
+}
+#endif
+
+TEST_F(ProjectPersistenceTest, FolderSearchStopsAtTheCapOrWhenCancelled) {
+    for (int i = 0; i < 5; ++i) touch(dir_ / ("f" + std::to_string(i) + ".png"));
+
+    const relocate::FolderIndex capped = relocate::indexFolder(dir_, nullptr, 2);
+    EXPECT_TRUE(capped.truncated);
+    EXPECT_LE(capped.byName.size(), 2u);
+
+    std::atomic<bool> cancel{true};
+    const relocate::FolderIndex cancelled = relocate::indexFolder(dir_, &cancel);
+    EXPECT_TRUE(cancelled.truncated);
+    EXPECT_TRUE(cancelled.byName.empty());
+}
+
+TEST_F(ProjectPersistenceTest, FolderSearchOfAMissingFolderFindsNothing) {
+    const relocate::FolderIndex index = relocate::indexFolder(dir_ / "no-such-folder");
+    EXPECT_TRUE(index.byName.empty());
+    EXPECT_TRUE(relocate::findInIndex(index, "clip.mp4").empty());
+}
+
+// Relocating one file resolves every other missing file sitting in its new folder.
+TEST_F(ProjectPersistenceTest, SiblingsInTheNewFolderAreFound) {
+    const fs::path moved = dir_ / "moved";
+    touch(moved / "a.png");
+    touch(moved / "b.mp4");
+    fs::create_directories(moved / "c.png");  // a folder with the name does not count
+
+    EXPECT_TRUE(fs::equivalent(relocate::findSibling(moved, "C:/old/show/b.mp4"), moved / "b.mp4"));
+    EXPECT_TRUE(relocate::findSibling(moved, "C:/old/show/c.png").empty());
+    EXPECT_TRUE(relocate::findSibling(moved, "C:/old/show/elsewhere.png").empty());
+    EXPECT_TRUE(relocate::findSibling(fs::path(), "C:/old/show/a.png").empty());
+    EXPECT_TRUE(relocate::findSibling(moved, fs::path()).empty());
+#ifdef _WIN32
+    EXPECT_FALSE(relocate::findSibling(moved, "C:/old/show/A.PNG").empty());
+#endif
+}
+
 // ---- Historical fixtures (ADR-032 / ADR-046) -------------------------------------
 
 TEST(ProjectFixtureTest, EveryHistoricalFormatLoads) {
@@ -526,13 +732,17 @@ TEST(ProjectFixtureTest, EveryHistoricalFormatLoads) {
     EXPECT_EQ(onDisk, std::size(expected)) << "a fixture was added without a load check";
 }
 
-TEST(ProjectFixtureTest, V31FixtureKeepsProceduralAndFallsBackForMissingVideo) {
+TEST(ProjectFixtureTest, V31FixtureKeepsProceduralAndTheMissingVideo) {
     auto loaded = ProjectSerializer::load(fs::path(QM_PROJECT_FIXTURES_DIR) / "v3.1-sources.qmap");
     ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
     const auto& quads = loaded.value().getScenes()[0].quads;
     ASSERT_EQ(quads.size(), 2u);
     EXPECT_EQ(quads[0].getTexture().mediaId.toString(), "4a1b2c3d-0000-4000-8000-0000000000f1");
-    EXPECT_TRUE(quads[1].getTexture().mediaId.isNull());  // video not shipped -> texturePath
+    // The video is not shipped: the quad stays bound to it for relocation, and
+    // texturePath is still there as the fallback.
+    EXPECT_EQ(quads[1].getTexture().mediaId.toString(), "4a1b2c3d-0000-4000-8000-0000000000f2");
+    EXPECT_TRUE(loaded.value().getSources()[1].missing);
+    EXPECT_FALSE(loaded.value().getSources()[0].missing);
     EXPECT_EQ(loaded.value().getScenes()[0].texturePaths[1], "C:/Shows/media/not-shipped.mp4");
 }
 
@@ -547,6 +757,7 @@ TEST(ProjectFixtureTest, V32FixtureKeepsObjectAndProjector) {
     EXPECT_EQ(o.name, "Column");
     // The mesh file is not shipped: the path still resolves against the project folder.
     EXPECT_EQ(fs::path(o.path), (dir / "models" / "not-shipped.obj").lexically_normal());
+    EXPECT_TRUE(o.missing);
     EXPECT_FLOAT_EQ(o.transform[0][0], 2.0f);
     EXPECT_FLOAT_EQ(o.transform[3][0], 0.5f);   // translation column
     EXPECT_FLOAT_EQ(o.transform[3][2], -1.0f);

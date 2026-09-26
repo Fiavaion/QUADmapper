@@ -860,27 +860,31 @@ static Project::ObjectData deserializeObject(const nlohmann::json& j, const fs::
     return object;
 }
 
-// Resolve each quad's and object's mediaId against the sources table (ADR-046): a
-// reference to a missing entry, or to a file source whose file is gone, is cleared so
-// a quad falls back to its absolute texturePath - the same path every v1/v2/v3.0 file
-// loads by - and an object shows untextured.
+// Resolve each quad's and object's mediaId against the sources table (ADR-046). A
+// reference to an id the table does not hold is cleared, so a quad falls back to its
+// absolute texturePath (the path every v1/v2/v3.0 file loads by) and an object shows
+// untextured. A file source whose file is gone keeps its references and its path and
+// is flagged missing, for the user to relocate (PRD §4.1.8); so is an object's mesh.
 static void resolveQuadSources(Project& project) {
     std::unordered_map<UUID, const Project::SourceData*> byId;
-    for (const auto& s : project.getSources()) byId[s.id] = &s;
+    for (auto& s : project.getSources()) {
+        if (isFileSourceKind(s.kind)) {
+            std::error_code ec;
+            s.missing = !fs::exists(s.path, ec);
+        }
+        byId[s.id] = &s;
+    }
 
     auto resolve = [&](UUID& mediaId) {
-        if (mediaId.isNull()) return;
-        auto it = byId.find(mediaId);
-        bool usable = (it != byId.end());
-        if (usable && isFileSourceKind(it->second->kind)) {
-            std::error_code ec;
-            usable = fs::exists(it->second->path, ec);
-        }
-        if (!usable) mediaId = UUID();
+        if (!mediaId.isNull() && byId.count(mediaId) == 0) mediaId = UUID();
     };
     for (auto& scene : project.getScenes()) {
         for (auto& quad : scene.quads) resolve(quad.getTexture().mediaId);
-        for (auto& object : scene.objects) resolve(object.texture.mediaId);
+        for (auto& object : scene.objects) {
+            resolve(object.texture.mediaId);
+            std::error_code ec;
+            object.missing = !object.path.empty() && !fs::exists(object.path, ec);
+        }
     }
 }
 

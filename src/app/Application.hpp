@@ -1,8 +1,10 @@
 #pragma once
 
 #include "../core/Result.hpp"
+#include "../project/MediaRelocation.hpp"
 
 #include <array>
+#include <atomic>
 #include <future>
 #include <functional>
 #include <memory>
@@ -56,6 +58,7 @@ class Quad;
 class Texture;
 class AsyncFileDialog;
 struct EditorState;
+struct MissingMediaItem;
 namespace ai { class SidecarClient; enum class SidecarState; }
 
 class Application {
@@ -144,6 +147,18 @@ private:
     // Unsaved-changes and recovery modals; called inside the ImGui frame.
     void renderSessionDialogs();
 
+    // Missing media (PRD §4.1.8, MissingMedia.hpp). The window lists the files a loaded
+    // project could not open; Locate and Search Folder use the non-blocking picker, and
+    // the folder is searched on a worker thread. Relocation itself runs at the frame
+    // boundary (the picker callback and pollMissingMediaSearch()).
+    void renderMissingMediaDialog();
+    void requestLocateMissingMedia(const MissingMediaItem& item);
+    void requestMissingMediaSearch();
+    void pollMissingMediaSearch();
+    // Stop a folder search whose results belong to a project being replaced; waits
+    // for the worker to notice.
+    void cancelMissingMediaSearch();
+
     // AI pre-show "Detect Surface" (QM-058): capture a frame (live camera, or the
     // QM_AI_TEST_IMAGE override) -> sidecar /surface -> apply the proposed quad to
     // the selected quad when confident, else prompt "tap the surface". Geometry
@@ -231,6 +246,11 @@ private:
     bool m_exitConfirmed = false;      // Exit passed the unsaved-changes check
     std::unique_ptr<AsyncFileDialog> m_projectDialog;  // Open/Save .qmap, off the render thread
     std::function<void(const std::string&)> m_onProjectFileChosen;
+    // Missing-media folder search in flight (declared in this order so the future,
+    // which waits for its worker, is destroyed before the flag the worker reads).
+    std::atomic<bool> m_mediaSearchCancel{false};
+    std::string m_mediaSearchFolder;
+    std::future<relocate::FolderIndex> m_mediaSearch;
 
     // QM-058 self-test hook (QM_AI_SELFTEST). Off in normal runs.
     bool m_aiSelfTestPending = false;

@@ -242,7 +242,7 @@ void ViewportEditor::render(EditorContext& ctx) {
         // Resolve every quad's texture through the shared builder: image via
         // TextureBinding::mediaId -> SourceManager, video via the legacy wrapper
         // (ADR-040 P2). Same map the per-output render and preview FBOs use.
-        auto texturePtrs = buildQuadTextureMap(es, ctx.sourceManager);
+        auto texturePtrs = buildQuadTextureMap(es, ctx.sourceManager, SurfaceView::Editor);
 
         // 3D objects as the canvas's projector sees them (WYSIWYG with the output),
         // under the quads. The scissor limits the depth clear to the canvas region.

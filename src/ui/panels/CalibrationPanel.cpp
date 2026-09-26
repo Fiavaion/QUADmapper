@@ -317,7 +317,7 @@ void CalibrationPanel::render(EditorContext& ctx) {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             if (scene) {
                 ctx.renderer->renderMeshObjects(scene->getObjects(), orbit,
-                                                buildQuadTextureMap(es, ctx.sourceManager));
+                                                buildQuadTextureMap(es, ctx.sourceManager, SurfaceView::Editor));
             }
             glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
             glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));

@@ -41,6 +41,9 @@ public:
         TextureBinding texture;     // mediaId references the sources table
         bool visible = true;
         float opacity = 1.0f;
+        // Set on load when the mesh file is not there; path is kept so the file can be
+        // relocated (PRD §4.1.8). Never written to disk.
+        bool missing = false;
     };
 
     struct SceneData {
@@ -91,6 +94,10 @@ public:
         int height = 1080;           // procedural
         std::string deviceName;      // camera
         std::optional<TransportData> transport;  // video / hap
+        // Set on load when a file source's file is not there. Its quads and objects
+        // keep referencing it and path keeps the original location, so saving before
+        // the file is relocated loses nothing (PRD §4.1.8). Never written to disk.
+        bool missing = false;
     };
 
     const std::string& getName() const { return name_; }
