@@ -5,6 +5,8 @@
 #include "MediaAssign.hpp"
 #include "MissingMedia.hpp"
 #include "OutputPersistence.hpp"
+#include "ControlBindings.hpp"
+#include "../control/ExternalControl.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
 #include "../project/Project.hpp"
@@ -238,6 +240,11 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
             if (outPtr) project.getOutputs().push_back(outputToData(*outPtr));
         }
     }
+
+    project.getMidiMappings().clear();
+    for (const auto& mapping : es.midiMappings) {
+        project.getMidiMappings().push_back(toProjectMapping(mapping));
+    }
 }
 
 // Copy a DTO quad's full state onto a freshly created live quad.
@@ -322,6 +329,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         return id;
     };
 
+    std::unordered_map<UUID, UUID> quadRemapAllScenes;  // for the MIDI mapping targets
     for (const auto& sd : project.getScenes()) {
         auto scene = std::make_unique<Scene>(sd.id);
         scene->setName(sd.name);
@@ -340,6 +348,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         for (size_t i = 0; i < sd.quads.size(); ++i) {
             Quad* nq = qm.createQuad(sd.quads[i].getName());
             quadRemap[sd.quads[i].getId()] = nq->getId();
+            quadRemapAllScenes[sd.quads[i].getId()] = nq->getId();
             applyQuadData(sd.quads[i], nq);
 
             // The copied binding still carries the SAVED source id; swap it for the
@@ -471,6 +480,21 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         }
 
         es.scenes.push_back(std::move(scene));
+    }
+
+    // MIDI mappings (ADR-048): quads and sources were just given new live ids (scenes
+    // keep theirs), so saved targets are rewritten onto them. A target whose quad or
+    // source is gone keeps its saved id and shows as unresolved.
+    es.midiMappings.clear();
+    std::unordered_map<UUID, UUID> liveSources;
+    for (const auto& [saved, live] : sourceRemap) {
+        if (!live.isNull()) liveSources.emplace(saved, live);
+    }
+    for (const auto& data : project.getMidiMappings()) {
+        control::MidiMapping mapping = fromProjectMapping(data);
+        mapping.target = remapTargetPath(mapping.target, "quad", quadRemapAllScenes);
+        mapping.target = remapTargetPath(mapping.target, "source", liveSources);
+        es.midiMappings.push_back(std::move(mapping));
     }
 
     // Guarantee >= 1 scene, then make the first one active.
@@ -635,6 +659,9 @@ bool Application::initialize(int argc, char* argv[]) {
         m_autoSaveEnabled = general.autoSaveEnabled;
         m_autoSaveIntervalSec = 60.0 * std::max(1, general.autoSaveIntervalMinutes);
     }
+
+    // The stress harness measures the render/perform path; it opens no ports or devices.
+    if (!m_stressConfig) initializeExternalControl();
 
     Logger::info("QUADmapper initialized successfully");
     m_running = true;
@@ -1238,6 +1265,7 @@ void Application::render() {
         ImGui::DockBuilderDockWindow("Video Player", dockLeft);  // Tabbed with Quad List
         ImGui::DockBuilderDockWindow("Properties", dockRight);
         ImGui::DockBuilderDockWindow("Calibration", dockRight);  // Tabbed with Properties
+        ImGui::DockBuilderDockWindow("Control", dockRight);      // Tabbed with Properties (ADR-048)
         ImGui::DockBuilderDockWindow("Resources", dockBottom);  // Tabbed panel with Project, Media, Outputs
 
         // Finish the layout
@@ -1413,6 +1441,24 @@ void Application::render() {
         for (int n : m_pendingSceneTakes) takeSceneByNumber(n);
     }
     m_pendingSceneTakes.clear();
+    // OSC/MIDI takes (ADR-048) go through the same take but skip that guard: it exists
+    // so keys typed into a field or behind a modal do not act on the show, and an
+    // operator's controller is not typing. Calibration still holds them off
+    // (takeSceneByNumber), as it does the keys.
+    for (int n : m_pendingExternalSceneTakes) {
+        takeSceneByNumber(n);
+        Logger::info("Control: scene take {} requested; active scene is now '{}'", n,
+                     es.activeScene().getName());
+    }
+    m_pendingExternalSceneTakes.clear();
+
+    // Blackout (ADR-048 §3): Ctrl+B, the panic key, works with a popup open like F11;
+    // only a text field keeps it. Tab/arrows/Delete/1-9/Ctrl+S/Z/Y/A/M/[/] and Alt+=/-/R
+    // are the editing keys, so Ctrl+B collides with none of them.
+    if (!io.WantTextInput && io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper &&
+        ImGui::IsKeyPressed(ImGuiKey_B, false)) {
+        m_outputManager->toggleBlackout();
+    }
 
     // F11 toggles perform mode and Esc leaves it, even with a popup open: the way out
     // of fullscreen must never take two presses. Only a text field keeps them (its Esc
@@ -1423,8 +1469,11 @@ void Application::render() {
     // While calibrating, the editor's Esc belongs to calibration: it cancels a pick in
     // progress, else leaves calibration, and never also leaves perform mode (Esc on an
     // output window still does).
+    // A pending MIDI learn takes Esc first: it cancels the learn and nothing else.
     if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        if (es.calibratingOutputId.isNull()) {
+        if (m_externalControl && m_externalControl->dispatcher().isLearning()) {
+            m_externalControl->dispatcher().cancelLearn();
+        } else if (es.calibratingOutputId.isNull()) {
             m_outputManager->handleEscapeKey();
         } else if (es.calibration.pick != CalibrationSession::Pick::None) {
             es.calibration.cancelPick();
@@ -1630,6 +1679,18 @@ void Application::render() {
         es.videoPlayerPanel.render(ctx);
     }
 
+    // ============ Control Panel (OSC / MIDI, ADR-048) ============
+    if (m_externalControl) {
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        if (es.controlPanel.render(ctx, *m_externalControl, *m_controlPrefs, glfwGetTime())) {
+            saveControlPreferences();
+        }
+    }
+
+    if (m_outputManager && m_outputManager->isBlackout()) drawBlackoutBanner();
+
     // Demo window for testing ImGui (can be removed later)
     static bool showDemo = false;
     if (showDemo) {
@@ -1819,6 +1880,74 @@ void Application::takeSceneByNumber(int number) {
     es.statusTimer = 3.0f;
 }
 
+void Application::initializeExternalControl() {
+    m_externalControl = std::make_unique<control::ExternalControl>();
+    m_controlPrefs = std::make_unique<ControlPreferences>();
+
+    ControlBindingHost host;
+    host.scenes = &m_editorState->scenes;
+    host.sources = m_sourceManager.get();
+    host.takeScene = [this](int number) { m_pendingExternalSceneTakes.push_back(number); };
+    host.isBlackout = [this]() { return m_outputManager && m_outputManager->isBlackout(); };
+    host.setBlackout = [this](bool on) { if (m_outputManager) m_outputManager->setBlackout(on); };
+    registerControlTargets(m_externalControl->registry(), host);
+
+    PreferencesDialog prefsDialog;
+    prefsDialog.loadPreferences();
+    *m_controlPrefs = prefsDialog.getPreferences().control;
+    m_externalControl->setWantedMidiDevices(m_controlPrefs->midiDevices);
+    if (m_controlPrefs->oscEnabled &&
+        !m_externalControl->startOsc(m_controlPrefs->oscBindAddress, m_controlPrefs->oscPort)) {
+        postStatus(*m_editorState, "OSC input is off: " + m_externalControl->oscError());
+    }
+}
+
+void Application::processExternalControl() {
+    if (!m_externalControl) return;
+    EditorState& es = *m_editorState;
+    const double now = glfwGetTime();
+    m_externalControl->maintainMidi(now);
+    // Names and ids can change with any edit; re-read them when something will use them.
+    if (m_externalControl->hasPendingEvents() || es.showControl) {
+        refreshControlEntities(m_externalControl->registry(), es.scenes, m_sourceManager.get());
+    }
+    m_externalControl->processEvents(es.midiMappings, now);
+}
+
+void Application::saveControlPreferences() {
+    PreferencesDialog prefsDialog;
+    prefsDialog.loadPreferences();
+    prefsDialog.getPreferences().control = *m_controlPrefs;
+    prefsDialog.savePreferences();
+}
+
+void Application::drawBlackoutBanner() {
+    const EditorState& es = *m_editorState;
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const bool haveCanvas = es.canvasRegionSize.x > 1.0f && es.canvasRegionSize.y > 1.0f;
+    // Across the top of the canvas, just below the zoom controls so they stay usable.
+    const float top = haveCanvas ? es.canvasRegionPos.y : viewport->WorkPos.y - viewport->Pos.y;
+    const ImVec2 origin(viewport->Pos.x + (haveCanvas ? es.canvasRegionPos.x : 0.0f),
+                        viewport->Pos.y + top + ImGui::GetFrameHeight() + 16.0f);
+    const float width = haveCanvas ? es.canvasRegionSize.x : viewport->WorkSize.x;
+
+    ImFont* font = ImGui::GetFont();
+    const float size = ImGui::GetFontSize() * 2.2f;
+    const char* title = "BLACKOUT";
+    const char* detail = "every projector output is black  -  Ctrl+B or Output > Blackout to restore";
+    const ImVec2 titleSize = font->CalcTextSizeA(size, FLT_MAX, 0.0f, title);
+    const ImVec2 detailSize = ImGui::CalcTextSize(detail);
+    const float height = titleSize.y + detailSize.y + 16.0f;
+
+    ImDrawList* draw = ImGui::GetForegroundDrawList(viewport);
+    draw->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + height), IM_COL32(200, 20, 20, 235));
+    draw->AddRect(origin, ImVec2(origin.x + width, origin.y + height), IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+    draw->AddText(font, size, ImVec2(origin.x + (width - titleSize.x) * 0.5f, origin.y + 4.0f),
+                  IM_COL32(255, 255, 255, 255), title);
+    draw->AddText(ImVec2(origin.x + (width - detailSize.x) * 0.5f, origin.y + 8.0f + titleSize.y),
+                  IM_COL32(255, 255, 255, 255), detail);
+}
+
 void Application::saveProject() {
     m_editorState->pendingFileAction = EditorState::FileAction::Save;
 }
@@ -1844,6 +1973,7 @@ void Application::runFrameBoundaryTasks() {
         offerRecovery("");
     }
     processPendingFileAction();
+    processExternalControl();
     pollMissingMediaSearch();
     if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager);
     fitProjectorsToOutputs();
@@ -1986,6 +2116,7 @@ void Application::performNewProject() {
     es.quadTexturePaths.clear();
     es.currentTexturePath[0] = '\0';
     es.activeVideoSourceId = UUID();
+    es.midiMappings.clear();  // show content; the Control panel's device choices stay
     if (m_sourceManager) releaseProjectSources(es, *m_sourceManager);
     cancelMissingMediaSearch();
     clearMissingMedia(es);
@@ -3102,6 +3233,7 @@ void Application::shutdown() {
     cancelMissingMediaSearch();
 
     // Cleanup components in reverse order of creation
+    m_externalControl.reset(); // joins the OSC thread, closes MIDI devices
     m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
     m_inputManager.reset();
     m_outputManager.reset();

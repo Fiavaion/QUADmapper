@@ -21,6 +21,8 @@ namespace quadmapper {
 //         texturePath is still written (absolute) so 3.0 readers keep file media.
 //   3.2 = additive per-scene "objects" (3D meshes by path) + per-output "projector"
 //         (lens, pose, calibration points) (ADR-052); older readers ignore both.
+//   3.3 = additive "control": {"midi": [...]} MIDI mappings (ADR-048), written only
+//         when a show has mappings; older readers ignore it, a missing one = none.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
@@ -860,6 +862,73 @@ static Project::ObjectData deserializeObject(const nlohmann::json& j, const fs::
     return object;
 }
 
+// ---- External control (ADR-048) -------------------------------------------------
+// "control": {"midi": [{device, type, channel, number, target, mode}, ...]}. It is
+// show content, but never worth failing a load for: a malformed block or entry is
+// skipped (logged), the rest of the show loads.
+
+static nlohmann::json serializeMidiMapping(const Project::MidiMappingData& m) {
+    nlohmann::json j;
+    j["device"] = m.device;
+    j["type"] = m.type;
+    j["channel"] = m.channel;
+    j["number"] = m.number;
+    j["target"] = m.target;
+    j["mode"] = m.mode;
+    return j;
+}
+
+static std::optional<Project::MidiMappingData> deserializeMidiMapping(const nlohmann::json& j) {
+    if (!j.is_object()) return std::nullopt;
+    auto stringField = [&](const char* key) -> std::optional<std::string> {
+        if (!j.contains(key) || !j[key].is_string()) return std::nullopt;
+        return j[key].get<std::string>();
+    };
+    auto intField = [&](const char* key, int lo, int hi) -> std::optional<int> {
+        if (!j.contains(key) || !j[key].is_number_integer()) return std::nullopt;
+        const auto v = j[key].get<long long>();
+        if (v < lo || v > hi) return std::nullopt;
+        return static_cast<int>(v);
+    };
+    const auto type = stringField("type");
+    const auto mode = stringField("mode");
+    const auto target = stringField("target");
+    const auto channel = intField("channel", 0, 16);
+    const auto number = intField("number", 0, 127);
+    if (!type || (*type != "note" && *type != "cc" && *type != "program")) return std::nullopt;
+    if (!mode || (*mode != "trigger" && *mode != "toggle" && *mode != "momentary" && *mode != "value")) {
+        return std::nullopt;
+    }
+    if (!target || target->empty() || (*target)[0] != '/' || !channel || !number) return std::nullopt;
+    Project::MidiMappingData m;
+    m.device = stringField("device").value_or("any");
+    if (m.device.empty()) m.device = "any";
+    m.type = *type;
+    m.channel = *channel;
+    m.number = *number;
+    m.target = *target;
+    m.mode = *mode;
+    return m;
+}
+
+static void loadControl(const nlohmann::json& json, Project& project) {
+    if (!json.contains("control")) return;
+    const auto& control = json["control"];
+    if (!control.is_object() || !control.contains("midi") || !control["midi"].is_array()) {
+        Logger::warning("Project: ignoring a malformed \"control\" block");
+        return;
+    }
+    size_t skipped = 0;
+    for (const auto& entry : control["midi"]) {
+        if (auto mapping = deserializeMidiMapping(entry)) {
+            project.getMidiMappings().push_back(std::move(*mapping));
+        } else {
+            ++skipped;
+        }
+    }
+    if (skipped > 0) Logger::warning("Project: skipped {} malformed MIDI mapping(s)", skipped);
+}
+
 // Resolve each quad's and object's mediaId against the sources table (ADR-046). A
 // reference to an id the table does not hold is cleared, so a quad falls back to its
 // absolute texturePath (the path every v1/v2/v3.0 file loads by) and an object shows
@@ -972,6 +1041,7 @@ static void loadProjectModel(const nlohmann::json& json, Project& project,
         }
     }
     resolveQuadSources(project);
+    loadControl(json, project);
 
     flattenScenesToFlat(project);
 }
@@ -1016,6 +1086,14 @@ static nlohmann::json buildProjectJson(const Project& project, const fs::path& b
                 outputsJson.push_back(serializeOutput(output));
             }
             json["outputs"] = outputsJson;
+        }
+
+        if (!project.getMidiMappings().empty()) {
+            nlohmann::json midiJson = nlohmann::json::array();
+            for (const auto& mapping : project.getMidiMappings()) {
+                midiJson.push_back(serializeMidiMapping(mapping));
+            }
+            json["control"] = {{"midi", midiJson}};
         }
         return json;
     }
@@ -1123,6 +1201,7 @@ Result<void, std::string> ProjectSerializer::deserialize(const std::string& json
         project.getScenes().clear();
         project.getOutputs().clear();
         project.getSources().clear();
+        project.getMidiMappings().clear();
 
         loadProjectModel(json, project, fs::path());
 

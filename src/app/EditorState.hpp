@@ -20,6 +20,7 @@
 #include "../core/Types.hpp"   // Vec2
 #include "../core/UUID.hpp"
 #include "../core/CommandHistory.hpp"
+#include "../control/MidiMapping.hpp"
 #include "../project/Project.hpp"
 #include "../scene/CalibrationSession.hpp"
 #include "../scene/Commands.hpp"
@@ -29,6 +30,7 @@
 #include "../renderer/UvTestGrid.hpp"
 #include "../video/VideoPlayer.hpp"
 #include "../ui/panels/CalibrationPanel.hpp"
+#include "../ui/panels/ControlPanel.hpp"
 #include "../ui/panels/InspectorPanel.hpp"
 #include "../ui/panels/MainMenuBar.hpp"
 #include "../ui/panels/MediaBinPanel.hpp"
@@ -279,12 +281,18 @@ struct EditorState {
     VideoPlayerPanel videoPlayerPanel;
     ViewportEditor viewportEditor;  // Non-Panel: pre-NewFrame on-canvas warp surface (ADR-0034)
     CalibrationPanel calibrationPanel;  // shown while calibrating a projector (ADR-052)
+    ControlPanel controlPanel;          // OSC / MIDI external control (ADR-048)
+
+    // The show's MIDI mappings (ADR-048 §4), saved in the project. Their targets name
+    // quads and sources by live id; load remaps the saved ids.
+    std::vector<control::MidiMapping> midiMappings;
 
     // Panel visibility toggles
     bool showQuadList = true;
     bool showProperties = true;
     bool showResources = true;
     bool showVideoPlayer = true;
+    bool showControl = false;  // Window > Control (OSC / MIDI)
 
     // Current selection
     SelectionType currentSelectionType = SelectionType::Quad;

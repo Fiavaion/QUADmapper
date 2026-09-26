@@ -671,6 +671,7 @@ void OutputManager::updatePreviews(const std::vector<std::unique_ptr<Scene>>& sc
         // Same routing + clean-render + rotation rules as renderToOutputs, but
         // into the FBO, so the thumbnail shows what the projector shows.
         renderer.setOutputRotation(output->getRotation());
+        if (blackout_) continue;  // the projector is black, so is its preview
         if (const Scene* scene = sceneForOutput(scenes, output->getId())) {
             drawOutputScene(*scene, *output, renderer, textures);
         }
@@ -743,7 +744,7 @@ void OutputManager::presentToOutputs(
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         renderer->setOutputRotation(output->getRotation());
-        draw(*output, *renderer);
+        if (!blackout_) draw(*output, *renderer);  // blackout: keep the black clear
 
         glEnable(GL_DEPTH_TEST);
 
@@ -938,6 +939,10 @@ void OutputManager::setupPerformModeKeyCallbacks() {
                     return;
                 }
             }
+            if (isBlackoutKey(key, action, mods)) {
+                toggleBlackout();
+                return;
+            }
             const int sceneNumber = sceneTakeNumber(key, action, mods);
             if (sceneNumber > 0 && sceneKeyCallback_) {
                 sceneKeyCallback_(sceneNumber);
@@ -952,6 +957,18 @@ int OutputManager::sceneTakeNumber(int key, int action, int mods) {
     if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9) return key - GLFW_KEY_0;
     if (key >= GLFW_KEY_KP_1 && key <= GLFW_KEY_KP_9) return key - GLFW_KEY_KP_0;
     return 0;
+}
+
+bool OutputManager::isBlackoutKey(int key, int action, int mods) {
+    constexpr int others = GLFW_MOD_SHIFT | GLFW_MOD_ALT | GLFW_MOD_SUPER;
+    return key == GLFW_KEY_B && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL) != 0 &&
+           (mods & others) == 0;
+}
+
+void OutputManager::setBlackout(bool on) {
+    if (on == blackout_) return;
+    blackout_ = on;
+    Logger::info("Blackout {}", on ? "ON: every output is black" : "off");
 }
 
 void OutputManager::clearPerformModeKeyCallbacks() {

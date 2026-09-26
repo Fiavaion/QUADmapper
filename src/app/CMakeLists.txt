@@ -18,6 +18,7 @@ target_link_libraries(QUADmapper
         quadmapper_output
         quadmapper_source
         quadmapper_ai
+        quadmapper_control
         quadmapper_ui
         quadmapper_input
         glad

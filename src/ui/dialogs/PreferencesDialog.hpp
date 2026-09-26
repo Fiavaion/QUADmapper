@@ -66,11 +66,23 @@ struct PerformancePreferences {
 };
 
 /**
+ * External control (ADR-048): which MIDI inputs to open and how OSC listens. Machine
+ * setup, not show content, so it lives here rather than in the project.
+ */
+struct ControlPreferences {
+    bool oscEnabled = false;                 // off by default: enabling opens a UDP port
+    int oscPort = 8000;
+    std::string oscBindAddress = "0.0.0.0";  // every interface
+    std::vector<std::string> midiDevices;    // input devices opened by name when present
+};
+
+/**
  * All application preferences combined.
  */
 struct AppPreferences {
     GeneralPreferences general;
     PerformancePreferences performance;
+    ControlPreferences control;
     // Keyboard shortcuts are managed separately
 
     static std::string getDefaultConfigPath();

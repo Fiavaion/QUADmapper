@@ -60,7 +60,9 @@ class Texture;
 class AsyncFileDialog;
 struct EditorState;
 struct MissingMediaItem;
+struct ControlPreferences;
 namespace ai { class SidecarClient; enum class SidecarState; }
+namespace control { class ExternalControl; }
 
 class Application {
 public:
@@ -123,6 +125,16 @@ private:
     void loadProject();   // Load the path typed in the Project tab
 
     void takeSceneByNumber(int number);  // live-show scene take; ignored while calibrating
+
+    // ---- External control (ADR-048) ---------------------------------------------
+    // Created at startup (not for the stress harness); OSC/MIDI settings come from the
+    // preferences. processExternalControl() runs at the frame boundary: MIDI hot-plug
+    // upkeep, then at most ExternalControl::kMaxEventsPerFrame queued events are
+    // applied on the main thread, before render() takes any scene references.
+    void initializeExternalControl();
+    void processExternalControl();
+    void saveControlPreferences();
+    void drawBlackoutBanner();  // inside the ImGui frame, over the canvas
 
     // ---- Show-safe session (ADR-046 §4) -----------------------------------------
     // Runs once per frame between glfwPollEvents() and render(): establishes the
@@ -239,6 +251,13 @@ private:
     // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
     std::unique_ptr<EditorState> m_editorState;
     std::vector<int> m_pendingSceneTakes;  // scene numbers pressed since the last frame
+    // Scene takes asked for by OSC/MIDI since the last frame (ADR-048). Kept apart from
+    // the key presses because they skip the typing/popup guard (see render()).
+    std::vector<int> m_pendingExternalSceneTakes;
+
+    // External control (ADR-048); null in the stress harness.
+    std::unique_ptr<control::ExternalControl> m_externalControl;
+    std::unique_ptr<ControlPreferences> m_controlPrefs;
 
     // State
     bool m_running = false;

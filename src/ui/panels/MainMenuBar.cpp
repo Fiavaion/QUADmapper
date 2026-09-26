@@ -117,12 +117,22 @@ void MainMenuBar::render(EditorContext& ctx) {
         ImGui::MenuItem("Properties",   nullptr, &es.showProperties);
         ImGui::MenuItem("Resources",    nullptr, &es.showResources);
         ImGui::MenuItem("Video Player", nullptr, &es.showVideoPlayer);
+        ImGui::MenuItem("Control (OSC / MIDI)", nullptr, &es.showControl);
         ImGui::Separator();
         if (ImGui::MenuItem("Reset Layout")) {
             es.showQuadList    = true;
             es.showProperties  = true;
             es.showResources   = true;
             es.showVideoPlayer = true;
+        }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Output")) {
+        // Master blackout (ADR-048 §3): every projector output goes black.
+        const bool blackout = ctx.outputManager && ctx.outputManager->isBlackout();
+        if (ImGui::MenuItem("Blackout", "Ctrl+B", blackout, ctx.outputManager != nullptr)) {
+            ctx.outputManager->toggleBlackout();
         }
         ImGui::EndMenu();
     }

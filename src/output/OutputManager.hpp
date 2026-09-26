@@ -255,6 +255,18 @@ public:
     // testable without GLFW; the editor and output windows both use it.
     static int sceneTakeNumber(int key, int action, int mods);
 
+    // Master blackout (ADR-048 §3): while on, every output and every preview renders
+    // black, whatever it would show (scene or One-Flash pattern). Runtime state, never
+    // saved. Toggled from the Output menu, Ctrl+B (editor and, in perform mode, a
+    // focused output window) and the /qm/blackout control target.
+    void setBlackout(bool on);
+    void toggleBlackout() { setBlackout(!blackout_); }
+    bool isBlackout() const { return blackout_; }
+
+    // True for the blackout shortcut: a Ctrl+B press, no Shift/Alt/Super. Pure, like
+    // sceneTakeNumber, so the editor and output windows share one testable rule.
+    static bool isBlackoutKey(int key, int action, int mods);
+
     // Called with the id of every output deleteOutput removes, after it is gone, so
     // the owner can drop references to it (scene routing).
     using OutputRemovedCallback = std::function<void(const UUID& outputId)>;
@@ -454,6 +466,7 @@ private:
     // Perform mode state
     bool performMode_ = false;
     bool useBorderlessFullscreen_ = true;
+    bool blackout_ = false;
 
     // Counter for auto-naming outputs
     int outputCounter_ = 0;

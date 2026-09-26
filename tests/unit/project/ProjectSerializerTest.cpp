@@ -619,5 +619,109 @@ TEST(ProjectSerializerV3Test, FlatProjectStillWritesV1) {
     EXPECT_EQ(json.find("\"scenes\""), std::string::npos);
 }
 
+// ---- External control mappings (ADR-048, additive "control" field) ---------------
+
+namespace {
+Project sceneProject() {
+    Project p;
+    p.setName("Show");
+    Project::SceneData s;
+    s.id = UUID::generate();
+    s.name = "Scene 1";
+    p.getScenes().push_back(std::move(s));
+    return p;
+}
+}  // namespace
+
+TEST(ProjectSerializerControlTest, MidiMappingsRoundTrip) {
+    ProjectSerializer serializer;
+    Project original = sceneProject();
+    Project::MidiMappingData fader;
+    fader.device = "APC mini";
+    fader.type = "cc";
+    fader.channel = 1;
+    fader.number = 48;
+    fader.target = "/qm/quad/0f8e2c1a-1111-2222-3333-444455556666/opacity";
+    fader.mode = "value";
+    Project::MidiMappingData pad;
+    pad.type = "note";
+    pad.channel = 0;  // any
+    pad.number = 36;
+    pad.target = "/qm/blackout";
+    pad.mode = "toggle";
+    original.getMidiMappings() = {fader, pad};
+
+    const std::string json = serializer.serialize(original);
+    EXPECT_NE(json.find("\"control\""), std::string::npos);
+
+    Project loaded;
+    ASSERT_TRUE(serializer.deserialize(json, loaded).isSuccess());
+    ASSERT_EQ(loaded.getMidiMappings().size(), 2u);
+    const auto& a = loaded.getMidiMappings()[0];
+    EXPECT_EQ(a.device, "APC mini");
+    EXPECT_EQ(a.type, "cc");
+    EXPECT_EQ(a.channel, 1);
+    EXPECT_EQ(a.number, 48);
+    EXPECT_EQ(a.target, fader.target);
+    EXPECT_EQ(a.mode, "value");
+    const auto& b = loaded.getMidiMappings()[1];
+    EXPECT_EQ(b.device, "any");
+    EXPECT_EQ(b.channel, 0);
+    EXPECT_EQ(b.target, "/qm/blackout");
+    EXPECT_EQ(b.mode, "toggle");
+
+    // Re-serialising the loaded show gives the same text (stable for dirty checks).
+    EXPECT_EQ(serializer.serialize(loaded), json);
+}
+
+TEST(ProjectSerializerControlTest, NoMappingsWritesNoControlField) {
+    ProjectSerializer serializer;
+    const std::string json = serializer.serialize(sceneProject());
+    EXPECT_EQ(json.find("\"control\""), std::string::npos) << "files without mappings are unchanged";
+}
+
+TEST(ProjectSerializerControlTest, MissingControlFieldMeansNoMappings) {
+    ProjectSerializer serializer;
+    Project project;
+    project.getMidiMappings().push_back({});  // cleared by deserialize
+    ASSERT_TRUE(serializer.deserialize(R"({"version": "3.2.0", "name": "Old", "scenes": []})", project)
+                    .isSuccess());
+    EXPECT_TRUE(project.getMidiMappings().empty());
+}
+
+TEST(ProjectSerializerControlTest, MalformedEntriesAreSkippedNotFatal) {
+    ProjectSerializer serializer;
+    Project project;
+    const std::string json = R"({"version": "3.3.0", "name": "S", "scenes": [],
+        "control": {"midi": [
+            {"device": "Pad", "type": "note", "channel": 1, "number": 36, "target": "/qm/blackout", "mode": "toggle"},
+            {"type": "sysex", "channel": 1, "number": 1, "target": "/qm/blackout", "mode": "toggle"},
+            {"type": "note", "channel": 17, "number": 1, "target": "/qm/blackout", "mode": "toggle"},
+            {"type": "note", "channel": 1, "number": 128, "target": "/qm/blackout", "mode": "toggle"},
+            {"type": "note", "channel": 1, "number": 1, "target": "qm/blackout", "mode": "toggle"},
+            {"type": "note", "channel": 1, "number": 1, "target": "/qm/blackout", "mode": "wobble"},
+            {"type": "note", "channel": "1", "number": 1, "target": "/qm/blackout", "mode": "toggle"},
+            {"type": "cc", "channel": 2, "number": 7, "target": "/qm/x", "mode": "value", "device": ""},
+            42, null, "text"
+        ]}})";
+    ASSERT_TRUE(serializer.deserialize(json, project).isSuccess());
+    ASSERT_EQ(project.getMidiMappings().size(), 2u);
+    EXPECT_EQ(project.getMidiMappings()[0].device, "Pad");
+    EXPECT_EQ(project.getMidiMappings()[1].device, "any") << "an empty device means any";
+}
+
+TEST(ProjectSerializerControlTest, MalformedControlBlockDoesNotFailTheLoad) {
+    ProjectSerializer serializer;
+    for (const char* control : {R"("x")", "[]", "{}", R"({"midi": 5})", "null"}) {
+        SCOPED_TRACE(control);
+        Project project;
+        const std::string json = std::string(R"({"version": "3.3.0", "name": "S", "scenes": [], "control": )") +
+                                 control + "}";
+        ASSERT_TRUE(serializer.deserialize(json, project).isSuccess());
+        EXPECT_TRUE(project.getMidiMappings().empty());
+        EXPECT_EQ(project.getScenes().size(), 1u);
+    }
+}
+
 } // namespace test
 } // namespace quadmapper

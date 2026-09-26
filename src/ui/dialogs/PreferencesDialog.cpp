@@ -853,6 +853,28 @@ Result<void, Error> PreferencesDialog::loadFromFile(const std::string& path) {
             }
         }
 
+        // External control (ADR-048). Wrong types are skipped, keeping the defaults.
+        if (root.contains("control") && root["control"].is_object()) {
+            const auto& ctl = root["control"];
+            ControlPreferences& control = preferences_.control;
+            if (ctl.contains("oscEnabled") && ctl["oscEnabled"].is_boolean()) {
+                control.oscEnabled = ctl["oscEnabled"].get<bool>();
+            }
+            if (ctl.contains("oscPort") && ctl["oscPort"].is_number_integer()) {
+                const int port = ctl["oscPort"].get<int>();
+                if (port >= 1 && port <= 65535) control.oscPort = port;
+            }
+            if (ctl.contains("oscBindAddress") && ctl["oscBindAddress"].is_string()) {
+                control.oscBindAddress = ctl["oscBindAddress"].get<std::string>();
+            }
+            if (ctl.contains("midiDevices") && ctl["midiDevices"].is_array()) {
+                control.midiDevices.clear();
+                for (const auto& device : ctl["midiDevices"]) {
+                    if (device.is_string()) control.midiDevices.push_back(device.get<std::string>());
+                }
+            }
+        }
+
         savedPreferences_ = preferences_;
         modified_ = false;
 
@@ -905,6 +927,13 @@ Result<void, Error> PreferencesDialog::saveToFile(const std::string& path) const
     perf["outputBufferCount"] = preferences_.performance.outputBufferCount;
     perf["enableAdaptiveSync"] = preferences_.performance.enableAdaptiveSync;
     root["performance"] = perf;
+
+    nlohmann::json ctl;
+    ctl["oscEnabled"] = preferences_.control.oscEnabled;
+    ctl["oscPort"] = preferences_.control.oscPort;
+    ctl["oscBindAddress"] = preferences_.control.oscBindAddress;
+    ctl["midiDevices"] = preferences_.control.midiDevices;
+    root["control"] = ctl;
 
     std::string json = root.dump(2);
     auto result = FileSystem::writeFile(path, json);

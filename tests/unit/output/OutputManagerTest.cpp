@@ -738,5 +738,34 @@ TEST(OutputManagerTest, DeleteOutputReportsTheRemovedId) {
     EXPECT_EQ(manager.getOutput(aId), nullptr);  // already gone when reported
 }
 
+// ---- Master blackout (ADR-048 §3) ------------------------------------------------
+
+TEST(BlackoutTest, StartsOffAndToggles) {
+    OutputManager manager;
+    EXPECT_FALSE(manager.isBlackout());
+    manager.toggleBlackout();
+    EXPECT_TRUE(manager.isBlackout());
+    manager.setBlackout(true);
+    EXPECT_TRUE(manager.isBlackout());
+    manager.toggleBlackout();
+    EXPECT_FALSE(manager.isBlackout());
+}
+
+TEST(BlackoutTest, ShortcutIsCtrlBPressOnly) {
+    EXPECT_TRUE(OutputManager::isBlackoutKey(GLFW_KEY_B, GLFW_PRESS, GLFW_MOD_CONTROL));
+    EXPECT_TRUE(OutputManager::isBlackoutKey(GLFW_KEY_B, GLFW_PRESS,
+                                             GLFW_MOD_CONTROL | GLFW_MOD_NUM_LOCK));
+    EXPECT_FALSE(OutputManager::isBlackoutKey(GLFW_KEY_B, GLFW_PRESS, 0));
+    EXPECT_FALSE(OutputManager::isBlackoutKey(GLFW_KEY_B, GLFW_REPEAT, GLFW_MOD_CONTROL));
+    EXPECT_FALSE(OutputManager::isBlackoutKey(GLFW_KEY_B, GLFW_RELEASE, GLFW_MOD_CONTROL));
+    EXPECT_FALSE(OutputManager::isBlackoutKey(GLFW_KEY_B, GLFW_PRESS,
+                                              GLFW_MOD_CONTROL | GLFW_MOD_SHIFT));
+    EXPECT_FALSE(OutputManager::isBlackoutKey(GLFW_KEY_B, GLFW_PRESS,
+                                              GLFW_MOD_CONTROL | GLFW_MOD_ALT));
+    EXPECT_FALSE(OutputManager::isBlackoutKey(GLFW_KEY_N, GLFW_PRESS, GLFW_MOD_CONTROL));
+    // It never collides with a scene-take key.
+    EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_B, GLFW_PRESS, GLFW_MOD_CONTROL), 0);
+}
+
 } // namespace test
 } // namespace quadmapper

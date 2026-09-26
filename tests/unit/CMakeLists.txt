@@ -141,3 +141,22 @@ target_link_libraries(test_ai PRIVATE quadmapper_ai quadmapper_core)
 target_compile_definitions(test_ai PRIVATE
     QM_SIDECAR_SCRIPT="${CMAKE_SOURCE_DIR}/tools/ai-sidecar/sidecar.py"
 )
+
+# External control tests (ADR-048): OSC parser (with fuzzing), UDP server on loopback,
+# MIDI decode and WinMM device handling (no hardware needed), registry, dispatch, learn.
+add_quadmapper_test(test_control
+    control/OscParserTest.cpp
+    control/OscServerTest.cpp
+    control/MidiTest.cpp
+    control/ControlEventQueueTest.cpp
+    control/ControlDispatchTest.cpp
+)
+target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws2_32)
+
+# The application's control targets (app/ControlBindings.hpp) on real scenes, quads and
+# sources, plus the control preferences. No GL context needed.
+add_quadmapper_test(test_control_app
+    control/ControlBindingsTest.cpp
+)
+target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_control
+    quadmapper_project quadmapper_scene quadmapper_source quadmapper_core)

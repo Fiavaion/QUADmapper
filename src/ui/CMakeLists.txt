@@ -28,6 +28,8 @@ add_library(quadmapper_ui STATIC
     panels/ProceduralEditorPanel.cpp
     panels/CalibrationPanel.hpp
     panels/CalibrationPanel.cpp
+    panels/ControlPanel.hpp
+    panels/ControlPanel.cpp
     dialogs/PreferencesDialog.hpp
     dialogs/PreferencesDialog.cpp
     dialogs/OutputConfigDialog.hpp
@@ -59,6 +61,7 @@ target_link_libraries(quadmapper_ui
         quadmapper_output
         quadmapper_source
         quadmapper_input
+        quadmapper_control
         imgui
     PRIVATE
         nlohmann_json::nlohmann_json

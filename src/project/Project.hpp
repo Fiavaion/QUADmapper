@@ -100,6 +100,17 @@ public:
         bool missing = false;
     };
 
+    // A MIDI mapping (.qmap "control": {"midi": [...]}, ADR-048). Plain strings so the
+    // project module does not depend on src/control; the app converts.
+    struct MidiMappingData {
+        std::string device = "any";  // input device name, or "any"
+        std::string type;            // "note" | "cc" | "program"
+        int channel = 0;             // 1-16, 0 = any
+        int number = 0;              // 0-127
+        std::string target;          // control path, e.g. /qm/quad/<uuid>/opacity
+        std::string mode;            // "trigger" | "toggle" | "momentary" | "value"
+    };
+
     const std::string& getName() const { return name_; }
     void setName(const std::string& name) { name_ = name; }
 
@@ -139,6 +150,8 @@ public:
     const std::vector<OutputData>& getOutputs() const { return outputs_; }
     std::vector<SourceData>& getSources() { return sources_; }
     const std::vector<SourceData>& getSources() const { return sources_; }
+    std::vector<MidiMappingData>& getMidiMappings() { return midiMappings_; }
+    const std::vector<MidiMappingData>& getMidiMappings() const { return midiMappings_; }
 
 private:
     std::string name_;
@@ -151,6 +164,7 @@ private:
     std::vector<SceneData> scenes_;
     std::vector<OutputData> outputs_;
     std::vector<SourceData> sources_;
+    std::vector<MidiMappingData> midiMappings_;
 };
 
 } // namespace quadmapper
