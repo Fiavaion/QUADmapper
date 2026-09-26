@@ -1,6 +1,6 @@
 // Headless PRD §5 performance benchmark (--bench). Builds synthetic shows in code,
-// drives the app's real frame (pollFrame + presentFrame: editor canvas, previews,
-// ImGui, editor swap, projector outputs) and reports JSON. It measures; it never
+// drives the app's real frame (pollFrame + presentFrame: editor canvas, output
+// frames, ImGui, editor swap, projector outputs) and reports JSON. It measures; it never
 // asserts thresholds, because machines vary. See Bench.hpp for the flags.
 
 #include "Bench.hpp"
@@ -215,10 +215,10 @@ private:
             j["fps"] = round3(fps());
             j["frame_ms"] = summarize(period);
             j["frames_over_16_7ms"] = over(FRAME_BUDGET_60HZ_MS);
-            j["stage_ms"] = json{{"poll_to_rendered (editor canvas + previews + source "
-                                  "uploads + ImGui)", summarize(editor)},
+            j["stage_ms"] = json{{"poll_to_rendered (editor canvas + output frames + "
+                                  "source uploads + ImGui)", summarize(editor)},
                                  {"editor_swap", summarize(editorSwap)},
-                                 {"projector_outputs (draw + swap)", summarize(outputs)}};
+                                 {"projector_outputs (copy + swap)", summarize(outputs)}};
             return j;
         }
         // 60 FPS target: throughput >= 60 and 99% of frames inside the 16.7 ms budget.
@@ -473,9 +473,10 @@ json BenchRunner::runQuads(int outputCount) {
     runFrames(cfg_.seconds, [&series](const Frame& f) { series.add(f); });
 
     r["quads_per_scene"] = cfg_.quads;
+    // Each output's frame is drawn once and shown by both its window and its
+    // preview (ADR-054).
     r["quads_drawn_per_frame"] = json{{"editor_canvas", cfg_.quads},
-                                      {"output_previews", cfg_.quads * outputCount},
-                                      {"projector_outputs", cfg_.quads * outputCount}};
+                                      {"output_frames", cfg_.quads * outputCount}};
     r["outputs"] = outputInfo(outputCount);
     r["result"] = series.toJson();
     r["pass"] = series.meets60();
@@ -894,7 +895,7 @@ int BenchRunner::run() {
                             {"drift_seconds", cfg_.driftSeconds}};
 
     // Leak baseline: an empty scene on every output window, each drawn once (the
-    // preview FBOs are created lazily on the first frame).
+    // output frames are created lazily on the first frame).
     const int leakOutputs = std::max(2, cfg_.outputs);
     auto emptyShow = [&]() {
         resetShow();

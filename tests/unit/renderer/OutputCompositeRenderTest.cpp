@@ -283,7 +283,7 @@ TEST(OutputCompositeRenderTest, UndrawnQuadMeshIsReleased) {
 
     renderer.renderQuad(makeQuad(0.0f, 0.0f, 1.0f, 1.0f), nullptr);
     EXPECT_EQ(GlObjectStats::vertexArrays(), vaos + 1);
-    EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers + 2);
+    EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers + 1);  // vertices; indices are shared
 
     const std::vector<std::unique_ptr<MeshObject>> noObjects;
     for (int pass = 0; pass <= 600; ++pass) {  // scene passes with the quad gone
@@ -292,5 +292,84 @@ TEST(OutputCompositeRenderTest, UndrawnQuadMeshIsReleased) {
     EXPECT_EQ(GlObjectStats::vertexArrays(), vaos);
     EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers);
 
+    renderer.shutdown();
+}
+
+// A draw skips the uniforms equal to the previous draw's (ADR-054), so each quad must
+// still get its own values: half-opacity, opaque, then half-opacity again, with a
+// selection outline (another program) drawn in between.
+TEST(OutputCompositeRenderTest, EachQuadDrawsWithItsOwnUniforms) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    Framebuffer fbo;
+    ASSERT_TRUE(fbo.resize(24, 8));
+    fbo.bind();
+    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    Quad left = makeQuad(0.0f, 0.0f, 1.0f / 3.0f, 1.0f);
+    left.setOpacity(0.5f);
+    Quad middle = makeQuad(1.0f / 3.0f, 0.0f, 2.0f / 3.0f, 1.0f);
+    Quad right = makeQuad(2.0f / 3.0f, 0.0f, 1.0f, 1.0f);
+    right.setOpacity(0.5f);
+    renderer.renderQuad(left, nullptr);
+    renderer.renderQuad(middle, nullptr, /*selected=*/true);
+    renderer.renderQuad(right, nullptr);
+    renderer.endFrame();
+
+    auto blended = [](const RGB& c) { return c.r > 100 && c.r < 156 && c.b > 240; };
+    EXPECT_TRUE(blended(readPixel(4, 4)));
+    EXPECT_TRUE(isWhite(readPixel(12, 4)));
+    EXPECT_TRUE(blended(readPixel(20, 4)));
+
+    Framebuffer::unbind();
+    renderer.shutdown();
+}
+
+// Every corner-pin patch has the same triangles, so all of them draw with one shared
+// index buffer (TD-22): a quad costs one VAO and one vertex buffer. A mesh-edit grid
+// owns its indices, and gives them back when it is a corner patch again, still
+// drawing where it is.
+TEST(OutputCompositeRenderTest, CornerPatchesShareOneIndexBuffer) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    Framebuffer fbo;
+    ASSERT_TRUE(fbo.resize(16, 16));
+    fbo.bind();
+    const long vaos = GlObjectStats::vertexArrays();
+    const long buffers = GlObjectStats::vertexBuffers();
+
+    std::vector<Quad> quads;
+    for (int i = 0; i < 8; ++i) {
+        const float x = 0.125f * static_cast<float>(i);
+        quads.push_back(makeQuad(x, 0.0f, x + 0.125f, 1.0f));
+    }
+    for (const Quad& quad : quads) {
+        renderer.renderQuad(quad, nullptr);
+    }
+    EXPECT_EQ(GlObjectStats::vertexArrays(), vaos + 8);
+    EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers + 8);
+
+    Quad& quad = quads.front();
+    quad.getGeometry().setMeshMode(MeshMode::MESH_EDIT);
+    quad.getGeometry().setUniformGrid(3);
+    renderer.renderQuad(quad, nullptr);
+    EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers + 9);
+
+    quad.getGeometry().setMeshMode(MeshMode::CORNERS_ONLY);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    renderer.renderQuad(quad, nullptr);
+    EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers + 8);
+    EXPECT_TRUE(isWhite(readPixel(1, 8)));   // inside the first strip
+    EXPECT_TRUE(isBlack(readPixel(12, 8)));  // the other strips were cleared
+
+    Framebuffer::unbind();
     renderer.shutdown();
 }

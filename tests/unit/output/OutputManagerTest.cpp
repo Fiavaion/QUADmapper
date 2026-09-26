@@ -1,8 +1,22 @@
 #include <gtest/gtest.h>
 #include "output/OutputManager.hpp"
 #include "app/OutputPersistence.hpp"
+#include "core/GlObjectStats.hpp"
+#include "renderer/Framebuffer.hpp"
+#include "renderer/Renderer.hpp"
+#include "renderer/Texture.hpp"
+#include "scene/MeshObject.hpp"
+#include "scene/ProjectorCamera.hpp"
+#include "scene/Scene.hpp"
 
+#include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <array>
+#include <memory>
+#include <unordered_map>
+#include <vector>
 
 namespace quadmapper {
 namespace test {
@@ -187,14 +201,19 @@ TEST(OutputManagerTest, ShutdownClearsOutputs) {
     EXPECT_FALSE(manager.isInitialized());
 }
 
-TEST(OutputManagerTest, RenderToOutputsIsSafeWhenNotInitialized) {
+TEST(OutputManagerTest, OutputFramesAreSafeWhenNotInitialized) {
     OutputManager manager;
-    manager.createOutput("Test");
+    OutputWindow* output = manager.createOutput("Test");
+    ASSERT_NE(output, nullptr);
 
-    // Should not crash with no enabled/created outputs (no GL context here).
+    // Should not crash with no main window and no created outputs (no GL context
+    // here): nothing is drawn and nothing is presented.
     std::vector<std::unique_ptr<Scene>> scenes;
     std::unordered_map<UUID, Texture*> textures;
-    manager.renderToOutputs(scenes, textures);
+    Renderer renderer;  // never initialized
+    manager.renderOutputFrames(scenes, textures, renderer);
+    manager.presentOutputs();
+    EXPECT_EQ(manager.outputFrame(output->getId()), nullptr);
 }
 
 TEST(OutputManagerTest, SceneForOutputRoutesByAssignedOutputId) {
@@ -765,6 +784,320 @@ TEST(BlackoutTest, ShortcutIsCtrlBPressOnly) {
     EXPECT_FALSE(OutputManager::isBlackoutKey(GLFW_KEY_N, GLFW_PRESS, GLFW_MOD_CONTROL));
     // It never collides with a scene-take key.
     EXPECT_EQ(OutputManager::sceneTakeNumber(GLFW_KEY_B, GLFW_PRESS, GLFW_MOD_CONTROL), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Render once per output (ADR-054): GPU readback proving the new path shows the
+// projector exactly what the old one did. Old path: a Renderer in the output
+// window's own context draws the scene straight into that window's framebuffer
+// (here an FBO of the same size and format in that context). New path:
+// renderOutputFrames draws the frame in the editor context, and the output context
+// copies it with FrameCopy. The two images must match byte for byte.
+// Skips where no GL 3.3 context is available (headless CI).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Hidden editor window with a GL 3.3 core context, RAII; ok == false means no GL.
+struct EditorGL {
+    GLFWwindow* win = nullptr;
+    bool ok = false;
+    EditorGL() {
+        if (!glfwInit()) return;
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+        win = glfwCreateWindow(64, 64, "render-once-editor", nullptr, nullptr);
+        glfwDefaultWindowHints();
+        if (!win) { glfwTerminate(); return; }
+        glfwMakeContextCurrent(win);
+        if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress))) {
+            glfwDestroyWindow(win); win = nullptr; glfwTerminate(); return;
+        }
+        ok = true;
+    }
+    ~EditorGL() {
+        if (win) { glfwDestroyWindow(win); glfwTerminate(); }
+    }
+    EditorGL(const EditorGL&) = delete;
+    EditorGL& operator=(const EditorGL&) = delete;
+};
+
+// A texture with detail in every texel (so any sampling difference shows).
+std::unique_ptr<Texture> patternTexture(int size, int seed) {
+    std::vector<unsigned char> px(static_cast<size_t>(size) * size * 4);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            unsigned char* p = &px[(static_cast<size_t>(y) * size + x) * 4];
+            p[0] = static_cast<unsigned char>((x * 37 + seed * 11) & 255);
+            p[1] = static_cast<unsigned char>((y * 53 + seed * 29) & 255);
+            p[2] = static_cast<unsigned char>(((x ^ y) * 17 + seed) & 255);
+            p[3] = 255;
+        }
+    }
+    auto texture = std::make_unique<Texture>();
+    texture->create(size, size, 4, px.data());
+    return texture;
+}
+
+std::vector<unsigned char> readBound(int w, int h) {
+    std::vector<unsigned char> pixels(static_cast<size_t>(w) * h * 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    return pixels;
+}
+
+// Quads with every surface option an output draws, overlapping so blending and
+// z-order matter, and one 3D cube in front of the projector.
+void buildFeatureScene(Scene& scene, const std::vector<Texture*>& media,
+                       std::unordered_map<UUID, Texture*>& textures) {
+    QuadManager& qm = scene.getQuadManager();
+
+    Quad* keystone = qm.createQuad("Keystone");
+    keystone->getGeometry().setCorners({Vec2(0.03f, 0.06f), Vec2(0.46f, 0.02f),
+                                        Vec2(0.42f, 0.52f), Vec2(0.08f, 0.44f)});
+    keystone->getTexture().uvRotation = 0.3f;
+    keystone->getTexture().cropRect = NormalizedRect{0.1f, 0.05f, 0.8f, 0.7f};
+
+    Quad* bezier = qm.createQuad("Bezier");
+    bezier->getGeometry().setCorners({Vec2(0.40f, 0.45f), Vec2(0.95f, 0.50f),
+                                      Vec2(0.90f, 0.95f), Vec2(0.45f, 0.88f)});
+    bezier->getGeometry().setBezierEnabled(true);
+    std::array<Vec2, 8> offsets;
+    for (int k = 0; k < 8; ++k) {
+        offsets[static_cast<size_t>(k)] = Vec2((k % 2 ? 0.04f : -0.05f), (k % 3 ? 0.03f : -0.04f));
+    }
+    bezier->getGeometry().setBezierOffsets(offsets);
+    ColorCorrection cc;
+    cc.brightness = 0.06f;
+    cc.contrast = 1.3f;
+    cc.gamma = 0.8f;
+    cc.rgbGain = Vec3(1.2f, 0.9f, 1.05f);
+    bezier->setColorCorrection(cc);
+    bezier->setOpacity(0.7f);
+
+    Quad* mesh = qm.createQuad("Mesh");
+    mesh->getGeometry().setCorners({Vec2(0.05f, 0.50f), Vec2(0.55f, 0.55f),
+                                    Vec2(0.50f, 0.98f), Vec2(0.03f, 0.92f)});
+    mesh->getGeometry().setMeshMode(MeshMode::MESH_EDIT);
+    mesh->getGeometry().setUniformGrid(4);
+    mesh->getGeometry().setMeshVertex(2, 2, Vec2(0.05f, -0.04f));
+    mesh->getGeometry().setMeshVertex(1, 3, Vec2(-0.03f, 0.02f));
+    SoftEdge edge;
+    edge.left = 0.2f;
+    edge.right = 0.15f;
+    edge.top = 0.1f;
+    edge.gamma = 2.2f;
+    mesh->setSoftEdge(edge);
+    mesh->getTexture().flipH = true;
+
+    const std::vector<Quad*> quads{keystone, bezier, mesh};
+    for (size_t i = 0; i < quads.size(); ++i) {
+        quads[i]->setZOrder(static_cast<int>(i));
+        textures[quads[i]->getId()] = media[i % media.size()];
+    }
+
+    // A cube 0.3 across at the origin; the output's projector is fitted onto it, and
+    // the quads leave the top right of the canvas for it.
+    MeshObject* cube = scene.createObject("Cube");
+    MeshData& data = cube->getMesh();
+    const float h = 0.15f;
+    for (int c = 0; c < 8; ++c) {
+        data.positions.push_back(Vec3((c & 1) ? h : -h, (c & 2) ? h : -h, (c & 4) ? h : -h));
+    }
+    data.indices = {0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5, 0, 4, 5, 0, 5, 1,
+                    2, 3, 7, 2, 7, 6, 0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3};
+    cube->setTransform(glm::rotate(glm::mat4(1.0f), 0.6f, Vec3(0.3f, 1.0f, 0.2f)));
+    textures[cube->getId()] = media.back();
+}
+
+struct ReadbackCase {
+    Rotation rotation;
+    bool blackout;
+};
+
+class RenderOnceReadbackTest : public ::testing::TestWithParam<ReadbackCase> {};
+
+}  // namespace
+
+TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    const ReadbackCase param = GetParam();
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* output = manager.createOutput("Readback");
+    ASSERT_NE(output, nullptr);
+    ASSERT_TRUE(output->isCreated());
+    output->setResolution(IVec2(160, 96));
+    ASSERT_TRUE(output->applyResolution().isSuccess());
+    output->setRotation(param.rotation);
+    manager.setBlackout(param.blackout);
+    int w = 0, h = 0;
+    glfwGetFramebufferSize(output->getGLFWwindow(), &w, &h);
+    ASSERT_GT(w, 0);
+    ASSERT_GT(h, 0);
+
+    // Media and the scene, made in the editor context (textures are shared).
+    glfwMakeContextCurrent(gl.win);
+    auto mediaA = patternTexture(64, 1);
+    auto mediaB = patternTexture(48, 2);
+    auto mediaC = patternTexture(32, 3);
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    Scene& scene = *scenes.front();
+    scene.setAssignedOutputId(output->getId());
+    std::unordered_map<UUID, Texture*> textures;
+    buildFeatureScene(scene, {mediaA.get(), mediaB.get(), mediaC.get()}, textures);
+    Vec3 objectsMin, objectsMax;
+    ASSERT_TRUE(scene.visibleObjectBounds(objectsMin, objectsMax));
+    const IVec2 effective = output->getEffectiveResolution();
+    output->getProjector() = ProjectorCamera::fitToOutput(
+        ProjectorCamera{}, effective.x, effective.y, &objectsMin, &objectsMax);
+
+    // New path, part 1: the editor context draws the output's frame.
+    Renderer editorRenderer;
+    ASSERT_TRUE(editorRenderer.initialize());
+    manager.renderOutputFrames(scenes, textures, editorRenderer);
+    const Framebuffer* frame = manager.outputFrame(output->getId());
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(frame->width(), w);
+    EXPECT_EQ(frame->height(), h);
+    glFinish();
+
+    std::vector<unsigned char> direct, copied;
+    {
+        output->makeContextCurrent();
+
+        // Old path: the output context's own Renderer draws straight into its
+        // framebuffer (presentToOutputs + drawOutputScene before ADR-054).
+        Renderer outputRenderer;
+        ASSERT_TRUE(outputRenderer.initialize());
+        Framebuffer window;
+        ASSERT_TRUE(window.resize(w, h));
+        window.bind();
+        glDisable(GL_DEPTH_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        outputRenderer.setOutputRotation(output->getRotation());
+        if (!param.blackout) {
+            outputRenderer.renderMeshObjects(scene.getObjects(), output->getProjector(), textures);
+            for (const Quad* quad : scene.getQuadsByZOrder()) {
+                outputRenderer.renderQuad(*quad, textures.at(quad->getId()), false);
+            }
+        }
+        glEnable(GL_DEPTH_TEST);
+        direct = readBound(w, h);
+
+        // The cube must be in the picture, or the comparison would not cover 3D.
+        if (!param.blackout) {
+            glDisable(GL_DEPTH_TEST);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            for (const Quad* quad : scene.getQuadsByZOrder()) {
+                outputRenderer.renderQuad(*quad, textures.at(quad->getId()), false);
+            }
+            EXPECT_NE(readBound(w, h), direct) << "the 3D object drew nothing";
+        }
+
+        // New path, part 2: the output context copies the frame into its framebuffer.
+        glClearColor(1.0f, 0.0f, 1.0f, 1.0f);  // anything the copy fails to cover shows
+        glClear(GL_COLOR_BUFFER_BIT);
+        FrameCopy copy;
+        ASSERT_TRUE(copy.copy(*frame, w, h));
+        copied = readBound(w, h);
+
+        copy.destroy();
+        window.destroy();
+        outputRenderer.shutdown();
+    }
+    glfwMakeContextCurrent(gl.win);
+
+    ASSERT_EQ(direct.size(), copied.size());
+    size_t differing = 0;
+    size_t lit = 0;
+    for (size_t i = 0; i < direct.size(); i += 4) {
+        if (direct[i] != copied[i] || direct[i + 1] != copied[i + 1] ||
+            direct[i + 2] != copied[i + 2]) {
+            ++differing;
+        }
+        if (direct[i] > 8 || direct[i + 1] > 8 || direct[i + 2] > 8) {
+            ++lit;
+        }
+    }
+    EXPECT_EQ(differing, 0u) << "of " << direct.size() / 4 << " pixels";
+    if (param.blackout) {
+        EXPECT_EQ(lit, 0u);  // the projector is black, and so is its frame
+    } else {
+        EXPECT_GT(lit, direct.size() / 4 / 3);  // the scene covers much of the frame
+    }
+
+    editorRenderer.shutdown();
+    mediaA.reset();
+    mediaB.reset();
+    mediaC.reset();
+    manager.shutdown();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RotationsAndBlackout, RenderOnceReadbackTest,
+    ::testing::Values(ReadbackCase{Rotation::R0, false}, ReadbackCase{Rotation::R90, false},
+                      ReadbackCase{Rotation::R180, false}, ReadbackCase{Rotation::R270, false},
+                      ReadbackCase{Rotation::R90, true}),
+    [](const ::testing::TestParamInfo<ReadbackCase>& info) {
+        return "R" + std::to_string(static_cast<int>(info.param.rotation)) +
+               (info.param.blackout ? "_Blackout" : "");
+    });
+
+// An output with no assigned scene shows black, and a deleted output's frame goes.
+TEST(RenderOnceTest, UnroutedOutputIsBlackAndDeletedOutputLosesItsFrame) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* output = manager.createOutput("Unrouted");
+    ASSERT_NE(output, nullptr);
+    glfwSetWindowSize(output->getGLFWwindow(), 32, 32);
+    glfwMakeContextCurrent(gl.win);
+
+    const long framebuffersBefore = GlObjectStats::framebuffers();
+    const long texturesBefore = GlObjectStats::textures();
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    scenes.front()->getQuadManager().createQuad("Not routed");
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    manager.renderOutputFrames(scenes, textures, renderer);
+
+    const Framebuffer* frame = manager.outputFrame(output->getId());
+    ASSERT_NE(frame, nullptr);
+    std::vector<unsigned char> pixels;
+    {
+        Framebuffer readTarget;
+        ASSERT_TRUE(readTarget.resize(frame->width(), frame->height()));
+        readTarget.bind();
+        glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        FrameCopy copy;
+        ASSERT_TRUE(copy.copy(*frame, frame->width(), frame->height()));
+        pixels = readBound(frame->width(), frame->height());
+        Framebuffer::unbind();
+    }
+    for (size_t i = 0; i < pixels.size(); i += 4) {
+        ASSERT_EQ(pixels[i] | pixels[i + 1] | pixels[i + 2], 0) << "pixel " << i / 4;
+    }
+
+    manager.deleteOutput(output->getId());
+    EXPECT_EQ(manager.outputFrame(output->getId()), nullptr);
+    EXPECT_EQ(GlObjectStats::framebuffers(), framebuffersBefore);
+    EXPECT_EQ(GlObjectStats::textures(), texturesBefore + 1);  // the renderer's white default
+
+    renderer.shutdown();
+    manager.shutdown();
 }
 
 } // namespace test

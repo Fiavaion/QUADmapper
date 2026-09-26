@@ -318,6 +318,7 @@ void CalibrationPanel::render(EditorContext& ctx) {
             if (scene) {
                 ctx.renderer->renderMeshObjects(scene->getObjects(), orbit,
                                                 buildQuadTextureMap(es, ctx.sourceManager, SurfaceView::Editor));
+                ctx.renderer->endFrame();  // unbind what the draws left bound
             }
             glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
             glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));

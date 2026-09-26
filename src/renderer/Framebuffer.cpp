@@ -80,4 +80,44 @@ void Framebuffer::destroy() {
     height_ = 0;
 }
 
+FrameCopy::~FrameCopy() {
+    destroy();
+}
+
+bool FrameCopy::copy(const Framebuffer& source, int width, int height) {
+    if (!source.valid() || width <= 0 || height <= 0) {
+        return false;
+    }
+    if (fbo_ == 0) {
+        glGenFramebuffers(1, &fbo_);
+        GlObjectStats::onFramebufferCreated();
+    }
+
+    GLint previousRead = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousRead);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
+    // Attached on every copy: the texture was drawn in another context (and may have
+    // been reallocated there), and attaching it here is what makes those contents
+    // visible in this one (GL 3.3 core, appendix D.3.3).
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           source.colorTexture(), 0);
+    const bool readable =
+        glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    if (readable) {
+        const bool sameSize = width == source.width() && height == source.height();
+        glBlitFramebuffer(0, 0, source.width(), source.height(), 0, 0, width, height,
+                          GL_COLOR_BUFFER_BIT, sameSize ? GL_NEAREST : GL_LINEAR);
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousRead));
+    return readable;
+}
+
+void FrameCopy::destroy() {
+    if (fbo_ != 0) {
+        glDeleteFramebuffers(1, &fbo_);
+        GlObjectStats::onFramebufferDestroyed();
+        fbo_ = 0;
+    }
+}
+
 }  // namespace quadmapper

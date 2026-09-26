@@ -57,22 +57,23 @@ void OutputManager::shutdown() {
         exitPerformMode();
     }
 
-    // Destroy per-output renderers in their respective GL contexts before windows close.
-    GLFWwindow* previousContext = glfwGetCurrentContext();
+    // Each output's copier dies in its own context, before its window closes.
     for (auto& output : outputs_) {
-        auto rendererIt = outputRenderers_.find(output->getId());
-        if (rendererIt != outputRenderers_.end() && output->isCreated()) {
-            output->makeContextCurrent();
-            rendererIt->second->shutdown();
-        }
+        releaseFrameCopy(*output);
     }
-    outputRenderers_.clear();
-    if (previousContext != nullptr) {
+    frameCopies_.clear();
+
+    // The frames and the fence live in the main context.
+    if (mainWindow_ != nullptr) {
+        GLFWwindow* previousContext = glfwGetCurrentContext();
+        glfwMakeContextCurrent(mainWindow_);
+        frames_.clear();
+        if (framesDrawn_ != nullptr) {
+            glDeleteSync(framesDrawn_);
+            framesDrawn_ = nullptr;
+        }
         glfwMakeContextCurrent(previousContext);
     }
-
-    // Destroy the preview FBOs (they live in the main context, current now).
-    previewTargets_.clear();
 
     // Destroy all output windows
     for (auto& output : outputs_) {
@@ -110,23 +111,6 @@ OutputWindow* OutputManager::createOutput(const std::string& name) {
                       outputName, result.error().message);
             return nullptr;
         }
-
-        // Create a Renderer for this output in its own GL context.
-        // VAOs are NOT shared across contexts, so each output needs its own.
-        // Shaders and VBOs are shared and will be re-created per-context (cheap).
-        GLFWwindow* previousContext = glfwGetCurrentContext();
-        output->makeContextCurrent();
-
-        auto renderer = std::make_unique<Renderer>();
-        if (!renderer->initialize()) {
-            LOG_ERROR("Failed to initialize renderer for output '{}'", outputName);
-            glfwMakeContextCurrent(previousContext);
-            output->destroy();
-            return nullptr;
-        }
-
-        outputRenderers_[output->getId()] = std::move(renderer);
-        glfwMakeContextCurrent(previousContext);
     }
 
     OutputWindow* ptr = output.get();
@@ -146,13 +130,13 @@ void OutputManager::deleteOutput(const UUID& id) {
     if (it != outputs_.end()) {
         std::string name = (*it)->getName();
 
-        // Destroy the per-output renderer in its own GL context before the window goes away.
-        auto rendererIt = outputRenderers_.find(id);
-        if (rendererIt != outputRenderers_.end()) {
+        // Its copier dies in its own context before the window goes; its frame in
+        // the main context.
+        releaseFrameCopy(**it);
+        if (frames_.count(id) != 0 && mainWindow_ != nullptr) {
             GLFWwindow* previousContext = glfwGetCurrentContext();
-            (*it)->makeContextCurrent();
-            rendererIt->second->shutdown();
-            outputRenderers_.erase(rendererIt);
+            glfwMakeContextCurrent(mainWindow_);
+            frames_.erase(id);
             glfwMakeContextCurrent(previousContext);
         }
 
@@ -617,24 +601,38 @@ void drawOutputScene(const Scene& scene, const OutputWindow& output, Renderer& r
 
 }  // namespace
 
-void OutputManager::renderToOutputs(const std::vector<std::unique_ptr<Scene>>& scenes,
-                                     const std::unordered_map<UUID, Texture*>& textures) {
-    if (!mainWindow_) {
-        return;
-    }
-
-    // Render only the scene assigned to THIS output (ADR-039 routing). An output
-    // with no assigned scene stays black.
-    presentToOutputs([&](const OutputWindow& output, Renderer& renderer) {
+void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>& scenes,
+                                       const std::unordered_map<UUID, Texture*>& textures,
+                                       Renderer& renderer) {
+    // Only the scene assigned to THIS output (ADR-039 routing); none stays black.
+    renderFrames(renderer, [&](const OutputWindow& output) {
         if (const Scene* scene = sceneForOutput(scenes, output.getId())) {
             drawOutputScene(*scene, output, renderer, textures);
         }
     });
 }
 
-void OutputManager::updatePreviews(const std::vector<std::unique_ptr<Scene>>& scenes,
-                                   const std::unordered_map<UUID, Texture*>& textures,
-                                   Renderer& renderer) {
+void OutputManager::renderPatternFrames(const Quad& patternQuad, const Texture* texture,
+                                        Renderer& renderer) {
+    // One fullscreen identity quad carrying the calibration texture.
+    renderFrames(renderer, [&](const OutputWindow&) {
+        renderer.renderQuad(patternQuad, texture, /*selected=*/false);
+    });
+}
+
+IVec2 OutputManager::frameSize(const OutputWindow& output) {
+    if (output.isCreated()) {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(output.getGLFWwindow(), &width, &height);
+        if (width > 0 && height > 0) {
+            return IVec2(width, height);
+        }
+    }
+    return output.getResolution();  // no window yet, or it is minimised (0 x 0)
+}
+
+void OutputManager::renderFrames(Renderer& renderer,
+                                 const std::function<void(const OutputWindow&)>& draw) {
     if (!mainWindow_) {
         return;
     }
@@ -645,86 +643,72 @@ void OutputManager::updatePreviews(const std::vector<std::unique_ptr<Scene>>& sc
     GLint prevViewport[4] = {0, 0, 0, 0};
     glGetIntegerv(GL_VIEWPORT, prevViewport);
 
-    // Drop thumbnails for outputs that no longer exist.
-    for (auto it = previewTargets_.begin(); it != previewTargets_.end();) {
+    // Drop the frames of outputs that no longer exist.
+    for (auto it = frames_.begin(); it != frames_.end();) {
         if (!getOutput(it->first)) {
-            it = previewTargets_.erase(it);
+            it = frames_.erase(it);
         } else {
             ++it;
         }
     }
 
+    // Every output, shown or not: the preview panel shows hidden projectors too.
     for (auto& output : outputs_) {
-        auto& target = previewTargets_[output->getId()];
-        if (!target) {
-            target = std::make_unique<Framebuffer>();
+        auto& frame = frames_[output->getId()];
+        if (!frame) {
+            frame = std::make_unique<Framebuffer>();
         }
-        if (!target->resize(kPreviewWidth, kPreviewHeight)) {
+        const IVec2 size = frameSize(*output);
+        if (!frame->resize(size.x, size.y)) {
             continue;
         }
 
-        target->bind();  // also sets the viewport to the thumbnail size
+        frame->bind();  // also sets the viewport to the frame size
         glDisable(GL_DEPTH_TEST);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        // Same routing + clean-render + rotation rules as renderToOutputs, but
-        // into the FBO, so the thumbnail shows what the projector shows. One
-        // exception: a quad whose media file is missing is drawn with the editor's
-        // checker here (the caller's texture map) where the projector shows black
-        // (MissingMediaLook.hpp), so the operator can see what needs relocating.
-        renderer.setOutputRotation(output->getRotation());
-        if (blackout_) continue;  // the projector is black, so is its preview
-        if (const Scene* scene = sceneForOutput(scenes, output->getId())) {
-            drawOutputScene(*scene, *output, renderer, textures);
+        if (blackout_) {
+            continue;  // the projector shows black, and so does its preview
         }
+        renderer.setOutputRotation(output->getRotation());
+        draw(*output);
     }
 
     // The editor canvas shares this Renderer and is never rotated.
     renderer.setOutputRotation(Rotation::R0);
+    renderer.endFrame();
 
-    // Restore the previous framebuffer + viewport for the rest of the frame.
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
     glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
-}
 
-unsigned int OutputManager::previewTextureFor(const UUID& outputId) const {
-    auto it = previewTargets_.find(outputId);
-    if (it == previewTargets_.end() || !it->second) {
-        return 0;
+    // The output contexts wait for this on the GPU before copying the frames.
+    if (framesDrawn_ != nullptr) {
+        glDeleteSync(framesDrawn_);  // frames drawn but never presented
     }
-    return it->second->colorTexture();
+    framesDrawn_ = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    glFlush();  // the fence must reach the GPU before another context waits on it
 }
 
-void OutputManager::renderPatternToOutputs(const Quad& patternQuad,
-                                           const Texture* texture) {
-    if (!mainWindow_) {
-        return;
+const Framebuffer* OutputManager::outputFrame(const UUID& outputId) const {
+    auto it = frames_.find(outputId);
+    if (it == frames_.end() || !it->second || !it->second->valid()) {
+        return nullptr;
     }
-
-    // One fullscreen identity quad carrying the calibration texture.
-    presentToOutputs([&](const OutputWindow&, Renderer& renderer) {
-        renderer.renderQuad(patternQuad, texture, /*selected=*/false);
-    });
+    return it->second.get();
 }
 
-void OutputManager::presentToOutputs(
-        const std::function<void(const OutputWindow&, Renderer&)>& draw) {
+void OutputManager::presentOutputs() {
     returnFocusToEditor();
 
     // Hidden outputs (not in perform mode, or hidden by the user) are neither
-    // drawn nor swapped: nobody sees them, and each swap costs frame time.
-    std::vector<std::pair<OutputWindow*, Renderer*>> presented;
+    // copied nor swapped: nobody sees them, and each swap costs frame time.
+    std::vector<OutputWindow*> presented;
     std::vector<bool> iconified;
     for (auto& output : outputs_) {
         if (!output->isEnabled() || !output->isCreated() || !output->isVisible()) {
             continue;
         }
-        auto rendererIt = outputRenderers_.find(output->getId());
-        if (rendererIt == outputRenderers_.end()) {
-            continue;
-        }
-        presented.emplace_back(output.get(), rendererIt->second.get());
+        presented.push_back(output.get());
         iconified.push_back(
             glfwGetWindowAttrib(output->getGLFWwindow(), GLFW_ICONIFIED) == GLFW_TRUE);
     }
@@ -732,28 +716,42 @@ void OutputManager::presentToOutputs(
 
     GLFWwindow* previousContext = glfwGetCurrentContext();
     for (size_t i = 0; i < presented.size(); ++i) {
-        OutputWindow* output = presented[i].first;
-        Renderer* renderer = presented[i].second;
+        OutputWindow* output = presented[i];
 
         output->makeContextCurrent();
         output->setSwapInterval(static_cast<int>(i) == holder ? 1 : 0);
 
-        int width, height;
+        int width = 0, height = 0;
         glfwGetFramebufferSize(output->getGLFWwindow(), &width, &height);
         glViewport(0, 0, width, height);
 
-        glDisable(GL_DEPTH_TEST);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        renderer->setOutputRotation(output->getRotation());
-        if (!blackout_) draw(*output, *renderer);  // blackout: keep the black clear
-
-        glEnable(GL_DEPTH_TEST);
+        // Black unless there is a frame to show (in blackout the frame is black).
+        const Framebuffer* frame = outputFrame(output->getId());
+        bool shown = false;
+        if (frame != nullptr) {
+            if (framesDrawn_ != nullptr) {
+                glWaitSync(framesDrawn_, 0, GL_TIMEOUT_IGNORED);
+            }
+            auto& copier = frameCopies_[output->getId()];
+            if (!copier) {
+                copier = std::make_unique<FrameCopy>();
+            }
+            shown = copier->copy(*frame, width, height);
+        }
+        if (!shown) {
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
 
         output->swapBuffers();
     }
 
+    // The fence belongs to the main context, which deletes it.
+    if (framesDrawn_ != nullptr) {
+        glfwMakeContextCurrent(mainWindow_);
+        glDeleteSync(framesDrawn_);
+        framesDrawn_ = nullptr;
+    }
     if (previousContext != nullptr) {
         glfwMakeContextCurrent(previousContext);
     }
@@ -761,6 +759,20 @@ void OutputManager::presentToOutputs(
     // A presented, non-minimised projector paces the loop and the editor swaps
     // without waiting. Otherwise the editor is vsync'd as before.
     setEditorSwapInterval(holder >= 0 ? 0 : 1);
+}
+
+void OutputManager::releaseFrameCopy(OutputWindow& output) {
+    auto it = frameCopies_.find(output.getId());
+    if (it == frameCopies_.end()) {
+        return;
+    }
+    if (output.isCreated()) {
+        GLFWwindow* previousContext = glfwGetCurrentContext();
+        output.makeContextCurrent();
+        it->second->destroy();
+        glfwMakeContextCurrent(previousContext);
+    }
+    frameCopies_.erase(it);
 }
 
 void OutputManager::setEditorSwapInterval(int interval) {

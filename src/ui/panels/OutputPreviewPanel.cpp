@@ -23,13 +23,11 @@ void OutputPreviewPanel::renderContent(EditorContext& ctx) {
         return;
     }
 
-    // Thumbnail display width: fit the panel, capped, preserving the render aspect.
-    const float aspect = static_cast<float>(om->previewHeight()) /
-                         static_cast<float>(om->previewWidth());
+    // Thumbnail display width: fit the panel, capped; the height follows each
+    // output's own frame aspect.
     float thumbW = ImGui::GetContentRegionAvail().x - 8.0f;
     if (thumbW > 360.0f) thumbW = 360.0f;
     if (thumbW < 80.0f) thumbW = 80.0f;
-    const ImVec2 thumbSize(thumbW, thumbW * aspect);
 
     int i = 0;
     for (const auto& output : outputs) {
@@ -45,10 +43,15 @@ void OutputPreviewPanel::renderContent(EditorContext& ctx) {
             ImGui::TextDisabled("-> (no scene)");
         }
 
-        unsigned int tex = om->previewTextureFor(output->getId());
-        if (tex != 0) {
-            // FBO color texture is bottom-up, so flip V (uv0={0,1}, uv1={1,0}).
-            ImGui::Image(static_cast<ImTextureID>(static_cast<uintptr_t>(tex)),
+        // The very texture the projector window shows (ADR-054).
+        const Framebuffer* frame = om->outputFrame(output->getId());
+        const float aspect = frame ? static_cast<float>(frame->height()) /
+                                         static_cast<float>(frame->width())
+                                   : 9.0f / 16.0f;
+        const ImVec2 thumbSize(thumbW, thumbW * aspect);
+        if (frame) {
+            // The frame is bottom-up, so flip V (uv0={0,1}, uv1={1,0}).
+            ImGui::Image(static_cast<ImTextureID>(static_cast<uintptr_t>(frame->colorTexture())),
                          thumbSize, ImVec2(0, 1), ImVec2(1, 0));
         } else {
             ImGui::Dummy(thumbSize);

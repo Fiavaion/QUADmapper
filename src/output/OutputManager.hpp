@@ -341,20 +341,26 @@ public:
      */
     void handleEscapeKey();
 
-    // Rendering
+    // Rendering (ADR-054): each output's frame is drawn once per frame, in the main
+    // GL context, into a colour texture that context owns. The output window copies
+    // that texture to the screen and the preview panel shows the same texture, so a
+    // preview is exactly what the projector shows.
+
     /**
-     * Render each enabled, visible output's ASSIGNED scene to that output window
-     * (ADR-039 per-output routing). An output shows the one scene whose
-     * assignedOutputId is this output's id; outputs with no assigned scene clear
-     * to black. Each output uses its own context-local Renderer; shared textures
-     * bind across contexts. The output's rotation is applied (QM-087). Selection
-     * highlighting and editor handles are suppressed — output is clean. The scene's
-     * 3D objects are drawn first, through the output's projector camera (ADR-052).
+     * Draw every output's frame into its render target, in the CURRENT (main) GL
+     * context with the main context's `renderer`. An output shows the one scene
+     * whose assignedOutputId is its id (ADR-039): the scene's 3D objects through the
+     * output's projector camera (ADR-052), then its quads in z-order, clean (no
+     * selection or editor handles), turned by the output's rotation (QM-087).
+     * With no assigned scene, or during blackout, the frame is black. The target is
+     * the output window's framebuffer size. Restores the framebuffer binding and
+     * viewport; leaves the renderer's rotation at R0 for the editor canvas.
      * @param scenes    The project's scenes (read-only); each may target one output
-     * @param textures  Map of quad/object UUID → Texture* (pointers owned by EditorState)
+     * @param textures  Map of quad/object UUID -> Texture* (pointers owned by EditorState)
      */
-    void renderToOutputs(const std::vector<std::unique_ptr<Scene>>& scenes,
-                         const std::unordered_map<UUID, Texture*>& textures);
+    void renderOutputFrames(const std::vector<std::unique_ptr<Scene>>& scenes,
+                            const std::unordered_map<UUID, Texture*>& textures,
+                            Renderer& renderer);
 
     /**
      * Pure routing decision: the scene assigned to a given output id, or nullptr if
@@ -364,36 +370,28 @@ public:
                                        const UUID& outputId);
 
     /**
-     * Render a single fullscreen calibration quad (One-Flash pattern, QM-059) to
-     * all enabled outputs, replacing the scene. Flashes a known ChArUco pattern on
-     * the chosen projector so one photo can solve the projector->surface
-     * homography (QM-060). Same clean output path as renderToOutputs.
+     * Like renderOutputFrames, but every output's frame is one fullscreen calibration
+     * quad (One-Flash pattern, QM-059) instead of its scene, so one photo can solve
+     * the projector->surface homography (QM-060).
      */
-    void renderPatternToOutputs(const Quad& patternQuad, const Texture* texture);
+    void renderPatternFrames(const Quad& patternQuad, const Texture* texture,
+                             Renderer& renderer);
 
     /**
-     * Render each output's assigned scene to a small offscreen thumbnail (ADR-039
-     * P4) so the UI can show a live preview of what every projector displays
-     * without entering perform mode. Renders in the CURRENT (main) GL context
-     * using the supplied main-context Renderer; saves and restores the framebuffer
-     * binding + viewport. Outputs with no assigned scene get a cleared (black)
-     * thumbnail. Cheap (a few small FBOs); safe to call every frame.
-     * @param scenes    The project's scenes (read-only)
-     * @param textures  Map of quad/object UUID → Texture* (owned by EditorState)
-     * @param renderer  A Renderer valid in the current (main) GL context
+     * Show the frames drawn this frame: copy each enabled, created, VISIBLE output's
+     * frame to its window and swap. Only the first presented, non-minimised output
+     * waits for vblank (vsyncHolder); the rest, and then the editor, swap with
+     * interval 0, so N outputs never divide the frame rate. With no such output the
+     * editor is the vsync'd window again. Call after the editor's swap, never inside
+     * an ImGui frame.
      */
-    void updatePreviews(const std::vector<std::unique_ptr<Scene>>& scenes,
-                        const std::unordered_map<UUID, Texture*>& textures,
-                        Renderer& renderer);
+    void presentOutputs();
 
     /**
-     * Color texture of an output's preview thumbnail, or 0 if none has been
-     * rendered. The texture is bottom-up (GL origin) — display with flipped V.
+     * An output's current frame, or nullptr before its first renderOutputFrames.
+     * The colour texture is bottom-up (GL origin): display it with flipped V.
      */
-    unsigned int previewTextureFor(const UUID& outputId) const;
-
-    int previewWidth() const { return kPreviewWidth; }
-    int previewHeight() const { return kPreviewHeight; }
+    const Framebuffer* outputFrame(const UUID& outputId) const;
 
     /**
      * Get the main window used for context sharing.
@@ -410,13 +408,16 @@ private:
     // Remove key callbacks from output windows
     void clearPerformModeKeyCallbacks();
 
-    // Render every enabled, created, VISIBLE output with its own Renderer and
-    // present it. `draw` issues the content draws after the black clear. Applies
-    // the output rotation and the swap policy (vsyncHolder): only the first
-    // presented, non-minimised output waits for vblank, the rest (and then the
-    // editor) swap with interval 0, so N outputs never divide the frame rate.
-    // With no such output the editor is the vsync'd window again.
-    void presentToOutputs(const std::function<void(const OutputWindow&, Renderer&)>& draw);
+    // Draw every output's frame (see renderOutputFrames); `draw` issues the content
+    // draws after the black clear, with the output's rotation set on `renderer`.
+    void renderFrames(Renderer& renderer, const std::function<void(const OutputWindow&)>& draw);
+
+    // The size an output's frame is drawn at: its window's framebuffer, or its
+    // resolution while it has no window or the window is minimised.
+    static IVec2 frameSize(const OutputWindow& output);
+
+    // Destroy an output's FrameCopy in that output's context (before its window goes).
+    void releaseFrameCopy(OutputWindow& output);
 
     // The monitor the editor window's centre is on; the primary monitor if the
     // editor is off every monitor (e.g. minimised), -1 if unknown.
@@ -448,17 +449,19 @@ private:
     // Output windows
     std::vector<std::unique_ptr<OutputWindow>> outputs_;
 
-    // Per-output Renderer instances keyed by OutputWindow UUID.
-    // Each Renderer is created/destroyed in that output's GL context so its
-    // VAOs (which are NOT shared) live in the right context.
-    std::unordered_map<UUID, std::unique_ptr<Renderer>> outputRenderers_;
+    // Each output's frame (ADR-054), keyed by output UUID. These render targets live
+    // in the MAIN GL context and are destroyed in shutdown()/deleteOutput() with it
+    // current; their colour textures are shared with the output contexts.
+    std::unordered_map<UUID, std::unique_ptr<Framebuffer>> frames_;
 
-    // Per-output offscreen preview thumbnails (ADR-039 P4), keyed by output UUID.
-    // These FBOs live in the MAIN GL context (unlike outputRenderers_) and are
-    // destroyed in shutdown() while it is current.
-    std::unordered_map<UUID, std::unique_ptr<Framebuffer>> previewTargets_;
-    static constexpr int kPreviewWidth = 320;
-    static constexpr int kPreviewHeight = 180;
+    // Per-output copiers keyed by output UUID. Each lives in THAT output's context
+    // (framebuffer objects are not shared), created on the output's first present.
+    std::unordered_map<UUID, std::unique_ptr<FrameCopy>> frameCopies_;
+
+    // Signalled when the frames drawn by renderFrames are complete; each output
+    // context waits on it on the GPU before copying (a change made in one context is
+    // only guaranteed visible in another once complete). Consumed by presentOutputs.
+    GLsync framesDrawn_ = nullptr;
 
     // Available monitors
     std::vector<MonitorInfo> monitors_;

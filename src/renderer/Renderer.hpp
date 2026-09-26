@@ -32,6 +32,9 @@ public:
     void shutdown();
 
     void beginFrame();
+    // Surface draws (renderQuad, renderMeshObject) leave their program, texture and
+    // VAO bound for the next draw; this unbinds them. Call at the end of a pass,
+    // before other GL code runs.
     void endFrame();
 
     // Render a single quad
@@ -111,13 +114,24 @@ public:
 private:
     void createOutlineBuffers();
     void createHandleBuffers();
-    // Fill vertices_/indices_ with the geometry's render mesh.
-    void tessellate(const QuadGeometry& geometry);
+    void createCornerIndexBuffer();
+    // Fill vertices_ with the geometry's render mesh, and indices_ with its triangles
+    // unless it is a corner-pin patch, whose triangles are always those in
+    // cornerIndexBuffer_. Returns true for such a patch.
+    bool tessellate(const QuadGeometry& geometry);
     // The quad's GPU mesh, tessellated and uploaded on first draw or when its
     // geometry changed since the last upload.
     const GpuQuad& quadBuffersFor(const Quad& quad);
     void updateOutlineBuffers(const Quad& quad);
     void createDefaultTexture();
+
+    // Bind a surface program (quad or 3D mesh) unless the previous surface draw left
+    // it bound. Only valid between endFrame() calls: other GL code must not change
+    // the program in the middle of a pass.
+    void useSurfaceProgram(ShaderProgram& shader);
+    // Unbind the program and forget which surface program was bound. Every other
+    // draw path unbinds through this, so the next surface draw binds again.
+    void unbindProgram();
 
     // Push the current view transform into a bound shader (u_ViewScale/u_ViewOffset).
     void applyViewUniforms(ShaderProgram& shader);
@@ -155,6 +169,11 @@ private:
     std::vector<QuadVertex> vertices_;
     std::vector<uint32_t> indices_;
 
+    // A corner-pin patch is an N×N grid; every one shares these indices (TD-22).
+    static constexpr int kCornerPatchDivisions = 32;
+    uint32_t cornerIndexBuffer_ = 0;
+    int cornerIndexCount_ = 0;
+
     // Buffers for outline
     std::vector<float> outlineVertices_;
 
@@ -174,6 +193,8 @@ private:
     glm::vec2 viewOffset_{0.0f, 0.0f};
     float canvasAspect_ = 0.0f;  // <= 0: derive handle aspect from the GL viewport
     Rotation outputRotation_ = Rotation::R0;
+
+    uint32_t boundProgram_ = 0;  // surface program a draw left bound; 0 = unknown/none
 
     bool initialized_ = false;
 };

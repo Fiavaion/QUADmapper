@@ -1012,9 +1012,9 @@ void Application::presentFrame(float deltaTime, FrameMarks* marks) {
     glfwSwapBuffers(m_window);
     if (marks) marks->editorSwapped = Clock::now();
 
-    // Push the warped scene to all projector outputs (after the main frame
+    // Show this frame's projector frames on the outputs (after the main frame
     // is committed so we never run inside an ImGui frame).
-    renderToProjectorOutputs();
+    if (m_outputManager) m_outputManager->presentOutputs();
     if (marks) marks->outputsPresented = Clock::now();
 }
 
@@ -1158,25 +1158,6 @@ void Application::render() {
         syncAudio();
     }
 
-    // On-canvas viewport: render every quad to the main GL framebuffer + the
-    // corner-pin / mesh-edit warp interaction. Runs BEFORE ImGui::NewFrame() so it
-    // owns the fullscreen GL surface and captures the mouse/keyboard ahead of any
-    // panel (the success-metric vertex-warp UX). See ADR-0034 / ViewportEditor.
-    {
-        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                          m_sourceManager.get(), m_outputManager.get(),
-                          m_renderer.get(), m_window};
-        es.viewportEditor.render(ctx);
-    }
-
-    // Render each output's assigned scene to an offscreen thumbnail (ADR-039 P4)
-    // so the Resources > Preview tab shows a live view of every projector. Runs in
-    // the main GL context; saves/restores the framebuffer + viewport itself.
-    if (m_outputManager && m_renderer) {
-        auto previewTextures = buildQuadTextureMap(es, m_sourceManager.get(), SurfaceView::Editor);
-        m_outputManager->updatePreviews(es.scenes, previewTextures, *m_renderer);
-    }
-
     // Start ImGui frame
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -1194,6 +1175,23 @@ void Application::render() {
         }
         claimCanvasEditingKeys(canvasKeys);
     }
+
+    // On-canvas viewport: the corner-pin / mesh-edit warp interaction, then every
+    // quad drawn to the main GL framebuffer. Runs right after NewFrame(), ahead of
+    // every panel, so it acts on this frame's input first (the success-metric
+    // vertex-warp UX) and a nudge shows in the very next presented frame (TD-21).
+    // See ADR-0034 / ViewportEditor.
+    {
+        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
+                          m_sourceManager.get(), m_outputManager.get(),
+                          m_renderer.get(), m_window};
+        es.viewportEditor.render(ctx);
+    }
+
+    // Draw each projector's frame once (ADR-054), after this frame's edits: the
+    // output windows copy these after the editor's swap, and the Resources >
+    // Preview tab shows the same textures.
+    renderProjectorFrames();
 
     // Create dockspace over the entire viewport
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -2883,8 +2881,8 @@ void Application::runOneFlash(const std::array<std::array<float, 2>, 4>* audienc
     setStatus(msg);
 }
 
-void Application::renderToProjectorOutputs() {
-    if (!m_outputManager || !m_editorState) {
+void Application::renderProjectorFrames() {
+    if (!m_outputManager || !m_editorState || !m_renderer) {
         return;
     }
 
@@ -2893,15 +2891,15 @@ void Application::renderToProjectorOutputs() {
     // One-Flash: when a calibration pattern is armed, flash it fullscreen on the
     // outputs instead of the scene (QM-059).
     if (m_emitPattern && m_calibQuad) {
-        m_outputManager->renderPatternToOutputs(*m_calibQuad, m_calibTexture.get());
+        m_outputManager->renderPatternFrames(*m_calibQuad, m_calibTexture.get(), *m_renderer);
         return;
     }
 
     // Resolve every quad's texture (image via SourceManager/mediaId, video via the
-    // legacy wrapper) through the shared builder — same map the editor/preview use.
+    // legacy wrapper) through the shared builder, with the projector's missing-media
+    // look (black).
     auto textures = buildQuadTextureMap(es, m_sourceManager.get(), SurfaceView::Output);
-
-    m_outputManager->renderToOutputs(es.scenes, textures);
+    m_outputManager->renderOutputFrames(es.scenes, textures, *m_renderer);
 }
 
 void Application::shutdown() {

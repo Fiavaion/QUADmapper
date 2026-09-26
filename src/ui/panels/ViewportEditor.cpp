@@ -132,7 +132,7 @@ void ViewportEditor::render(EditorContext& ctx) {
     // projector's aspect, scaled by zoom and translated by pan. Render AND the
     // vertex hit-test below read the same (scale, offset) so handles stay under the
     // cursor (the success-metric UX). All of this is identity-equivalent for the
-    // per-output windows / preview FBOs, which never touch the renderer transform.
+    // output frames, which never touch the renderer transform.
     int fbWidth = 0, fbHeight = 0;
     glfwGetFramebufferSize(m_window, &fbWidth, &fbHeight);
     int winWidth = 0, winHeight = 0;
@@ -222,73 +222,11 @@ void ViewportEditor::render(EditorContext& ctx) {
     // Projector calibration suspends quad editing (ADR-052 §6).
     const bool calibrating = !es.calibratingOutputId.isNull();
 
-    // Disable depth test for 2D rendering
-    glDisable(GL_DEPTH_TEST);
-
-    // Constrain drawing to the canvas region and apply the view transform.
-    glViewport(vpX, vpY, vpW, vpH);
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(vpX, vpY, vpW, vpH);
-
-    // Render all quads
-    if (m_renderer) {
-        m_renderer->setViewTransform(glm::vec2(viewScaleX, viewScaleY),
-                                     glm::vec2(viewOffsetX, viewOffsetY), canvasAspect);
-        m_renderer->beginFrame();
-
-        // Canvas frame border so the projector-frame bounds are visible.
-        m_renderer->renderCanvasBorder(glm::vec4(0.45f, 0.45f, 0.5f, 0.9f), 1.0f);
-
-        // Resolve every quad's texture through the shared builder: image via
-        // TextureBinding::mediaId -> SourceManager, video via the legacy wrapper
-        // (ADR-040 P2). Same map the per-output render and preview FBOs use.
-        auto texturePtrs = buildQuadTextureMap(es, ctx.sourceManager, SurfaceView::Editor);
-
-        // 3D objects as the canvas's projector sees them (WYSIWYG with the output),
-        // under the quads. The scissor limits the depth clear to the canvas region.
-        glClear(GL_DEPTH_BUFFER_BIT);
-        m_renderer->renderMeshObjects(es.activeScene().getObjects(), *canvasProjector,
-                                      texturePtrs);
-
-        m_renderer->renderQuads(quadManager, texturePtrs);
-
-        // Render handles for selected quad based on mode (none while calibrating, when
-        // the canvas edits calibration points instead).
-        Quad* selectedQuadForHandles =
-            calibrating ? nullptr : quadManager.getPrimarySelectedQuad();
-        if (selectedQuadForHandles) {
-            MeshMode mode = selectedQuadForHandles->getGeometry().getMeshMode();
-            if (mode == MeshMode::MESH_EDIT) {
-                // Draw the control-grid wireframe so division lines are visible,
-                // then the vertex handles on top.
-                m_renderer->renderMeshGrid(*selectedQuadForHandles,
-                                           glm::vec4(0.0f, 0.8f, 1.0f, 0.6f), 1.0f);
-                m_renderer->renderMeshHandles(*selectedQuadForHandles, meshHoveredVertex, meshDraggedVertex, meshSelectedVertex);
-            } else {
-                // CORNERS_ONLY mode (default) - show just the 4 corner handles
-                m_renderer->renderCornerHandles(*selectedQuadForHandles, cornerHoveredVertex, cornerDraggedVertex, cornerSelectedVertex);
-                // Bezier edge handles on top (no-op unless bezier is enabled).
-                m_renderer->renderBezierHandles(*selectedQuadForHandles,
-                                                es.bezierHovered, es.bezierDragged);
-            }
-
-            // Render snap indicator if actively snapping to another quad's vertex
-            if (snapActive) {
-                m_renderer->renderSnapIndicator(snapTargetPos);
-            }
-        }
-
-        m_renderer->endFrame();
-        m_renderer->resetViewTransform();
-    }
-
-    // Restore full-framebuffer viewport + drop scissor so the preview FBOs and
-    // ImGui render over the whole window unaffected.
-    glDisable(GL_SCISSOR_TEST);
-    glViewport(0, 0, fbWidth, fbHeight);
-
-    // Handle vertex interaction (before ImGui to capture mouse before UI)
-    {
+    // ---- Interaction -------------------------------------------------------
+    // Mouse and keyboard editing runs BEFORE the canvas is drawn, so a drag or a
+    // key handled this frame is already in this frame's picture and in the output
+    // frames drawn after it (TD-21). A lambda so calibration can leave early.
+    auto handleInput = [&]() {
         // Mouse -> canvas-normalized coordinates by inverting the same view transform
         // used to render (ADR-041): cursor -> region-normalized [0,1] -> canvas via
         // (vn - offset) / scale. Render and hit-test share (scale, offset) so a handle
@@ -313,7 +251,7 @@ void ViewportEditor::render(EditorContext& ctx) {
         const bool inRegion = mouseX >= regionX && mouseX <= regionX + regionW &&
                               mouseY >= regionY && mouseY <= regionY + regionH;
         // A fresh press on the canvas itself, not on or over an ImGui window, menu or
-        // popup (io reflects last frame's hit-test at this position). Clicks and drags
+        // popup (io holds this frame's hit-test against last frame's windows). Clicks and drags
         // start only on such a press, so a slider or a bin clip dragged across a handle
         // never grabs it and clicks on overlays above the canvas never reselect quads.
         const bool canvasPress = mousePressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
@@ -329,7 +267,6 @@ void ViewportEditor::render(EditorContext& ctx) {
             meshHoveredVertex = meshDraggedVertex = -1;
             es.bezierHovered = es.bezierDragged = -1;
             snapActive = false;
-            glEnable(GL_DEPTH_TEST);
             return;
         }
 
@@ -672,7 +609,74 @@ void ViewportEditor::render(EditorContext& ctx) {
             meshDraggedVertex = -1;
             meshSelectedVertex = -1;
         }
+    };
+    handleInput();
+
+    // Disable depth test for 2D rendering
+    glDisable(GL_DEPTH_TEST);
+
+    // Constrain drawing to the canvas region and apply the view transform.
+    glViewport(vpX, vpY, vpW, vpH);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(vpX, vpY, vpW, vpH);
+
+    // Render all quads
+    if (m_renderer) {
+        m_renderer->setViewTransform(glm::vec2(viewScaleX, viewScaleY),
+                                     glm::vec2(viewOffsetX, viewOffsetY), canvasAspect);
+        m_renderer->beginFrame();
+
+        // Canvas frame border so the projector-frame bounds are visible.
+        m_renderer->renderCanvasBorder(glm::vec4(0.45f, 0.45f, 0.5f, 0.9f), 1.0f);
+
+        // Resolve every quad's texture through the shared builder: image via
+        // TextureBinding::mediaId -> SourceManager, video via the legacy wrapper
+        // (ADR-040 P2). The output frames use the same builder with the projector's
+        // missing-media look.
+        auto texturePtrs = buildQuadTextureMap(es, ctx.sourceManager, SurfaceView::Editor);
+
+        // 3D objects as the canvas's projector sees them (WYSIWYG with the output),
+        // under the quads. The scissor limits the depth clear to the canvas region.
+        glClear(GL_DEPTH_BUFFER_BIT);
+        m_renderer->renderMeshObjects(es.activeScene().getObjects(), *canvasProjector,
+                                      texturePtrs);
+
+        m_renderer->renderQuads(quadManager, texturePtrs);
+
+        // Render handles for selected quad based on mode (none while calibrating, when
+        // the canvas edits calibration points instead).
+        Quad* selectedQuadForHandles =
+            calibrating ? nullptr : quadManager.getPrimarySelectedQuad();
+        if (selectedQuadForHandles) {
+            MeshMode mode = selectedQuadForHandles->getGeometry().getMeshMode();
+            if (mode == MeshMode::MESH_EDIT) {
+                // Draw the control-grid wireframe so division lines are visible,
+                // then the vertex handles on top.
+                m_renderer->renderMeshGrid(*selectedQuadForHandles,
+                                           glm::vec4(0.0f, 0.8f, 1.0f, 0.6f), 1.0f);
+                m_renderer->renderMeshHandles(*selectedQuadForHandles, meshHoveredVertex, meshDraggedVertex, meshSelectedVertex);
+            } else {
+                // CORNERS_ONLY mode (default) - show just the 4 corner handles
+                m_renderer->renderCornerHandles(*selectedQuadForHandles, cornerHoveredVertex, cornerDraggedVertex, cornerSelectedVertex);
+                // Bezier edge handles on top (no-op unless bezier is enabled).
+                m_renderer->renderBezierHandles(*selectedQuadForHandles,
+                                                es.bezierHovered, es.bezierDragged);
+            }
+
+            // Render snap indicator if actively snapping to another quad's vertex
+            if (snapActive) {
+                m_renderer->renderSnapIndicator(snapTargetPos);
+            }
+        }
+
+        m_renderer->endFrame();
+        m_renderer->resetViewTransform();
     }
+
+    // Restore full-framebuffer viewport + drop scissor so the output frames and
+    // ImGui render over the whole window unaffected.
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, fbWidth, fbHeight);
 
     // Re-enable depth test
     glEnable(GL_DEPTH_TEST);

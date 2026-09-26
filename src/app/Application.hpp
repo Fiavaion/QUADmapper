@@ -200,10 +200,11 @@ private:
     // and the One-Flash capture.
     bool captureCameraFrameToPng(const std::string& pngPath, std::string& error);
 
-    // Build the per-frame texture map from m_editorState and push the warped
-    // scene to all enabled output windows.  Called from presentFrame() after the
-    // editor's render()+ImGui+swap so it never runs mid-ImGui-frame.
-    void renderToProjectorOutputs();
+    // Draw every output's frame (its routed scene, or the armed One-Flash pattern)
+    // into the OutputManager's render targets (ADR-054). Called from render() after
+    // the canvas edits, so the frames include them; presentFrame() then shows them
+    // on the outputs after the editor's swap.
+    void renderProjectorFrames();
 
     // Headless perform-mode stress harness (QM-081 H2). Driven by --stress CLI
     // flags; runs in place of the interactive loop. Returns 0 on clean (flat GL

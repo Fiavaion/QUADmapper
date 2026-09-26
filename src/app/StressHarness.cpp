@@ -87,8 +87,8 @@ std::size_t processWorkingSetBytes() {
 // Control flow:
 //   1. Build cfg.outputs output windows + one scene/quad + a procedural
 //      TestPattern source (no file dependency).  Built once, before the loop.
-//   2. Run ONE warm-up cycle (enter → N frames → exit) to let per-output
-//      Renderers and textures settle.
+//   2. Run ONE warm-up cycle (enter → N frames → exit) to let the output
+//      frames (ADR-054) and textures settle.
 //   3. Snapshot GlObjectStats::Snapshot::capture() + working set immediately
 //      after warm-up exit — the consistent "post-exit" phase.
 //   4. Loop cfg.cycles: enter → N frames (with wedge watchdog) → exit →
@@ -97,8 +97,8 @@ std::size_t processWorkingSetBytes() {
 //      Return 0 only when all gates pass.
 //
 // H3 — --hidden mode:
-//   Exercises the same GL-object churn (per-output Renderer create/destroy via
-//   enterPerformMode/exitPerformMode + renderToOutputs) WITHOUT touching
+//   Exercises the same GL-object churn (output frame render targets resized
+//   around enterPerformMode/exitPerformMode + renderOutputFrames) WITHOUT touching
 //   borderless-fullscreen or bringing output windows on-screen.  Output
 //   windows stay hidden via OutputWindow::hide(); the main window is also
 //   hidden by glfwHideWindow at the start of the run.
@@ -106,11 +106,11 @@ std::size_t processWorkingSetBytes() {
 //     - No glfwShowWindow / goBorderlessFullscreen / goWindowed calls.
 //     - No monitor assignment / DWM composition swap.
 //   What it still exercises (the leak-relevant part):
-//     - Per-output Renderer lifecycle (created in enterPerformMode, destroyed in
-//       exitPerformMode) — the most common resource-leak site.
+//     - Output frame lifecycle (each output's render target, drawn every frame
+//       whether its window is shown or not) — the most common resource-leak site.
 //     - All RAII wrapper create/destroy paths tracked by GlObjectStats.
-//   Since QM-087 renderToOutputs skips hidden outputs, so --hidden no longer
-//   draws or swaps them; run without --hidden to exercise (and time) that path.
+//   presentOutputs skips hidden outputs, so --hidden never copies or swaps
+//   them; run without --hidden to exercise (and time) that path.
 // ---------------------------------------------------------------------------
 
 
@@ -231,14 +231,10 @@ int Application::runStress(const StressConfig& cfg) {
         }
 
         if (cfg.hidden) {
-            // --hidden: call the same enter/exit path so the per-output Renderer
-            // lifecycle fires (the leak-relevant part), but keep windows hidden.
-            // enterPerformMode normally shows + fullscreens each window; we skip
-            // that here by driving it ourselves on the OutputManager's internals
-            // via the public API in the most minimal way: just call renderToOutputs
-            // directly without the show/fullscreen step.  The per-cycle Renderer
-            // create/destroy still fires because enterPerformMode creates per-output
-            // renderers regardless of visibility.
+            // --hidden: call the same enter/exit path, but keep windows hidden.
+            // enterPerformMode normally shows + fullscreens each window; hiding
+            // them again right after skips that, while renderOutputFrames still
+            // draws every output's frame regardless of visibility.
             m_outputManager->enterPerformMode(/*borderless=*/false);
             // Keep windows hidden after enterPerformMode showed them.
             for (auto& ow : m_outputManager->getOutputs()) {
@@ -326,7 +322,8 @@ int Application::runStress(const StressConfig& cfg) {
                 glfwSwapBuffers(m_window);
             }
             auto textures = buildQuadTextureMap(es, m_sourceManager.get(), SurfaceView::Output);
-            m_outputManager->renderToOutputs(es.scenes, textures);
+            m_outputManager->renderOutputFrames(es.scenes, textures, *m_renderer);
+            m_outputManager->presentOutputs();
         }
         if (measurePacing) {
             pacingSeconds += glfwGetTime() - loopStart;

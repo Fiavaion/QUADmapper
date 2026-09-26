@@ -48,6 +48,7 @@ bool Renderer::initialize() {
     }
 
     // Create buffers (each quad's surface buffers are made on first draw)
+    createCornerIndexBuffer();
     createOutlineBuffers();
     createHandleBuffers();
 
@@ -71,7 +72,13 @@ void Renderer::shutdown() {
     }
 
     meshCache_.clear();
-    quadCache_.clear();
+    quadCache_.clear();  // before the shared corner indices their VAOs use
+    if (cornerIndexBuffer_ != 0) {
+        glDeleteBuffers(1, &cornerIndexBuffer_);
+        GlObjectStats::onVertexBufferDestroyed();
+        cornerIndexBuffer_ = 0;
+        cornerIndexCount_ = 0;
+    }
     quadShader_.destroy();
     mesh3dShader_.destroy();
     outlineShader_.destroy();
@@ -109,6 +116,7 @@ void Renderer::shutdown() {
         handleVBO_ = 0;
     }
 
+    boundProgram_ = 0;  // the ids may be reused by programs made later
     initialized_ = false;
     Logger::debug("Renderer shutdown complete");
 }
@@ -118,7 +126,26 @@ void Renderer::beginFrame() {
 }
 
 void Renderer::endFrame() {
-    // Frame cleanup if needed
+    // Surface draws leave their program, texture and VAO bound for the next one
+    // (ADR-054); unbind them so no other GL code can change a quad's VAO, and so
+    // the next pass binds its program again whatever ran in between.
+    glBindVertexArray(0);
+    Texture::unbind();
+    unbindProgram();
+}
+
+void Renderer::useSurfaceProgram(ShaderProgram& shader) {
+    // glUseProgram costs as much as several uniform uploads even when the program
+    // is already current, and consecutive surface draws share it.
+    if (boundProgram_ != shader.getId()) {
+        shader.bind();
+        boundProgram_ = shader.getId();
+    }
+}
+
+void Renderer::unbindProgram() {
+    ShaderProgram::unbind();
+    boundProgram_ = 0;
 }
 
 void Renderer::setViewTransform(const glm::vec2& scale, const glm::vec2& offset, float canvasAspect) {
@@ -140,11 +167,13 @@ void Renderer::applyViewUniforms(ShaderProgram& shader) {
 
 // A quad's tessellated surface on the GPU. VAOs are per context, like the Renderer
 // that owns it. Rebuilt only when the quad's geometry changes, so drawing an
-// unchanged quad costs no tessellation and no buffer upload.
+// unchanged quad costs no tessellation and no buffer upload. A corner-pin patch
+// draws with the Renderer's shared index buffer (every patch has the same
+// triangles, TD-22); only a mesh-edit grid owns its indices.
 struct GpuQuad {
     GLuint vao = 0;
     GLuint vbo = 0;
-    GLuint ebo = 0;
+    GLuint ownIndices = 0;  // 0 while the VAO uses the shared corner-patch indices
     GLsizei indexCount = 0;
     QuadGeometry builtFrom;  // the geometry the buffers hold
     uint64_t lastPass = 0;
@@ -154,12 +183,9 @@ struct GpuQuad {
         GlObjectStats::onVertexArrayCreated();
         glGenBuffers(1, &vbo);
         GlObjectStats::onVertexBufferCreated();
-        glGenBuffers(1, &ebo);
-        GlObjectStats::onVertexBufferCreated();
 
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, position));
         glEnableVertexAttribArray(1);
@@ -171,22 +197,45 @@ struct GpuQuad {
         GlObjectStats::onVertexArrayDestroyed();
         glDeleteBuffers(1, &vbo);
         GlObjectStats::onVertexBufferDestroyed();
-        glDeleteBuffers(1, &ebo);
-        GlObjectStats::onVertexBufferDestroyed();
+        releaseOwnIndices();
     }
     GpuQuad(const GpuQuad&) = delete;
     GpuQuad& operator=(const GpuQuad&) = delete;
 
-    void upload(const std::vector<QuadVertex>& vertices, const std::vector<uint32_t>& indices) {
+    // Upload the vertices and draw them with `indices`, or, when that is null, with
+    // the shared buffer `sharedIndices` holding `sharedCount` indices.
+    void upload(const std::vector<QuadVertex>& vertices, const std::vector<uint32_t>* indices,
+                GLuint sharedIndices, GLsizei sharedCount) {
         glBindVertexArray(vao);  // the element-array binding is VAO state
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(QuadVertex)),
                      vertices.data(), GL_DYNAMIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices.size() * sizeof(uint32_t)),
-                     indices.data(), GL_DYNAMIC_DRAW);
+        if (indices) {
+            if (ownIndices == 0) {
+                glGenBuffers(1, &ownIndices);
+                GlObjectStats::onVertexBufferCreated();
+            }
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ownIndices);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices->size() * sizeof(uint32_t)),
+                         indices->data(), GL_DYNAMIC_DRAW);
+            indexCount = static_cast<GLsizei>(indices->size());
+        } else {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sharedIndices);
+            indexCount = sharedCount;
+        }
         glBindVertexArray(0);
-        indexCount = static_cast<GLsizei>(indices.size());
+        if (!indices) {
+            releaseOwnIndices();  // no longer bound to the VAO
+        }
+    }
+
+private:
+    void releaseOwnIndices() {
+        if (ownIndices != 0) {
+            glDeleteBuffers(1, &ownIndices);
+            GlObjectStats::onVertexBufferDestroyed();
+            ownIndices = 0;
+        }
     }
 };
 
@@ -211,8 +260,10 @@ const GpuQuad& Renderer::quadBuffersFor(const Quad& quad) {
         slot = std::make_unique<GpuQuad>();
     }
     if (fresh || !sameSurface(slot->builtFrom, geometry)) {
-        tessellate(geometry);
-        slot->upload(vertices_, indices_);
+        // A corner-pin patch leaves indices_ alone: it uses the shared set.
+        const bool ownIndices = !tessellate(geometry);
+        slot->upload(vertices_, ownIndices ? &indices_ : nullptr, cornerIndexBuffer_,
+                     cornerIndexCount_);
         slot->builtFrom = geometry;
     }
     slot->lastPass = meshPass_;
@@ -251,13 +302,14 @@ void Renderer::createOutlineBuffers() {
     glBindVertexArray(0);
 }
 
-void Renderer::tessellate(const QuadGeometry& geometry) {
+bool Renderer::tessellate(const QuadGeometry& geometry) {
     // Smooth path (ADR-043): a CORNERS_ONLY quad is a projective (or bezier) corner
     // patch — its surface is fully defined by the corners, so render it as a fine
     // N×N tessellation sampled from surfacePoint(). This decouples render density
     // from the 1×1 control grid and removes the diagonal "fold" on extreme warps.
+    // Its triangles are always the same, so it draws with cornerIndexBuffer_.
     if (geometry.getMeshMode() == MeshMode::CORNERS_ONLY) {
-        constexpr int N = 32;  // sub-divisions per axis (33×33 verts; within buffers)
+        constexpr int N = kCornerPatchDivisions;
         const int line = N + 1;
         vertices_.resize(static_cast<size_t>(line) * line);
         const auto samples = geometry.sampleSurface(N);
@@ -274,19 +326,7 @@ void Renderer::tessellate(const QuadGeometry& geometry) {
                 vertices_[index].texCoord[2] = s.q;
             }
         }
-        indices_.resize(static_cast<size_t>(N) * N * 6);
-        int o = 0;
-        for (int r = 0; r < N; ++r) {
-            for (int c = 0; c < N; ++c) {
-                uint32_t tl = static_cast<uint32_t>(r * line + c);
-                uint32_t tr = tl + 1;
-                uint32_t bl = static_cast<uint32_t>((r + 1) * line + c);
-                uint32_t br = bl + 1;
-                indices_[o++] = tl; indices_[o++] = bl; indices_[o++] = tr;
-                indices_[o++] = tr; indices_[o++] = bl; indices_[o++] = br;
-            }
-        }
-        return;
+        return true;
     }
 
     // Control grid may be non-uniform (ADR-038): iterate per-axis using the
@@ -332,6 +372,34 @@ void Renderer::tessellate(const QuadGeometry& geometry) {
             indices_[indexOffset++] = bottomRight;
         }
     }
+    return false;
+}
+
+void Renderer::createCornerIndexBuffer() {
+    // The triangles of every corner-pin patch: two per cell of the N×N grid.
+    constexpr int N = kCornerPatchDivisions;
+    const int line = N + 1;
+    std::vector<uint32_t> indices(static_cast<size_t>(N) * N * 6);
+    size_t o = 0;
+    for (int r = 0; r < N; ++r) {
+        for (int c = 0; c < N; ++c) {
+            const uint32_t tl = static_cast<uint32_t>(r * line + c);
+            const uint32_t tr = tl + 1;
+            const uint32_t bl = static_cast<uint32_t>((r + 1) * line + c);
+            const uint32_t br = bl + 1;
+            indices[o++] = tl; indices[o++] = bl; indices[o++] = tr;
+            indices[o++] = tr; indices[o++] = bl; indices[o++] = br;
+        }
+    }
+    glGenBuffers(1, &cornerIndexBuffer_);
+    GlObjectStats::onVertexBufferCreated();
+    // With no VAO bound, so no VAO records this element-array binding.
+    glBindVertexArray(0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cornerIndexBuffer_);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices.size() * sizeof(uint32_t)),
+                 indices.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    cornerIndexCount_ = static_cast<int>(indices.size());
 }
 
 void Renderer::updateOutlineBuffers(const Quad& quad) {
@@ -371,21 +439,17 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
 
     const GpuQuad& gpu = quadBuffersFor(quad);
 
-    // Bind shader
-    quadShader_.bind();
+    // Uniforms equal to the previous draw's are skipped (ShaderProgram), and the
+    // program, texture and VAO stay bound until the next draw or endFrame().
+    useSurfaceProgram(quadShader_);
     applyViewUniforms(quadShader_);
     quadShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
 
     applySurfaceUniforms(quadShader_, quad.getTexture(), quad.getOpacity(),
                          quad.getColorCorrection(), quad.getSoftEdge(), texture);
 
-    // Draw
     glBindVertexArray(gpu.vao);
     glDrawElements(GL_TRIANGLES, gpu.indexCount, GL_UNSIGNED_INT, nullptr);
-    glBindVertexArray(0);
-
-    Texture::unbind();
-    ShaderProgram::unbind();
 
     // Draw selection outline if selected
     if (selected) {
@@ -576,7 +640,7 @@ void Renderer::renderMeshObject(const MeshObject& object, const ProjectorCamera&
     const glm::mat4 mvp =
         camera.projectionMatrix(nearZ, farZ) * camera.viewMatrix() * object.getTransform();
 
-    mesh3dShader_.bind();
+    useSurfaceProgram(mesh3dShader_);
     mesh3dShader_.setMat4("u_MVP", mvp);
     applyViewUniforms(mesh3dShader_);
     mesh3dShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
@@ -584,12 +648,9 @@ void Renderer::renderMeshObject(const MeshObject& object, const ProjectorCamera&
     applySurfaceUniforms(mesh3dShader_, object.getTexture(), object.getOpacity(),
                          ColorCorrection{}, SoftEdge{}, texture);
 
+    // Left bound, as by renderQuad, until the next draw or endFrame().
     glBindVertexArray(gpu->vao);
     glDrawElements(GL_TRIANGLES, gpu->indexCount, GL_UNSIGNED_INT, nullptr);
-    glBindVertexArray(0);
-
-    Texture::unbind();
-    ShaderProgram::unbind();
 }
 
 void Renderer::renderMeshObjects(const std::vector<std::unique_ptr<MeshObject>>& objects,
@@ -696,7 +757,7 @@ void Renderer::renderQuadOutline(const Quad& quad, const glm::vec4& color, float
     glDrawArrays(GL_LINE_STRIP, 0, 5);
     glBindVertexArray(0);
 
-    ShaderProgram::unbind();
+    unbindProgram();
     glLineWidth(1.0f);
 }
 
@@ -736,7 +797,7 @@ void Renderer::renderMeshGrid(const Quad& quad, const glm::vec4& color, float li
     glBindVertexArray(gridVAO_);
     glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridVertices_.size() / 2));
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
     glLineWidth(1.0f);
 }
 
@@ -762,7 +823,7 @@ void Renderer::renderCanvasBorder(const glm::vec4& color, float lineWidth) {
     glBindVertexArray(outlineVAO_);
     glDrawArrays(GL_LINE_STRIP, 0, 5);
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
     glLineWidth(1.0f);
 }
 
@@ -870,7 +931,7 @@ void Renderer::renderCornerHandles(const Quad& quad, int hoveredIndex, int dragg
     }
 
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
 }
 
 void Renderer::renderMeshHandles(const Quad& quad, int hoveredIndex, int draggedIndex, int selectedIndex) {
@@ -935,7 +996,7 @@ void Renderer::renderMeshHandles(const Quad& quad, int hoveredIndex, int dragged
     }
 
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
 }
 
 void Renderer::renderSnapIndicator(const Vec2& position) {
@@ -965,7 +1026,7 @@ void Renderer::renderSnapIndicator(const Vec2& position) {
     glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
 
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
 }
 
 void Renderer::renderBezierHandles(const Quad& quad, int hovered, int dragged) {
@@ -997,7 +1058,7 @@ void Renderer::renderBezierHandles(const Quad& quad, int hovered, int dragged) {
     glBindVertexArray(gridVAO_);
     glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridVertices_.size() / 2));
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
 
     // Control points as round amber handles.
     handleShader_.bind();
@@ -1017,7 +1078,7 @@ void Renderer::renderBezierHandles(const Quad& quad, int hovered, int dragged) {
         glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
     }
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
 }
 
 } // namespace quadmapper

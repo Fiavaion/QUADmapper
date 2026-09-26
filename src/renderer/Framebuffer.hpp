@@ -48,4 +48,28 @@ private:
     int height_ = 0;
 };
 
+// Copies a Framebuffer's colour texture onto the draw framebuffer of ANOTHER context
+// that shares it (ADR-054: an output window shows the frame the main context drew).
+// Textures are shared between contexts, framebuffer objects are not, so each context
+// that copies owns one of these. Create, use and destroy it with that context current.
+class FrameCopy {
+public:
+    FrameCopy() = default;
+    ~FrameCopy();
+
+    FrameCopy(const FrameCopy&) = delete;
+    FrameCopy& operator=(const FrameCopy&) = delete;
+
+    // Copy `source` onto the bound draw framebuffer's rectangle (0,0)-(width,height):
+    // texel for texel when the sizes match, filtered otherwise. The scissor test must
+    // be off. False when the source has no texture or cannot be read.
+    bool copy(const Framebuffer& source, int width, int height);
+
+    // Release the GL object (call with the owning context current). Idempotent.
+    void destroy();
+
+private:
+    GLuint fbo_ = 0;  // read framebuffer holding the source texture
+};
+
 }  // namespace quadmapper
