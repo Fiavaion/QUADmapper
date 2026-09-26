@@ -6,7 +6,8 @@ namespace quadmapper {
 
 // Supported file extensions
 static const std::vector<std::string> IMAGE_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".psd", ".hdr"
+    ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".psd", ".hdr",
+    ".tif", ".tiff"
 };
 
 static const std::vector<std::string> VIDEO_EXTENSIONS = {

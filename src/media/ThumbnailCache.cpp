@@ -1,8 +1,7 @@
 #include "ThumbnailCache.hpp"
+#include "ImageLoader.hpp"
 #include "MediaLibrary.hpp"
 #include "core/Logger.hpp"
-
-#include <stb_image.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -33,7 +32,8 @@ std::filesystem::path ThumbnailCache::getCachePath(const std::filesystem::path& 
     // Create a hash from the full path for a unique filename
     std::hash<std::string> hasher;
     size_t hash = hasher(filePath.string());
-    return getCacheDir() / (std::to_string(hash) + ".thumb");
+    // "v2": thumbnails are now always stored top row first; older ones could be flipped.
+    return getCacheDir() / (std::to_string(hash) + ".v2.thumb");
 }
 
 bool ThumbnailCache::isCacheValid(const std::filesystem::path& filePath,
@@ -155,13 +155,17 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
         return 0;
     }
 
-    // Load original image
-    int width, height, channels;
-    unsigned char* data = stbi_load(filePath.string().c_str(), &width, &height, &channels, 4);
-    if (!data) {
+    // Load through ImageLoader so every image format (TIFF included) thumbnails, always
+    // as RGBA stored bottom row first.
+    auto loaded = ImageLoader::loadWithChannels(filePath, 4);
+    if (!loaded.isSuccess()) {
         Logger::debug("ThumbnailCache: Failed to load image: {}", filePath.filename().string());
         return 0;
     }
+    const ImageData& image = loaded.value();
+    const int width = image.width;
+    const int height = image.height;
+    const uint8_t* data = image.pixels.data();
 
     // Calculate thumbnail dimensions maintaining aspect ratio
     int thumbWidth, thumbHeight;
@@ -177,12 +181,13 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     thumbWidth = std::max(1, thumbWidth);
     thumbHeight = std::max(1, thumbHeight);
 
-    // Simple nearest-neighbor resize
+    // Simple nearest-neighbor resize. The source is bottom row first but the bin draws
+    // thumbnails with UV (0,0) at the top, so thumbnail rows are written top row first.
     unsigned char* thumbData = new unsigned char[thumbWidth * thumbHeight * 4];
     for (int y = 0; y < thumbHeight; ++y) {
         for (int x = 0; x < thumbWidth; ++x) {
             int srcX = (x * width) / thumbWidth;
-            int srcY = (y * height) / thumbHeight;
+            int srcY = height - 1 - (y * height) / thumbHeight;
             int srcIdx = (srcY * width + srcX) * 4;
             int dstIdx = (y * thumbWidth + x) * 4;
 
@@ -192,8 +197,6 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
             thumbData[dstIdx + 3] = data[srcIdx + 3];
         }
     }
-
-    stbi_image_free(data);
 
     // Create OpenGL texture
     GLuint texId = 0;

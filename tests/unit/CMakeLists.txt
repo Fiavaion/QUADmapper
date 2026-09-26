@@ -27,6 +27,7 @@ add_quadmapper_test(test_scene
     scene/ProjectorCalibrationTest.cpp
     scene/RayPickTest.cpp
     scene/CalibrationSessionTest.cpp
+    scene/CropInsetsTest.cpp
 )
 target_link_libraries(test_scene PRIVATE quadmapper_scene quadmapper_core)
 
@@ -88,6 +89,7 @@ endif()
 # Media module tests
 add_quadmapper_test(test_media
     media/MediaLibraryTest.cpp
+    media/ImageLoaderTest.cpp
 )
 target_link_libraries(test_media PRIVATE quadmapper_media quadmapper_core)
 
