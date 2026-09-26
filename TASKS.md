@@ -5,8 +5,8 @@ Last Updated: 2026-09-25 (Session 22)
 ## Quick Status
 - In Progress: 0
 - Todo: Phase 0 S6 hygiene (move AI + stress out of Application.cpp, dead stubs, audio decision,
-  dev→master PR), Phase 1 ADR-047..051, QM-079 (needs ADR-049), QM-082, TD-08/11/12/13/14, 🚩 QM-061
-- Done: Session 22 added QM-083..QM-091 (see below)
+  dev→master PR), Phase 1 ADR-047..051, QM-079 (needs ADR-049), QM-082, TD-08/11..17, 🚩 QM-061
+- Done: Session 22 added QM-083..QM-099 (see below)
 - Blocked: 0
 - Plan of record: [docs/audits/2026-09-25-foundation-audit.md](docs/audits/2026-09-25-foundation-audit.md) §8
 
@@ -34,6 +34,27 @@ verifier. 747/747 ctest (4 audio skips) at 9607a1f.
 - **QM-091 DONE** — frame-exact seeks on MPEG-TS (keyframe landing check + backwards retry,
   interruptible so scrubbing never freezes outputs), decoder drained at EOF (no lost B-frames).
 - Final verify of the source-lifetime redesign + QM-090 passed; its LOW/MEDIUM follow-ups are TD-14.
+- **GUI QA of Phase 0: 10/10 scenarios PASS on the real app** (tests/smoke, BitBlt capture — the
+  "dark-video speckles" were a GDI+ CopyFromScreen artefact in the harness, QM-096).
+
+### Phase 3D-A — 3D projection mapping foundation (ADR-052), GUI-verified
+- **QM-092 DONE** — ProjectorCamera (OpenCV-convention pinhole, GL matrices proven equal to
+  project()), MeshObject, Scene objects, per-output projector + calibration points.
+- **QM-093 DONE** — calibrateProjector: DLT/POSIT/homography + LM, robust single-mis-click
+  isolation (>= 9 pts), warnings; Auto solves the lens only from >= 8 points and only keeps a
+  plausible lens (QM-099).
+- **QM-094 DONE** — OBJ import, `.qmap` 3.2.0 (objects + projector), object list/Inspector.
+- **QM-095 DONE** — objects rendered from each output's projector (depth, previews, editor).
+- **QM-097 DONE** — calibration UI: model view pick (vertex snap), canvas placement, Tab/arrow
+  nudge, live solve, per-point error, warnings.
+- **QM-098 DONE** — every projector fits its output's current size; uncalibrated ones re-frame
+  on their objects each frame.
+- **QM-099 DONE** — object textures upright (reverted a double flip), stable Auto lens, New
+  resets calibration. GUI QA: import, rotation, no-output scene, 6-point calibration + nudges,
+  save/load (within 1-2 px), object safety, success metric — all PASS.
+- **Next (needs approval: new sidecar dependencies/ADR-053)** — 3D-B camera-assisted
+  calibration (Gray-code structured light + ChArUco camera calibration → automatic point pairs),
+  3D-C AI proposals (SAM 2 masks, Depth Anything V2 surfaces), 🚩 QM-061 real camera test.
 
 ## Session 21 (2026-06-19) — MultiMon cross-pollination (built + verified, uncommitted)
 Cross-pollinated from the MultiMon project (`D:\AIprojects\MultiMon`). Model-switched build
