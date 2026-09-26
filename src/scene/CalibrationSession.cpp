@@ -83,12 +83,14 @@ bool CalibrationSession::update(const std::vector<CalibrationPoint>& points,
         solved = false;
         statusIsError = false;
         rmsError = 0.0f;
+        warning.clear();
         const int more = needed - pointsUsed;
         status = "Add " + std::to_string(more) + " more enabled point" + (more == 1 ? "" : "s") +
                  " to solve (" + std::to_string(needed) + " needed)";
         return false;
     }
 
+    warning.clear();
     auto result = calibrateProjector(points, lens, mode);
     if (!result) {
         solved = false;
@@ -104,6 +106,7 @@ bool CalibrationSession::update(const std::vector<CalibrationPoint>& points,
     statusIsError = false;
     rmsError = solution.rmsError;
     status = solution.method;
+    warning = solution.warning;
     return true;
 }
 

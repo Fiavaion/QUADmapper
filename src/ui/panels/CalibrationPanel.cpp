@@ -11,6 +11,7 @@
 #include "scene/CalibrationSession.hpp"
 #include "scene/MeshObject.hpp"
 #include "scene/RayPick.hpp"
+#include "ui/Theme.hpp"
 #include "scene/Scene.hpp"
 
 #include <glad/glad.h>
@@ -272,6 +273,11 @@ void CalibrationPanel::render(EditorContext& ctx) {
         } else if (cal.solved) {
             ImGui::TextWrapped("%s | RMS %.2f px | %d points", cal.status.c_str(), cal.rmsError,
                                cal.pointsUsed);
+            if (!cal.warning.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(Theme::Colors::Warning));
+                ImGui::TextWrapped("%s", cal.warning.c_str());
+                ImGui::PopStyleColor();
+            }
         } else if (!cal.status.empty()) {
             ImGui::TextDisabled("%s", cal.status.c_str());
         }

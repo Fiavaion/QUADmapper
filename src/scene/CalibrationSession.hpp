@@ -62,6 +62,9 @@ struct CalibrationSession {
     // failure.
     std::string status;
     bool statusIsError = false;
+    // The solver's caution on a successful solve (poor fit it cannot pin on one pair, or
+    // an unreliable lens it refused); empty when the solve is clean.
+    std::string warning;
     bool solved = false;  // the last attempt succeeded
     float rmsError = 0.0f;
     int pointsUsed = 0;

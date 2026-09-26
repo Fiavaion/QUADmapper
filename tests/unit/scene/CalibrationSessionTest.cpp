@@ -174,6 +174,27 @@ TEST(CalibrationSessionTest, EnoughPointsSolveAndCalibrateTheProjector) {
     EXPECT_NEAR(session.lens.fx, truth.intrinsics.fx, 1.0f);
 }
 
+TEST(CalibrationSessionTest, SolverWarningReachesTheSession) {
+    // GUI QA: the solver's warnings never reached the panel. Five pairs with one
+    // mis-clicked: pose-only solves, but too few pairs to single out the wrong one.
+    auto points = pairsFor(trueCamera(), cubeCorners());
+    points.resize(5);
+    points[1].pixel += Vec2(60.0f, -40.0f);
+    ProjectorCamera projector;
+    projector.intrinsics = trueCamera().intrinsics;  // pose-only: the lens must be right
+    CalibrationSession session;
+    session.begin(projector);
+    ASSERT_TRUE(session.update(points, projector)) << session.status;
+    EXPECT_TRUE(session.solved);
+    EXPECT_FALSE(session.warning.empty());
+
+    // A clean solve clears it.
+    points[1] = pairsFor(trueCamera(), cubeCorners())[1];
+    session.markChanged();
+    ASSERT_TRUE(session.update(points, projector)) << session.status;
+    EXPECT_TRUE(session.warning.empty()) << session.warning;
+}
+
 TEST(CalibrationSessionTest, SolvesOnlyAfterAChange) {
     const auto points = pairsFor(trueCamera(), cubeCorners());
     ProjectorCamera projector;
