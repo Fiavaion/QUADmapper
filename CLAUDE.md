@@ -202,16 +202,26 @@ See `.claude/agent-state/spawn-rules.json` for full configuration.
 
 ### Adding a New Panel
 
-1. Create `src/ui/panels/NewPanel.hpp` and `.cpp`
-2. Inherit from `Panel` base class
-3. Register in `UIManager::initializePanels()`
-4. Add menu entry in `MainMenu`
+1. Create `src/ui/panels/NewPanel.hpp` and `.cpp` (add both to `src/ui/CMakeLists.txt`) with a
+   `render(EditorContext& ctx)` that returns early when its `show…` flag is off, like
+   `VideoPlayerPanel` or `ControlPanel`.
+2. Hold the panel and its visibility flag in `EditorState` (`src/app/EditorState.hpp`).
+3. Draw it from `Application::render()` next to the other panels.
+4. Add a toggle in the Window menu (`src/ui/panels/MainMenuBar.cpp`).
+5. Check the dock layout on a first run (`imgui.ini`) so it docks sensibly.
 
 ### Adding a New Keyboard Shortcut
 
-1. Add action enum in `src/input/KeyboardShortcuts.hpp`
-2. Add default binding in `KeyboardShortcuts::initializeDefaults()`
-3. Handle action in appropriate manager class
+- **Editor-wide shortcuts** go in the shortcut block of `Application::render()`, behind its
+  guards (no text field active, no popup open), with `ImGui::IsKeyPressed(key, false)`.
+- **Canvas editing keys** (vertex select and nudge) live in `ViewportEditor.cpp` and
+  `src/input/VertexKeyboard.hpp`, which claim the keys with `SetKeyOwner`. Never let a new
+  shortcut take Tab, the arrows, Shift or Alt from the canvas.
+- **Keys on a focused projector window** go through the output windows' GLFW key callback
+  (`OutputManager`), as scene takes and Ctrl+B blackout do.
+- Keys that must not depend on the keyboard layout (scene takes 1–9) use physical GLFW key
+  codes, not `ImGuiKey`.
+- `src/input/KeyboardShortcuts.*` is not wired into the app; do not add to it.
 
 ### Adding a New Media Type
 
