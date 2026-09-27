@@ -1415,7 +1415,10 @@ void Application::render() {
                 m_project->setModified(true);
             }
         } else if (quadManager.hasSelection()) {
+            // Selecting an object deselects the quads, so a quad selection is newer.
             es.deleteSelectedQuads();
+            m_project->setModified(true);
+        } else if (es.deleteSelectedObject()) {
             m_project->setModified(true);
         }
     }

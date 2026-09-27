@@ -433,6 +433,20 @@ struct EditorState {
         return ObjectRef{&quadResolver, activeScene().getId(), object.getId()};
     }
 
+    // Delete key on a selected 3D object (the Object selection of the active scene), as
+    // an undo step. False when no object is selected, or a quad is (selecting an object
+    // deselects the quads, so a quad selection is the newer one).
+    bool deleteSelectedObject() {
+        if (currentSelectionType != SelectionType::Object || selectedObjectId.isNull()) return false;
+        if (activeScene().getQuadManager().hasSelection()) return false;
+        Scene& scene = activeScene();
+        if (!scene.getObject(selectedObjectId)) return false;
+        commandHistory.execute(std::make_unique<DeleteObjectCommand>(
+            ObjectRef{&quadResolver, scene.getId(), selectedObjectId}));
+        selectedObjectId = UUID();
+        return true;
+    }
+
     // Delete every selected quad of the active scene as ONE undo step, through
     // Scene::deleteQuad (group cleanup). Legacy quadTextures/quadTexturePaths entries
     // are kept so undo brings the quad back with its UV grid and saved media path.

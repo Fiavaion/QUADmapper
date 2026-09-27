@@ -783,3 +783,48 @@ TEST(MeshLoadsTest, NewOrLoadDropsARelocationInProgress) {
     fx.waitIdle();
     EXPECT_TRUE(adoptLoadedMeshes(fx.es).empty());
 }
+
+// ---- Delete key on a selected 3D object (EditorState::deleteSelectedObject) ----------
+
+TEST(DeleteKeyTest, DeletesTheSelectedObjectAsAnUndoStep) {
+    EditorState es;
+    Scene& scene = es.activeScene();
+    MeshObject* object = scene.createObject("Prop");
+    const UUID id = object->getId();
+    es.selectedObjectId = id;
+    es.currentSelectionType = EditorState::SelectionType::Object;
+
+    ASSERT_TRUE(es.deleteSelectedObject());
+    EXPECT_EQ(scene.getObject(id), nullptr);
+    EXPECT_TRUE(es.selectedObjectId.isNull());
+    EXPECT_EQ(es.commandHistory.getUndoDescription(), "Delete 3D object");
+    EXPECT_FALSE(es.deleteSelectedObject());  // nothing selected any more
+
+    ASSERT_TRUE(es.commandHistory.undo());
+    EXPECT_NE(scene.getObject(id), nullptr);
+}
+
+TEST(DeleteKeyTest, LeavesObjectsAloneWhenTheyAreNotTheSelection) {
+    EditorState es;
+    Scene& scene = es.activeScene();
+    MeshObject* object = scene.createObject("Prop");
+    const UUID id = object->getId();
+    es.selectedObjectId = id;
+
+    es.currentSelectionType = EditorState::SelectionType::Quad;  // e.g. a quad picked since
+    EXPECT_FALSE(es.deleteSelectedObject());
+    es.currentSelectionType = EditorState::SelectionType::Output;
+    EXPECT_FALSE(es.deleteSelectedObject());
+
+    // Object selection, but a quad selected on the canvas after it: the quad is newer.
+    es.currentSelectionType = EditorState::SelectionType::Object;
+    Quad* quad = scene.createQuad();
+    scene.getQuadManager().selectQuad(quad->getId());
+    EXPECT_FALSE(es.deleteSelectedObject());
+    scene.getQuadManager().deselectAll();
+
+    // A stale selection (the object is gone, or in another scene) deletes nothing.
+    scene.deleteObject(id);
+    EXPECT_FALSE(es.deleteSelectedObject());
+    EXPECT_FALSE(es.commandHistory.canUndo());
+}
