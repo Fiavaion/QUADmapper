@@ -378,7 +378,7 @@ bool YuvConverter::uploadPlanes(const YuvPicture& picture, YuvUploadState& state
 }
 
 void YuvConverter::prefetch(const YuvPicture& next, YuvUploadState& state) {
-    if (!copier_ || !next.isValid() || state.staging_.mapped || next.layout != state.layout_ ||
+    if (!copier_ || !next.isValid() || next.onGpu() || state.staging_.mapped || next.layout != state.layout_ ||
         next.width != state.width_ || next.height != state.height_) {
         return;
     }
@@ -400,7 +400,7 @@ void YuvConverter::end() {
 }
 
 bool YuvConverter::convert(const YuvPicture& picture, Texture& target, YuvUploadState& state) {
-    if (!picture.isValid() || !target.isValid() || target.getWidth() != picture.width ||
+    if (!picture.isValid() || picture.onGpu() || !target.isValid() || target.getWidth() != picture.width ||
         target.getHeight() != picture.height) {
         return false;
     }
@@ -421,7 +421,41 @@ bool YuvConverter::convert(const YuvPicture& picture, Texture& target, YuvUpload
         if (!inBatch_) end();
         return false;
     }
+    drawPass(picture, state.planes_, target);
+    if (!inBatch_) end();
+    return true;
+}
 
+bool YuvConverter::convertPlanes(const YuvPicture& picture, uint32_t luma, uint32_t chroma, Texture& target) {
+    if (!picture.semiPlanar() || luma == 0 || chroma == 0 || !target.isValid() ||
+        target.getWidth() != picture.width || target.getHeight() != picture.height) {
+        return false;
+    }
+    if (!saved_) saveState();
+    if (!ensureObjects()) {
+        if (!inBatch_) end();
+        return false;
+    }
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    // Sampled as the uploaded planes are (ensurePlanes): linear, clamped. They have one
+    // level already; the driver refuses GL_TEXTURE_MAX_LEVEL on a shared texture.
+    for (uint32_t plane : {luma, chroma}) {
+        glBindTexture(GL_TEXTURE_2D, plane);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    const uint32_t planes[3] = {luma, chroma, 0};
+    drawPass(picture, planes, target);
+    if (!inBatch_) end();
+    return true;
+}
+
+void YuvConverter::drawPass(const YuvPicture& picture, const uint32_t planes[3], Texture& target) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target.getId(), 0);
     glViewport(0, 0, picture.width, picture.height);
@@ -435,7 +469,7 @@ bool YuvConverter::convert(const YuvPicture& picture, Texture& target, YuvUpload
 
     for (int p = 0; p < 3; ++p) {
         glActiveTexture(GL_TEXTURE0 + p);
-        glBindTexture(GL_TEXTURE_2D, p < picture.planeCount() ? state.planes_[p] : 0);
+        glBindTexture(GL_TEXTURE_2D, p < picture.planeCount() ? planes[p] : 0);
     }
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -446,9 +480,6 @@ bool YuvConverter::convert(const YuvPicture& picture, Texture& target, YuvUpload
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, target.getId());
     glGenerateMipmap(GL_TEXTURE_2D);
-
-    if (!inBatch_) end();
-    return true;
 }
 
 void YuvConverter::saveState() {

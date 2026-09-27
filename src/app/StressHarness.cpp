@@ -11,11 +11,13 @@
 #include "../core/Logger.hpp"
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
+#include "../renderer/DxInterop.hpp"
 #include "../scene/Quad.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../scene/Scene.hpp"
 #include "../source/SourceManager.hpp"
 #include "../source/procedural/ProceduralSource.hpp"
+#include "../video/VideoDecoder.hpp"
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -461,7 +463,25 @@ int Application::runStress(const StressConfig& cfg) {
                       "after pause/resume (LESSON-BUG-006 repro).");
     }
 
-    if (anyLeak || anyWedge || wsExceeded || pauseResumeWedge || audioLeak) {
+    // ADR-056: once the video source is gone, nothing D3D11 is held for it: no interop
+    // target (shared planes, opened frames, views, registrations) and no decoded
+    // frame left on the GPU.
+    bool d3dLeak = false;
+    if (needsMedia) {
+        m_sourceManager->removeSource(sourceId);
+        quad->getTexture().mediaId = UUID();
+        const long interopObjects = DxInterop::liveObjects();
+        const long gpuFrames = VideoDecoder::liveGpuFrames();
+        d3dLeak = interopObjects != 0 || gpuFrames != 0;
+        if (d3dLeak) {
+            Logger::error("[STRESS] STRESS FAIL (D3D11 leak) — with the video source removed, {} interop "
+                          "objects and {} GPU frames are still alive.", interopObjects, gpuFrames);
+        } else {
+            Logger::info("[STRESS] D3D11: no interop objects or GPU frames left after the source was removed.");
+        }
+    }
+
+    if (anyLeak || anyWedge || wsExceeded || pauseResumeWedge || audioLeak || d3dLeak) {
         return 1;
     }
 

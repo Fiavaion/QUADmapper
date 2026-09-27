@@ -19,11 +19,26 @@ enum class YuvLayout {
 enum class YuvMatrix { BT601, BT709, BT2020 };
 
 /**
+ * @brief A decoded picture left on the GPU (ADR-056)
+ *
+ * An NV12 or P010 D3D11 texture on the decoders' D3D11 device, shared with a keyed mutex
+ * (key 0) so the renderer opens it on its own device. Plain handles, so no D3D header
+ * reaches this one.
+ */
+struct GpuSurface {
+    void* texture = nullptr;         // ID3D11Texture2D* on `device`, alive while YuvPicture::owner is
+    void* shared = nullptr;          // its shared HANDLE, for OpenSharedResource
+    uint64_t serial = 0;             // names the texture for the life of the process
+    void* device = nullptr;          // the decoders' ID3D11Device* (kept until the process exits)
+};
+
+/**
  * @brief A decoded picture kept as YUV planes for the GPU conversion pass (ADR-055)
  *
  * Nothing is converted or copied on the CPU: the planes point into the decoder's
  * buffers, which `owner` keeps alive. Copying a YuvPicture shares those buffers, so a
- * frame moves from the decode thread to the upload by handle.
+ * frame moves from the decode thread to the upload by handle. A picture left on the GPU
+ * (ADR-056) has no planes in memory; `gpu` names its texture instead.
  */
 struct YuvPicture {
     YuvLayout layout = YuvLayout::None;
@@ -34,9 +49,11 @@ struct YuvPicture {
     YuvMatrix matrix = YuvMatrix::BT709;
     bool fullRange = false;      // false: limited ("TV") range, 16-235 for 8-bit luma
     std::shared_ptr<const void> owner;
+    GpuSurface gpu;              // set instead of the planes for a picture on the GPU
 
+    bool onGpu() const { return gpu.texture != nullptr; }
     bool isValid() const {
-        return layout != YuvLayout::None && width > 0 && height > 0 && planes[0] != nullptr;
+        return layout != YuvLayout::None && width > 0 && height > 0 && (planes[0] != nullptr || onGpu());
     }
     bool semiPlanar() const { return layout == YuvLayout::NV12 || layout == YuvLayout::P010; }
     int planeCount() const { return semiPlanar() ? 2 : 3; }

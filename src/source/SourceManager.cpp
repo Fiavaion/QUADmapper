@@ -6,6 +6,7 @@
 #include "procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/YuvConverter.hpp"
+#include "renderer/DxInterop.hpp"
 #include "renderer/GpuCapabilities.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
@@ -57,6 +58,7 @@ bool isHapContainer(const std::filesystem::path& path) {
 
 SourceManager::SourceManager()
     : yuvConverter_(std::make_unique<YuvConverter>())  // no GL work until the first video frame
+    , dxInterop_(std::make_unique<DxInterop>())        // nor any D3D11 work
 {
     masterTimeline_.play(std::chrono::steady_clock::now());
 }
@@ -126,7 +128,10 @@ UUID SourceManager::createVideoSource(const std::filesystem::path& path) {
         source = std::make_unique<HapFileSource>(path);
         Logger::debug("SourceManager: '{}' is HAP — using HapFileSource", utf8FromPath(path.filename()));
     } else {
-        source = std::make_unique<VideoFileSource>(path);
+        // Hardware frames stay on the GPU when this GL context can share them (ADR-056).
+        DecodeOptions options = VideoFileSource::playbackDecodeOptions();
+        options.zeroCopy = dxInterop_->available();
+        source = std::make_unique<VideoFileSource>(path, options);
     }
     UUID id = source->getId();
 
@@ -346,6 +351,12 @@ void SourceManager::updateAll(double deltaTime) {
             }
         }
     }
+    // The zero-copy frames staged above, all under one interop lock (ADR-056).
+    const auto start = std::chrono::steady_clock::now();
+    dxInterop_->finish(*yuvConverter_, [this](void* key, const YuvPicture& picture, const std::string& why) {
+        fallBackFromZeroCopy(*static_cast<SourceEntry*>(key), picture, why);
+    });
+    uploadStats_.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     yuvConverter_->end();
 }
 
@@ -491,11 +502,43 @@ void SourceManager::uploadYuvFrame(SourceEntry& entry, const FrameData& frame) {
         texture.getWidth() != frame.width || texture.getHeight() != frame.height) {
         texture.createEmpty(frame.width, frame.height, 4);
     }
+    if (frame.yuv.onGpu()) {
+        // Left on the GPU (ADR-056): staged now, delivered by finish() at the end of updateAll().
+        std::string why;
+        if (!entry.zeroCopyFailed) {
+            if (!entry.zeroCopy) entry.zeroCopy = std::make_unique<DxInteropTarget>();
+            if (dxInterop_->stage(frame.yuv, *entry.zeroCopy, texture, &entry, why)) {
+                entry.source->markFrameConsumed();
+                return;
+            }
+        }
+        fallBackFromZeroCopy(entry, frame.yuv, why);
+        entry.source->markFrameConsumed();
+        return;
+    }
     if (!entry.yuvUpload) entry.yuvUpload = std::make_unique<YuvUploadState>();  // a registered source
     if (yuvConverter_->convert(frame.yuv, texture, *entry.yuvUpload)) {
         yuvConverter_->prefetch(frame.nextYuv, *entry.yuvUpload);
     }
     entry.source->markFrameConsumed();
+}
+
+// This source cannot use zero-copy (ADR-056): its decoder copies frames through memory
+// from now on, and the frames already decoded on the GPU, this one included, are copied
+// to memory here, so playback carries on from the same frame.
+void SourceManager::fallBackFromZeroCopy(SourceEntry& entry, const YuvPicture& picture, const std::string& why) {
+    if (!entry.zeroCopyFailed) {
+        entry.zeroCopyFailed = true;
+        entry.zeroCopy.reset();  // unregistered from GL: never locked outside finish()
+        if (auto* video = dynamic_cast<VideoFileSource*>(entry.source.get())) video->stopZeroCopy(why);
+    }
+    const YuvPicture memory = VideoDecoder::downloadPicture(picture);
+    if (!memory.isValid()) {
+        Logger::warning("SourceManager: a video frame could not be copied from the GPU; it was skipped");
+        return;
+    }
+    if (!entry.yuvUpload) entry.yuvUpload = std::make_unique<YuvUploadState>();
+    yuvConverter_->convert(memory, *entry.texture, *entry.yuvUpload);
 }
 
 } // namespace quadmapper

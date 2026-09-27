@@ -15,6 +15,9 @@ namespace quadmapper {
 class Texture;
 class YuvConverter;
 class YuvUploadState;
+class DxInterop;
+class DxInteropTarget;
+struct YuvPicture;
 
 /**
  * @brief Central manager for all texture sources
@@ -223,7 +226,9 @@ public:
      * Must be called each frame from the main thread.
      * This updates all sources and uploads any new frame data to GPU textures.
      * Video frames arrive as YUV planes and are converted into the source's RGBA
-     * texture by a GPU pass (ADR-055), which restores the GL state it changes.
+     * texture by a GPU pass (ADR-055), which restores the GL state it changes. Hardware
+     * frames left on the GPU are converted there and shared with OpenGL (ADR-056); a
+     * source that cannot share them falls back to the planes, from the same frame.
      */
     void updateAll(double deltaTime);
 
@@ -281,12 +286,15 @@ private:
         uint64_t lastFrameNumber = 0;           // For detecting new frames
         bool compressedUnsupportedLogged = false; // Rate-limit the BCn-unsupported skip log (ADR-044)
         std::unique_ptr<YuvUploadState> yuvUpload; // plane textures + PBOs of a YUV video (ADR-055)
+        std::unique_ptr<DxInteropTarget> zeroCopy; // D3D11 texture shared with GL (ADR-056)
+        bool zeroCopyFailed = false;               // this source fell back to the planes
     };
 
     std::unordered_map<UUID, SourceEntry> sources_;
     PlaybackClock masterTimeline_;
     UploadStats uploadStats_;
     std::unique_ptr<YuvConverter> yuvConverter_;  // YUV -> RGBA pass for video frames
+    std::unique_ptr<DxInterop> dxInterop_;        // zero-copy hardware frames (ADR-056)
 
     SourceAddedCallback sourceAddedCallback_;
     SourceRemovedCallback sourceRemovedCallback_;
@@ -295,6 +303,7 @@ private:
     void createGPUTexture(SourceEntry& entry);
     void uploadFrameToTexture(SourceEntry& entry);
     void uploadYuvFrame(SourceEntry& entry, const FrameData& frame);
+    void fallBackFromZeroCopy(SourceEntry& entry, const YuvPicture& picture, const std::string& why);
 };
 
 } // namespace quadmapper

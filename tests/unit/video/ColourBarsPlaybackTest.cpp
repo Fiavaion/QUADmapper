@@ -2,8 +2,9 @@
 // BT.601 and BT.709, limited and full range, plays through a VideoFileSource and the
 // SourceManager's GPU conversion; the source's RGBA texture matches the reference RGB
 // within +-2 per channel. H.264 (Windows Media Foundation encoder) is decoded both on
-// the GPU (NV12 planes) and in software (YUV420P planes); MPEG-2, which is limited
-// range by definition, in software.
+// the GPU (NV12 planes), on the GPU with the frames left there (ADR-056 zero-copy: the
+// planes reach OpenGL through WGL_NV_DX_interop2) and in software (YUV420P planes);
+// MPEG-2, which is limited range by definition, in software.
 //
 // Needs a real GL 3.3 context; SKIPs where none is available (headless CI).
 
@@ -13,6 +14,7 @@
 #include <GLFW/glfw3.h>
 
 #include "ColourBars.hpp"
+#include "renderer/DxInterop.hpp"
 #include "renderer/Texture.hpp"
 #include "source/SourceManager.hpp"
 #include "source/VideoFileSource.hpp"
@@ -178,11 +180,12 @@ struct Case {
     YuvMatrix matrix;
     bool fullRange;
     bool hardware;  // ask for GPU decoding
+    bool zeroCopy = false;  // and leave the frames on the GPU (ADR-056)
 };
 
 std::string caseName(const Case& c) {
     return std::string(c.encoder) + (c.matrix == YuvMatrix::BT601 ? " BT.601" : " BT.709") +
-           (c.fullRange ? " full" : " limited") + (c.hardware ? " hw" : " sw");
+           (c.fullRange ? " full" : " limited") + (c.hardware ? " hw" : " sw") + (c.zeroCopy ? " zc" : "");
 }
 
 }  // namespace
@@ -196,7 +199,7 @@ TEST_P(ColourBarsPlayback, TextureMatchesReferenceBars) {
 
     const std::filesystem::path clip = std::filesystem::temp_directory_path() /
         ("qm_bars_" + std::string(c.encoder) + (c.matrix == YuvMatrix::BT601 ? "_601" : "_709") +
-         (c.fullRange ? "_full" : "_limited") + (c.hardware ? "_hw" : "_sw") + ".mp4");
+         (c.fullRange ? "_full" : "_limited") + (c.hardware ? "_hw" : "_sw") + (c.zeroCopy ? "_zc" : "") + ".mp4");
     const std::string why = writeBarsClip(clip, c.encoder, c.matrix, c.fullRange);
     if (!why.empty()) {
         std::filesystem::remove(clip);
@@ -204,12 +207,19 @@ TEST_P(ColourBarsPlayback, TextureMatchesReferenceBars) {
         GTEST_SKIP() << caseName(c) << ": " << why;
     }
 
+    bool interop = false;
+    if (c.zeroCopy) {
+        DxInterop probe;
+        interop = probe.available();
+    }
     std::vector<uint8_t> rgba;
     bool hardware = false;
+    bool zeroCopy = false;
     {
         SourceManager sm;
         DecodeOptions options = VideoFileSource::playbackDecodeOptions();
         options.hardware = c.hardware;
+        options.zeroCopy = c.zeroCopy && interop;
         const UUID id = sm.registerSource(std::make_unique<VideoFileSource>(clip, options));
         ASSERT_FALSE(id.isNull());
         auto* video = sm.getSourceAs<VideoFileSource>(id);
@@ -223,6 +233,7 @@ TEST_P(ColourBarsPlayback, TextureMatchesReferenceBars) {
         }
         ASSERT_TRUE(uploaded) << "no YUV frame reached the texture";
         hardware = video->isHardwareDecoding();
+        zeroCopy = video->isZeroCopy();
 
         Texture* texture = sm.getTexture(id);
         ASSERT_TRUE(texture && texture->getWidth() == WIDTH && texture->getHeight() == HEIGHT &&
@@ -235,6 +246,7 @@ TEST_P(ColourBarsPlayback, TextureMatchesReferenceBars) {
     }
     std::filesystem::remove(clip);
     if (!c.hardware) EXPECT_FALSE(hardware);
+    if (hardware && interop) EXPECT_TRUE(zeroCopy) << "the frames were copied through memory";
 
     int worst = 0;
     for (size_t i = 0; i < BARS.size(); ++i) {
@@ -250,7 +262,7 @@ TEST_P(ColourBarsPlayback, TextureMatchesReferenceBars) {
     }
     RecordProperty("worst_channel_error", worst);
     std::printf("[ colour ] %s %s: worst channel error %d\n", caseName(c).c_str(),
-                hardware ? "hardware" : "software", worst);
+                zeroCopy ? "hardware (zero-copy)" : hardware ? "hardware" : "software", worst);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -260,7 +272,9 @@ INSTANTIATE_TEST_SUITE_P(
                     Case{"h264_mf", YuvMatrix::BT601, false, true}, Case{"h264_mf", YuvMatrix::BT601, true, true},
                     Case{"h264_mf", YuvMatrix::BT709, false, true}, Case{"h264_mf", YuvMatrix::BT709, true, true},
                     Case{"h264_mf", YuvMatrix::BT601, false, false}, Case{"h264_mf", YuvMatrix::BT601, true, false},
-                    Case{"h264_mf", YuvMatrix::BT709, false, false}, Case{"h264_mf", YuvMatrix::BT709, true, false}),
+                    Case{"h264_mf", YuvMatrix::BT709, false, false}, Case{"h264_mf", YuvMatrix::BT709, true, false},
+                    Case{"h264_mf", YuvMatrix::BT601, false, true, true}, Case{"h264_mf", YuvMatrix::BT601, true, true, true},
+                    Case{"h264_mf", YuvMatrix::BT709, false, true, true}, Case{"h264_mf", YuvMatrix::BT709, true, true, true}),
     [](const testing::TestParamInfo<Case>& info) {
         std::string n = caseName(info.param);
         for (char& ch : n) {

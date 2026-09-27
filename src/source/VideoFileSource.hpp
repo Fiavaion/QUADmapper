@@ -106,6 +106,10 @@ public:
     // Whether frames come from the GPU decoder now, and why not when hardware was asked for.
     bool isHardwareDecoding() const;
     std::string getDecodeNote() const;
+    // Whether frames stay on the GPU (ADR-056); stopZeroCopy() falls back to memory copies.
+    bool isZeroCopy() const;
+    void stopZeroCopy(const std::string& reason);
+    std::string getZeroCopyNote() const;
     // The player behind this source (tests inject time and a reverse cache budget).
     VideoPlayer& getPlayer() { return *player_; }
 

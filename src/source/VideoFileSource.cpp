@@ -229,6 +229,18 @@ std::string VideoFileSource::getDecodeNote() const {
     return player_ ? player_->getDecodeNote() : std::string();
 }
 
+bool VideoFileSource::isZeroCopy() const {
+    return player_ && player_->isZeroCopy();
+}
+
+void VideoFileSource::stopZeroCopy(const std::string& reason) {
+    if (player_) player_->stopZeroCopy(reason);
+}
+
+std::string VideoFileSource::getZeroCopyNote() const {
+    return player_ ? player_->getZeroCopyNote() : std::string();
+}
+
 const VideoInfo& VideoFileSource::getVideoInfo() const {
     static VideoInfo empty;
     if (player_ && player_->isLoaded()) {

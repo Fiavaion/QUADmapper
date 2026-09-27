@@ -184,6 +184,21 @@ public:
      */
     std::string getDecodeNote() const;
 
+    /**
+     * @brief Whether decoded frames stay on the GPU for the zero-copy path (ADR-056)
+     */
+    bool isZeroCopy() const;
+
+    /**
+     * @brief Copy frames through memory from now on; see VideoDecoder::stopZeroCopy()
+     */
+    void stopZeroCopy(const std::string& reason);
+
+    /**
+     * @brief Why a clip that asked for zero-copy copies through memory, or empty
+     */
+    std::string getZeroCopyNote() const;
+
     // --- Frame Access ---
 
     /**

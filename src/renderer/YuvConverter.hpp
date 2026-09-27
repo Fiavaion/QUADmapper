@@ -90,6 +90,11 @@ public:
     // Start copying `next`, the frame expected after the one just converted, into a
     // spare buffer. convert() uses it if that frame comes next, else copies anew.
     void prefetch(const YuvPicture& next, YuvUploadState& state);
+    // Convert a semi-planar (NV12/P010) picture whose planes are already GL textures
+    // (a zero-copy frame shared from D3D11, ADR-056): `luma` R8/R16, `chroma` RG8/RG16,
+    // as the upload path would fill them. `picture` gives the layout, size, matrix and
+    // range. False if the GL objects could not be created or the arguments do not fit.
+    bool convertPlanes(const YuvPicture& picture, uint32_t luma, uint32_t chroma, Texture& target);
     void end();
 
     /**
@@ -111,6 +116,8 @@ private:
     bool uploadPlanes(const YuvPicture& picture, YuvUploadState& state);
     bool mapStaging(YuvUploadState& state);
     void stageCopy(const YuvPicture& picture, YuvUploadState& state);
+    // The conversion draw from the plane textures into `target`, then its mipmaps.
+    void drawPass(const YuvPicture& picture, const uint32_t planes[3], Texture& target);
     void saveState();
     void restoreState();
 

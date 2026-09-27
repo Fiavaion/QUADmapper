@@ -656,6 +656,15 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
                                  {"decode_lag_ms", summarize(t.lagMs)}});
     }
     r["videos"] = cfg_.videos;
+    // Where the frames went (ADR-055/056), counted at the end of the run.
+    int hardwareCount = 0, zeroCopyCount = 0;
+    for (const Track& t : tracks) {
+        if (const auto* video = dynamic_cast<const VideoFileSource*>(t.source)) {
+            hardwareCount += video->isHardwareDecoding() ? 1 : 0;
+            zeroCopyCount += video->isZeroCopy() ? 1 : 0;
+        }
+    }
+    r["decoding"] = json{{"hardware", hardwareCount}, {"zero_copy", zeroCopyCount}};
     r["outputs"] = outputInfo(cfg_.outputs);
     r["result"] = series.toJson();
     const double renderedFrames = static_cast<double>(series.period.size() + (series.any ? 1 : 0));

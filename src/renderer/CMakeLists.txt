@@ -15,6 +15,8 @@ add_library(quadmapper_renderer STATIC
     Texture.cpp
     YuvConverter.hpp
     YuvConverter.cpp
+    DxInterop.hpp
+    DxInterop.cpp
     GpuCapabilities.hpp
     GpuCapabilities.cpp
     Framebuffer.hpp

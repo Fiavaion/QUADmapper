@@ -185,6 +185,18 @@ std::string VideoPlayer::getDecodeNote() const {
     return decoder_ ? decoder_->getDecodeNote() : std::string();
 }
 
+bool VideoPlayer::isZeroCopy() const {
+    return decoder_ && decoder_->isZeroCopy();
+}
+
+void VideoPlayer::stopZeroCopy(const std::string& reason) {
+    if (decoder_) decoder_->stopZeroCopy(reason);
+}
+
+std::string VideoPlayer::getZeroCopyNote() const {
+    return decoder_ ? decoder_->getZeroCopyNote() : std::string();
+}
+
 void VideoPlayer::applyTransport() {
     if (transport_.takeReposition()) reposition();
     refreshState();

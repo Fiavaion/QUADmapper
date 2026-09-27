@@ -50,6 +50,11 @@ struct DecodeOptions {
     // instead of converting them to RGB24 on the CPU. Pixel formats the pass does not
     // handle still arrive as RGB24.
     bool yuvOutput = false;
+    // Leave hardware frames on the GPU (VideoFrame::yuv.gpu) for the zero-copy path
+    // (ADR-056) instead of copying them to memory. Needs hardware and yuvOutput; set
+    // only when the renderer can share D3D11 textures. VideoDecoder::stopZeroCopy()
+    // turns it off for the rest of the stream.
+    bool zeroCopy = false;
     // Test hook: treat the GPU as failed once it has produced this many frames
     // (0: already at open). Negative: never.
     int failHardwareAfterFrames = -1;
@@ -286,6 +291,41 @@ public:
      * the app exits (ADR-055).
      */
     static int hardwareDevicesCreated();
+
+    // --- Zero-copy frames (ADR-056) ---
+
+    /**
+     * @brief Whether hardware frames are being left on the GPU
+     */
+    bool isZeroCopy() const;
+
+    /**
+     * @brief Copy frames to memory from now on (the renderer could not use them)
+     *
+     * Thread-safe. Frames already decoded may still be on the GPU; downloadPicture()
+     * brings any of them to memory.
+     */
+    void stopZeroCopy(const std::string& reason);
+
+    /**
+     * @brief Why a stream that asked for zero-copy copies through memory, or empty
+     */
+    std::string getZeroCopyNote() const;
+
+    /**
+     * @brief A picture left on the GPU, copied to memory (P010 or NV12 planes)
+     *
+     * Waits for the GPU. For the few frames already decoded when a stream falls back.
+     * Returns `picture` unchanged if it is not on the GPU, an invalid picture on failure.
+     */
+    static YuvPicture downloadPicture(const YuvPicture& picture);
+
+    /**
+     * @brief D3D11 textures holding frames left on the GPU, across every decoder
+     *
+     * For leak checks: back to its earlier value once the frames and decoders are gone.
+     */
+    static long liveGpuFrames();
 
 private:
     class Impl;

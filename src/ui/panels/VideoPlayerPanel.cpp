@@ -254,11 +254,15 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         if (const auto* decoded = dynamic_cast<const VideoFileSource*>(video)) {
             const VideoInfo& info = decoded->getVideoInfo();
             ImGui::Text("FPS: %.2f | Codec: %s", info.frameRate, info.codecName.c_str());
-            // Where the clip decodes (ADR-055): software is the per-clip fallback.
-            ImGui::Text("Decoding: %s", decoded->isHardwareDecoding() ? "hardware" : "software");
-            const std::string note = decoded->getDecodeNote();
+            // Where the clip decodes (ADR-055) and whether its frames stay on the GPU
+            // (ADR-056); software and the memory copy are the per-clip fallbacks.
+            const bool hardware = decoded->isHardwareDecoding();
+            ImGui::Text("Decoding: %s", !hardware ? "software"
+                                        : decoded->isZeroCopy() ? "hardware (zero-copy)" : "hardware");
+            const std::string note = hardware ? decoded->getZeroCopyNote() : decoded->getDecodeNote();
             if (!note.empty() && ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Software because %s.", note.c_str());
+                ImGui::SetTooltip(hardware ? "Frames copied through memory because %s." : "Software because %s.",
+                                  note.c_str());
             }
             if (info.hasAudio) {
                 ImGui::Text("Audio: %d ch @ %d Hz", info.audioChannels, info.audioSampleRate);
