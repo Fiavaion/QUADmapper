@@ -1694,5 +1694,127 @@ TEST(CanvasSliceRenderTest, SliceShowsItsInputThroughItsWarp) {
     manager.shutdown();
 }
 
+// The black-level lift outside the blend zones is L + (1 - L) * (the canvas over the
+// frame below): a 3D object under a lifted slice is lifted, not replaced by black.
+TEST(CanvasSliceRenderTest, BlackLevelLiftKeepsObjectsUnderTheSlice) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* output = manager.createOutput("Lifted");
+    ASSERT_NE(output, nullptr);
+    glfwSetWindowSize(output->getGLFWwindow(), 96, 64);
+    int w = 0, h = 0;
+    glfwGetFramebufferSize(output->getGLFWwindow(), &w, &h);
+    glfwMakeContextCurrent(gl.win);
+
+    auto media = patternTexture(32, 4);
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    Scene& scene = *scenes.front();
+    scene.setCanvasSize(IVec2(w, h));
+    OutputManager::showScene(*output, &scene, scenes);
+    std::unordered_map<UUID, Texture*> textures;
+    // The feature scene's cube, with no quads over it: the canvas is transparent.
+    buildFeatureScene(scene, {media.get()}, textures);
+    std::vector<UUID> quadIds;
+    for (const auto& quad : scene.getQuadManager().getQuads()) quadIds.push_back(quad->getId());
+    for (const UUID& id : quadIds) scene.getQuadManager().deleteQuad(id);
+    Vec3 lo, hi;
+    ASSERT_TRUE(scene.visibleObjectBounds(lo, hi));
+    output->getProjector() = ProjectorCamera::fitToOutput(ProjectorCamera{}, w, h, &lo, &hi);
+
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    manager.renderOutputFrames(scenes, textures, renderer);
+    const std::vector<unsigned char> plain = readFrame(*manager.outputFrame(output->getId()));
+    const float level = 0.1f;
+    output->getSlices()[0].blackLevel = level;
+    manager.renderOutputFrames(scenes, textures, renderer);
+    const std::vector<unsigned char> lifted = readFrame(*manager.outputFrame(output->getId()));
+    ASSERT_EQ(plain.size(), lifted.size());
+
+    size_t onObject = 0;
+    int worst = 0;
+    for (size_t i = 0; i < plain.size(); i += 4) {
+        if (plain[i] > 40 || plain[i + 1] > 40 || plain[i + 2] > 40) ++onObject;
+        for (size_t c = 0; c < 3; ++c) {
+            const float expected = 255.0f * level + (1.0f - level) * plain[i + c];
+            worst = std::max(worst, static_cast<int>(std::lround(std::abs(lifted[i + c] - expected))));
+        }
+    }
+    EXPECT_GT(onObject, plain.size() / 4 / 20) << "the cube must be in the picture";
+    EXPECT_LE(worst, 1) << "lifted = L + (1 - L) * frame, levels off at worst";
+
+    renderer.shutdown();
+    media.reset();
+    manager.shutdown();
+}
+
+// The slice shader and its C++ mirror (sliceBlendGain, outsideBlendZones) agree at
+// every pixel of a slice with four different blend zones and a black level: a swapped
+// edge, a wrong ramp or a broken black-level branch shows as tens of levels.
+TEST(CanvasSliceRenderTest, ShaderMatchesSliceBlendGainOnEveryEdge) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* output = manager.createOutput("Edges");
+    ASSERT_NE(output, nullptr);
+    glfwSetWindowSize(output->getGLFWwindow(), 64, 48);
+    int w = 0, h = 0;
+    glfwGetFramebufferSize(output->getGLFWwindow(), &w, &h);
+    ASSERT_GT(w, 40);
+    ASSERT_GT(h, 30);
+    glfwMakeContextCurrent(gl.win);
+
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    Scene& scene = *scenes.front();
+    scene.setCanvasSize(IVec2(w, h));
+    fullCanvasQuad(scene)->setOpacity(0.5f);  // grey, so the black level shows
+    OutputManager::showScene(*output, &scene, scenes);
+    Slice& slice = output->getSlices()[0];
+    slice.blend[SLICE_EDGE_LEFT] = BlendEdge{9.0f, 2.2f, 2.0f};
+    slice.blend[SLICE_EDGE_RIGHT] = BlendEdge{13.0f, 1.8f, 3.0f};
+    slice.blend[SLICE_EDGE_TOP] = BlendEdge{7.0f, 2.4f, 1.0f};
+    slice.blend[SLICE_EDGE_BOTTOM] = BlendEdge{11.0f, 2.0f, 1.5f};
+    slice.blackLevel = 0.08f;
+
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    manager.renderOutputFrames(scenes, textures, renderer);
+    const std::vector<unsigned char> canvas = readFrame(*manager.sceneCanvas(scene.getId()));
+    const std::vector<unsigned char> frame = readFrame(*manager.outputFrame(output->getId()));
+    ASSERT_EQ(frame.size(), static_cast<size_t>(w) * h * 4);
+    const float content = canvas[(static_cast<size_t>(h / 2) * w + w / 2) * 4] / 255.0f;
+    ASSERT_NEAR(content, 0.5f, 0.01f);
+
+    int worst = 0;
+    size_t lifted = 0;
+    for (int row = 0; row < h; ++row) {
+        const int y = h - 1 - row;  // frames are bottom-up; slices are y down
+        for (int x = 0; x < w; ++x) {
+            const Vec2 p(static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
+            const bool outside = outsideBlendZones(slice, p);
+            const float expected = outside ? slice.blackLevel + (1.0f - slice.blackLevel) * content
+                                           : content * sliceBlendGain(slice, p);
+            if (outside) ++lifted;
+            const int got = frame[(static_cast<size_t>(row) * w + x) * 4];
+            const int delta = static_cast<int>(std::lround(std::abs(got - 255.0f * expected)));
+            worst = std::max(worst, delta);
+            EXPECT_LE(delta, 2) << "pixel " << x << ", " << y;
+        }
+    }
+    EXPECT_GT(lifted, 0u);
+    std::printf("[ slice ] shader vs sliceBlendGain: worst %d levels over %d pixels\n", worst, w * h);
+
+    renderer.shutdown();
+    manager.shutdown();
+}
+
 } // namespace test
 } // namespace quadmapper

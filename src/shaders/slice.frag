@@ -67,8 +67,11 @@ void main() {
     vec3 rgb = c.rgb * gain;
     float alpha = c.a;
     if (u_BlackLevel > 0.0 && all(greaterThanEqual(d, u_BlendWidth))) {
+        // The frame becomes L + (1 - L) * (canvas over what is already drawn, the 3D
+        // objects): colour L + (1 - L) c.rgb, and the frame below kept by
+        // (1 - L)(1 - c.a), which the (ONE, ONE_MINUS_SRC_ALPHA) blend reads from alpha.
         rgb = u_BlackLevel + (1.0 - u_BlackLevel) * rgb;
-        alpha = 1.0;
+        alpha = 1.0 - (1.0 - u_BlackLevel) * (1.0 - c.a);
     }
     FragColor = vec4(rgb, alpha);
 }
