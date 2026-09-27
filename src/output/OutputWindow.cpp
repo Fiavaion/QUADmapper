@@ -16,62 +16,6 @@ OutputWindow::~OutputWindow() {
     destroy();
 }
 
-OutputWindow::OutputWindow(OutputWindow&& other) noexcept
-    : id_(std::move(other.id_))
-    , name_(std::move(other.name_))
-    , resolution_(other.resolution_)
-    , rotation_(other.rotation_)
-    , monitor_(other.monitor_)
-    , desiredMonitor_(std::move(other.desiredMonitor_))
-    , fullscreen_(other.fullscreen_)
-    , borderless_(other.borderless_)
-    , enabled_(other.enabled_)
-    , assignedScenes_(std::move(other.assignedScenes_))
-    , window_(other.window_)
-    , shareContext_(other.shareContext_)
-    , swapInterval_(other.swapInterval_)
-    , frameCopy_(std::move(other.frameCopy_))
-    , position_(other.position_)
-    , savedWindowedPos_(other.savedWindowedPos_)
-    , savedWindowedSize_(other.savedWindowedSize_)
-    , keyCallback_(std::move(other.keyCallback_))
-{
-    // Clear the other's window pointer to prevent double-destroy
-    other.window_ = nullptr;
-    other.shareContext_ = nullptr;
-}
-
-OutputWindow& OutputWindow::operator=(OutputWindow&& other) noexcept {
-    if (this != &other) {
-        // Destroy our current window first
-        destroy();
-
-        id_ = std::move(other.id_);
-        name_ = std::move(other.name_);
-        resolution_ = other.resolution_;
-        rotation_ = other.rotation_;
-        monitor_ = other.monitor_;
-        desiredMonitor_ = std::move(other.desiredMonitor_);
-        fullscreen_ = other.fullscreen_;
-        borderless_ = other.borderless_;
-        enabled_ = other.enabled_;
-        assignedScenes_ = std::move(other.assignedScenes_);
-        window_ = other.window_;
-        shareContext_ = other.shareContext_;
-        swapInterval_ = other.swapInterval_;
-        frameCopy_ = std::move(other.frameCopy_);
-        position_ = other.position_;
-        savedWindowedPos_ = other.savedWindowedPos_;
-        savedWindowedSize_ = other.savedWindowedSize_;
-        keyCallback_ = std::move(other.keyCallback_);
-
-        // Clear the other's window pointer to prevent double-destroy
-        other.window_ = nullptr;
-        other.shareContext_ = nullptr;
-    }
-    return *this;
-}
-
 void OutputWindow::assignScene(const UUID& sceneId) {
     if (!hasScene(sceneId)) {
         assignedScenes_.push_back(sceneId);
@@ -440,7 +384,10 @@ void OutputWindow::setKeyCallback(KeyCallback callback) {
 void OutputWindow::glfwKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     OutputWindow* self = static_cast<OutputWindow*>(glfwGetWindowUserPointer(window));
     if (self && self->keyCallback_) {
-        self->keyCallback_(key, scancode, action, mods);
+        // Call a copy: the callback may clear or replace keyCallback_, which must not
+        // destroy the function object while it is running.
+        const KeyCallback callback = self->keyCallback_;
+        callback(key, scancode, action, mods);
     }
 }
 

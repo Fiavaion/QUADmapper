@@ -428,6 +428,40 @@ TEST(OutputManagerTest, HandleEscapeKeyWhenNotInPerformMode) {
     EXPECT_FALSE(manager.isInPerformMode());
 }
 
+// TD-13: Esc/F11 on an output window never leave perform mode inside the key callback
+// (that would clear the running callback); they leave a request for the main loop.
+TEST(OutputManagerTest, OutputWindowEscAndF11OnlyRequestThePerformExit) {
+    OutputManager manager;
+    EXPECT_FALSE(manager.isPerformExitPending());
+
+    manager.handleOutputWindowKey(GLFW_KEY_ESCAPE, GLFW_RELEASE, 0);
+    manager.handleOutputWindowKey(GLFW_KEY_ESCAPE, GLFW_REPEAT, 0);
+    EXPECT_FALSE(manager.isPerformExitPending());  // presses only
+
+    manager.handleOutputWindowKey(GLFW_KEY_ESCAPE, GLFW_PRESS, 0);
+    EXPECT_TRUE(manager.isPerformExitPending());
+    manager.applyPendingPerformExit();
+    EXPECT_FALSE(manager.isPerformExitPending());
+    EXPECT_FALSE(manager.isInPerformMode());
+
+    manager.handleOutputWindowKey(GLFW_KEY_F11, GLFW_PRESS, 0);
+    EXPECT_TRUE(manager.isPerformExitPending());
+    manager.applyPendingPerformExit();
+    EXPECT_FALSE(manager.isPerformExitPending());
+}
+
+TEST(OutputManagerTest, OutputWindowBlackoutAndSceneKeysStillActAtOnce) {
+    OutputManager manager;
+    int taken = 0;
+    manager.setSceneKeyCallback([&taken](int scene) { taken = scene; });
+
+    manager.handleOutputWindowKey(GLFW_KEY_B, GLFW_PRESS, GLFW_MOD_CONTROL);
+    EXPECT_TRUE(manager.isBlackout());
+    manager.handleOutputWindowKey(GLFW_KEY_3, GLFW_PRESS, 0);
+    EXPECT_EQ(taken, 3);
+    EXPECT_FALSE(manager.isPerformExitPending());
+}
+
 TEST(OutputManagerTest, HandleF11KeyWhenNoOutputs) {
     OutputManager manager;
 
@@ -492,6 +526,37 @@ MonitorInfo monitorAt(int index, const std::string& name, IVec2 position) {
 const std::string kGeneric = "Generic PnP Monitor";
 constexpr int kNoEditor = -1;
 }  // namespace
+
+// TD-14c: the Output panel and the Inspector show the same monitor choice, and an
+// unresolved output is never shown as monitor 0.
+TEST(DescribeMonitorChoiceTest, ResolvedChosenAutomaticAndUnresolved) {
+    const std::vector<MonitorInfo> monitors = {monitorAt(0, "Dell", IVec2(0, 0)),
+                                               monitorAt(1, "Epson", IVec2(1920, 0))};
+    const std::string epson = monitors[1].getDisplayString();
+    OutputWindow output;
+
+    output.setMonitor(1);  // automatic, resolved to the projector
+    EXPECT_TRUE(output.isMonitorAutomatic());
+    EXPECT_EQ(OutputManager::describeMonitorChoice(monitors, output), epson + " (automatic)");
+
+    output.setDesiredMonitor({"Epson", IVec2(1920, 0), 1});  // chosen
+    EXPECT_FALSE(output.isMonitorAutomatic());
+    EXPECT_EQ(OutputManager::describeMonitorChoice(monitors, output), epson);
+
+    output.setMonitor(-1);  // chosen display unplugged
+    EXPECT_EQ(OutputManager::describeMonitorChoice(monitors, output), "Epson (not connected)");
+
+    output.setDesiredMonitor({});  // automatic with nothing free
+    EXPECT_EQ(OutputManager::describeMonitorChoice(monitors, output), "Not connected");
+
+    output.setMonitor(5);  // stale index past the list
+    EXPECT_EQ(OutputManager::describeMonitorChoice(monitors, output), "Not connected");
+
+    MonitorIdentity savedIndexOnly;  // a pre-identity file chose index 0 by number
+    savedIndexOnly.savedIndex = 0;
+    output.setDesiredMonitor(savedIndexOnly);
+    EXPECT_FALSE(output.isMonitorAutomatic());
+}
 
 TEST(ResolveMonitorTest, ExactNameAndPositionWinOverStaleIndex) {
     // Displays re-enumerated: the projector moved from index 1 to index 0.

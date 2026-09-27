@@ -3,12 +3,38 @@
 #include "audio/AudioSource.hpp"
 #include "audio/AudioBuffer.hpp"
 #include "audio/AudioDevice.hpp"
+#include "audio/SyncedAudioSource.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <new>
 #include <vector>
 #include <thread>
 #include <chrono>
+
+// Counts heap allocations and frees made by a thread that opted in (TD-08: the mixing
+// thread must never allocate or free, whatever the control thread does meanwhile).
+// Every other operator new/delete form forwards to these two.
+namespace {
+thread_local bool g_countHeapOnThisThread = false;
+std::atomic<int> g_countedAllocations{0};
+std::atomic<int> g_countedFrees{0};
+}  // namespace
+
+void* operator new(std::size_t size) {
+    if (g_countHeapOnThisThread) ++g_countedAllocations;
+    if (void* p = std::malloc(size ? size : 1)) return p;
+    throw std::bad_alloc();
+}
+
+void operator delete(void* p) noexcept {
+    if (!p) return;
+    if (g_countHeapOnThisThread) ++g_countedFrees;
+    std::free(p);
+}
+
+void operator delete(void* p, std::size_t) noexcept { operator delete(p); }
 
 namespace quadmapper {
 namespace test {
@@ -412,6 +438,80 @@ TEST_F(AudioMixerTest, ARemovedSourceIsNeverRenderedAgainAndDiesOnTheControlThre
     EXPECT_EQ(cycles, CYCLES);
     EXPECT_EQ(violations.load(), 0);
     EXPECT_EQ(wrongThread, 0);
+}
+
+// TD-08: whatever the control thread does to the mix (add, remove and clear sources,
+// volume/mute/pan, master changes, swapping the output tap, closing and reopening the
+// device), the mixing thread neither allocates nor frees, and no source dies on it.
+// The mixing thread here calls renderOffline(), the same processAudio() the device
+// callback runs, so every heap operation on that thread is counted.
+TEST_F(AudioMixerTest, MixingThreadNeverAllocatesOrFreesWhileTheControlThreadChurns) {
+    struct Tracked : AudioSource {
+        std::thread::id* diedOn = nullptr;
+        ~Tracked() override { *diedOn = std::this_thread::get_id(); }
+    };
+
+    AudioDevice device;
+    ASSERT_TRUE(device.initialize(/*nullBackend=*/true));
+    g_countedAllocations = 0;
+    g_countedFrees = 0;
+
+    std::atomic<bool> running{true};
+    std::atomic<int> blocks{0};
+    std::atomic<int> taps{0};
+    std::thread mixThread([&] {
+        std::vector<float> out(512 * 2);  // allocated before counting starts
+        g_countHeapOnThisThread = true;
+        while (running.load()) {
+            mixer->renderOffline(out.data(), 512, 0);
+            ++blocks;
+        }
+        g_countHeapOnThisThread = false;
+    });
+
+    // EXPECT, not ASSERT, inside the loop: the mixing thread must be joined either way.
+    constexpr int CYCLES = 300;
+    std::vector<std::thread::id> diedOn(CYCLES);
+    for (int i = 0; i < CYCLES; ++i) {
+        auto plain = std::make_shared<Tracked>();
+        plain->diedOn = &diedOn[i];
+        auto synced = std::make_shared<SyncedAudioSource>(std::make_shared<AudioBuffer>(4096), 48000);
+        mixer->addSource(plain);
+        mixer->addSource(synced);
+        plain->setVolume(static_cast<float>(i % 10) / 10.0f);
+        plain->setPan(static_cast<float>(i % 3) - 1.0f);
+        synced->setMuted(i % 2 == 0);
+        mixer->setMasterVolume(static_cast<float>(i % 5) / 5.0f);
+        mixer->setMasterMuted(i % 7 == 0);
+        if (i % 3 == 0) {
+            mixer->setMixCallback([&taps](const float*, size_t, int64_t) { ++taps; });
+        } else if (i % 3 == 1) {
+            mixer->setMixCallback({});
+        }
+        if (i % 25 == 0) {  // device close + reopen; sources stay registered
+            mixer->shutdown();
+            EXPECT_TRUE(mixer->initialize(&device));
+        }
+        std::this_thread::yield();
+        EXPECT_TRUE(mixer->removeSource(plain->getId()));
+        if (i % 2 == 0) {
+            mixer->clearSources();
+        } else {
+            EXPECT_TRUE(mixer->removeSource(synced->getId()));
+        }
+    }  // `plain` and `synced` lose their last references here, on this thread
+    while (blocks.load() < CYCLES) std::this_thread::yield();  // mixing overlapped the churn
+    running = false;
+    mixThread.join();
+    mixer->setMixCallback({});
+    mixer->shutdown();
+
+    EXPECT_GT(taps.load(), 0);  // the tap really was swapped in and called
+    EXPECT_EQ(g_countedAllocations.load(), 0);
+    EXPECT_EQ(g_countedFrees.load(), 0);
+    const int diedHere = static_cast<int>(
+        std::count(diedOn.begin(), diedOn.end(), std::this_thread::get_id()));
+    EXPECT_EQ(diedHere, CYCLES);  // every source died on the control thread
 }
 
 TEST_F(AudioMixerTest, NullBackendReportsItsDeviceAndLatency) {

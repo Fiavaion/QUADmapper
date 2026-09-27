@@ -258,21 +258,8 @@ void OutputPanel::renderMonitorDropdown(OutputWindow* output) {
     int currentMonitor = output->getMonitor();
     const auto& monitors = outputManager_->getMonitors();
     // No chosen display = automatic: the first one that is not the editor's (QM-090).
-    const MonitorIdentity& desired = output->getDesiredMonitor();
-    const bool automatic = desired.name.empty() && desired.savedIndex < 0;
-
-    // Build preview string
-    std::string previewStr;
-    if (currentMonitor >= 0 && static_cast<size_t>(currentMonitor) < monitors.size()) {
-        previewStr = monitors[currentMonitor].getDisplayString();
-        if (automatic) {
-            previewStr += " (automatic)";
-        }
-    } else if (!desired.name.empty()) {
-        previewStr = desired.name + " (not connected)";
-    } else {
-        previewStr = "Not connected";
-    }
+    const bool automatic = output->isMonitorAutomatic();
+    const std::string previewStr = OutputManager::describeMonitorChoice(monitors, *output);
 
     ImGui::SetNextItemWidth(-1);
     if (ImGui::BeginCombo("##monitor", previewStr.c_str())) {

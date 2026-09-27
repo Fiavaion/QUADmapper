@@ -790,27 +790,21 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
         // Monitor dropdown
         ImGui::Text("Display:");
         const auto& monitors = ctx.outputManager->getMonitors();
-        int currentMonitor = selectedOutput->getMonitor();
-        if (currentMonitor < 0) currentMonitor = 0;
-
-        // Build monitor combo string
-        std::string monitorPreview = "Monitor " + std::to_string(currentMonitor + 1);
-        if (currentMonitor < static_cast<int>(monitors.size())) {
-            monitorPreview = monitors[currentMonitor].name + " (" +
-                std::to_string(monitors[currentMonitor].resolution.x) + "x" +
-                std::to_string(monitors[currentMonitor].resolution.y) + ")";
-        }
+        const int currentMonitor = selectedOutput->getMonitor();  // -1: none connected
+        const bool automatic = selectedOutput->isMonitorAutomatic();
+        const std::string monitorPreview =
+            OutputManager::describeMonitorChoice(monitors, *selectedOutput);
 
         ImGui::SetNextItemWidth(-1);
         if (ImGui::BeginCombo("##Monitor", monitorPreview.c_str())) {
+            if (ImGui::Selectable("Automatic (not the editor's display)", automatic)) {
+                ctx.outputManager->assignMonitor(*selectedOutput, -1);
+            }
+            ImGui::Separator();
             for (size_t i = 0; i < monitors.size(); ++i) {
                 const auto& mon = monitors[i];
-                std::string label = mon.name + " (" +
-                    std::to_string(mon.resolution.x) + "x" +
-                    std::to_string(mon.resolution.y) + ")";
-                if (mon.isPrimary) label += " [Primary]";
-
-                bool isSelected = (static_cast<int>(i) == currentMonitor);
+                const std::string label = mon.getDisplayString();
+                const bool isSelected = !automatic && static_cast<int>(i) == currentMonitor;
                 if (ImGui::Selectable(label.c_str(), isSelected)) {
                     ctx.outputManager->assignMonitor(*selectedOutput, static_cast<int>(i));
                     selectedOutput->setResolution(mon.resolution);

@@ -406,6 +406,19 @@ void OutputManager::resolveOutputs() {
     }
 }
 
+std::string OutputManager::describeMonitorChoice(const std::vector<MonitorInfo>& monitors,
+                                                const OutputWindow& output) {
+    const int current = output.getMonitor();
+    if (current >= 0 && static_cast<size_t>(current) < monitors.size()) {
+        std::string label = monitors[current].getDisplayString();
+        if (output.isMonitorAutomatic()) label += " (automatic)";
+        return label;
+    }
+    const MonitorIdentity& desired = output.getDesiredMonitor();
+    if (!desired.name.empty()) return desired.name + " (not connected)";
+    return "Not connected";
+}
+
 void OutputManager::assignMonitor(OutputWindow& output, int monitorIndex) {
     const MonitorInfo* monitor = getMonitor(monitorIndex);
     MonitorIdentity identity;
@@ -541,6 +554,7 @@ Result<void, Error> OutputManager::exitPerformMode() {
     }
 
     performMode_ = false;
+    performExitPending_ = false;  // a request made before this exit is spent
 
     // No output paces the loop any more; the editor is vsync'd again.
     setEditorSwapInterval(1);
@@ -921,33 +935,35 @@ void OutputManager::handleEscapeKey() {
     }
 }
 
+void OutputManager::handleOutputWindowKey(int key, int action, int mods) {
+    if (action == GLFW_PRESS && (key == GLFW_KEY_ESCAPE || key == GLFW_KEY_F11)) {
+        performExitPending_ = true;
+        return;
+    }
+    if (isBlackoutKey(key, action, mods)) {
+        toggleBlackout();
+        return;
+    }
+    const int sceneNumber = sceneTakeNumber(key, action, mods);
+    if (sceneNumber > 0 && sceneKeyCallback_) {
+        sceneKeyCallback_(sceneNumber);
+    }
+}
+
+void OutputManager::applyPendingPerformExit() {
+    if (!performExitPending_) return;
+    performExitPending_ = false;
+    LOG_DEBUG("Output window asked to leave perform mode");
+    exitPerformMode();
+}
+
 void OutputManager::setupPerformModeKeyCallbacks() {
     for (auto& output : outputs_) {
         if (!output->isCreated()) {
             continue;
         }
-
-        // Esc and F11 leave perform mode, which clears this very callback: return
-        // straight after them, never touching the lambda's captures again.
         output->setKeyCallback([this](int key, int /*scancode*/, int action, int mods) {
-            if (action == GLFW_PRESS) {
-                if (key == GLFW_KEY_ESCAPE) {
-                    handleEscapeKey();
-                    return;
-                }
-                if (key == GLFW_KEY_F11) {
-                    handleF11Key();
-                    return;
-                }
-            }
-            if (isBlackoutKey(key, action, mods)) {
-                toggleBlackout();
-                return;
-            }
-            const int sceneNumber = sceneTakeNumber(key, action, mods);
-            if (sceneNumber > 0 && sceneKeyCallback_) {
-                sceneKeyCallback_(sceneNumber);
-            }
+            handleOutputWindowKey(key, action, mods);
         });
     }
 }

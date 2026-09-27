@@ -4,6 +4,7 @@
 #include "TextureResolve.hpp"
 #include "MediaAssign.hpp"
 #include "MissingMedia.hpp"
+#include "ProjectReplace.hpp"
 #include "OutputPersistence.hpp"
 #include "ControlBindings.hpp"
 #include "../control/ExternalControl.hpp"
@@ -254,17 +255,7 @@ static bool isFileSource(const Project::SourceData& source) {
 // its mesh path with an empty mesh) and collectMissingMedia() lists them to relocate.
 static void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
                                 SourceManager* sm) {
-    es.selectedObjectId = UUID();
-    es.endCalibration();  // the session's lens and selection belong to the old project
-    es.scenes.clear();
-    es.quadTextures.clear();
-    es.quadTexturePaths.clear();
-    clearMissingMedia(es);
-    // Release the previous project's media now (the media bin's own generators stay,
-    // so its items remain assignable); a reloaded show then starts fresh decoders
-    // rather than inheriting ones found by path.
-    es.activeVideoSourceId = UUID();
-    if (sm) releaseProjectSources(es, *sm);
+    clearProjectContent(es, sm);  // before any of the new project's sources exist
 
     // Rebuild outputs from the file (v3) so scene assignments remap onto the freshly
     // created output ids. v1/v2 files carry no outputs — keep the existing ones (e.g.
@@ -992,6 +983,9 @@ bool Application::pollFrame(float& deltaTime) {
 
     // Poll events
     glfwPollEvents();
+    // Esc/F11 on an output window only asked to leave perform mode (TD-13): leave it
+    // here, outside the key callback that the exit clears.
+    if (m_outputManager) m_outputManager->applyPendingPerformExit();
 
     // Frame boundary: pending file actions (New/Open/Save/Exit, recovery) and
     // autosave run here, before render() takes any scene references (ADR-046).
@@ -2122,20 +2116,11 @@ void Application::processPendingFileAction() {
 void Application::performNewProject() {
     EditorState& es = *m_editorState;
 
-    // Undo commands hold raw quad pointers into the scenes about to be destroyed.
-    es.commandHistory.clear();
-    es.selectedObjectId = UUID();
-    es.endCalibration();
-    es.scenes.clear();
-    es.quadTextures.clear();
-    es.quadTexturePaths.clear();
-    es.currentTexturePath[0] = '\0';
-    es.activeVideoSourceId = UUID();
-    es.midiMappings.clear();  // show content; the Control panel's device choices stay
     dropQueuedSceneTakes();
-    if (m_sourceManager) releaseProjectSources(es, *m_sourceManager);
     cancelMissingMediaSearch();
-    clearMissingMedia(es);
+    clearProjectContent(es, m_sourceManager.get());
+    es.currentTexturePath[0] = '\0';
+    es.midiMappings.clear();  // show content; the Control panel's device choices stay
 
     // One default scene with one quad, still aimed at the first output. Outputs are
     // hardware setup, not show content, so New keeps them. Their projector calibration is show
@@ -2172,7 +2157,6 @@ bool Application::performLoadProject(const std::string& path) {
         return false;
     }
 
-    es.commandHistory.clear();  // before the scenes its commands point into go away
     *m_project = std::move(result.value());
     dropQueuedSceneTakes();
     cancelMissingMediaSearch();
@@ -2241,7 +2225,6 @@ void Application::performRestoreRecovery() {
         postStatus(es, "Could not restore " + file + ": " + result.error().message);
         return;
     }
-    es.commandHistory.clear();
     *m_project = std::move(result.value());
     m_project->setFilePath(projectPath);  // it belongs to the project, not the autosave
     dropQueuedSceneTakes();

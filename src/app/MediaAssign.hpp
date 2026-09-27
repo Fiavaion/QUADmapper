@@ -141,6 +141,38 @@ inline std::unordered_set<UUID> editorOwnedSources(const EditorState& es) {
     return ids;
 }
 
+// Pause-while-unseen (part of releaseUnusedSources): a playing clip that only the
+// undo history still holds (its quad was deleted) should not keep decoding and
+// uploading unseen. Pause it and remember it in es.sourcesPausedWhileUnseen; resume it
+// once a quad shows it again (undo). A clip the user had paused is never touched, and
+// neither is one the editor keeps (owned: the Video Player's, the bin's).
+// onScreen: sources bound to a quad that exists now; inUse: every source still
+// referenced, by a scene or by the undo history.
+inline void pauseSourcesOnlyUndoHolds(EditorState& es, SourceManager& sm,
+                                      const std::unordered_set<UUID>& onScreen,
+                                      const std::unordered_set<UUID>& inUse,
+                                      const std::unordered_set<UUID>& owned) {
+    for (auto it = es.sourcesPausedWhileUnseen.begin(); it != es.sourcesPausedWhileUnseen.end();) {
+        auto* playable = sm.getSourceAs<PlayableSource>(*it);
+        if (!playable) {
+            it = es.sourcesPausedWhileUnseen.erase(it);  // released meanwhile
+        } else if (onScreen.count(*it)) {
+            playable->play();
+            it = es.sourcesPausedWhileUnseen.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (const UUID& id : inUse) {
+        if (onScreen.count(id) || owned.count(id)) continue;
+        auto* playable = sm.getSourceAs<PlayableSource>(id);
+        if (playable && playable->getPlaybackState() == PlaybackState::PLAYING) {
+            playable->pause();
+            es.sourcesPausedWhileUnseen.insert(id);
+        }
+    }
+}
+
 // Frame-boundary source housekeeping (QM-088): release sources that no quad in any
 // scene uses, that no undo/redo step can restore, and that the editor does not keep
 // alive, so orphaned videos and generators stop decoding, rendering and uploading.
@@ -191,6 +223,17 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
         }
     }
     std::unordered_set<UUID> inUse = referencedMediaIds(es.scenes, es.commandHistory);
+    // The media bin's hover previews are open clips like any other, so a Load or an
+    // assignment can find one by path and bind it. A bound preview belongs to its new
+    // user; one whose hover ended and that nothing bound is removed here.
+    const auto bound = [&](const UUID& id) {
+        return inUse.count(id) > 0 || id == es.activeVideoSourceId;
+    };
+    for (const UUID& id : es.mediaBinPanel.takeEndedPreviews()) {
+        if (!bound(id)) sm.removeSource(id);
+    }
+    const UUID preview = es.mediaBinPanel.getPreviewSourceId();
+    if (!preview.isNull() && bound(preview)) es.mediaBinPanel.handOverPreviewSource();
     const std::unordered_set<UUID> owned = editorOwnedSources(es);
     inUse.insert(owned.begin(), owned.end());
     // Remember how each clip about to be released was playing, for a binding that
@@ -208,37 +251,7 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
         it = inUse.count(it->first) ? std::next(it) : es.missingSources.erase(it);
     }
 
-    // A video kept only so undo can restore its deleted quad should not keep decoding
-    // and uploading unseen; pause it, and resume it once undo brings it back.
-    for (auto it = es.sourcesPausedWhileUnseen.begin(); it != es.sourcesPausedWhileUnseen.end();) {
-        auto* playable = sm.getSourceAs<PlayableSource>(*it);
-        if (!playable) {
-            it = es.sourcesPausedWhileUnseen.erase(it);  // released meanwhile
-        } else if (onScreen.count(*it)) {
-            playable->play();
-            it = es.sourcesPausedWhileUnseen.erase(it);
-        } else {
-            ++it;
-        }
-    }
-    for (const UUID& id : inUse) {
-        if (onScreen.count(id) || owned.count(id)) continue;
-        auto* playable = sm.getSourceAs<PlayableSource>(id);
-        if (playable && playable->getPlaybackState() == PlaybackState::PLAYING) {
-            playable->pause();
-            es.sourcesPausedWhileUnseen.insert(id);
-        }
-    }
-}
-
-// Called when the whole project is replaced (New, Load, recovery), after the old
-// scenes and undo history are gone and before the new project's sources are created:
-// releases the previous project's sources right away, so a reloaded show starts its
-// media fresh instead of inheriting live decoders found by path.
-inline void releaseProjectSources(EditorState& es, SourceManager& sm) {
-    es.sourcesPausedWhileUnseen.clear();
-    es.releasedTransports.clear();
-    sm.releaseUnreferenced(editorOwnedSources(es));
+    pauseSourcesOnlyUndoHolds(es, sm, onScreen, inUse, owned);
 }
 
 }  // namespace quadmapper

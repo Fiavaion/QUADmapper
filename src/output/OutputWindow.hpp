@@ -63,11 +63,12 @@ public:
     OutputWindow();
     ~OutputWindow();
 
-    // Non-copyable, movable
+    // Neither copyable nor movable: the GLFW window's user pointer is this object's
+    // address (the key callback finds it there). Hold outputs by unique_ptr.
     OutputWindow(const OutputWindow&) = delete;
     OutputWindow& operator=(const OutputWindow&) = delete;
-    OutputWindow(OutputWindow&& other) noexcept;
-    OutputWindow& operator=(OutputWindow&& other) noexcept;
+    OutputWindow(OutputWindow&&) = delete;
+    OutputWindow& operator=(OutputWindow&&) = delete;
 
     // Identity
     const UUID& getId() const { return id_; }
@@ -85,6 +86,10 @@ public:
     void setMonitor(int m) { monitor_ = m; }
     const MonitorIdentity& getDesiredMonitor() const { return desiredMonitor_; }
     void setDesiredMonitor(const MonitorIdentity& identity) { desiredMonitor_ = identity; }
+    // No display was chosen: the output takes the first one that is not the editor's.
+    bool isMonitorAutomatic() const {
+        return desiredMonitor_.name.empty() && desiredMonitor_.savedIndex < 0;
+    }
 
     /**
      * Get the effective resolution accounting for rotation.
@@ -206,7 +211,8 @@ public:
 
     /**
      * Set a callback for key events on this output window.
-     * Used primarily for perform mode escape handling.
+     * Used primarily for perform mode escape handling. The callback may replace or
+     * clear itself while it runs: the window invokes a copy.
      */
     void setKeyCallback(KeyCallback callback);
 

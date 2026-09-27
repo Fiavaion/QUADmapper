@@ -222,6 +222,15 @@ public:
     void resolveOutputs();
 
     /**
+     * What a monitor picker shows for `output` (the Output panel and the Inspector):
+     * the display it resolved to, marked "(automatic)" when none was chosen; else the
+     * chosen display marked "(not connected)"; else "Not connected". Never names a
+     * display the output is not on. Pure.
+     */
+    static std::string describeMonitorChoice(const std::vector<MonitorInfo>& monitors,
+                                             const OutputWindow& output);
+
+    /**
      * The user explicitly chose monitor `monitorIndex` for `output` (-1 =
      * automatic). Records that monitor's current identity as the desired one,
      * which is honoured as-is even when it is the editor's own screen. In
@@ -340,6 +349,23 @@ public:
      * This method can be called from the input system.
      */
     void handleEscapeKey();
+
+    /**
+     * A key on an output window in perform mode (its GLFW key callback). Esc and F11
+     * only request the exit, which applyPendingPerformExit() carries out from the main
+     * loop: leaving perform mode inside the callback would clear the callback that is
+     * running. Ctrl+B toggles blackout; 1-9 are scene takes (setSceneKeyCallback).
+     */
+    void handleOutputWindowKey(int key, int action, int mods);
+
+    /** True between an output window's Esc/F11 and the next applyPendingPerformExit(). */
+    bool isPerformExitPending() const { return performExitPending_; }
+
+    /**
+     * Main loop, outside any GLFW callback: leave perform mode if an output window
+     * asked to. Clears the request either way.
+     */
+    void applyPendingPerformExit();
 
     // Rendering (ADR-054): each output's frame is drawn once per frame, in the main
     // GL context, into a colour texture that context owns. The output window copies
@@ -465,6 +491,7 @@ private:
     bool performMode_ = false;
     bool useBorderlessFullscreen_ = true;
     bool blackout_ = false;
+    bool performExitPending_ = false;  // Esc/F11 on an output window (handleOutputWindowKey)
 
     // Counter for auto-naming outputs
     int outputCounter_ = 0;

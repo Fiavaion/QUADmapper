@@ -245,9 +245,10 @@ void MediaBinPanel::updateHoverPreview() {
     // Only act when the hovered video changes (avoid per-frame decoder churn).
     if (hoveredVideoThisFrame_ == hoverPreviewPath_) return;
 
-    // Tear down the previous preview decoder.
+    // Retire the previous preview decoder; the frame boundary removes it unless
+    // something bound it meanwhile (takeEndedPreviews).
     if (!hoverPreviewId_.isNull()) {
-        sourceManager_->removeSource(hoverPreviewId_);
+        endedPreviews_.push_back(hoverPreviewId_);
         hoverPreviewId_ = UUID();
         hoverPreviewPath_.clear();
     }

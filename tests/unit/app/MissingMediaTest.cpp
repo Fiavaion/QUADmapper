@@ -1,9 +1,11 @@
 // Missing-media app logic (app/MissingMedia.hpp) and the saved-transport helper it
-// shares with load and source release (app/MediaAssign.hpp), on a real EditorState.
+// shares with load and source release (app/MediaAssign.hpp), plus the project-replace
+// order (app/ProjectReplace.hpp) and pause-while-unseen, on a real EditorState.
 // Opening a real file needs GL (its texture), so relocation is tested from the point
 // the new source exists: the rebind and the transport it is given.
 
 #include "app/MissingMedia.hpp"
+#include "app/ProjectReplace.hpp"
 #include "../control/FakePlayable.hpp"
 
 #include <gtest/gtest.h>
@@ -195,6 +197,131 @@ TEST(SavedTransportTest, ReleasingAClipRemembersItsTransport) {
     EXPECT_TRUE(t.timelineLocked);
     EXPECT_FLOAT_EQ(t.speed, 0.5f);
 
-    releaseProjectSources(es, sm);  // a new project forgets them
+    clearProjectContent(es, &sm);  // a new project forgets them
     EXPECT_TRUE(es.releasedTransports.empty());
+}
+
+// ---- Pause-while-unseen and the project-replace order (TD-14a) ----------------------
+
+namespace {
+
+// One quad of the active scene showing a playing fake clip, selected so
+// deleteSelectedQuads() takes it off screen while the undo history keeps it.
+struct UnseenFixture {
+    EditorState es;
+    SourceManager sm;
+    FakePlayable* clip = nullptr;
+    UUID clipId;
+    Quad* quad = nullptr;
+
+    UnseenFixture() {
+        auto fake = std::make_unique<FakePlayable>("clip.mp4");
+        clip = fake.get();
+        clipId = sm.registerSource(std::move(fake));
+        clip->play();
+        quad = es.quadManager().createQuad("Q");
+        quad->getTexture().mediaId = clipId;
+        es.quadManager().selectQuad(quad->getId());
+    }
+};
+
+}  // namespace
+
+TEST(PauseWhileUnseenTest, AClipOnlyUndoHoldsPausesAndResumesWhenUndoBringsItBack) {
+    UnseenFixture fx;
+    releaseUnusedSources(fx.es, fx.sm);  // on screen: untouched
+    EXPECT_EQ(fx.clip->state, PlaybackState::PLAYING);
+    EXPECT_TRUE(fx.es.sourcesPausedWhileUnseen.empty());
+
+    fx.es.deleteSelectedQuads();
+    releaseUnusedSources(fx.es, fx.sm);
+    ASSERT_TRUE(fx.sm.hasSource(fx.clipId));  // undo may still need it
+    EXPECT_EQ(fx.clip->state, PlaybackState::PAUSED);
+    EXPECT_EQ(fx.es.sourcesPausedWhileUnseen.count(fx.clipId), 1u);
+
+    releaseUnusedSources(fx.es, fx.sm);  // a later pass changes nothing
+    EXPECT_EQ(fx.clip->pauses, 1);
+
+    ASSERT_TRUE(fx.es.commandHistory.undo());
+    releaseUnusedSources(fx.es, fx.sm);
+    EXPECT_EQ(fx.clip->state, PlaybackState::PLAYING);
+    EXPECT_TRUE(fx.es.sourcesPausedWhileUnseen.empty());
+}
+
+TEST(PauseWhileUnseenTest, AClipTheUserPausedStaysPausedThroughDeleteAndUndo) {
+    UnseenFixture fx;
+    fx.clip->pause();
+    const int plays = fx.clip->plays;
+    fx.es.deleteSelectedQuads();
+    releaseUnusedSources(fx.es, fx.sm);
+    EXPECT_TRUE(fx.es.sourcesPausedWhileUnseen.empty());
+
+    ASSERT_TRUE(fx.es.commandHistory.undo());
+    releaseUnusedSources(fx.es, fx.sm);
+    EXPECT_EQ(fx.clip->state, PlaybackState::PAUSED);
+    EXPECT_EQ(fx.clip->plays, plays);  // never resumed behind the user's back
+}
+
+TEST(PauseWhileUnseenTest, TheVideoPlayersClipKeepsPlayingWithItsQuadDeleted) {
+    UnseenFixture fx;
+    fx.es.activeVideoSourceId = fx.clipId;
+    fx.es.deleteSelectedQuads();
+    releaseUnusedSources(fx.es, fx.sm);
+    EXPECT_EQ(fx.clip->state, PlaybackState::PLAYING);
+    EXPECT_TRUE(fx.es.sourcesPausedWhileUnseen.empty());
+}
+
+TEST(PauseWhileUnseenTest, AClipNoUndoCanRestoreIsReleasedAndForgotten) {
+    UnseenFixture fx;
+    fx.es.deleteSelectedQuads();
+    releaseUnusedSources(fx.es, fx.sm);
+    ASSERT_EQ(fx.es.sourcesPausedWhileUnseen.count(fx.clipId), 1u);
+
+    fx.es.commandHistory.clear();
+    releaseUnusedSources(fx.es, fx.sm);
+    EXPECT_FALSE(fx.sm.hasSource(fx.clipId));
+    EXPECT_TRUE(fx.es.sourcesPausedWhileUnseen.empty());
+}
+
+// New, Load and recovery all clear through clearProjectContent before the next project
+// creates a source: the old project's clips are gone (a reloaded show opens its media
+// fresh), with the undo history and every record naming them, while the media bin's
+// own sources stay assignable.
+TEST(ClearProjectContentTest, ReleasesTheOldProjectsMediaAndRecordsButKeepsTheBins) {
+    UnseenFixture fx;
+    const UUID binId = fx.sm.registerSource(std::make_unique<FakePlayable>("bin generator"));
+    MediaLibrary library;
+    auto binItem = std::make_unique<MediaItem>();
+    binItem->setSourceId(binId);
+    library.addItem(std::move(binItem));
+    fx.es.mediaBinPanel.setMediaLibrary(&library);
+
+    const UUID playerId = fx.sm.registerSource(std::make_unique<FakePlayable>("player.mp4"));
+    fx.es.activeVideoSourceId = playerId;  // the Video Player's clip is project media
+    fx.es.quadTexturePaths[fx.quad->getId()] = "C:/show/clip.mp4";
+    fx.es.deleteSelectedQuads();
+    releaseUnusedSources(fx.es, fx.sm);  // the clip is paused, held by undo only
+    ASSERT_EQ(fx.es.sourcesPausedWhileUnseen.count(fx.clipId), 1u);
+    fx.es.releasedTransports[UUID::generate()] = Project::TransportData{};
+    Project::SourceData missing;
+    missing.id = UUID::generate();
+    missing.path = "C:/show/gone.mp4";
+    fx.es.missingSources.emplace(missing.id, missing);
+    fx.es.showMissingMedia = true;
+
+    clearProjectContent(fx.es, &fx.sm);
+
+    EXPECT_FALSE(fx.es.commandHistory.canUndo());
+    EXPECT_TRUE(fx.es.scenes.empty());
+    EXPECT_TRUE(fx.es.quadTexturePaths.empty());
+    EXPECT_TRUE(fx.es.activeVideoSourceId.isNull());
+    EXPECT_FALSE(fx.sm.hasSource(fx.clipId));
+    EXPECT_FALSE(fx.sm.hasSource(playerId));
+    EXPECT_TRUE(fx.sm.hasSource(binId));
+    EXPECT_TRUE(fx.es.sourcesPausedWhileUnseen.empty());
+    EXPECT_TRUE(fx.es.releasedTransports.empty());
+    EXPECT_TRUE(fx.es.missingSources.empty());
+    EXPECT_FALSE(fx.es.showMissingMedia);
+
+    fx.es.mediaBinPanel.setMediaLibrary(nullptr);  // `library` dies before `fx`
 }

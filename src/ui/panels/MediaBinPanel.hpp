@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <utility>
 #include <functional>
 #include <memory>
 #include <filesystem>
@@ -80,6 +81,23 @@ public:
      * unused-source cleanup must be told to keep it.
      */
     const UUID& getPreviewSourceId() const { return hoverPreviewId_; }
+
+    /**
+     * The preview's decoder was bound elsewhere (a Load or an assignment found it by
+     * path, like any open clip): it belongs to that user now. Forget it without
+     * removing it; a still-hovered item gets a new preview next frame.
+     */
+    void handOverPreviewSource() {
+        hoverPreviewId_ = UUID();
+        hoverPreviewPath_.clear();
+    }
+
+    /**
+     * Previews whose hover ended since the last call. The bin never removes a preview
+     * itself: an assignment earlier in the same frame may have bound it. The frame
+     * boundary (releaseUnusedSources) removes each one nothing bound.
+     */
+    std::vector<UUID> takeEndedPreviews() { return std::exchange(endedPreviews_, {}); }
 
     // Thumbnail size settings
     float getThumbnailSize() const { return thumbnailSize_; }
@@ -163,6 +181,7 @@ private:
     UUID hoverPreviewId_;
     std::string hoverPreviewPath_;
     std::string hoveredVideoThisFrame_;
+    std::vector<UUID> endedPreviews_;  // see takeEndedPreviews()
 
     // Load Files / Load Folder run off the render thread (QM-088); one at a time.
     AsyncFileDialog importDialog_;
