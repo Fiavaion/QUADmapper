@@ -5,7 +5,7 @@ Last Updated: 2026-09-26 (Session 23)
 ## Quick Status
 - In Progress: 0
 - Todo: Phase 0 S6 hygiene (move AI out of Application.cpp, dead stubs,
-  dev→master PR), Phase 1 ADR-047..051, QM-079 (needs ADR-049), QM-082, TD-08/11..17, 🚩 QM-061
+  dev→master PR), Phase 1 ADR-047..051 (ADR-049 done), QM-082, TD-08/12..17, 🚩 QM-061
 - Done: Session 22 added QM-083..QM-099 (see below); Session 23 added QM-100..QM-109 (PRD MVP
   gaps + post-MVP control)
 - Blocked: 0
@@ -134,7 +134,10 @@ All built + 633/633 ctest; committed + pushed to `origin/dev` (`721b61a` code + 
   edits; crash-safe via history-clear on delete/scene-switch. (Create/delete undo deferred.)
 - **QM-078 DONE** — Report Bug button; smooth 32×32 corner-pin tessellation (no fold); bezier
   edges on the 4 corners (ADR-043): Coons patch, amber handles, toggle+reset, .qmap, undo.
-- **QM-079 TODO** — bezier handles on grid division lines (the deferred half of the bezier ask).
+- **QM-079 DONE (2026-09-27, ADR-049)** — bezier handles on grid division lines: every control
+  vertex has optional tangent handles along its row and column (two per axis), on the unified
+  surface evaluator S = B + R. Mesh edit: `H` / `Shift+H` cycles the selected vertex's handles,
+  arrows nudge them (Shift 10×, Alt 0.1×), mouse drag works, undoable; saved as `meshTangents`.
 
 ## Session 18 (2026-06-17) — ADR-040 scoping (shared media sources + per-quad crop)
 
