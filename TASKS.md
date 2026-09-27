@@ -21,8 +21,8 @@ Last Updated: 2026-09-26 (Session 23)
   identity by readback (byte-identical without 3D objects at every rotation; ≤ 2 levels where
   translucent quads lie over a 3D object), blend flatness 0.5% on the GPU. GUI-checked: the
   v3.4 fixture's left projector fades over the overlap on the second monitor; an old keystone
-  show projects as in the editor. Bench still needs a quiet-machine rerun (see ADR-047
-  Amendment 1).
+  show projects as in the editor. Quiet-machine bench: quads256 on 2 outputs 170 fps, p99
+  10.8 ms, gate met (ADR-047 "Gate e result").
 - **QM-121 B1 DONE** — ADR-047 part B1 (editor side, Amendment 3): slice editor in the
   Properties panel for the selected output (list/add/remove/select, input rect, warp corners,
   blend edges, black level; every edit an id-keyed undo step, same-target edits merge); warp
@@ -38,8 +38,7 @@ Last Updated: 2026-09-26 (Session 23)
   reverses or completes-then-fades, equal-power audio cross-gain ramped by the mixer;
   TD-12 measured (`--bench=present`), vsync holder chosen by refresh rate, mixed-rate
   notice; present threads left in TD-12. GUI-checked on the second monitor (mid-fade and
-  end captures). Bench `quads256` 2 outputs on a busy machine: 111 fps, p99 27.7 ms
-  (quiet rerun still owed).
+  end captures). Quiet-machine bench: quads256 on 2 outputs 170 fps, p99 10.8 ms.
 
 ## Session 23 (2026-09-26) — PRD MVP gaps, audio, OSC/MIDI (committed on dev, not pushed)
 
