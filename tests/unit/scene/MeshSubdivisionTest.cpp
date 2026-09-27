@@ -2,90 +2,116 @@
 #include "scene/MeshSubdivision.hpp"
 #include "scene/QuadGeometry.hpp"
 
+#include <algorithm>
+
 namespace quadmapper {
 namespace test {
 
+namespace {
+
+QuadGeometry unitSquare(int resolution) {
+    QuadGeometry geometry;
+    geometry.setMeshResolution(resolution);
+    geometry.setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)});
+    return geometry;
+}
+
+// The (u, v) a render vertex carries: its projective texture coordinate divided by q.
+Vec2 uvOf(const MeshVertex& v) {
+    return Vec2(v.texCoord.x, v.texCoord.y) / v.texCoord.z;
+}
+
+}  // namespace
+
 // =============================================================================
-// Basic Mesh Generation Tests
+// Render tessellation (ADR-049 §4)
 // =============================================================================
 
-TEST(MeshSubdivisionTest, ResolutionTwoReturnsNineVertices) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(2);
+TEST(MeshSubdivisionTest, CornerSurfaceTessellatesAtTheRenderMinimum) {
+    QuadGeometry geometry = unitSquare(2);  // the control grid does not set density
 
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
-    MeshSubdivision::generateMesh(geometry, vertices, indices);
+    const IVec2 cells = MeshSubdivision::generateMesh(geometry, vertices, indices);
 
-    // 2 resolution = 3x3 grid = 9 vertices
-    EXPECT_EQ(vertices.size(), 9);
+    EXPECT_EQ(cells, IVec2(RENDER_MIN_SEGMENTS, RENDER_MIN_SEGMENTS));
+    EXPECT_EQ(vertices.size(), static_cast<size_t>(33 * 33));
+    EXPECT_EQ(indices.size(), static_cast<size_t>(32 * 32 * 6));
+
+    // Zero residuals in mesh edit are the same surface, so the same mesh.
+    geometry.setMeshMode(MeshMode::MESH_EDIT);
+    std::vector<MeshVertex> editVertices;
+    EXPECT_EQ(MeshSubdivision::generateMesh(geometry, editVertices, indices), cells);
+    ASSERT_EQ(editVertices.size(), vertices.size());
+    for (size_t i = 0; i < vertices.size(); ++i) {
+        EXPECT_EQ(editVertices[i].position, vertices[i].position);
+        EXPECT_EQ(editVertices[i].texCoord, vertices[i].texCoord);
+    }
 }
 
-TEST(MeshSubdivisionTest, ResolutionFourReturnsTwentyFiveVertices) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(4);
-
-    std::vector<MeshVertex> vertices;
-    std::vector<uint32_t> indices;
-    MeshSubdivision::generateMesh(geometry, vertices, indices);
-
-    // 4 resolution = 5x5 grid = 25 vertices
-    EXPECT_EQ(vertices.size(), 25);
+TEST(MeshSubdivisionTest, MeshWarpSplitsEveryControlCell) {
+    // max(2, ceil(32 / cells)) segments per cell: 1 -> 32, 3 -> 11 each, 20 -> 2
+    // each, 64 -> 2 each.
+    const struct { int cells; int segments; } cases[] = {
+        {1, 32}, {3, 33}, {4, 32}, {20, 40}, {MAX_MESH_RESOLUTION, 128}};
+    for (const auto& c : cases) {
+        QuadGeometry geometry = unitSquare(c.cells);
+        geometry.setMeshMode(MeshMode::MESH_EDIT);
+        geometry.setMeshVertexByIndex(0, Vec2(0.01f, 0.0f));
+        std::vector<MeshVertex> vertices;
+        std::vector<uint32_t> indices;
+        const IVec2 cells = MeshSubdivision::generateMesh(geometry, vertices, indices);
+        EXPECT_EQ(cells, IVec2(c.segments, c.segments)) << c.cells << " cells";
+        EXPECT_EQ(vertices.size(), static_cast<size_t>((c.segments + 1) * (c.segments + 1)));
+        EXPECT_EQ(indices.size(), static_cast<size_t>(c.segments * c.segments * 6));
+    }
 }
 
-TEST(MeshSubdivisionTest, SubdivisionCreatesCorrectIndices) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(2);
-
-    std::vector<MeshVertex> vertices;
-    std::vector<uint32_t> indices;
-    MeshSubdivision::generateMesh(geometry, vertices, indices);
-
-    // 2 resolution = 2x2 quads = 4 quads = 8 triangles = 24 indices
-    EXPECT_EQ(indices.size(), 24);
+TEST(MeshSubdivisionTest, EveryControlLineIsATessellationLine) {
+    QuadGeometry geometry = unitSquare(1);
+    geometry.setGridCoords({0.0f, 0.3f, 1.0f}, {0.0f, 0.55f, 0.6f, 1.0f});
+    geometry.setMeshMode(MeshMode::MESH_EDIT);
+    geometry.setMeshVertex(1, 1, Vec2(0.05f, -0.02f));
+    const std::vector<float> us = geometry.tessellationU();
+    const std::vector<float> vs = geometry.tessellationV();
+    for (float u : geometry.getUCoords()) {
+        EXPECT_NE(std::find(us.begin(), us.end(), u), us.end()) << u;
+    }
+    for (float v : geometry.getVCoords()) {
+        EXPECT_NE(std::find(vs.begin(), vs.end(), v), vs.end()) << v;
+    }
+    EXPECT_TRUE(std::is_sorted(us.begin(), us.end()));
+    EXPECT_TRUE(std::is_sorted(vs.begin(), vs.end()));
 }
 
-TEST(MeshSubdivisionTest, VertexPositionsAreInterpolated) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(2);
-
-    // Set up unit square
-    geometry.setCorners({
-        Vec2(0.0f, 0.0f),
-        Vec2(1.0f, 0.0f),
-        Vec2(1.0f, 1.0f),
-        Vec2(0.0f, 1.0f)
-    });
-
+TEST(MeshSubdivisionTest, VertexPositionsAndUVsFollowTheSurface) {
+    QuadGeometry geometry = unitSquare(2);
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
     MeshSubdivision::generateMesh(geometry, vertices, indices);
 
-    // Center vertex should be at (0.5, 0.5)
-    // For 3x3 grid, center is index 4
-    EXPECT_NEAR(vertices[4].position.x, 0.5f, 0.001f);
-    EXPECT_NEAR(vertices[4].position.y, 0.5f, 0.001f);
+    const MeshVertex& centre = vertices[16 * 33 + 16];
+    EXPECT_NEAR(centre.position.x, 0.5f, 1e-6f);
+    EXPECT_NEAR(centre.position.y, 0.5f, 1e-6f);
+    EXPECT_NEAR(uvOf(centre).x, 0.5f, 1e-6f);
+    EXPECT_NEAR(uvOf(centre).y, 0.5f, 1e-6f);
+    EXPECT_NEAR(uvOf(vertices.front()).x, 0.0f, 1e-6f);
+    EXPECT_NEAR(uvOf(vertices.back()).y, 1.0f, 1e-6f);
 }
 
-TEST(MeshSubdivisionTest, UVCoordinatesAreCorrect) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(2);
+TEST(MeshSubdivisionTest, IndicesFormValidTriangles) {
+    QuadGeometry geometry = unitSquare(3);
+    geometry.setMeshMode(MeshMode::MESH_EDIT);
+    geometry.setMeshVertex(1, 1, Vec2(0.02f, 0.0f));
 
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
     MeshSubdivision::generateMesh(geometry, vertices, indices);
 
-    // Top-left corner UV should be (0, 0)
-    EXPECT_NEAR(vertices[0].texCoord.x, 0.0f, 0.001f);
-    EXPECT_NEAR(vertices[0].texCoord.y, 0.0f, 0.001f);
-
-    // Bottom-right corner UV should be (1, 1) - index 8 for 3x3 grid
-    EXPECT_NEAR(vertices[8].texCoord.x, 1.0f, 0.001f);
-    EXPECT_NEAR(vertices[8].texCoord.y, 1.0f, 0.001f);
-
-    // Center UV should be (0.5, 0.5)
-    EXPECT_NEAR(vertices[4].texCoord.x, 0.5f, 0.001f);
-    EXPECT_NEAR(vertices[4].texCoord.y, 0.5f, 0.001f);
+    for (uint32_t idx : indices) {
+        EXPECT_LT(idx, vertices.size());
+    }
+    EXPECT_EQ(indices.size() % 3, 0);
 }
 
 TEST(MeshSubdivisionTest, GetVertexIndexWorks) {
@@ -111,61 +137,6 @@ TEST(MeshSubdivisionTest, GeneratePositionsMatchesQuadGeometry) {
         EXPECT_FLOAT_EQ(positions[i].x, directPositions[i].x);
         EXPECT_FLOAT_EQ(positions[i].y, directPositions[i].y);
     }
-}
-
-TEST(MeshSubdivisionTest, IndicesFormValidTriangles) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(2);
-
-    std::vector<MeshVertex> vertices;
-    std::vector<uint32_t> indices;
-    MeshSubdivision::generateMesh(geometry, vertices, indices);
-
-    // All indices should be valid vertex indices
-    for (uint32_t idx : indices) {
-        EXPECT_LT(idx, vertices.size());
-    }
-
-    // Indices should be in groups of 3 (triangles)
-    EXPECT_EQ(indices.size() % 3, 0);
-}
-
-// =============================================================================
-// Edge Case Tests (Min/Max Resolution)
-// =============================================================================
-
-TEST(MeshSubdivisionTest, MinResolutionGeneratesCorrectMesh) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(MIN_MESH_RESOLUTION);
-
-    std::vector<MeshVertex> vertices;
-    std::vector<uint32_t> indices;
-    MeshSubdivision::generateMesh(geometry, vertices, indices);
-
-    // Min resolution (2) = 3x3 grid = 9 vertices
-    int expectedVertices = MeshSubdivision::getVertexCount(MIN_MESH_RESOLUTION);
-    EXPECT_EQ(vertices.size(), static_cast<size_t>(expectedVertices));
-
-    // 2x2 quads = 8 triangles = 24 indices
-    int expectedIndices = MeshSubdivision::getIndexCount(MIN_MESH_RESOLUTION);
-    EXPECT_EQ(indices.size(), static_cast<size_t>(expectedIndices));
-}
-
-TEST(MeshSubdivisionTest, MaxResolutionGeneratesCorrectMesh) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(MAX_MESH_RESOLUTION);
-
-    std::vector<MeshVertex> vertices;
-    std::vector<uint32_t> indices;
-    MeshSubdivision::generateMesh(geometry, vertices, indices);
-
-    // Max resolution (64) = 65x65 grid = 4225 vertices
-    int expectedVertices = MeshSubdivision::getVertexCount(MAX_MESH_RESOLUTION);
-    EXPECT_EQ(vertices.size(), static_cast<size_t>(expectedVertices));
-
-    // 64x64 quads = 8192 triangles = 24576 indices
-    int expectedIndices = MeshSubdivision::getIndexCount(MAX_MESH_RESOLUTION);
-    EXPECT_EQ(indices.size(), static_cast<size_t>(expectedIndices));
 }
 
 // =============================================================================
@@ -220,35 +191,6 @@ TEST(MeshSubdivisionTest, IsValidResolutionReturnsFalseForInvalidValues) {
     EXPECT_FALSE(MeshSubdivision::isValidResolution(-5));
 }
 
-// =============================================================================
-// Bilinear Position Tests
-// =============================================================================
-
-TEST(MeshSubdivisionTest, GenerateBilinearPositionsIgnoresMeshOffsets) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(2);
-    geometry.setMeshMode(MeshMode::MESH_EDIT);
-
-    // Set up unit square
-    geometry.setCorners({
-        Vec2(0.0f, 0.0f),
-        Vec2(1.0f, 0.0f),
-        Vec2(1.0f, 1.0f),
-        Vec2(0.0f, 1.0f)
-    });
-
-    // Add an offset to the center vertex
-    geometry.setMeshVertex(1, 1, Vec2(0.1f, 0.1f));
-
-    // Get bilinear positions (should ignore offset)
-    auto bilinearPositions = MeshSubdivision::generateBilinearPositions(geometry);
-
-    // Center should still be at (0.5, 0.5) since offsets are ignored
-    int centerIndex = MeshSubdivision::getVertexIndex(1, 1, 2);
-    EXPECT_NEAR(bilinearPositions[centerIndex].x, 0.5f, 0.001f);
-    EXPECT_NEAR(bilinearPositions[centerIndex].y, 0.5f, 0.001f);
-}
-
 TEST(MeshSubdivisionTest, GenerateIndicesOnlyCreatesCorrectIndices) {
     std::vector<uint32_t> indices;
     MeshSubdivision::generateIndices(4, indices);
@@ -263,60 +205,38 @@ TEST(MeshSubdivisionTest, GenerateIndicesOnlyCreatesCorrectIndices) {
 }
 
 // =============================================================================
-// Mesh Offset Tests (for future mesh editing)
+// Mesh residuals
 // =============================================================================
 
 TEST(MeshSubdivisionTest, MeshOffsetsAppliedInMeshEditMode) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(2);
+    QuadGeometry geometry = unitSquare(2);
     geometry.setMeshMode(MeshMode::MESH_EDIT);
-
-    // Set up unit square
-    geometry.setCorners({
-        Vec2(0.0f, 0.0f),
-        Vec2(1.0f, 0.0f),
-        Vec2(1.0f, 1.0f),
-        Vec2(0.0f, 1.0f)
-    });
-
-    // Add an offset to the center vertex
-    Vec2 offset(0.1f, 0.2f);
-    geometry.setMeshVertex(1, 1, offset);
-
-    std::vector<MeshVertex> vertices;
-    std::vector<uint32_t> indices;
-    MeshSubdivision::generateMesh(geometry, vertices, indices);
-
-    // Center should be at (0.5 + 0.1, 0.5 + 0.2) = (0.6, 0.7)
-    int centerIndex = MeshSubdivision::getVertexIndex(1, 1, 2);
-    EXPECT_NEAR(vertices[centerIndex].position.x, 0.6f, 0.001f);
-    EXPECT_NEAR(vertices[centerIndex].position.y, 0.7f, 0.001f);
-}
-
-TEST(MeshSubdivisionTest, MeshOffsetsNotAppliedInCornersOnlyMode) {
-    QuadGeometry geometry;
-    geometry.setMeshResolution(2);
-    geometry.setMeshMode(MeshMode::CORNERS_ONLY);
-
-    // Set up unit square
-    geometry.setCorners({
-        Vec2(0.0f, 0.0f),
-        Vec2(1.0f, 0.0f),
-        Vec2(1.0f, 1.0f),
-        Vec2(0.0f, 1.0f)
-    });
-
-    // Add an offset to the center vertex (should be ignored)
     geometry.setMeshVertex(1, 1, Vec2(0.1f, 0.2f));
 
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
     MeshSubdivision::generateMesh(geometry, vertices, indices);
 
-    // Center should still be at (0.5, 0.5) since we're in CORNERS_ONLY mode
-    int centerIndex = MeshSubdivision::getVertexIndex(1, 1, 2);
-    EXPECT_NEAR(vertices[centerIndex].position.x, 0.5f, 0.001f);
-    EXPECT_NEAR(vertices[centerIndex].position.y, 0.5f, 0.001f);
+    // 2 cells of 16 segments: the centre control vertex is render vertex (16, 16), and
+    // keeps the base's texture coordinate while the residual moves it.
+    const MeshVertex& centre = vertices[16 * 33 + 16];
+    EXPECT_NEAR(centre.position.x, 0.6f, 1e-6f);
+    EXPECT_NEAR(centre.position.y, 0.7f, 1e-6f);
+    EXPECT_NEAR(uvOf(centre).x, 0.5f, 1e-6f);
+    EXPECT_NEAR(uvOf(centre).y, 0.5f, 1e-6f);
+}
+
+TEST(MeshSubdivisionTest, MeshOffsetsNotAppliedInCornersOnlyMode) {
+    QuadGeometry geometry = unitSquare(2);
+    geometry.setMeshMode(MeshMode::CORNERS_ONLY);
+    geometry.setMeshVertex(1, 1, Vec2(0.1f, 0.2f));
+
+    std::vector<MeshVertex> vertices;
+    std::vector<uint32_t> indices;
+    MeshSubdivision::generateMesh(geometry, vertices, indices);
+
+    EXPECT_NEAR(vertices[16 * 33 + 16].position.x, 0.5f, 1e-6f);
+    EXPECT_NEAR(vertices[16 * 33 + 16].position.y, 0.5f, 1e-6f);
 }
 
 // =============================================================================
@@ -347,10 +267,9 @@ TEST(MeshSubdivisionTest, WarpedQuadInterpolatesCorrectly) {
         EXPECT_LE(vertex.position.y, 1.0f);
     }
 
-    // The top-middle vertex (row 0, col 1) should be at (0.5, 0.0)
-    int topMiddleIndex = MeshSubdivision::getVertexIndex(0, 1, 2);
-    EXPECT_NEAR(vertices[topMiddleIndex].position.x, 0.5f, 0.001f);
-    EXPECT_NEAR(vertices[topMiddleIndex].position.y, 0.0f, 0.001f);
+    // The trapezoid is symmetric, so u = 0.5 on the top edge is its midpoint.
+    EXPECT_NEAR(vertices[16].position.x, 0.5f, 1e-6f);
+    EXPECT_NEAR(vertices[16].position.y, 0.0f, 1e-6f);
 }
 
 } // namespace test

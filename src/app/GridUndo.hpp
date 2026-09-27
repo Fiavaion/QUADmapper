@@ -1,9 +1,10 @@
 #pragma once
 
 // Undo support for control-grid edits — add/remove division lines and the even-grid
-// reset (ADR-043). These change the whole grid (coords + offsets), so we snapshot the
-// grid before and after and replay via setGridCoords + setMeshVertices. Reuses the
-// id-keyed QuadPropertyCommand, so a deleted quad makes the step a safe no-op.
+// reset (ADR-043). These change the whole grid (coords, residuals, tangents), so we
+// snapshot the grid before and after and replay via setGridCoords + setMeshVertices +
+// setVertexTangents. Reuses the id-keyed QuadPropertyCommand, so a deleted quad makes
+// the step a safe no-op.
 
 #include "core/CommandHistory.hpp"
 #include "core/Types.hpp"
@@ -21,15 +22,18 @@ struct GridSnapshot {
     std::vector<float> u;
     std::vector<float> v;
     std::vector<Vec2> offsets;
+    std::vector<VertexTangents> tangents;
 };
 
 inline GridSnapshot captureGrid(const QuadGeometry& g) {
-    return GridSnapshot{ g.getUCoords(), g.getVCoords(), g.getMeshVertices() };
+    return GridSnapshot{ g.getUCoords(), g.getVCoords(), g.getMeshVertices(),
+                         g.getVertexTangents() };
 }
 
 inline void applyGridSnapshot(Quad& quad, const GridSnapshot& s) {
     quad.getGeometry().setGridCoords(s.u, s.v);
     quad.getGeometry().setMeshVertices(s.offsets);
+    quad.getGeometry().setVertexTangents(s.tangents);
 }
 
 // Record a completed grid change (already applied to the quad) as one undo step.

@@ -21,6 +21,7 @@
 #include "../core/UUID.hpp"
 #include "../core/CommandHistory.hpp"
 #include "../control/MidiMapping.hpp"
+#include "GridUndo.hpp"
 #include "../project/Project.hpp"
 #include "../scene/CalibrationSession.hpp"
 #include "../scene/Commands.hpp"
@@ -123,6 +124,7 @@ struct EditorState {
         // active one. Drop it to avoid a stale index into another scene's quad.
         cornerHoveredVertex = cornerDraggedVertex = cornerSelectedVertex = -1;
         meshHoveredVertex = meshDraggedVertex = meshSelectedVertex = -1;
+        meshSelectedHandle = meshHoveredHandle = meshDraggedHandle = -1;
         snapActive = false;
         gridInsert = GridInsert::None;
         gridInsertMouseLatch = false;
@@ -252,6 +254,16 @@ struct EditorState {
     int meshSelectedVertex = -1;  // Persistent selection for keyboard control
     Vec2 meshDragStartMousePos{0.0f};
 
+    // Grid tangent handles of the selected mesh vertex (ADR-049 §3): GridHandle
+    // values, -1 for none. meshSelectedHandle is the keyboard target (H cycles it);
+    // a drag snapshots the vertex's tangents for one undo step on release.
+    int meshSelectedHandle = -1;
+    int meshHoveredHandle = -1;
+    int meshDraggedHandle = -1;
+    Vec2 meshHandleDragStartMousePos{0.0f};
+    Vec2 meshHandleDragStartPos{0.0f};
+    VertexTangents meshHandleDragBefore;
+
     // Snap indicator state (visual feedback when snapping)
     bool snapActive = false;
     Vec2 snapTargetPos{0.0f};
@@ -332,9 +344,7 @@ struct EditorState {
 
     // Grid snapshot captured at the press that begins a click-to-insert gesture, so
     // the whole insert+drag commits as ONE undo step on release (ADR-043).
-    std::vector<float> gridInsertBeforeU;
-    std::vector<float> gridInsertBeforeV;
-    std::vector<Vec2> gridInsertBeforeOffsets;
+    GridSnapshot gridInsertBefore;
 
     // ---- Viewport view transform (ADR-041, session-only) ------------------
     // The editor canvas is drawn into the dockspace central node with the

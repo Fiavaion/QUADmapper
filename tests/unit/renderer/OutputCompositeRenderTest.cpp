@@ -270,6 +270,75 @@ TEST(OutputCompositeRenderTest, CachedQuadRedrawsWhereItsGeometryMoved) {
     renderer.shutdown();
 }
 
+// ADR-049 gate (TD-11): entering mesh edit on a strongly keystoned quad with nothing
+// moved changes no pixel, whatever the control grid and with bezier edges too; the
+// first residual then does move pixels, so the comparison can see a change.
+TEST(OutputCompositeRenderTest, MeshEditToggleOnKeystoneChangesNoPixel) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    constexpr int SIZE = 128;
+    Framebuffer fbo;
+    ASSERT_TRUE(fbo.resize(SIZE, SIZE));
+    fbo.bind();
+
+    // Detail everywhere: gradients in red and green, a checker in blue.
+    constexpr int TEX = 16;
+    std::vector<unsigned char> texels(TEX * TEX * 3);
+    for (int y = 0; y < TEX; ++y) {
+        for (int x = 0; x < TEX; ++x) {
+            unsigned char* t = &texels[static_cast<size_t>((y * TEX + x) * 3)];
+            t[0] = static_cast<unsigned char>(x * 16);
+            t[1] = static_cast<unsigned char>(y * 16);
+            t[2] = ((x + y) % 2) ? 255 : 0;
+        }
+    }
+    Texture texture;
+    ASSERT_TRUE(texture.create(TEX, TEX, 3, texels.data()));
+
+    Quad quad;
+    QuadGeometry& g = quad.getGeometry();
+    g.setCorners({Vec2(0.05f, 0.10f), Vec2(0.95f, 0.35f), Vec2(0.95f, 0.65f), Vec2(0.05f, 0.90f)});
+    auto frame = [&]() {
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        renderer.renderQuad(quad, &texture);
+        renderer.endFrame();
+        std::vector<unsigned char> pixels(SIZE * SIZE * 4);
+        glReadPixels(0, 0, SIZE, SIZE, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        return pixels;
+    };
+    auto differing = [](const std::vector<unsigned char>& a, const std::vector<unsigned char>& b) {
+        int count = 0;
+        for (size_t i = 0; i < a.size(); i += 4) {
+            if (a[i] != b[i] || a[i + 1] != b[i + 1] || a[i + 2] != b[i + 2]) ++count;
+        }
+        return count;
+    };
+
+    const auto corner = frame();
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    EXPECT_EQ(differing(corner, frame()), 0) << "default 1x1 grid";
+    g.setGridCoords({0.0f, 0.3f, 0.55f, 1.0f}, {0.0f, 0.4f, 1.0f});
+    EXPECT_EQ(differing(corner, frame()), 0) << "non-uniform 3x2 grid";
+
+    g.setMeshMode(MeshMode::CORNERS_ONLY);
+    g.setBezierEnabled(true);
+    g.setBezierControl(0, 0, g.getBezierControl(0, 0) + Vec2(0.0f, -0.05f));
+    g.setBezierControl(1, 1, g.getBezierControl(1, 1) + Vec2(0.04f, 0.0f));
+    const auto curved = frame();
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    EXPECT_EQ(differing(curved, frame()), 0) << "bezier edges";
+
+    g.setMeshVertex(1, 1, Vec2(0.03f, 0.0f));
+    EXPECT_GT(differing(curved, frame()), 50) << "a residual moves the picture";
+
+    Framebuffer::unbind();
+    renderer.shutdown();
+}
+
 // A quad that stops being drawn (deleted, or its scene no longer shown) gives its GPU
 // mesh back once the renderer has made enough scene passes without it.
 TEST(OutputCompositeRenderTest, UndrawnQuadMeshIsReleased) {
@@ -330,9 +399,9 @@ TEST(OutputCompositeRenderTest, EachQuadDrawsWithItsOwnUniforms) {
 }
 
 // Every corner-pin patch has the same triangles, so all of them draw with one shared
-// index buffer (TD-22): a quad costs one VAO and one vertex buffer. A mesh-edit grid
-// owns its indices, and gives them back when it is a corner patch again, still
-// drawing where it is.
+// index buffer (TD-22): a quad costs one VAO and one vertex buffer. A mesh warp whose
+// tessellation has another size (3 cells of 11 segments) owns its indices, and gives
+// them back when it is a corner patch again, still drawing where it is.
 TEST(OutputCompositeRenderTest, CornerPatchesShareOneIndexBuffer) {
     GLContext ctx;
     if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
@@ -359,6 +428,9 @@ TEST(OutputCompositeRenderTest, CornerPatchesShareOneIndexBuffer) {
     Quad& quad = quads.front();
     quad.getGeometry().setMeshMode(MeshMode::MESH_EDIT);
     quad.getGeometry().setUniformGrid(3);
+    renderer.renderQuad(quad, nullptr);
+    EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers + 8) << "no residual: still the corner patch";
+    quad.getGeometry().setMeshVertex(1, 1, Vec2(0.001f, 0.0f));
     renderer.renderQuad(quad, nullptr);
     EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers + 9);
 

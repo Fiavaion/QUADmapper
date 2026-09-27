@@ -475,6 +475,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 es.meshDraggedVertex   = -1;
                 es.meshHoveredVertex   = -1;
                 es.meshSelectedVertex  = -1;
+                es.meshSelectedHandle = es.meshHoveredHandle = es.meshDraggedHandle = -1;
                 es.cornerDraggedVertex = -1;
                 es.cornerHoveredVertex = -1;
                 es.cornerSelectedVertex = -1;
@@ -491,16 +492,17 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
                 if (geometry.hasMeshModifications()) {
                     ImGui::SameLine();
-                    if (ImGui::Button("Reset Mesh to Bilinear")) {
+                    if (ImGui::Button("Reset Mesh")) {
                         geometry.resetMesh();
                         ctx.project->setModified(true);
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip(
-                            "Clear all mesh vertex offsets and return to bilinear"
-                            " interpolation");
+                            "Clear every mesh vertex offset and grid-line handle, back"
+                            " to the corner-pin surface");
                     }
                 }
+                ImGui::TextDisabled("H / Shift+H: the selected vertex's grid-line handles");
 
                 // Show vertex count info
                 ImGui::Text("Vertices: %d (%dx%d grid)",

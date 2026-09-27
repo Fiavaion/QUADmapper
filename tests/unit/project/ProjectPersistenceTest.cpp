@@ -909,6 +909,7 @@ TEST(ProjectFixtureTest, EveryHistoricalFormatLoads) {
         {"v3.1-sources.qmap", 1, 2},
         {"v3.2-objects-projector.qmap", 1, 1},
         {"v3.3-control-audio-lock.qmap", 1, 1},
+        {"v3.3-mesh-keystone.qmap", 1, 2},
     };
     for (const auto& e : expected) {
         auto loaded = ProjectSerializer::load(dir / e.file);
@@ -1003,6 +1004,36 @@ TEST(ProjectFixtureTest, V33FixtureKeepsControlAudioAndLock) {
               "4a1b2c3d-0000-4000-8000-0000000000f2");
 }
 
+namespace {
+
+// Where a file written before ADR-049 put its control vertices: the bilinear corner
+// patch at each grid parameter plus the stored offset (row-major).
+std::vector<Vec2> legacyControlPositions(const std::array<Vec2, 4>& c,
+                                         const std::vector<float>& us,
+                                         const std::vector<float>& vs,
+                                         const std::vector<Vec2>& offsets) {
+    std::vector<Vec2> positions;
+    for (size_t r = 0; r < vs.size(); ++r) {
+        for (size_t col = 0; col < us.size(); ++col) {
+            const Vec2 top = glm::mix(c[0], c[1], us[col]);
+            const Vec2 bottom = glm::mix(c[3], c[2], us[col]);
+            positions.push_back(glm::mix(top, bottom, vs[r]) + offsets[r * us.size() + col]);
+        }
+    }
+    return positions;
+}
+
+void expectPositions(const std::vector<Vec2>& actual, const std::vector<Vec2>& expected,
+                     const char* what) {
+    ASSERT_EQ(actual.size(), expected.size()) << what;
+    for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_NEAR(actual[i].x, expected[i].x, 1e-5f) << what << " vertex " << i;
+        EXPECT_NEAR(actual[i].y, expected[i].y, 1e-5f) << what << " vertex " << i;
+    }
+}
+
+}  // namespace
+
 TEST(ProjectFixtureTest, V12FixtureKeepsGridAndOffsets) {
     auto loaded = ProjectSerializer::load(fs::path(QM_PROJECT_FIXTURES_DIR) / "v1.2-flat-grid.qmap");
     ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
@@ -1010,6 +1041,100 @@ TEST(ProjectFixtureTest, V12FixtureKeepsGridAndOffsets) {
     EXPECT_EQ(geo.getUCoords(), (std::vector<float>{0.0f, 0.3f, 1.0f}));
     EXPECT_EQ(geo.getMeshMode(), MeshMode::MESH_EDIT);
     EXPECT_TRUE(geo.hasMeshModifications());
+    // Every control vertex stays where the file put it (ADR-049 §2).
+    const std::vector<Vec2> offsets = {
+        {0.0f, 0.0f}, {0.01f, 0.0f}, {0.0f, 0.0f},
+        {0.0f, 0.02f}, {0.0f, 0.0f}, {0.0f, 0.0f},
+        {0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}};
+    expectPositions(geo.generateMeshPositions(),
+                    legacyControlPositions(geo.getCorners(), {0.0f, 0.3f, 1.0f},
+                                           {0.0f, 0.5f, 1.0f}, offsets),
+                    "v1.2");
+}
+
+TEST(ProjectFixtureTest, V33KeystoneMeshKeepsControlVerticesAndSavesOnce) {
+    auto loaded = ProjectSerializer::load(fs::path(QM_PROJECT_FIXTURES_DIR) / "v3.3-mesh-keystone.qmap");
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const auto& quads = loaded.value().getScenes()[0].quads;
+    ASSERT_EQ(quads.size(), 2u);
+
+    // A keystoned, bezier-edged mesh warp: bilinear and projective disagree inside,
+    // yet every control vertex lands where the file put it.
+    const QuadGeometry& warp = quads[0].getGeometry();
+    const std::vector<Vec2> offsets = {
+        {0.0f, 0.0f}, {0.01f, -0.02f}, {0.0f, 0.0f},
+        {-0.015f, 0.0f}, {0.03f, 0.025f}, {0.02f, 0.0f},
+        {0.0f, 0.0f}, {0.0f, 0.015f}, {0.0f, 0.0f}};
+    const std::vector<Vec2> expected = legacyControlPositions(
+        warp.getCorners(), {0.0f, 0.4f, 1.0f}, {0.0f, 0.5f, 1.0f}, offsets);
+    expectPositions(warp.generateMeshPositions(), expected, "loaded");
+    const Vec2 centreBase = warp.basePoint(0.4f, 0.5f);
+    EXPECT_GT(glm::length(expected[4] - offsets[4] - centreBase), 0.01f)
+        << "the fixture must be keystoned enough to tell the bases apart";
+
+    // No warp stored: no residual, so toggling mesh edit changes nothing (TD-11).
+    const QuadGeometry& plain = quads[1].getGeometry();
+    EXPECT_FALSE(plain.hasMeshModifications());
+    EXPECT_EQ(plain.surfacePoint(0.3f, 0.6f), plain.basePoint(0.3f, 0.6f));
+
+    // Saved again it is marked surface-relative, so a reload does not convert twice.
+    ProjectSerializer serializer;
+    const std::string json = serializer.serialize(loaded.value());
+    EXPECT_NE(json.find("\"meshBase\""), std::string::npos);
+    Project reloaded;
+    ASSERT_TRUE(serializer.deserialize(json, reloaded).isSuccess());
+    expectPositions(reloaded.getScenes()[0].quads[0].getGeometry().generateMeshPositions(),
+                    expected, "reloaded");
+}
+
+TEST(ProjectFixtureTest, GridHandlesRoundTrip) {
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    scene.name = "Scene 1";
+    Quad quad;
+    QuadGeometry& g = quad.getGeometry();
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    g.setGridHandlePosition(4, GRID_HANDLE_U_AFTER, g.gridHandlePosition(4, GRID_HANDLE_U_AFTER) +
+                                                         Vec2(0.01f, 0.02f));
+    g.setGridHandlePosition(1, GRID_HANDLE_V_AFTER, g.gridHandlePosition(1, GRID_HANDLE_V_AFTER) +
+                                                         Vec2(-0.02f, 0.0f));
+    scene.quads.push_back(quad);
+    scene.texturePaths.push_back("");
+    project.getScenes().push_back(std::move(scene));
+
+    ProjectSerializer serializer;
+    const std::string json = serializer.serialize(project);
+    Project reloaded;
+    ASSERT_TRUE(serializer.deserialize(json, reloaded).isSuccess());
+    const QuadGeometry& back = reloaded.getScenes()[0].quads[0].getGeometry();
+    EXPECT_EQ(back.getVertexTangents(), g.getVertexTangents());
+    EXPECT_EQ(back.getMeshVertices(), g.getMeshVertices());
+}
+
+TEST(ProjectFixtureTest, MalformedGridHandlesAreRejected) {
+    auto withTangents = [](const std::string& tangents) {
+        return std::string(R"({"version": "3.3.0", "scenes": [{"quads": [{"geometry": {
+            "corners": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+            "meshResolution": 1, "meshMode": 1, "meshTangents": )") + tangents + "}}]}]}";
+    };
+    ProjectSerializer serializer;
+    Project project;
+    EXPECT_FALSE(serializer.deserialize(withTangents(R"("nope")"), project).isSuccess());
+    EXPECT_FALSE(serializer.deserialize(withTangents(R"([{"vertex": 0}])"), project).isSuccess());
+    EXPECT_FALSE(serializer.deserialize(
+        withTangents(R"([{"vertex": 0, "handles": [null, [1, "x"], null, null]}])"), project)
+        .isSuccess());
+    // A vertex the grid does not have, or a handle pointing out of the grid, is dropped.
+    Project ok;
+    ASSERT_TRUE(serializer.deserialize(
+        withTangents(R"([{"vertex": 9, "handles": [null, null, null, null]},
+                         {"vertex": 0, "handles": [[1, 1], [0.5, 0], null, null]}])"), ok)
+        .isSuccess());
+    const VertexTangents t = ok.getScenes()[0].quads[0].getGeometry().getVertexTangent(0);
+    EXPECT_EQ(t.explicitMask, 1u << GRID_HANDLE_U_AFTER);
+    EXPECT_EQ(t.derivative[GRID_HANDLE_U_AFTER], Vec2(0.5f, 0.0f));
 }
 
 }  // namespace test

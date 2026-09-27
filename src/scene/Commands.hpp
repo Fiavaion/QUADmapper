@@ -90,6 +90,28 @@ private:
     Vec2 newOffset_;
 };
 
+// MoveGridHandleCommand - one control vertex's tangent handles (ADR-049 §3) before
+// and after moving `handle`. Consecutive moves of the same handle merge.
+class MoveGridHandleCommand : public Command {
+public:
+    MoveGridHandleCommand(const QuadRef& target, int vertexIndex, int handle,
+                          const VertexTangents& oldTangents, const VertexTangents& newTangents);
+
+    bool execute() override;
+    bool undo() override;
+    std::string getDescription() const override;
+
+    bool canMergeWith(const Command& other) const override;
+    void mergeWith(const Command& other) override;
+
+private:
+    QuadRef target_;
+    int vertexIndex_;
+    int handle_;
+    VertexTangents oldTangents_;
+    VertexTangents newTangents_;
+};
+
 // QuadPropertyCommand - generic before/after value of one quad, applied by callback.
 // The callback receives the resolved quad, so it must not capture a Quad*.
 template<typename T>

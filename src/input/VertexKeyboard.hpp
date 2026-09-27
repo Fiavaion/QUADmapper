@@ -35,6 +35,53 @@ inline Vec2 nudgeDelta(bool up, bool down, bool left, bool right, float step) {
                 (down ? step : 0.0f) - (up ? step : 0.0f));
 }
 
+// In mesh edit, H (Shift+H backwards) cycles the selected vertex's grid-line handles
+// (ADR-049 §3); the arrows then nudge the handle with the same steps. A bare H is no
+// other key's: the editor uses Tab, the arrows, Delete, 1-9 / numpad 1-9 (scene
+// take), F11, Esc, and Ctrl or Alt chords.
+constexpr ImGuiKey GRID_HANDLE_KEY = ImGuiKey_H;
+
+// Handle selected after H (or Shift+H when `backwards`), given `available` with one
+// bit per handle (QuadGeometry::availableHandles, 4 handles). It steps from the
+// vertex itself (-1) through each available handle and back to the vertex.
+inline int cycleHandle(int current, unsigned available, bool backwards) {
+    constexpr int HANDLES = 4;
+    int h = (current >= -1 && current < HANDLES) ? current : -1;
+    for (int step = 0; step <= HANDLES; ++step) {
+        if (backwards) h = (h < 0) ? HANDLES - 1 : h - 1;
+        else           h = (h + 1 >= HANDLES) ? -1 : h + 1;
+        if (h < 0 || ((available >> h) & 1u)) return h;
+    }
+    return -1;
+}
+
+// The canvas editing keys pressed this frame: arrows auto-repeat, Tab and H do not.
+struct CanvasKeys {
+    bool tab = false;
+    bool handle = false;
+    bool up = false, down = false, left = false, right = false;
+    bool shift = false, alt = false;
+
+    bool arrow() const { return up || down || left || right; }
+    Vec2 nudge() const { return nudgeDelta(up, down, left, right, nudgeStep(shift, alt)); }
+};
+
+// Read CanvasKeys from ImGui. Call only while canvasOwnsEditingKeys() holds.
+inline CanvasKeys readCanvasKeys() {
+    const ImGuiIO& io = ImGui::GetIO();
+    CanvasKeys keys;
+    keys.tab = ImGui::IsKeyPressed(ImGuiKey_Tab, false);
+    keys.handle = !io.KeyCtrl && !io.KeyAlt && !io.KeySuper &&
+                  ImGui::IsKeyPressed(GRID_HANDLE_KEY, false);
+    keys.up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+    keys.down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+    keys.left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true);
+    keys.right = ImGui::IsKeyPressed(ImGuiKey_RightArrow, true);
+    keys.shift = io.KeyShift;
+    keys.alt = io.KeyAlt;
+    return keys;
+}
+
 // True when the canvas should act on Tab / arrow keys: a quad is selected, nothing
 // is being typed or edited in a widget, and no popup or modal is open.
 inline bool canvasOwnsEditingKeys(bool quadSelected) {
@@ -44,7 +91,7 @@ inline bool canvasOwnsEditingKeys(bool quadSelected) {
 }
 
 // Call once per frame right after ImGui::NewFrame(). While the canvas owns the
-// editing keys, it claims Tab and the arrows so a focused panel's tabbing and
+// editing keys, it claims Tab, H and the arrows so a focused panel's tabbing and
 // keyboard navigation (which only act on unowned keys) leave them alone; the vertex
 // then moves no matter which panel was clicked last ("+ Add Quad", the media bin, the
 // Inspector). Ownership set now applies from the next NewFrame, when the next key
@@ -52,7 +99,7 @@ inline bool canvasOwnsEditingKeys(bool quadSelected) {
 inline void claimCanvasEditingKeys(bool quadSelected) {
     if (!canvasOwnsEditingKeys(quadSelected)) return;
     const ImGuiID owner = ImHashStr("QUADmapper.CanvasEditingKeys");
-    for (ImGuiKey key : {ImGuiKey_Tab, ImGuiKey_UpArrow, ImGuiKey_DownArrow,
+    for (ImGuiKey key : {ImGuiKey_Tab, GRID_HANDLE_KEY, ImGuiKey_UpArrow, ImGuiKey_DownArrow,
                          ImGuiKey_LeftArrow, ImGuiKey_RightArrow}) {
         ImGui::SetKeyOwner(key, owner);
     }

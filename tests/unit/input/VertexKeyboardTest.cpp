@@ -32,6 +32,21 @@ TEST(VertexKeyboardTest, CycleVertexRecoversFromStaleIndex) {
     EXPECT_EQ(cycleVertex(0, 0, false), -1);
 }
 
+TEST(VertexKeyboardTest, CycleHandleVisitsOnlyAvailableHandlesThenTheVertex) {
+    const unsigned all = 0xF;
+    EXPECT_EQ(cycleHandle(-1, all, false), 0);
+    EXPECT_EQ(cycleHandle(3, all, false), -1);   // after the last: back to the vertex
+    EXPECT_EQ(cycleHandle(-1, all, true), 3);    // Shift+H from the vertex: the last
+    EXPECT_EQ(cycleHandle(0, all, true), -1);
+    const unsigned topLeft = (1u << 1) | (1u << 3);  // U after, V after
+    EXPECT_EQ(cycleHandle(-1, topLeft, false), 1);
+    EXPECT_EQ(cycleHandle(1, topLeft, false), 3);
+    EXPECT_EQ(cycleHandle(3, topLeft, false), -1);
+    EXPECT_EQ(cycleHandle(-1, topLeft, true), 3);
+    EXPECT_EQ(cycleHandle(-1, 0u, false), -1);   // no handles: stays on the vertex
+    EXPECT_EQ(cycleHandle(7, all, false), 0);    // a stale index restarts
+}
+
 TEST(VertexKeyboardTest, NudgeDeltaFollowsArrowKeys) {
     const float s = 0.01f;
     EXPECT_EQ(nudgeDelta(true, false, false, false, s), Vec2(0.0f, -s));
@@ -68,6 +83,11 @@ protected:
         ImGui::NewFrame();
         if (claim) claimCanvasEditingKeys(quadSelected);
         sawTab_ = sawTab_ || ImGui::IsKeyPressed(ImGuiKey_Tab, false);  // ViewportEditor's query
+        if (canvasOwnsEditingKeys(quadSelected)) {  // the mesh-edit path's read
+            const CanvasKeys keys = readCanvasKeys();
+            sawHandleKey_ = sawHandleKey_ || keys.handle;
+            sawShiftHandleKey_ = sawShiftHandleKey_ || (keys.handle && keys.shift);
+        }
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
         ImGui::SetNextWindowSize(ImVec2(300.0f, 200.0f));
         if (focusPanel) ImGui::SetNextWindowFocus();
@@ -88,7 +108,35 @@ protected:
     ImGuiContext* ctx_ = nullptr;
     char name_[32] = "Quad 1";
     bool sawTab_ = false;
+    bool sawHandleKey_ = false;
+    bool sawShiftHandleKey_ = false;
 };
+
+TEST_F(CanvasKeyOwnershipTest, HandleKeyReachesTheCanvasThroughAFocusedPanel) {
+    frame(true, true, /*focusPanel=*/true);
+    frame(true);
+    EXPECT_FALSE(ImGui::TestKeyOwner(GRID_HANDLE_KEY, ImGuiKeyOwner_NoOwner))
+        << "H is claimed with the other canvas keys";
+
+    press(GRID_HANDLE_KEY, /*claim=*/true);
+    EXPECT_TRUE(sawHandleKey_);
+    EXPECT_FALSE(sawShiftHandleKey_);
+    EXPECT_FALSE(ImGui::GetIO().WantTextInput);
+
+    ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, true);
+    press(GRID_HANDLE_KEY, true);
+    ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, false);
+    EXPECT_TRUE(sawShiftHandleKey_) << "Shift+H cycles backwards";
+}
+
+TEST_F(CanvasKeyOwnershipTest, CtrlHIsNotTheHandleKey) {
+    frame(true, true, /*focusPanel=*/true);
+    frame(true);
+    ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, true);
+    press(GRID_HANDLE_KEY, true);
+    ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, false);
+    EXPECT_FALSE(sawHandleKey_);
+}
 
 TEST_F(CanvasKeyOwnershipTest, FocusedPanelDoesNotCaptureKeyboard) {
     frame(true, true, /*focusPanel=*/true);
