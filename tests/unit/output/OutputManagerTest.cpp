@@ -992,6 +992,21 @@ TEST(VsyncHolderTest, FirstNonMinimisedOutputPacesTheLoop) {
     EXPECT_EQ(OutputManager::vsyncHolder({true, true}), -1);
 }
 
+// TD-12: the refresh rate most presented outputs share paces the loop; a tie goes to
+// the lower rate (no output is sent more frames than its display shows), then to list
+// order. Unknown rates (0) hold vsync only when no rate is known.
+TEST(VsyncHolderTest, TheSharedThenLowerRefreshRatePacesTheLoop) {
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false}, {165, 60}), 1);   // measured rig
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false}, {60, 165}), 0);
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false, false}, {50, 60, 60}), 1);  // majority
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false, false}, {60, 60, 60}), 0);
+    EXPECT_EQ(OutputManager::vsyncHolder({true, false, false}, {50, 60, 165}), 1);  // minimised: never
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false}, {0, 144}), 1);   // a known rate wins
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false}, {0, 0}), 0);
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false}, {60}), 0);       // missing = unknown
+    EXPECT_EQ(OutputManager::vsyncHolder({true, true}, {60, 60}), -1);
+}
+
 // ---- Scene take keys on output windows (US-008) ----------------------------------
 
 TEST(SceneTakeKeyTest, PlainDigitPressesTakeTheirScene) {
@@ -1946,6 +1961,186 @@ TEST(CanvasSliceRenderTest, CanvasIsColourOnly) {
 
     renderer.shutdown();
     manager.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Scene crossfades (ADR-047 §5, QM-121): readback of the mixed frames.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::unique_ptr<Texture> solidTexture(unsigned char r, unsigned char g, unsigned char b) {
+    std::vector<unsigned char> px(4 * 4 * 4);
+    for (size_t i = 0; i < px.size(); i += 4) {
+        px[i] = r;
+        px[i + 1] = g;
+        px[i + 2] = b;
+        px[i + 3] = 255;
+    }
+    auto texture = std::make_unique<Texture>();
+    texture->create(4, 4, 4, px.data());
+    return texture;
+}
+
+// One output and scenes of one solid colour each, filling their canvas.
+struct FadeRig {
+    EditorGL gl;
+    OutputManager manager;
+    OutputWindow* output = nullptr;
+    int w = 0, h = 0;
+    std::vector<std::unique_ptr<Scene>> scenes;
+    std::vector<std::unique_ptr<Texture>> media;
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    bool ok = false;
+
+    FadeRig() {
+        if (!gl.ok || !manager.initialize(gl.win).isSuccess()) return;
+        output = manager.createOutput("Faded");
+        if (!output) return;
+        glfwSetWindowSize(output->getGLFWwindow(), 64, 32);
+        glfwGetFramebufferSize(output->getGLFWwindow(), &w, &h);
+        glfwMakeContextCurrent(gl.win);
+        ok = renderer.initialize();
+    }
+    ~FadeRig() {
+        if (!ok) return;
+        renderer.shutdown();
+        media.clear();
+        manager.shutdown();
+    }
+
+    Scene* addScene(unsigned char r, unsigned char g, unsigned char b, IVec2 canvas) {
+        scenes.push_back(std::make_unique<Scene>());
+        Scene* scene = scenes.back().get();
+        scene->setCanvasSize(canvas);
+        media.push_back(solidTexture(r, g, b));
+        textures[fullCanvasQuad(*scene)->getId()] = media.back().get();
+        return scene;
+    }
+
+    // The output's frame at frame-clock time `t` (fades retired first, as a frame does).
+    std::vector<unsigned char> frameAt(double t) {
+        manager.setFrameTime(t);
+        manager.retireSceneFades(scenes);
+        manager.renderOutputFrames(scenes, textures, renderer);
+        return readFrame(*manager.outputFrame(output->getId()));
+    }
+
+    std::array<int, 3> centre(const std::vector<unsigned char>& px) const {
+        const size_t i = (static_cast<size_t>(h / 2) * w + w / 2) * 4;
+        return {px[i], px[i + 1], px[i + 2]};
+    }
+};
+
+int worstDifference(const std::vector<unsigned char>& a, const std::vector<unsigned char>& b) {
+    int worst = 0;
+    for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
+        worst = std::max(worst, std::abs(static_cast<int>(a[i]) - static_cast<int>(b[i])));
+    }
+    return a.size() == b.size() ? worst : 256;
+}
+
+}  // namespace
+
+// Gate (ADR-047 §8): a 1 s crossfade on the GPU. At t = 0 the frame is the old scene
+// byte for byte, at 0.5 the two mixed, at 1 the new scene byte-identical to a cut;
+// stepped at 60 Hz every frame differs from the one before and the mix is monotonic.
+// The canvas of the scene faded out is released when the fade ends.
+TEST(SceneFadeRenderTest, OneSecondCrossfadeMixesTheCanvasesMonotonically) {
+    FadeRig rig;
+    if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    Scene* a = rig.addScene(240, 0, 0, IVec2(rig.w, rig.h));
+    Scene* b = rig.addScene(0, 0, 240, IVec2(rig.w, rig.h));
+
+    // References: each scene alone, routed as a cut.
+    rig.manager.routeScene(*rig.output, b, rig.scenes);
+    const std::vector<unsigned char> cutToB = rig.frameAt(0.0);
+    rig.manager.routeScene(*rig.output, a, rig.scenes);
+    const std::vector<unsigned char> onlyA = rig.frameAt(0.0);
+    ASSERT_EQ(rig.centre(onlyA), (std::array<int, 3>{240, 0, 0}));
+    ASSERT_EQ(rig.centre(cutToB), (std::array<int, 3>{0, 0, 240}));
+
+    const long framebuffers = GlObjectStats::framebuffers();
+    rig.manager.setFrameTime(100.0);
+    rig.manager.takeScene(*rig.output, b, rig.scenes, 1.0);
+    EXPECT_EQ(worstDifference(rig.frameAt(100.0), onlyA), 0) << "t = 0: the old scene exactly";
+    EXPECT_EQ(GlObjectStats::framebuffers(), framebuffers + 1) << "both canvases drawn";
+    ASSERT_NE(rig.manager.sceneCanvas(a->getId()), nullptr);
+
+    const std::array<int, 3> half = rig.centre(rig.frameAt(100.5));
+    EXPECT_NEAR(half[0], 120, 1);
+    EXPECT_EQ(half[1], 0);
+    EXPECT_NEAR(half[2], 120, 1);
+
+    std::vector<std::array<int, 3>> sequence;
+    for (int frame = 0; frame <= 60; ++frame) {
+        sequence.push_back(rig.centre(rig.frameAt(100.0 + frame / 60.0)));
+    }
+    for (size_t i = 1; i < sequence.size(); ++i) {
+        EXPECT_LT(sequence[i][0], sequence[i - 1][0]) << "frame " << i << " repeats or goes back";
+        EXPECT_GT(sequence[i][2], sequence[i - 1][2]) << "frame " << i;
+    }
+    EXPECT_TRUE(rig.manager.sceneFades().empty());
+    EXPECT_EQ(worstDifference(rig.frameAt(101.0), cutToB), 0) << "t = 1: identical to a cut";
+    EXPECT_EQ(rig.manager.sceneCanvas(a->getId()), nullptr) << "the faded-out canvas is released";
+    EXPECT_EQ(GlObjectStats::framebuffers(), framebuffers);
+}
+
+// The mix happens before the blend zones and black level: mid-fade, a slice with both
+// shows exactly what it would show for one scene of the mixed colour. The scene fading
+// out has a canvas of another size (the filtered path).
+TEST(SceneFadeRenderTest, BlendZonesAndBlackLevelApplyToTheMix) {
+    FadeRig rig;
+    if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    Scene* a = rig.addScene(200, 40, 0, IVec2(rig.w * 2, rig.h * 2));
+    Scene* b = rig.addScene(0, 120, 200, IVec2(rig.w, rig.h));
+    Scene* mixed = rig.addScene(100, 80, 100, IVec2(rig.w, rig.h));
+    rig.manager.routeScene(*rig.output, a, rig.scenes);
+    rig.frameAt(0.0);
+
+    rig.manager.takeScene(*rig.output, b, rig.scenes, 2.0);
+    Slice& slice = rig.output->getSlices()[0];
+    slice.blend[SLICE_EDGE_RIGHT] = BlendEdge{static_cast<float>(rig.w) / 2.0f, 2.2f, 2.0f};
+    slice.blend[SLICE_EDGE_TOP] = BlendEdge{8.0f, 1.8f, 3.0f};
+    slice.blackLevel = 0.1f;
+    const std::vector<unsigned char> fading = rig.frameAt(1.0);  // mix 0.5
+    ASSERT_NE(rig.manager.sceneFade(*rig.output), nullptr);
+
+    OutputManager::showScene(*rig.output, mixed, rig.scenes);  // same size: slices unchanged
+    const std::vector<unsigned char> reference = rig.frameAt(1.0);
+    EXPECT_LE(worstDifference(fading, reference), 1);
+}
+
+// An output that showed nothing fades its first scene in from black.
+TEST(SceneFadeRenderTest, AnOutputShowingNothingFadesInFromBlack) {
+    FadeRig rig;
+    if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    Scene* b = rig.addScene(0, 200, 0, IVec2(rig.w, rig.h));
+    rig.manager.setFrameTime(0.0);
+    rig.manager.takeScene(*rig.output, b, rig.scenes, 1.0);
+    EXPECT_EQ(rig.centre(rig.frameAt(0.0)), (std::array<int, 3>{0, 0, 0}));
+    const std::array<int, 3> half = rig.centre(rig.frameAt(0.5));
+    EXPECT_NEAR(half[1], 100, 1);
+    EXPECT_EQ(rig.centre(rig.frameAt(1.0)), (std::array<int, 3>{0, 200, 0}));
+}
+
+// Blackout mid-fade: black while on (no canvas drawn), and the fade is where the wall
+// clock says when it lifts.
+TEST(SceneFadeRenderTest, BlackoutDuringAFadeIsBlackAndTheClockRunsOn) {
+    FadeRig rig;
+    if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    Scene* a = rig.addScene(240, 0, 0, IVec2(rig.w, rig.h));
+    Scene* b = rig.addScene(0, 0, 240, IVec2(rig.w, rig.h));
+    rig.manager.routeScene(*rig.output, a, rig.scenes);
+    rig.frameAt(0.0);
+    rig.manager.takeScene(*rig.output, b, rig.scenes, 1.0);
+    rig.manager.setBlackout(true);
+    EXPECT_EQ(rig.centre(rig.frameAt(0.25)), (std::array<int, 3>{0, 0, 0}));
+    rig.manager.setBlackout(false);
+    const std::array<int, 3> later = rig.centre(rig.frameAt(0.75));
+    EXPECT_NEAR(later[0], 60, 1);
+    EXPECT_NEAR(later[2], 180, 1);
 }
 
 } // namespace test

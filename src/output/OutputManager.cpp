@@ -135,6 +135,7 @@ void OutputManager::deleteOutput(const UUID& id) {
 
         (*it)->destroy();
         outputs_.erase(it);
+        sceneFades_.cancelOutput(id);
         releaseUnshownCanvases();
         LOG_INFO("Deleted output '{}' (remaining: {})", name, outputs_.size());
         if (outputRemovedCallback_) {
@@ -338,13 +339,32 @@ int OutputManager::monitorContaining(const std::vector<MonitorInfo>& monitors, I
     return -1;
 }
 
-int OutputManager::vsyncHolder(const std::vector<bool>& iconified) {
+int OutputManager::vsyncHolder(const std::vector<bool>& iconified, const std::vector<int>& refreshHz) {
+    auto rate = [&](size_t i) { return i < refreshHz.size() && refreshHz[i] > 0 ? refreshHz[i] : 0; };
+    int holder = -1;
+    int holderShare = 0;
     for (size_t i = 0; i < iconified.size(); ++i) {
-        if (!iconified[i]) {
-            return static_cast<int>(i);
+        if (iconified[i]) {
+            continue;
+        }
+        if (holder < 0) {
+            holder = static_cast<int>(i);  // with no rate known: the first one
+        }
+        const int hz = rate(i);
+        if (hz == 0) {
+            continue;
+        }
+        int share = 0;
+        for (size_t j = 0; j < iconified.size(); ++j) {
+            if (!iconified[j] && rate(j) == hz) ++share;
+        }
+        const int current = rate(static_cast<size_t>(holder));
+        if (current == 0 || share > holderShare || (share == holderShare && hz < current)) {
+            holder = static_cast<int>(i);
+            holderShare = share;
         }
     }
-    return -1;
+    return holder;
 }
 
 int OutputManager::editorMonitorIndex() const {
@@ -659,6 +679,45 @@ bool OutputManager::routeScene(OutputWindow& output, Scene* scene,
     return canvas != before;
 }
 
+bool OutputManager::takeScene(OutputWindow& output, Scene* scene,
+                              const std::vector<std::unique_ptr<Scene>>& scenes, double fadeSeconds) {
+    const UUID from = output.getSceneId();
+    const bool canvasChanged = routeScene(output, scene, scenes);
+    sceneFades_.begin(output.getId(), from, output.getSceneId(), frameTime_, fadeSeconds);
+    return canvasChanged;
+}
+
+bool OutputManager::retireSceneFades(const std::vector<std::unique_ptr<Scene>>& scenes) {
+    auto known = [&](const UUID& id) {
+        return std::any_of(scenes.begin(), scenes.end(),
+                           [&](const auto& s) { return s && s->getId() == id; });
+    };
+    return sceneFades_.retire(frameTime_, [&](const UUID& outputId, const SceneFade& fade) {
+        const OutputWindow* output = getOutput(outputId);
+        return output && output->getSceneId() == fade.toSceneId && known(fade.toSceneId) &&
+               (fade.fromSceneId.isNull() || known(fade.fromSceneId));
+    });
+}
+
+const SceneFade* OutputManager::sceneFade(const OutputWindow& output) const {
+    const SceneFade* fade = sceneFades_.find(output.getId());
+    if (!fade || fade->toSceneId != output.getSceneId() || output.getSceneId().isNull() ||
+        sceneFadeMix(*fade, frameTime_) >= 1.0f) {
+        return nullptr;
+    }
+    return fade;
+}
+
+bool OutputManager::sceneOnAnOutput(const UUID& sceneId) const {
+    if (firstOutputShowing(sceneId)) {
+        return true;
+    }
+    return std::any_of(outputs_.begin(), outputs_.end(), [&](const auto& output) {
+        const SceneFade* fade = sceneFade(*output);
+        return fade && fade->fromSceneId == sceneId;
+    });
+}
+
 bool OutputManager::followOutputSizes(std::vector<std::unique_ptr<Scene>>& scenes) {
     bool changed = false;
     for (const auto& output : outputs_) {
@@ -730,7 +789,7 @@ void OutputManager::releaseUnshownCanvases() {
     GLFWwindow* previousContext = glfwGetCurrentContext();
     glfwMakeContextCurrent(mainWindow_);
     for (auto it = canvases_.begin(); it != canvases_.end();) {
-        if (!firstOutputShowing(it->first)) {
+        if (!sceneOnAnOutput(it->first)) {
             it = canvases_.erase(it);
         } else {
             ++it;
@@ -742,13 +801,21 @@ void OutputManager::releaseUnshownCanvases() {
 void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& scenes,
                                    const std::unordered_map<UUID, Texture*>& textures,
                                    Renderer& renderer) {
-    // The scenes outputs show, each once.
+    // The scenes outputs show, and those they are fading out of, each once.
     canvasScenes_.clear();
+    auto addCanvasScene = [&](const UUID& id) {
+        const bool exists = std::any_of(scenes.begin(), scenes.end(),
+                                        [&](const auto& s) { return s && s->getId() == id; });
+        if (exists && std::find(canvasScenes_.begin(), canvasScenes_.end(), id) == canvasScenes_.end()) {
+            canvasScenes_.push_back(id);
+        }
+    };
     for (const auto& output : outputs_) {
-        const Scene* scene = sceneForOutput(scenes, *output);
-        if (scene && std::find(canvasScenes_.begin(), canvasScenes_.end(), scene->getId()) ==
-                         canvasScenes_.end()) {
-            canvasScenes_.push_back(scene->getId());
+        if (const Scene* scene = sceneForOutput(scenes, *output)) {
+            addCanvasScene(scene->getId());
+        }
+        if (const SceneFade* fade = sceneFade(*output); fade && !fade->fromSceneId.isNull()) {
+            addCanvasScene(fade->fromSceneId);
         }
     }
     for (auto it = canvases_.begin(); it != canvases_.end();) {
@@ -777,10 +844,11 @@ void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& sc
             // output into its frame, never into the canvas.
             canvas.target = std::make_unique<Framebuffer>(Framebuffer::Depth::Without);
         }
-        // The rotation all its outputs share, else none.
+        // The rotation all its outputs (showing it or fading out of it) share, else none.
         bool first = true;
         for (const auto& output : outputs_) {
-            if (output->getSceneId() != sceneId) continue;
+            const SceneFade* fade = sceneFade(*output);
+            if (output->getSceneId() != sceneId && !(fade && fade->fromSceneId == sceneId)) continue;
             if (first) {
                 canvas.rotation = output->getRotation();
                 first = false;
@@ -859,22 +927,44 @@ void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>
                         static_cast<GLenum>(prevBlend[2]), static_cast<GLenum>(prevBlend[3]));
 
     // Each output: its scene's objects from its projector (ADR-052), then its slices
-    // of the scene's canvas over them. No scene stays black.
+    // of the scene's canvas over them. No scene stays black. During a crossfade the
+    // slices mix the canvas of the scene fading out into this one, and the objects of
+    // both scenes are drawn with their opacity scaled by their weight.
     renderFrames(renderer, [&](const OutputWindow& output, IVec2 effectiveSize) {
         const Scene* scene = sceneForOutput(scenes, output);
         if (!scene) {
             return;
         }
-        renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures);
+        const SceneFade* fade = sceneFade(output);
+        Renderer::SliceFade sliceFade;
+        const Scene* from = nullptr;
+        if (fade) {
+            sliceFade.mix = sceneFadeMix(*fade, frameTime_);
+            for (const auto& s : scenes) {
+                if (s && !fade->fromSceneId.isNull() && s->getId() == fade->fromSceneId) from = s.get();
+            }
+        }
+        if (from && !from->getObjects().empty()) {
+            renderer.renderMeshObjects(from->getObjects(), output.getProjector(), textures,
+                                       1.0f - sliceFade.mix);
+            glClear(GL_DEPTH_BUFFER_BIT);  // each pass has its own depth range
+        }
+        renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures,
+                                   sliceFade.mix);
         const Framebuffer* canvas = sceneCanvas(scene->getId());
         if (!canvas || output.getSlices().empty()) {
             return;
+        }
+        if (const Framebuffer* fromCanvas = from ? sceneCanvas(from->getId()) : nullptr) {
+            sliceFade.fromTexture = fromCanvas->colorTexture();
+            sliceFade.fromSize = from->getCanvasSize();
+            sliceFade.fromRotation = canvases_.at(from->getId()).rotation;
         }
         const Rotation canvasRotation = canvases_.at(scene->getId()).rotation;
         glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
         for (const Slice& slice : output.getSlices()) {
             renderer.renderSlice(slice, canvas->colorTexture(), scene->getCanvasSize(),
-                                 canvasRotation, effectiveSize);
+                                 canvasRotation, effectiveSize, fade ? &sliceFade : nullptr);
         }
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
     });
@@ -981,11 +1071,15 @@ const Framebuffer* OutputManager::outputFrame(const UUID& outputId) const {
 
 void OutputManager::presentOutputs() {
     returnFocusToEditor();
+    lastPresents_.clear();
 
     // Hidden outputs (not in perform mode, or hidden by the user) are neither
     // copied nor swapped: nobody sees them, and each swap costs frame time.
     std::vector<OutputWindow*> presented;
     std::vector<bool> iconified;
+    presentedRefresh_.clear();
+    int monitorCount = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
     for (auto& output : outputs_) {
         if (!output->isEnabled() || !output->isCreated() || !output->isVisible()) {
             continue;
@@ -993,15 +1087,24 @@ void OutputManager::presentOutputs() {
         presented.push_back(output.get());
         iconified.push_back(
             glfwGetWindowAttrib(output->getGLFWwindow(), GLFW_ICONIFIED) == GLFW_TRUE);
+        // The display it is on, when it covers one (perform mode); a window's rate is unknown.
+        int hz = 0;
+        const int m = output->getMonitor();
+        if ((output->isFullscreen() || output->isBorderless()) && m >= 0 && m < monitorCount) {
+            if (const GLFWvidmode* mode = glfwGetVideoMode(monitors[m])) hz = mode->refreshRate;
+        }
+        presentedRefresh_.push_back(hz);
     }
-    const int holder = vsyncHolder(iconified);
+    const int holder = vsyncHolder(iconified, presentedRefresh_);
+    noticeMixedRefresh(presented, holder);
 
     GLFWwindow* previousContext = glfwGetCurrentContext();
     for (size_t i = 0; i < presented.size(); ++i) {
         OutputWindow* output = presented[i];
 
         output->makeContextCurrent();
-        output->setSwapInterval(static_cast<int>(i) == holder ? 1 : 0);
+        const int interval = static_cast<int>(i) == holder ? 1 : 0;
+        output->setSwapInterval(interval);
 
         int width = 0, height = 0;
         glfwGetFramebufferSize(output->getGLFWwindow(), &width, &height);
@@ -1022,6 +1125,7 @@ void OutputManager::presentOutputs() {
         }
 
         output->swapBuffers();
+        lastPresents_.push_back({output->getId(), std::chrono::steady_clock::now(), interval});
     }
 
     // The fence belongs to the main context, which deletes it.
@@ -1037,6 +1141,27 @@ void OutputManager::presentOutputs() {
     // A presented, non-minimised projector paces the loop and the editor swaps
     // without waiting. Otherwise the editor is vsync'd as before.
     setEditorSwapInterval(holder >= 0 ? 0 : 1);
+}
+
+void OutputManager::noticeMixedRefresh(const std::vector<OutputWindow*>& presented, int holder) {
+    std::vector<int> rates;
+    for (int hz : presentedRefresh_) {
+        if (hz > 0 && std::find(rates.begin(), rates.end(), hz) == rates.end()) rates.push_back(hz);
+    }
+    std::string text;
+    if (rates.size() > 1 && holder >= 0) {
+        std::sort(rates.begin(), rates.end());
+        std::string list;
+        for (int hz : rates) list += (list.empty() ? "" : ", ") + std::to_string(hz) + " Hz";
+        text = "Projector outputs run at different refresh rates (" + list + "): the show is paced at " +
+               std::to_string(presentedRefresh_[static_cast<size_t>(holder)]) + " Hz by '" +
+               presented[static_cast<size_t>(holder)]->getName() +
+               "'; outputs at another rate repeat or drop frames";
+    }
+    if (text != mixedRefreshNotice_) {
+        mixedRefreshNotice_ = text;
+        if (!text.empty()) notify(text);
+    }
 }
 
 void OutputManager::setEditorSwapInterval(int interval) {

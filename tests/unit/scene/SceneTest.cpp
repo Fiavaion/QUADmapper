@@ -2,12 +2,16 @@
 #include "scene/Scene.hpp"
 #include "scene/Quad.hpp"
 #include "scene/MediaReferences.hpp"
+#include "scene/SceneFade.hpp"
 #include "core/CommandHistory.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <unordered_map>
+#include <vector>
 
 namespace quadmapper {
 namespace test {
@@ -644,6 +648,165 @@ TEST_F(SceneTakeTest, BlendedGroupChangesTogether) {
     EXPECT_EQ(shownOn(out3), id(1));
 }
 
+
+
+// ---- Scene crossfades (ADR-047 §5, QM-121) ------------------------------------------
+
+// Ids made per test: a namespace-scope UUID::generate() runs before the generator is
+// set up (static initialization order), so the ids are members of the fixture.
+class SceneFadeTest : public ::testing::Test {
+protected:
+    const UUID kOut = UUID::generate();
+    const UUID kA = UUID::generate();
+    const UUID kB = UUID::generate();
+    const UUID kC = UUID::generate();
+};
+
+TEST_F(SceneFadeTest, MixFollowsTheFrameClockLinearly) {
+    SceneFades fades;
+    fades.begin(kOut, kA, kB, 100.0, 1.0);
+    ASSERT_NE(fades.find(kOut), nullptr);
+    EXPECT_EQ(fades.find(kOut)->fromSceneId, kA);
+    EXPECT_EQ(fades.find(kOut)->toSceneId, kB);
+    EXPECT_FLOAT_EQ(fades.mix(kOut, 99.0), 0.0f);  // a clock before the start: the old scene
+    EXPECT_FLOAT_EQ(fades.mix(kOut, 100.0), 0.0f);
+    EXPECT_FLOAT_EQ(fades.mix(kOut, 100.25), 0.25f);
+    EXPECT_FLOAT_EQ(fades.mix(kOut, 100.5), 0.5f);
+    EXPECT_FLOAT_EQ(fades.mix(kOut, 101.0), 1.0f);
+    EXPECT_FLOAT_EQ(fades.mix(kOut, 250.0), 1.0f);
+    EXPECT_FLOAT_EQ(fades.mix(UUID::generate(), 100.5), 1.0f) << "an output not fading shows its scene";
+}
+
+// Gate (ADR-047 §8): a 1 s crossfade is smooth. A fake frame clock steps 60 Hz frames,
+// then irregular ones: every frame shows a new mix (no repeated frame), the mix only
+// rises, it is the elapsed wall time (not a frame count), and the fade completes on time.
+TEST_F(SceneFadeTest, OneSecondFadeIsMonotonicWithNoRepeatedFrame) {
+    for (const bool jitter : {false, true}) {
+        SCOPED_TRACE(jitter ? "irregular frames" : "60 Hz frames");
+        SceneFades fades;
+        const double start = 5000.0;
+        fades.begin(kOut, kA, kB, start, 1.0);
+        std::vector<float> mixes;
+        double now = start;
+        int frame = 0;
+        while (!fades.empty()) {
+            mixes.push_back(fades.mix(kOut, now));
+            EXPECT_NEAR(mixes.back(), std::min(1.0, now - start), 1e-6);
+            // Retiring happens at the next frame's start, as Application::presentFrame does.
+            ++frame;
+            now = jitter ? now + (frame % 3 == 0 ? 0.021 : 0.012) : start + frame / 60.0;
+            fades.retire(now, [](const UUID&, const SceneFade&) { return true; });
+            ASSERT_LT(frame, 1000);
+        }
+        ASSERT_GE(mixes.size(), 2u);
+        EXPECT_EQ(mixes.front(), 0.0f) << "the take's own frame still shows the old scene";
+        for (size_t i = 1; i < mixes.size(); ++i) {
+            EXPECT_GT(mixes[i], mixes[i - 1]) << "frame " << i;
+        }
+        if (!jitter) EXPECT_EQ(mixes.size(), 60u) << "a 1 s fade spans 60 frames at 60 Hz";
+        EXPECT_GE(now - start, 1.0);
+        EXPECT_LT(now - start, 1.0 + 0.022);
+    }
+}
+
+TEST_F(SceneFadeTest, ZeroOrInvalidTimeIsACut) {
+    SceneFades fades;
+    for (double seconds : {0.0, -1.0, std::nan(""), std::numeric_limits<double>::infinity()}) {
+        fades.begin(kOut, kA, kB, 10.0, seconds);
+        EXPECT_TRUE(fades.empty()) << seconds;
+    }
+    fades.begin(kOut, kA, kA, 10.0, 1.0);  // same scene: nothing to fade
+    EXPECT_TRUE(fades.empty());
+    fades.begin(kOut, UUID::null(), kB, 10.0, 1.0);  // the output showed nothing: from black
+    ASSERT_NE(fades.find(kOut), nullptr);
+    EXPECT_TRUE(fades.find(kOut)->fromSceneId.isNull());
+}
+
+TEST_F(SceneFadeTest, FinishedFadesRetireAndRejectedOnesToo) {
+    SceneFades fades;
+    const UUID other = UUID::generate();
+    fades.begin(kOut, kA, kB, 0.0, 1.0);
+    fades.begin(other, kA, kC, 0.0, 2.0);
+    auto all = [](const UUID&, const SceneFade&) { return true; };
+    EXPECT_FALSE(fades.retire(0.99, all));
+    EXPECT_TRUE(fades.retire(1.0, all));
+    EXPECT_EQ(fades.find(kOut), nullptr);
+    ASSERT_NE(fades.find(other), nullptr);
+    EXPECT_TRUE(fades.retire(1.5, [&](const UUID& id, const SceneFade&) { return id != other; }));
+    EXPECT_TRUE(fades.empty());
+}
+
+// Taking back the scene that is fading out reverses from where the fade is: no jump.
+TEST_F(SceneFadeTest, TakingBackTheOutgoingSceneReversesWithoutAJump) {
+    SceneFades fades;
+    fades.begin(kOut, kA, kB, 0.0, 1.0);
+    const double now = 0.3;  // A at 0.7, B at 0.3
+    fades.begin(kOut, kB, kA, now, 2.0);
+    const SceneFade* fade = fades.find(kOut);
+    ASSERT_NE(fade, nullptr);
+    EXPECT_EQ(fade->fromSceneId, kB);
+    EXPECT_EQ(fade->toSceneId, kA);
+    EXPECT_NEAR(fades.mix(kOut, now), 0.7, 1e-6) << "A keeps its 0.7";
+    EXPECT_NEAR(fades.mix(kOut, now + 0.2), 0.8, 1e-6) << "then rises over the new 2 s time";
+    EXPECT_FLOAT_EQ(fades.mix(kOut, now + 0.6), 1.0f);
+}
+
+// Any other scene: the fade in progress completes at once (the scene fading in is on
+// screen) and the new fade starts from it.
+TEST_F(SceneFadeTest, TakingAThirdSceneFadesFromTheSceneFadingIn) {
+    SceneFades fades;
+    fades.begin(kOut, kA, kB, 0.0, 1.0);
+    fades.begin(kOut, kB, kC, 0.4, 1.0);
+    const SceneFade* fade = fades.find(kOut);
+    ASSERT_NE(fade, nullptr);
+    EXPECT_EQ(fade->fromSceneId, kB);
+    EXPECT_EQ(fade->toSceneId, kC);
+    EXPECT_FLOAT_EQ(fades.mix(kOut, 0.4), 0.0f);
+
+    // Taking the scene already fading in changes nothing: the fade carries on as it was.
+    fades.begin(kOut, kC, kC, 0.9, 5.0);  // what OutputManager::takeScene would pass
+    ASSERT_NE(fades.find(kOut), nullptr);
+    EXPECT_EQ(fades.find(kOut)->fromSceneId, kB);
+    EXPECT_FLOAT_EQ(fades.mix(kOut, 0.9), 0.5f) << "carries on at the original time";
+
+    // A cut during a fade ends it.
+    fades.begin(kOut, kC, kA, 0.7, 0.0);
+    EXPECT_TRUE(fades.empty());
+}
+
+TEST_F(SceneFadeTest, DeletingASceneEndsTheFadesInvolvingIt) {
+    SceneFades fades;
+    const UUID o2 = UUID::generate(), o3 = UUID::generate();
+    fades.begin(kOut, kA, kB, 0.0, 1.0);
+    fades.begin(o2, kB, kC, 0.0, 1.0);
+    fades.begin(o3, kC, kA, 0.0, 1.0);
+    fades.cancelScene(kB);
+    EXPECT_EQ(fades.find(kOut), nullptr);
+    EXPECT_EQ(fades.find(o2), nullptr);
+    EXPECT_NE(fades.find(o3), nullptr);
+    fades.cancelOutput(o3);
+    EXPECT_TRUE(fades.empty());
+}
+
+// Audio cross-gain (non-realtime side): equal power, monotonic, exact at both ends.
+TEST_F(SceneFadeTest, CrossGainIsEqualPowerMonotonicAndExactAtTheEnds) {
+    EXPECT_EQ(crossfadeGains(0.0f).out, 1.0f);
+    EXPECT_EQ(crossfadeGains(0.0f).in, 0.0f);
+    EXPECT_EQ(crossfadeGains(1.0f).out, 0.0f);
+    EXPECT_EQ(crossfadeGains(1.0f).in, 1.0f);
+    EXPECT_EQ(crossfadeGains(-0.5f).out, 1.0f);
+    EXPECT_EQ(crossfadeGains(std::nanf("")).out, 1.0f);
+    EXPECT_EQ(crossfadeGains(3.0f).in, 1.0f);
+    CrossGain last = crossfadeGains(0.0f);
+    for (int i = 1; i <= 1000; ++i) {
+        const CrossGain g = crossfadeGains(static_cast<float>(i) / 1000.0f);
+        EXPECT_LE(g.out, last.out);
+        EXPECT_GE(g.in, last.in);
+        EXPECT_NEAR(g.out * g.out + g.in * g.in, 1.0f, 1e-5f) << "constant power";
+        last = g;
+    }
+    EXPECT_NEAR(crossfadeGains(0.5f).out, std::sqrt(0.5f), 1e-6f);
+}
 
 } // namespace test
 } // namespace quadmapper

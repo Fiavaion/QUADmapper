@@ -1,7 +1,7 @@
 // Scene takes on the live routing (ADR-047 §5): EditorState::takeScene against real
-// outputs. Also slice editing on the same rig (ADR-047 part B, app/SliceEditing.hpp):
-// the canvas keys, auto-blend and the canvas size, through real commands and undo.
-// No GL context needed.
+// outputs, with and without crossfades. Also slice editing on the same rig (ADR-047
+// part B, app/SliceEditing.hpp): the canvas keys, auto-blend and the canvas size,
+// through real commands and undo. No GL context needed.
 #include "app/EditorState.hpp"
 #include "app/MeshEditKeys.hpp"
 #include "app/SliceEditing.hpp"
@@ -322,4 +322,144 @@ TEST(SliceEditingTest, CanvasResizeRescalesSlicesLocksAndUndoes) {
     // Unlocking alone is a step too.
     EXPECT_TRUE(setSceneCanvas(rig.es, &rig.om, rig.wide, wide.getCanvasSize(), false));
     EXPECT_FALSE(wide.isCanvasLocked());
+}
+
+// ---- Crossfaded takes (ADR-047 §5, QM-121) ------------------------------------------
+
+// A take with a fade fades the whole blended group together, from the scene it showed,
+// on the frame clock; the side projector is untouched. The fade ends on time.
+TEST(SceneTakeFadeTest, TheBlendedGroupFadesTogether) {
+    BlendedRig rig;
+    rig.om.setFrameTime(10.0);
+    const SceneTake take = rig.es.takeScene(3, rig.om, 1.0);
+    ASSERT_EQ(take.kind, SceneTake::Kind::Route);
+    EXPECT_EQ(rig.left->getSceneId(), rig.next) << "the routing changes at once";
+    EXPECT_EQ(rig.es.activeSceneId, rig.next);
+    for (OutputWindow* o : {rig.left, rig.right}) {
+        const SceneFade* fade = rig.om.sceneFade(*o);
+        ASSERT_NE(fade, nullptr) << o->getName();
+        EXPECT_EQ(fade->fromSceneId, rig.wide);
+        EXPECT_EQ(fade->toSceneId, rig.next);
+        EXPECT_FLOAT_EQ(sceneFadeMix(*fade, rig.om.frameTime()), 0.0f);
+    }
+    EXPECT_EQ(rig.om.sceneFade(*rig.side), nullptr);
+
+    rig.om.setFrameTime(10.5);
+    EXPECT_FALSE(rig.om.retireSceneFades(rig.es.scenes));
+    EXPECT_FLOAT_EQ(rig.om.sceneFades().mix(rig.left->getId(), 10.5), 0.5f);
+    EXPECT_FLOAT_EQ(rig.om.sceneFades().mix(rig.right->getId(), 10.5), 0.5f);
+
+    rig.om.setFrameTime(11.0);
+    EXPECT_TRUE(rig.om.retireSceneFades(rig.es.scenes));
+    EXPECT_TRUE(rig.om.sceneFades().empty());
+    EXPECT_EQ(rig.left->getSceneId(), rig.next);
+}
+
+// Gate (ADR-047 §8): a fade of 0 is today's cut — same routing, no fade state.
+TEST(SceneTakeFadeTest, AZeroFadeIsACut) {
+    BlendedRig cut;
+    BlendedRig faded;
+    cut.es.takeScene(3, cut.om);
+    faded.es.takeScene(3, faded.om, 0.0);
+    EXPECT_TRUE(faded.om.sceneFades().empty());
+    EXPECT_EQ(cut.left->getSceneId(), cut.next);
+    EXPECT_EQ(faded.left->getSceneId(), faded.next);
+    EXPECT_EQ(faded.right->getSceneId(), faded.next);
+    EXPECT_EQ(faded.right->getSlices()[0].input, cut.right->getSlices()[0].input);
+    EXPECT_EQ(faded.om.sceneFade(*faded.left), nullptr);
+}
+
+// Taking back the scene that is fading out reverses the group's fade from where it is.
+TEST(SceneTakeFadeTest, ATakeDuringAFadeStartsFromWhatIsOnScreen) {
+    BlendedRig rig;
+    rig.om.setFrameTime(0.0);
+    rig.es.takeScene(3, rig.om, 1.0);
+    rig.om.setFrameTime(0.25);
+    rig.om.retireSceneFades(rig.es.scenes);
+    const SceneTake back = rig.es.takeScene(1, rig.om, 1.0);  // wide is fading out: not shown
+    ASSERT_EQ(back.kind, SceneTake::Kind::Route);
+    for (OutputWindow* o : {rig.left, rig.right}) {
+        const SceneFade* fade = rig.om.sceneFade(*o);
+        ASSERT_NE(fade, nullptr);
+        EXPECT_EQ(fade->fromSceneId, rig.next);
+        EXPECT_EQ(fade->toSceneId, rig.wide);
+        EXPECT_NEAR(sceneFadeMix(*fade, 0.25), 0.75, 1e-6) << "wide keeps its 0.75";
+    }
+
+    // A take of the side projector's scene only activates it: the fade carries on.
+    EXPECT_EQ(rig.es.takeScene(2, rig.om, 1.0).kind, SceneTake::Kind::Activate);
+    EXPECT_NE(rig.om.sceneFade(*rig.left), nullptr);
+}
+
+TEST(SceneTakeFadeTest, DeletingASceneMidFadeIsSafe) {
+    {
+        BlendedRig rig;  // the scene fading out goes
+        rig.om.setFrameTime(0.0);
+        rig.es.takeScene(3, rig.om, 1.0);
+        rig.es.setActiveScene(rig.other);
+        ASSERT_TRUE(rig.es.deleteScene(rig.wide, &rig.om));
+        EXPECT_EQ(rig.om.sceneFade(*rig.left), nullptr);
+        EXPECT_EQ(rig.left->getSceneId(), rig.next) << "the scene fading in shows in full";
+        rig.om.setFrameTime(0.5);
+        EXPECT_FALSE(rig.om.retireSceneFades(rig.es.scenes));
+    }
+    {
+        BlendedRig rig;  // the scene fading in goes
+        rig.om.setFrameTime(0.0);
+        rig.es.takeScene(3, rig.om, 1.0);
+        ASSERT_TRUE(rig.es.deleteScene(rig.next, &rig.om));
+        EXPECT_TRUE(rig.om.sceneFades().empty());
+        EXPECT_TRUE(rig.left->getSceneId().isNull()) << "as deleting a shown scene always did";
+    }
+    {
+        BlendedRig rig;  // a scene list replaced without deleteScene (New/Open): retired
+        rig.om.setFrameTime(0.0);
+        rig.es.takeScene(3, rig.om, 1.0);
+        std::vector<std::unique_ptr<Scene>> none;
+        rig.om.setFrameTime(0.1);
+        EXPECT_TRUE(rig.om.retireSceneFades(none));
+        EXPECT_TRUE(rig.om.sceneFades().empty());
+    }
+}
+
+// Re-routing a fading output by hand (Inspector, Scenes panel) ends its fade.
+TEST(SceneTakeFadeTest, ManualRoutingEndsTheFade) {
+    BlendedRig rig;
+    rig.om.setFrameTime(0.0);
+    rig.es.takeScene(3, rig.om, 1.0);
+    rig.om.routeScene(*rig.left, rig.es.scenes[1].get(), rig.es.scenes);
+    EXPECT_EQ(rig.om.sceneFade(*rig.left), nullptr);
+    EXPECT_NE(rig.om.sceneFade(*rig.right), nullptr);
+    rig.om.setFrameTime(0.1);
+    EXPECT_TRUE(rig.om.retireSceneFades(rig.es.scenes));
+    EXPECT_EQ(rig.om.sceneFades().find(rig.left->getId()), nullptr);
+}
+
+// Blackout hides the fade but does not stop its clock: lifted after the fade time, the
+// new scene shows in full; lifted midway, the fade is where the wall clock says.
+TEST(SceneTakeFadeTest, BlackoutDoesNotStopTheFadeClock) {
+    BlendedRig rig;
+    rig.om.setFrameTime(0.0);
+    rig.es.takeScene(3, rig.om, 2.0);
+    rig.om.setBlackout(true);
+    rig.om.setFrameTime(1.0);
+    rig.om.retireSceneFades(rig.es.scenes);
+    rig.om.setBlackout(false);
+    EXPECT_FLOAT_EQ(sceneFadeMix(*rig.om.sceneFade(*rig.left), 1.0), 0.5f);
+    rig.om.setBlackout(true);
+    rig.om.setFrameTime(2.5);
+    EXPECT_TRUE(rig.om.retireSceneFades(rig.es.scenes));
+    rig.om.setBlackout(false);
+    EXPECT_EQ(rig.om.sceneFade(*rig.left), nullptr);
+}
+
+// Deleting a fading output drops its fade.
+TEST(SceneTakeFadeTest, DeletingAnOutputDropsItsFade) {
+    BlendedRig rig;
+    rig.om.setFrameTime(0.0);
+    rig.es.takeScene(3, rig.om, 1.0);
+    const UUID leftId = rig.left->getId();
+    rig.om.deleteOutput(leftId);
+    EXPECT_EQ(rig.om.sceneFades().find(leftId), nullptr);
+    EXPECT_NE(rig.om.sceneFade(*rig.right), nullptr);
 }

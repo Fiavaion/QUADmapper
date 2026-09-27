@@ -218,6 +218,7 @@ void ControlDispatcher::dispatchOsc(const ControlEvent& event, double now) {
 
     const OscArg& arg = message.args.front();
     float value = 0.0f;
+    bool numeric = true;
     switch (arg.type) {
         case OscArg::Type::Int:   value = static_cast<float>(arg.i); break;
         case OscArg::Type::Float: value = arg.f; break;
@@ -225,11 +226,13 @@ void ControlDispatcher::dispatchOsc(const ControlEvent& event, double now) {
         case OscArg::Type::False: value = 0.0f; break;
         case OscArg::Type::String:
         case OscArg::Type::Unsupported:
-            ++badArguments_;
-            return;
+            numeric = false;
+            break;
     }
     for (const auto& r : targets) {
-        if (!setValue(r, value)) {
+        const bool applied = r.target->applyOscArgs ? r.target->applyOscArgs(r.entityId, message.args)
+                                                    : numeric && setValue(r, value);
+        if (!applied) {
             rejected = true;
             continue;
         }

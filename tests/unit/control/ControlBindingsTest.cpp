@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 using namespace quadmapper;
 using namespace quadmapper::control;
@@ -33,6 +34,7 @@ struct AppFixture {
     ControlDispatcher dispatcher{registry};
     std::vector<MidiMapping> mappings;
     std::vector<int> takes;
+    std::vector<std::optional<float>> takeFades;  // per take; nullopt = the Preferences default
     bool blackout = false;
     float masterVolume = 1.0f;
     bool masterMuted = false;
@@ -60,7 +62,10 @@ struct AppFixture {
         ControlBindingHost host;
         host.scenes = &scenes;
         host.sources = &sources;
-        host.takeScene = [this](int n) { takes.push_back(n); };
+        host.takeScene = [this](int n, std::optional<float> fade) {
+            takes.push_back(n);
+            takeFades.push_back(fade);
+        };
         host.activeSceneNumber = [] { return 1; };
         host.isBlackout = [this] { return blackout; };
         host.setBlackout = [this](bool on) { blackout = on; };
@@ -77,6 +82,14 @@ struct AppFixture {
 
     void refresh() { refreshControlEntities(registry, scenes, &sources); }
 
+    void oscArgs(const std::string& address, std::vector<OscArg> args) {
+        ControlEvent e;
+        e.source = ControlEvent::Source::Osc;
+        e.osc.address = address;
+        e.osc.args = std::move(args);
+        dispatcher.dispatch(e, mappings, 0.0);
+    }
+
     void osc(const std::string& address, std::optional<float> value = std::nullopt) {
         ControlEvent e;
         e.source = ControlEvent::Source::Osc;
@@ -90,6 +103,27 @@ struct AppFixture {
         dispatcher.dispatch(e, mappings, 0.0);
     }
 };
+
+OscArg intArg(int32_t v) {
+    OscArg a;
+    a.type = OscArg::Type::Int;
+    a.i = v;
+    return a;
+}
+
+OscArg floatArg(float v) {
+    OscArg a;
+    a.type = OscArg::Type::Float;
+    a.f = v;
+    return a;
+}
+
+OscArg stringArg(const char* v) {
+    OscArg a;
+    a.type = OscArg::Type::String;
+    a.s = v;
+    return a;
+}
 
 std::string path(const char* collection, const UUID& id, const char* action) {
     return std::string("/qm/") + collection + "/" + id.toString() + "/" + action;
@@ -116,6 +150,58 @@ TEST(ControlBindingsTest, SceneTakesQueueTheSceneNumber) {
     fx.osc(path("scene", fx.scenes[0]->getId(), "take"), 1.0f);
     fx.osc(path("scene", fx.scenes[0]->getId(), "take"), 0.0f);  // button release: nothing
     EXPECT_EQ(fx.takes, (std::vector<int>{2, 2, 1}));
+    // Without a fade time every take uses the Preferences default.
+    EXPECT_EQ(fx.takeFades, (std::vector<std::optional<float>>(3, std::nullopt)));
+}
+
+// ADR-047 §5: /qm/scene/take i n f seconds carries its own fade; the one-argument form
+// still works and uses the default.
+TEST(ControlBindingsTest, SceneTakeCarriesAnOptionalFadeTime) {
+    AppFixture fx;
+    fx.oscArgs("/qm/scene/take", {intArg(2), floatArg(1.5f)});
+    fx.oscArgs("/qm/scene/take", {floatArg(1.0f), intArg(3)});         // either numeric type
+    fx.oscArgs("/qm/scene/take", {intArg(2), floatArg(0.0f)});         // 0 = an explicit cut
+    fx.oscArgs("/qm/scene/take", {intArg(1)});                         // the 1-argument form
+    fx.oscArgs("/qm/scene/take", {floatArg(2.4f), floatArg(600.0f)});  // rounded; clamped
+    EXPECT_EQ(fx.takes, (std::vector<int>{2, 1, 2, 1, 2}));
+    EXPECT_EQ(fx.takeFades, (std::vector<std::optional<float>>{1.5f, 3.0f, 0.0f, std::nullopt,
+                                                                MAX_SCENE_FADE_SECONDS}));
+    EXPECT_EQ(fx.dispatcher.badArguments(), 0u);
+}
+
+TEST(ControlBindingsTest, BadSceneTakeArgumentsTakeNothing) {
+    AppFixture fx;
+    const std::vector<std::vector<OscArg>> bad = {
+        {intArg(2), floatArg(-1.0f)},                                   // negative time
+        {intArg(2), floatArg(std::nanf(""))},                           // not a number
+        {intArg(2), floatArg(std::numeric_limits<float>::infinity())},
+        {intArg(2), stringArg("1.0")},                                  // a string time
+        {intArg(2), floatArg(1.0f), floatArg(1.0f)},                    // three arguments
+        {intArg(0), floatArg(1.0f)},                                    // no scene 0
+        {floatArg(0.2f)},                                               // rounds below 1
+        {stringArg("2"), floatArg(1.0f)},                               // a string scene
+        {floatArg(2.0e6f)},                                             // beyond the index range
+    };
+    for (const auto& args : bad) fx.oscArgs("/qm/scene/take", args);
+    fx.osc("/qm/scene/take");  // no argument: a value target needs its value
+    EXPECT_TRUE(fx.takes.empty());
+    EXPECT_EQ(fx.dispatcher.badArguments(), bad.size() + 1);
+}
+
+TEST(ControlBindingsTest, ParseSceneTakeArgs) {
+    using control_bindings::parseSceneTakeArgs;
+    const auto one = parseSceneTakeArgs({intArg(4)});
+    ASSERT_TRUE(one.has_value());
+    EXPECT_EQ(one->number, 4);
+    EXPECT_FALSE(one->fadeSeconds.has_value());
+    const auto two = parseSceneTakeArgs({intArg(4), intArg(2)});
+    ASSERT_TRUE(two.has_value());
+    EXPECT_EQ(two->fadeSeconds, std::optional<float>(2.0f));
+    OscArg yes;
+    yes.type = OscArg::Type::True;
+    EXPECT_EQ(parseSceneTakeArgs({yes})->number, 1);                 // as the Index target did
+    EXPECT_FALSE(parseSceneTakeArgs({intArg(1), yes}).has_value());  // a time is a number
+    EXPECT_FALSE(parseSceneTakeArgs({}).has_value());
 }
 
 TEST(ControlBindingsTest, BlackoutSetsAndToggles) {
@@ -279,7 +365,7 @@ TEST(ControlBindingsTest, ActiveSceneReportsAndTakes) {
     std::vector<int> takes;
     ControlBindingHost host;
     host.scenes = &scenes;
-    host.takeScene = [&](int n) { takes.push_back(n); };
+    host.takeScene = [&](int n, std::optional<float>) { takes.push_back(n); };
     host.activeSceneNumber = [&] { return active; };
     registerControlTargets(registry, host);
     const auto scene = registry.resolve("/qm/scene/active");
@@ -682,6 +768,7 @@ TEST(PreferencesFileTest, EverySettingRoundTrips) {
         p.general.autoSaveEnabled = false;
         p.general.autoSaveIntervalMinutes = 12;
         p.general.uiMode = 1;
+        p.general.sceneFadeSeconds = 1.25f;
         p.performance.audioDevice = "Speakers (USB Audio)";
         p.control.oscEnabled = true;
         p.control.oscPort = 9100;
@@ -702,6 +789,7 @@ TEST(PreferencesFileTest, EverySettingRoundTrips) {
     EXPECT_FALSE(p.general.autoSaveEnabled);
     EXPECT_EQ(p.general.autoSaveIntervalMinutes, 12);
     EXPECT_EQ(p.general.uiMode, 1);
+    EXPECT_FLOAT_EQ(p.general.sceneFadeSeconds, 1.25f);
     EXPECT_EQ(p.performance.audioDevice, "Speakers (USB Audio)");
     EXPECT_TRUE(p.control.oscEnabled);
     EXPECT_EQ(p.control.oscPort, 9100);
@@ -721,6 +809,7 @@ TEST(PreferencesFileTest, DefaultsAreTheShippedBehaviour) {
     EXPECT_TRUE(p.general.autoSaveEnabled);
     EXPECT_EQ(p.general.autoSaveIntervalMinutes, 1);  // ADR-046: at most a minute lost
     EXPECT_EQ(p.general.uiMode, 0);                   // ADR-042: Simple
+    EXPECT_EQ(p.general.sceneFadeSeconds, 0.0f);      // ADR-047 §5: takes cut
     EXPECT_TRUE(p.performance.audioDevice.empty());
 }
 
@@ -765,7 +854,8 @@ TEST(PreferencesFileTest, SettingsThisVersionDroppedAreIgnoredAndNotWrittenBack)
                         "control.oscFeedbackUseIds", "control.oscPort",
                         "general.autoLoadMediaOnStartup", "general.autoSaveEnabled",
                         "general.autoSaveIntervalMinutes", "general.defaultMediaFolder",
-                        "general.recursiveFolderScan", "general.uiMode", "performance.audioDevice"}));
+                        "general.recursiveFolderScan", "general.sceneFadeSeconds", "general.uiMode",
+                        "performance.audioDevice"}));
 }
 
 TEST(PreferencesFileTest, WrongTypesAndOutOfRangeValuesKeepDefaults) {
@@ -788,6 +878,34 @@ TEST(PreferencesFileTest, WrongTypesAndOutOfRangeValuesKeepDefaults) {
         EXPECT_TRUE(g.defaultMediaFolder.empty());
         EXPECT_FALSE(g.recursiveFolderScan);
         EXPECT_TRUE(g.autoLoadMediaOnStartup);
+    }
+}
+
+// The scene take fade default (ADR-047 §5): seconds, 0 to MAX_SCENE_FADE_SECONDS, an
+// integer or a fraction; anything else keeps the current value.
+TEST(PreferencesFileTest, SceneFadeDefaultRoundTripsAndRejectsBadValues) {
+    TempPrefsFile file;
+    file.write(R"({"version": "1.0", "general": {"sceneFadeSeconds": 2}})");
+    PreferencesDialog dialog;
+    ASSERT_TRUE(dialog.loadFromFile(file.path.string()));
+    EXPECT_FLOAT_EQ(dialog.getPreferences().general.sceneFadeSeconds, 2.0f);
+    dialog.getPreferences().general.sceneFadeSeconds = 0.5f;
+    ASSERT_TRUE(dialog.saveToFile(file.path.string()));
+    PreferencesDialog loaded;
+    ASSERT_TRUE(loaded.loadFromFile(file.path.string()));
+    EXPECT_FLOAT_EQ(loaded.getPreferences().general.sceneFadeSeconds, 0.5f);
+
+    for (const char* text : {R"({"version": "1.0", "general": {"sceneFadeSeconds": -0.5}})",
+                             R"({"version": "1.0", "general": {"sceneFadeSeconds": 60.5}})",
+                             R"({"version": "1.0", "general": {"sceneFadeSeconds": "1"}})",
+                             R"({"version": "1.0", "general": {"sceneFadeSeconds": null}})",
+                             R"({"version": "1.0", "general": {"sceneFadeSeconds": true}})"}) {
+        SCOPED_TRACE(text);
+        file.write(text);
+        PreferencesDialog d;
+        d.getPreferences().general.sceneFadeSeconds = 3.0f;
+        ASSERT_TRUE(d.loadFromFile(file.path.string()));
+        EXPECT_FLOAT_EQ(d.getPreferences().general.sceneFadeSeconds, 3.0f);
     }
 }
 

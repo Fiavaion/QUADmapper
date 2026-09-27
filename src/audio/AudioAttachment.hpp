@@ -36,6 +36,9 @@ struct AudioTransport {
     // Not in a scene anyone sees or hears: silent (the gain ramps to 0), but kept in
     // step so it comes back in sync when its scene is taken.
     bool gated = false;
+    // Level of the scenes it plays in, 0-1: below 1 while they cross-fade (ADR-047
+    // §5). Multiplies the volume, so the mixer's per-buffer gain ramp smooths it.
+    float sceneGain = 1.0f;
 };
 
 enum class AudioAttachmentState {

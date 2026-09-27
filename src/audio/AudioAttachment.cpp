@@ -143,7 +143,7 @@ void AudioAttachment::requestResync(double timeline, double clip, const AudioTra
 }
 
 void AudioAttachment::update(const AudioTransport& transport) {
-    source_->setVolume(transport.volume);
+    source_->setVolume(transport.volume * transport.sceneGain);  // NaN or < 0 counts as 0
     source_->setMuted(transport.muted || transport.gated);
     lastDrift_ = std::numeric_limits<double>::quiet_NaN();
     if (state_.load() != AudioAttachmentState::Ready) return;

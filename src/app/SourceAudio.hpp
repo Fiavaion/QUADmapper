@@ -8,6 +8,7 @@
 #include "core/UUID.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/Scene.hpp"
+#include "scene/SceneFade.hpp"
 #include "source/HapFileSource.hpp"
 #include "source/SourceManager.hpp"
 #include "source/TextureSource.hpp"
@@ -16,7 +17,9 @@
 
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 #include <filesystem>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace quadmapper {
@@ -115,12 +118,71 @@ inline std::unordered_set<UUID> audibleSourceIds(const SceneList& scenes, const 
     return ids;
 }
 
+// How loud each heard scene is: the audibility rule of audibleSourceIds with scene
+// crossfades (ADR-047 §5). 1 for the editor's active scene and for scenes an enabled
+// output shows; while an enabled output fades (`fadeOf(output)` returns its fade, as
+// OutputManager::sceneFade does, or null), the scene fading out is at
+// crossfadeGains(mix).out and the scene fading in at .in, the mix taken at `now`. A
+// scene several outputs weigh takes the largest weight. The active scene is not
+// raised to 1 while it fades in: a take makes it active at the start of its fade.
+// Scenes absent from the map are silent.
+template <typename Outputs, typename FadeOf>
+std::unordered_map<UUID, float> sceneAudioWeights(const UUID& activeSceneId, const Outputs& outputs,
+                                                  FadeOf fadeOf, double now) {
+    std::unordered_map<UUID, float> weights;
+    auto raise = [&](const UUID& id, float weight) {
+        if (id.isNull() || !(weight > 0.0f)) return;
+        float& w = weights[id];
+        w = std::max(w, weight);
+    };
+    std::unordered_set<UUID> fadingIn;
+    for (const auto& output : outputs) {
+        if (!output || !output->isEnabled() || output->getSceneId().isNull()) continue;
+        if (const SceneFade* fade = fadeOf(*output)) {
+            const CrossGain gains = crossfadeGains(sceneFadeMix(*fade, now));
+            raise(fade->fromSceneId, gains.out);
+            raise(fade->toSceneId, gains.in);
+            fadingIn.insert(fade->toSceneId);
+        } else {
+            raise(output->getSceneId(), 1.0f);
+        }
+    }
+    if (fadingIn.count(activeSceneId) == 0) raise(activeSceneId, 1.0f);
+    return weights;
+}
+
+// Each source's scene gain from the scene weights: the sum over the scenes using it,
+// at most 1. A source playing in both scenes of a fade is one sound, not two, so it
+// stays at full level (out + in >= 1 across an equal-power fade) instead of dipping.
+inline std::unordered_map<UUID, float> sourceSceneGains(const SceneList& scenes,
+                                                       const std::unordered_map<UUID, float>& weights) {
+    std::unordered_map<UUID, float> gains;
+    for (const auto& scene : scenes) {
+        if (!scene) continue;
+        auto weight = weights.find(scene->getId());
+        if (weight == weights.end()) continue;
+        std::unordered_set<UUID> used;  // a source counts once per scene
+        for (const auto& quad : scene->getQuadManager().getQuads()) {
+            if (!quad->getTexture().mediaId.isNull()) used.insert(quad->getTexture().mediaId);
+        }
+        for (const auto& object : scene->getObjects()) {
+            if (!object->getTexture().mediaId.isNull()) used.insert(object->getTexture().mediaId);
+        }
+        for (const UUID& id : used) {
+            float& gain = gains[id];
+            gain = std::min(1.0f, gain + weight->second);
+        }
+    }
+    return gains;
+}
+
 // Once per frame, after SourceManager::updateAll(): keep every video source's audio on
 // its clock (creating attachments as sources appear) and free the audio of sources
 // that are gone — released by the source GC, unloaded, or replaced by a project load.
-// Sources outside `audible` are gated silent (see audibleSourceIds).
+// Each source plays at its scene gain (sourceSceneGains); sources without one are
+// gated silent, still in step.
 inline void syncSourceAudio(AudioEngine& audio, SourceManager& sources,
-                            const std::unordered_set<UUID>& audible) {
+                            const std::unordered_map<UUID, float>& sceneGains) {
     std::unordered_set<UUID> live;
     for (const UUID& id : sources.getAllSourceIds()) {
         TextureSource* source = sources.getSource(id);
@@ -134,7 +196,9 @@ inline void syncSourceAudio(AudioEngine& audio, SourceManager& sources,
             audioTransportOf(playable->getClock(), playable->getClockNow()), playable->getPlaybackState());
         transport.volume = playable->getAudioVolume();
         transport.muted = playable->isAudioMuted();
-        transport.gated = audible.count(id) == 0;
+        auto gain = sceneGains.find(id);
+        transport.gated = gain == sceneGains.end();
+        if (!transport.gated) transport.sceneGain = gain->second;  // gated: as a cut always was
         audio.sync(id, path, transport);
     }
     audio.retainOnly(live);

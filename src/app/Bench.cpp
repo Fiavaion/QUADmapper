@@ -42,6 +42,7 @@
 #include <limits>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifdef _WIN32
@@ -52,6 +53,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 #endif
 
 namespace quadmapper {
@@ -287,6 +290,7 @@ private:
     json runLatency();
     json runDrift();
     json runSameFrame();
+    json runPresent();
     int verifyReport();
 
     Application& app_;
@@ -1080,6 +1084,159 @@ json BenchRunner::runSameFrame() {
     return r;
 }
 
+namespace {
+
+// The desktop compositor's counters (Windows DWM, the whole desktop), or null.
+json dwmTiming() {
+#ifdef _WIN32
+    DWM_TIMING_INFO info{};
+    info.cbSize = sizeof(info);
+    if (FAILED(DwmGetCompositionTimingInfo(nullptr, &info))) return json();
+    const double rate = info.rateRefresh.uiDenominator
+                            ? static_cast<double>(info.rateRefresh.uiNumerator) / info.rateRefresh.uiDenominator
+                            : 0.0;
+    return json{{"refresh_hz", round3(rate)}, {"refresh_count", info.cRefresh},
+                {"frames_displayed", info.cFramesDisplayed}, {"frames_dropped", info.cFramesDropped},
+                {"frames_missed", info.cFramesMissed}, {"frame", info.cFrame}};
+#else
+    return json();
+#endif
+}
+
+}  // namespace
+
+// TD-12 (ADR-047 §6): how each projector output presents. Every output goes fullscreen
+// on its own monitor (as perform mode does, borderless or exclusive) with the app's
+// own vsync pacing: the first output holds vsync (interval 1), the rest swap with
+// interval 0. For each output: the time between its swaps (after SwapBuffers returns),
+// a 1 ms histogram, and presents per refresh of the monitor it is on (1 = one new
+// frame each refresh; < 1 = frames repeat, uneven motion; > 1 = more frames than the
+// display can show, dropped or, where the swap is not composited, torn). The DWM
+// counters (the compositor, whole desktop) are sampled around each case. Tearing
+// itself cannot be seen from software; the configuration that can tear (interval 0
+// on an output the compositor does not compose) is reported.
+json BenchRunner::runPresent() {
+    json r;
+    r["name"] = "present";
+    int monitorCount = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
+    const int count = std::max(2, cfg_.outputs);
+    if (monitorCount < 1) {
+        r["skipped"] = "no monitor";
+        return r;
+    }
+    resetShow();
+    if (!showOutputs(count)) {
+        r["error"] = "could not create output windows";
+        return r;
+    }
+    Scene& scene = es().activeScene();
+    fillQuadGrid(scene, 64, proceduralSet(0), true);
+    for (int o = 0; o < count; ++o) route(scene.getId(), o);
+
+    struct Case {
+        const char* name;
+        bool exclusive;
+        bool reversed;  // the outputs' monitors in reverse order: the other one holds vsync
+    };
+    const Case cases[] = {{"borderless, vsync held by the output on monitor 0", false, false},
+                          {"borderless, vsync held by the output on the last monitor", false, true},
+                          {"exclusive, vsync held by the output on monitor 0", true, false},
+                          {"exclusive, vsync held by the output on the last monitor", true, true}};
+    json results = json::array();
+    for (const Case& c : cases) {
+        std::vector<int> monitorOf(static_cast<size_t>(count));
+        for (int o = 0; o < count; ++o) {
+            const int m = o % monitorCount;
+            monitorOf[static_cast<size_t>(o)] = c.reversed ? monitorCount - 1 - m : m;
+        }
+        int o = 0;
+        for (auto& output : outputs().getOutputs()) {
+            if (o >= count) break;
+            const int m = monitorOf[static_cast<size_t>(o++)];
+            output->show();
+            const auto done = c.exclusive ? output->goFullscreen(m) : output->goBorderlessFullscreen(m);
+            if (!done) Logger::warning("bench present: {}", done.error().message);
+        }
+        const Clock::time_point warm = Clock::now();
+        while (!aborted_ && seconds(warm, Clock::now()) < std::max(1.0, cfg_.warmupSeconds)) step();
+
+        std::unordered_map<UUID, std::vector<Clock::time_point>> swaps;
+        std::unordered_map<UUID, int> intervals;
+        std::vector<double> loop;
+        Clock::time_point lastLoop{};
+        const json dwmBefore = dwmTiming();
+        const Clock::time_point begin = Clock::now();
+        while (!aborted_ && seconds(begin, Clock::now()) < cfg_.seconds) {
+            const Frame f = step();
+            if (lastLoop != Clock::time_point{}) loop.push_back(ms(lastLoop, f.presented));
+            lastLoop = f.presented;
+            for (const auto& stamp : outputs().lastPresents()) {
+                swaps[stamp.outputId].push_back(stamp.swapped);
+                intervals[stamp.outputId] = stamp.swapInterval;
+            }
+        }
+        const double elapsed = seconds(begin, Clock::now());
+        const json dwmAfter = dwmTiming();
+
+        json perOutput = json::array();
+        o = 0;
+        for (auto& output : outputs().getOutputs()) {
+            if (o >= count) break;
+            const int m = monitorOf[static_cast<size_t>(o++)];
+            const GLFWvidmode* mode = glfwGetVideoMode(monitors[m]);
+            const char* monitorName = glfwGetMonitorName(monitors[m]);
+            const double refresh = mode ? mode->refreshRate : 0.0;
+            const std::vector<Clock::time_point>& t = swaps[output->getId()];
+            std::vector<double> gaps;
+            for (size_t i = 1; i < t.size(); ++i) gaps.push_back(ms(t[i - 1], t[i]));
+            std::vector<int> histogram(41, 0);  // 1 ms bins; the last one is >= 40 ms
+            for (double g : gaps) histogram[static_cast<size_t>(std::min(40.0, std::floor(g)))]++;
+            const double presentsPerSecond = static_cast<double>(t.size()) / elapsed;
+            // A swap that returns within 1.5 ms of the previous one is a present the
+            // display could not have shown on its own refresh (interval 0 bursts).
+            const auto early = std::count_if(gaps.begin(), gaps.end(), [&](double g) {
+                return refresh > 0.0 && g < 0.5 * 1000.0 / refresh;
+            });
+            perOutput.push_back(json{
+                {"output", output->getName()},
+                {"monitor", m},
+                {"monitor_name", monitorName ? monitorName : "?"},
+                {"monitor_mode", mode ? json{mode->width, mode->height} : json()},
+                {"refresh_hz", refresh},
+                {"mode", c.exclusive ? "exclusive" : "borderless"},
+                {"swap_interval", intervals.count(output->getId()) ? intervals[output->getId()] : -1},
+                {"presents", t.size()},
+                {"presents_per_second", round3(presentsPerSecond)},
+                {"presents_per_refresh", refresh > 0.0 ? round3(presentsPerSecond / refresh) : 0.0},
+                {"swap_to_swap_ms", summarize(gaps)},
+                {"swaps_closer_than_half_a_refresh", early},
+                {"histogram_1ms", histogram}});
+        }
+        json dwm;
+        if (!dwmBefore.is_null() && !dwmAfter.is_null()) {
+            auto delta = [&](const char* key) {
+                return dwmAfter[key].get<double>() - dwmBefore[key].get<double>();
+            };
+            dwm = json{{"refresh_hz", dwmAfter["refresh_hz"]}, {"refreshes", delta("refresh_count")},
+                       {"frames_displayed", delta("frames_displayed")},
+                       {"frames_dropped", delta("frames_dropped")}, {"frames_missed", delta("frames_missed")}};
+        }
+        results.push_back(json{{"case", c.name}, {"seconds", round3(elapsed)},
+                               {"loop_frame_ms", summarize(loop)}, {"outputs", perOutput},
+                               {"dwm", dwm}});
+        for (auto& output : outputs().getOutputs()) {
+            output->goWindowed();
+        }
+        for (int i = 0; i < 10 && !aborted_; ++i) step();
+    }
+    showOutputs(0);
+    r["monitors"] = monitorCount;
+    r["cases"] = results;
+    r["pass"] = !aborted_;
+    return r;
+}
+
 int BenchRunner::run() {
     EditorState& e = es();
     // Deterministic and side-effect free: default dock layout (no imgui.ini read or
@@ -1142,6 +1299,8 @@ int BenchRunner::run() {
     if (cfg_.wants("latency")) record(runLatency());
     if (cfg_.wants("drift")) record(runDrift());
     if (cfg_.wants("sameFrame")) record(runSameFrame());
+    // Takes over every monitor (fullscreen), so never part of "all".
+    if (cfg_.scenarios != "all" && cfg_.wants("present")) record(runPresent());
     report["scenarios"] = scenarios;
 
     // Renderers drop a deleted quad's GPU mesh after 600 idle scene passes (one or

@@ -105,7 +105,9 @@ private:
     void saveProject();   // Save; an untitled project asks for a path
     void loadProject();   // Load the path typed in the Project tab
 
-    void takeSceneByNumber(int number);  // live-show scene take; ignored while calibrating
+    // Live-show scene take, fading over `fadeSeconds` (nullopt = the Preferences
+    // default, ADR-047 §5); ignored while calibrating.
+    void takeSceneByNumber(int number, std::optional<float> fadeSeconds = std::nullopt);
     // New, Load and Restore drop takes still queued: they were pressed for the show
     // that was just replaced and must not put its scene N of the new one on air.
     void dropQueuedSceneTakes() {
@@ -251,7 +253,11 @@ private:
     std::vector<int> m_pendingSceneTakes;  // scene numbers pressed since the last frame
     // Scene takes asked for by OSC/MIDI since the last frame (ADR-048). Kept apart from
     // the key presses because they skip the typing/popup guard (see render()).
-    std::vector<int> m_pendingExternalSceneTakes;
+    struct ExternalSceneTake {
+        int number = 0;
+        std::optional<float> fadeSeconds;  // nullopt = the Preferences default
+    };
+    std::vector<ExternalSceneTake> m_pendingExternalSceneTakes;
 
     // External control (ADR-048); null in the stress harness.
     std::unique_ptr<control::ExternalControl> m_externalControl;

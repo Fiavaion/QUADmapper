@@ -20,6 +20,13 @@ uniform vec4 u_BlendWidth;   // left, right, top, bottom zone widths in canvas p
 uniform vec4 u_BlendGamma;
 uniform vec4 u_BlendCurve;
 uniform float u_BlackLevel;
+// Scene crossfade (ADR-047 §5): below 1, the canvas mixes in over u_From, the canvas
+// of the scene fading out, sampled at the same normalized canvas point.
+uniform float u_Mix;          // weight of u_Canvas; 1 = no fade
+uniform sampler2D u_From;
+uniform int u_FromMode;       // 0 nothing (transparent), 1 texel under the pixel, 2 filtered
+uniform vec2 u_FromSize;      // its canvas pixels, unrotated
+uniform int u_FromRotation;
 
 // Linear-light ramp: ramp(t) + ramp(1 - t) == 1 for every curve p.
 float ramp(float t, float p) {
@@ -32,30 +39,53 @@ float edgeGain(float distance, float width, float gamma, float curve) {
     return pow(ramp(distance / width, curve), 1.0 / gamma);
 }
 
+// Where a normalized canvas point is in a canvas texture: the mapping quad.vert used
+// to draw it (y flipped to the GL origin, then the canvas rotation).
+vec2 canvasTexCoord(vec2 canvasN, int rotation) {
+    vec2 ndc = vec2(canvasN.x * 2.0 - 1.0, 1.0 - canvasN.y * 2.0);
+    if (rotation == 1) {
+        ndc = vec2(ndc.y, -ndc.x);
+    } else if (rotation == 2) {
+        ndc = -ndc;
+    } else if (rotation == 3) {
+        ndc = vec2(-ndc.y, ndc.x);
+    }
+    return ndc * 0.5 + 0.5;
+}
+
+vec2 turnedSize(vec2 size, int rotation) {
+    return (rotation == 1 || rotation == 3) ? size.yx : size;
+}
+
 void main() {
     vec2 uv = v_TexCoordQ.xy / v_TexCoordQ.z;
     vec2 inSlice = uv * u_Input.zw;
     vec2 canvasPx = u_Input.xy + inSlice;
 
-    // Where that canvas point is in the texture: the mapping quad.vert used to draw
-    // it (y flipped to the GL origin, then the canvas rotation).
     vec2 canvasN = canvasPx / u_CanvasSize;
-    vec2 ndc = vec2(canvasN.x * 2.0 - 1.0, 1.0 - canvasN.y * 2.0);
-    if (u_CanvasRotation == 1) {
-        ndc = vec2(ndc.y, -ndc.x);
-    } else if (u_CanvasRotation == 2) {
-        ndc = -ndc;
-    } else if (u_CanvasRotation == 3) {
-        ndc = vec2(-ndc.y, ndc.x);
-    }
-    vec2 t = ndc * 0.5 + 0.5;
-    vec2 texSize = (u_CanvasRotation == 1 || u_CanvasRotation == 3) ? u_CanvasSize.yx : u_CanvasSize;
+    vec2 t = canvasTexCoord(canvasN, u_CanvasRotation);
+    vec2 texSize = turnedSize(u_CanvasSize, u_CanvasRotation);
     vec4 c;
     if (u_Exact == 1) {
         ivec2 texel = clamp(ivec2(floor(t * texSize)), ivec2(0), ivec2(texSize) - 1);
         c = texelFetch(u_Canvas, texel, 0);
     } else {
         c = texture(u_Canvas, t);
+    }
+
+    if (u_Mix < 1.0) {
+        // Both canvases hold colour premultiplied by coverage, so a linear mix of the
+        // two is itself a canvas; the blend zones and black level below act on it.
+        vec4 from = vec4(0.0);
+        if (u_FromMode == 1) {
+            vec2 fromTexSize = turnedSize(u_FromSize, u_FromRotation);
+            vec2 ft = canvasTexCoord(canvasN, u_FromRotation);
+            ivec2 texel = clamp(ivec2(floor(ft * fromTexSize)), ivec2(0), ivec2(fromTexSize) - 1);
+            from = texelFetch(u_From, texel, 0);
+        } else if (u_FromMode == 2) {
+            from = texture(u_From, canvasTexCoord(canvasN, u_FromRotation));
+        }
+        c = mix(from, c, u_Mix);
     }
 
     vec4 d = vec4(inSlice.x, u_Input.z - inSlice.x, inSlice.y, u_Input.w - inSlice.y);

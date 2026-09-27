@@ -199,6 +199,7 @@ struct EditorState {
             [&](const std::unique_ptr<Scene>& s) { return s && s->getId() == id; });
         if (it == scenes.end()) return false;
         if (outputs) {
+            outputs->cancelSceneFades(id);
             for (const auto& output : outputs->getOutputs()) {
                 if (output && output->getSceneId() == id) {
                     OutputManager::showScene(*output, nullptr, scenes);
@@ -213,8 +214,9 @@ struct EditorState {
 
     // Live-show take of scene `number` (1-9 keys, US-008, ADR-047 §5; see
     // planSceneTake). Returns what was done; Kind::Route changed the routing of every
-    // output in take.outputIds (a saved project change).
-    SceneTake takeScene(int number, OutputManager& outputs) {
+    // output in take.outputIds (a saved project change), each fading from what it
+    // showed over `fadeSeconds` (0 = a cut; OutputManager::takeScene).
+    SceneTake takeScene(int number, OutputManager& outputs, double fadeSeconds = 0.0) {
         std::vector<SceneTakeOutput> routing;
         for (const auto& output : outputs.getOutputs()) {
             if (!output) continue;
@@ -227,7 +229,7 @@ struct EditorState {
             Scene* target = scenes[static_cast<size_t>(findSceneIndex(scenes, take.sceneId))].get();
             for (const UUID& id : take.outputIds) {
                 if (OutputWindow* output = outputs.getOutput(id)) {
-                    outputs.routeScene(*output, target, scenes);
+                    outputs.takeScene(*output, target, scenes, fadeSeconds);
                 }
             }
         }

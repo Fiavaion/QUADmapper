@@ -10,7 +10,9 @@ namespace quadmapper {
 // --bench-prefixed so it never collides with the --stress sub-flags.
 //
 //   --bench[=LIST]            scenarios, comma-separated: quads256, videos16,
-//                             sceneSwitch, latency, drift, sameFrame (default: all)
+//                             sceneSwitch, latency, drift, sameFrame (default: all);
+//                             present (TD-12: fullscreen outputs on every monitor,
+//                             per-output swap timing) runs only when named
 //   --bench-out=PATH          JSON report file (also printed to stdout); the log
 //                             goes to PATH.log
 //   --bench-seconds=S         measured seconds per scenario (after warm-up)

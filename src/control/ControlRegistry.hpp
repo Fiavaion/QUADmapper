@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ControlEvent.hpp"
+
 #include <functional>
 #include <optional>
 #include <string>
@@ -31,6 +33,10 @@ struct ControlTarget {
     // At most one at a time (a scene take): an OSC pattern that matches more than one
     // exclusive target is refused for all of them, since last-wins would be arbitrary.
     bool exclusive = false;
+    // Optional: an OSC message with arguments goes here, whole, instead of through
+    // apply (a take with a fade time, /qm/scene/take i n f seconds). Returns false
+    // when the arguments are bad (counted like any bad argument). MIDI still uses apply.
+    std::function<bool(const std::string& entityId, const std::vector<OscArg>& args)> applyOscArgs;
 };
 
 // Something a path can name: a quad, scene or source.

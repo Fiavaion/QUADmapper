@@ -5,9 +5,11 @@
 #include "core/UUID.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/Scene.hpp"
+#include "scene/SceneFade.hpp"
 #include "renderer/Renderer.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/Framebuffer.hpp"
+#include <chrono>
 #include <vector>
 #include <memory>
 #include <string>
@@ -243,12 +245,17 @@ public:
     void assignMonitor(OutputWindow& output, int monitorIndex);
 
     /**
-     * Swap-interval policy (QM-090): the index of the output that waits for
-     * vblank, i.e. the first presented output that is not minimised; -1 if none,
-     * in which case the editor is the vsync'd window. A minimised window's swap
-     * returns at once, so it must never be the one pacing the loop. Pure.
+     * Swap-interval policy (QM-090, TD-12): the index of the output that waits for
+     * vblank; -1 if none, in which case the editor is the vsync'd window. A minimised
+     * window's swap returns at once, so it must never be the one pacing the loop.
+     * Among the others: the refresh rate most of them share wins, a tie goes to the
+     * lower rate, then list order. So outputs sharing a rate get one new frame per
+     * refresh, and no output is sent more frames than its display can show (swaps
+     * with interval 0 beyond that are dropped, or torn where not composited).
+     * `refreshHz` gives each output's display rate (0 or missing = unknown: it
+     * holds vsync only when no rate is known). Pure.
      */
-    static int vsyncHolder(const std::vector<bool>& iconified);
+    static int vsyncHolder(const std::vector<bool>& iconified, const std::vector<int>& refreshHz = {});
 
     // Operator-facing messages (e.g. a projector that is not connected at F11).
     // Everything passed here is also logged.
@@ -440,6 +447,35 @@ public:
      */
     bool followOutputSizes(std::vector<std::unique_ptr<Scene>>& scenes);
 
+    // ---- Scene crossfades (ADR-047 §5) ------------------------------------------
+    // The frame clock: seconds on a steady wall clock, set once per frame before the
+    // frame's takes and render (Application::presentFrame; tests step it by hand).
+    // Fades start and are mixed at this time, so they follow wall time, not frames.
+    void setFrameTime(double seconds) { frameTime_ = seconds; }
+    double frameTime() const { return frameTime_; }
+
+    /**
+     * A scene take onto `output`: routeScene, then a fade over `fadeSeconds` (0 = a
+     * cut) from what the output showed until now, starting at frameTime(). A take
+     * during a fade follows SceneFades::begin. Returns routeScene's result.
+     */
+    bool takeScene(OutputWindow& output, Scene* scene,
+                   const std::vector<std::unique_ptr<Scene>>& scenes, double fadeSeconds);
+
+    /**
+     * Once per frame, after setFrameTime and before the frame's takes: end the fades
+     * that have finished, and those whose output is gone, now shows another scene
+     * than the one it was fading to, or whose scenes are gone. True when one ended.
+     */
+    bool retireSceneFades(const std::vector<std::unique_ptr<Scene>>& scenes);
+
+    /** The fade `output` is in at frameTime() (mix < 1, to the scene it shows), or nullptr. */
+    const SceneFade* sceneFade(const OutputWindow& output) const;
+    const SceneFades& sceneFades() const { return sceneFades_; }
+
+    /** A scene is being deleted: fades from or to it end at once. */
+    void cancelSceneFades(const UUID& sceneId) { sceneFades_.cancelScene(sceneId); }
+
     /** The first output (list order) that shows this scene, or nullptr. */
     OutputWindow* firstOutputShowing(const UUID& sceneId) const;
 
@@ -480,6 +516,15 @@ public:
      */
     void presentOutputs();
 
+    // When each output the last presentOutputs showed finished its swap, and the swap
+    // interval it swapped with (TD-12 measurement, --bench=present). Reused per call.
+    struct PresentStamp {
+        UUID outputId;
+        std::chrono::steady_clock::time_point swapped;
+        int swapInterval = 0;
+    };
+    const std::vector<PresentStamp>& lastPresents() const { return lastPresents_; }
+
     /**
      * An output's current frame, or nullptr before its first renderOutputFrames.
      * The colour texture is bottom-up (GL origin): display it with flipped V.
@@ -515,6 +560,10 @@ private:
     // Release the canvases of scenes no output shows (after an output is removed).
     void releaseUnshownCanvases();
 
+    // True when an output shows the scene, or is fading out of it (its canvas is
+    // still drawn then).
+    bool sceneOnAnOutput(const UUID& sceneId) const;
+
     // The size an output's frame is drawn at: its window's framebuffer, or its
     // resolution while it has no window or the window is minimised.
     static IVec2 frameSize(const OutputWindow& output);
@@ -533,6 +582,10 @@ private:
     void reresolveOutputs(bool refreshMonitorList);
 
     void notify(const std::string& message);
+
+    // Tell the operator once (notify) when the presented outputs' displays run at
+    // different refresh rates, and which one paces the show (TD-12).
+    void noticeMixedRefresh(const std::vector<OutputWindow*>& presented, int holder);
 
     // Set the editor (main) window's swap interval; a no-op when unchanged.
     void setEditorSwapInterval(int interval);
@@ -570,6 +623,10 @@ private:
     std::vector<UUID> canvasScenes_;
     GLint maxTextureSize_ = 0;  // GL_MAX_TEXTURE_SIZE, queried on the first canvas
 
+    // Scene crossfades in progress, by output (ADR-047 §5), and the frame clock.
+    SceneFades sceneFades_;
+    double frameTime_ = 0.0;
+
     // Each output's effective resolution, and whether it was fullscreen (or
     // borderless), when followOutputSizes last saw it.
     struct KnownOutputSize {
@@ -582,6 +639,10 @@ private:
     // context waits on it on the GPU before copying (a change made in one context is
     // only guaranteed visible in another once complete). Consumed by presentOutputs.
     GLsync framesDrawn_ = nullptr;
+
+    std::vector<PresentStamp> lastPresents_;  // see lastPresents()
+    std::vector<int> presentedRefresh_;       // per-frame scratch for vsyncHolder
+    std::string mixedRefreshNotice_;          // the last mixed-rate notice, sent once
 
     // Available monitors
     std::vector<MonitorInfo> monitors_;

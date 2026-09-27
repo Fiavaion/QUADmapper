@@ -32,8 +32,14 @@ Last Updated: 2026-09-26 (Session 23)
   slice rescale and the canvas lock (`scenes[].canvasLocked`, routing never overwrites a set
   size); calibration restricted to outputs with the default slicing (TD-29). GUI-checked on
   the v3.4 fixture.
-- **QM-121 B2 TODO** — ADR-047 part B2: scene crossfades (§5 fade times, OSC
-  `/qm/scene/take i n f`, audio cross-gain), TD-12 per-output presentation (§6).
+- **QM-121 B2 DONE (2026-09-27, ADR-047 Amendment 4)** — scene crossfades: Preferences fade
+  default (0 = cut), OSC `/qm/scene/take i n f seconds`, both canvases mixed in the slice
+  shader before blend and black level, blended groups fade together, take-during-fade
+  reverses or completes-then-fades, equal-power audio cross-gain ramped by the mixer;
+  TD-12 measured (`--bench=present`), vsync holder chosen by refresh rate, mixed-rate
+  notice; present threads left in TD-12. GUI-checked on the second monitor (mid-fade and
+  end captures). Bench `quads256` 2 outputs on a busy machine: 111 fps, p99 27.7 ms
+  (quiet rerun still owed).
 
 ## Session 23 (2026-09-26) — PRD MVP gaps, audio, OSC/MIDI (committed on dev, not pushed)
 

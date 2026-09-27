@@ -361,7 +361,7 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture) {
 }
 
 void Renderer::renderSlice(const Slice& slice, uint32_t canvasTexture, IVec2 canvasSize,
-                           Rotation canvasRotation, IVec2 outputSize) {
+                           Rotation canvasRotation, IVec2 outputSize, const SliceFade* fade) {
     if (!initialized_ || canvasTexture == 0 || canvasSize.x <= 0 || canvasSize.y <= 0 ||
         slice.input.width <= 0.0f || slice.input.height <= 0.0f) {
         return;
@@ -392,6 +392,23 @@ void Renderer::renderSlice(const Slice& slice, uint32_t canvasTexture, IVec2 can
     sliceShader_.setVec4("u_BlendCurve", glm::vec4(b[SLICE_EDGE_LEFT].curve, b[SLICE_EDGE_RIGHT].curve,
                                                    b[SLICE_EDGE_TOP].curve, b[SLICE_EDGE_BOTTOM].curve));
     sliceShader_.setFloat("u_BlackLevel", slice.blackLevel);
+
+    // Crossfade: 0 none (transparent), 1 the texel under the pixel (both canvases the
+    // same size and turn on the exact-copy path), 2 filtered.
+    const bool fading = fade != nullptr && fade->mix < 1.0f;
+    sliceShader_.setFloat("u_Mix", fading ? std::max(fade->mix, 0.0f) : 1.0f);
+    if (fading) {
+        const bool hasFrom = fade->fromTexture != 0 && fade->fromSize.x > 0 && fade->fromSize.y > 0;
+        const bool sameCanvas = fade->fromSize == canvasSize && fade->fromRotation == canvasRotation;
+        sliceShader_.setInt("u_From", 1);
+        sliceShader_.setInt("u_FromMode", !hasFrom ? 0 : (exact && sameCanvas ? 1 : 2));
+        sliceShader_.setVec2("u_FromSize", glm::vec2(fade->fromSize));
+        sliceShader_.setInt("u_FromRotation", static_cast<int>(fade->fromRotation) / 90);
+        if (hasFrom) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, fade->fromTexture);
+        }
+    }
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, canvasTexture);
@@ -580,7 +597,8 @@ const GpuMesh* Renderer::meshBuffersFor(const MeshObject& object) {
 }
 
 void Renderer::renderMeshObject(const MeshObject& object, const ProjectorCamera& camera,
-                                const Texture* texture, float nearZ, float farZ) {
+                                const Texture* texture, float nearZ, float farZ,
+                                float opacityScale) {
     if (!initialized_ || !object.isVisible() || !(nearZ > 0.0f) || !(farZ > nearZ)) {
         return;
     }
@@ -597,7 +615,7 @@ void Renderer::renderMeshObject(const MeshObject& object, const ProjectorCamera&
     applyViewUniforms(mesh3dShader_);
     mesh3dShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
     // Objects carry no colour correction or soft edge of their own: identity.
-    applySurfaceUniforms(mesh3dShader_, object.getTexture(), object.getOpacity(),
+    applySurfaceUniforms(mesh3dShader_, object.getTexture(), object.getOpacity() * opacityScale,
                          ColorCorrection{}, SoftEdge{}, texture);
 
     // Left bound, as by renderQuad, until the next draw or endFrame().
@@ -607,7 +625,8 @@ void Renderer::renderMeshObject(const MeshObject& object, const ProjectorCamera&
 
 void Renderer::renderMeshObjects(const std::vector<std::unique_ptr<MeshObject>>& objects,
                                  const ProjectorCamera& camera,
-                                 const std::unordered_map<UUID, Texture*>& textures) {
+                                 const std::unordered_map<UUID, Texture*>& textures,
+                                 float opacityScale) {
     if (!initialized_) {
         return;
     }
@@ -662,7 +681,7 @@ void Renderer::renderMeshObjects(const std::vector<std::unique_ptr<MeshObject>>&
         if (it != textures.end()) {
             texture = it->second;
         }
-        renderMeshObject(*object, camera, texture, nearZ, farZ);
+        renderMeshObject(*object, camera, texture, nearZ, farZ, opacityScale);
     }
     glDisable(GL_DEPTH_TEST);
 }

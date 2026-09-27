@@ -1009,6 +1009,14 @@ bool Application::pollFrame(float& deltaTime) {
 void Application::presentFrame(float deltaTime, FrameMarks* marks) {
     using Clock = std::chrono::steady_clock;
 
+    // The frame clock scene crossfades run on (ADR-047 §5): wall time, sampled once,
+    // before this frame's audio, takes and projector frames all read it.
+    if (m_outputManager && m_editorState) {
+        m_outputManager->setFrameTime(
+            std::chrono::duration<double>(Clock::now().time_since_epoch()).count());
+        m_outputManager->retireSceneFades(m_editorState->scenes);
+    }
+
     // Update
     update(deltaTime);
 
@@ -1439,9 +1447,9 @@ void Application::render() {
     // so keys typed into a field or behind a modal do not act on the show, and an
     // operator's controller is not typing. Calibration still holds them off
     // (takeSceneByNumber), as it does the keys.
-    for (int n : m_pendingExternalSceneTakes) {
-        takeSceneByNumber(n);
-        Logger::info("Control: scene take {} requested; active scene is now '{}'", n,
+    for (const ExternalSceneTake& t : m_pendingExternalSceneTakes) {
+        takeSceneByNumber(t.number, t.fadeSeconds);
+        Logger::info("Control: scene take {} requested; active scene is now '{}'", t.number,
                      es.activeScene().getName());
     }
     m_pendingExternalSceneTakes.clear();
@@ -1897,12 +1905,17 @@ void adoptObjectMeshes(EditorState& es, OutputManager* om, Project* project) {
 
 }  // namespace
 
-void Application::takeSceneByNumber(int number) {
+void Application::takeSceneByNumber(int number, std::optional<float> fadeSeconds) {
     EditorState& es = *m_editorState;
     // Calibration edits the scene routed to the calibrated output; keep it there.
     if (!es.calibratingOutputId.isNull()) return;
 
-    const SceneTake take = es.takeScene(number, *m_outputManager);
+    // The harnesses cut whatever this machine's preference is, so their scene-switch
+    // timings and same-frame readbacks do not depend on it.
+    const bool harness = m_stressConfig.has_value() || m_benchConfig.has_value();
+    const float fade = fadeSeconds ? *fadeSeconds
+                                   : (harness ? 0.0f : m_preferences->getPreferences().general.sceneFadeSeconds);
+    const SceneTake take = es.takeScene(number, *m_outputManager, fade);
     if (take.kind == SceneTake::Kind::None) return;
     // Takes run inside render(), after the frame-boundary fit and before this frame's
     // projector frames are drawn: re-fit now so those frames are framed for the scene
@@ -1931,7 +1944,9 @@ void Application::initializeExternalControl() {
     ControlBindingHost host;
     host.scenes = &m_editorState->scenes;
     host.sources = m_sourceManager.get();
-    host.takeScene = [this](int number) { m_pendingExternalSceneTakes.push_back(number); };
+    host.takeScene = [this](int number, std::optional<float> fadeSeconds) {
+        m_pendingExternalSceneTakes.push_back({number, fadeSeconds});
+    };
     host.activeSceneNumber = [this]() {
         const EditorState& es = *m_editorState;
         for (size_t i = 0; i < es.scenes.size(); ++i) {
@@ -2330,12 +2345,16 @@ void Application::buildEditorProject(Project& out) {
 }
 
 // Once per frame after the sources advance (ADR-050 §2). Heard: sources of the active
-// scene and of scenes on enabled outputs; the rest are gated silent, still in step.
+// scene and of scenes on enabled outputs, cross-faded with the picture during a scene
+// fade (ADR-047 §5); the rest are gated silent, still in step.
 void Application::syncAudio() {
     if (!m_audioEngine || !m_sourceManager || !m_editorState || !m_outputManager) return;
     const EditorState& es = *m_editorState;
-    syncSourceAudio(*m_audioEngine, *m_sourceManager,
-                    audibleSourceIds(es.scenes, es.activeSceneId, liveSceneIds(m_outputManager->getOutputs())));
+    const OutputManager& om = *m_outputManager;
+    const auto weights = sceneAudioWeights(
+        es.activeSceneId, om.getOutputs(), [&om](const OutputWindow& o) { return om.sceneFade(o); },
+        om.frameTime());
+    syncSourceAudio(*m_audioEngine, *m_sourceManager, sourceSceneGains(es.scenes, weights));
 }
 
 void Application::applyProjectAudio() {

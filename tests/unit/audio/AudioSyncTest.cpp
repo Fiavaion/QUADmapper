@@ -23,6 +23,7 @@
 #include "audio/LoopCrossfade.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/Scene.hpp"
+#include "scene/SceneFade.hpp"
 #include "video/PlaybackClock.hpp"
 #include "AudioTestMedia.hpp"
 
@@ -1085,6 +1086,152 @@ TEST(AudibleSourcesTest, LiveScenesAreThoseEnabledOutputsShow) {
     outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{offAir, false}));
     outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{UUID(), true}));
     EXPECT_EQ(liveSceneIds(outputs), (std::unordered_set<UUID>{shared}));
+}
+
+// ---- Scene crossfades (ADR-047 §5): both scenes heard, cross-gain ramped -----------
+
+namespace {
+struct FadeOutput {
+    UUID id = UUID::generate();
+    UUID sceneId;
+    bool enabled = true;
+    bool isEnabled() const { return enabled; }
+    const UUID& getSceneId() const { return sceneId; }
+};
+}  // namespace
+
+// A 1 s fade stepped at 60 Hz on the frame clock: the outgoing scene's source falls
+// and the incoming one rises, each monotonically, equal power, ending at exactly 0
+// (gated, as a cut) and 1. A source in both scenes stays at full level. A disabled
+// output's fade is not heard.
+TEST(SceneAudioFadeTest, CrossGainRampsMonotonicallyToZeroAndOne) {
+    const UUID clipA = UUID::generate(), clipB = UUID::generate(), shared = UUID::generate();
+    const UUID clipOff = UUID::generate();
+    SceneList scenes;
+    auto makeScene = [&](std::vector<UUID> media) {
+        auto scene = std::make_unique<Scene>();
+        for (const UUID& m : media) scene->getQuadManager().createQuad("q")->getTexture().mediaId = m;
+        scenes.push_back(std::move(scene));
+        return scenes.back()->getId();
+    };
+    const UUID a = makeScene({clipA, shared});
+    const UUID b = makeScene({clipB, shared});
+    const UUID off = makeScene({clipOff});
+
+    std::vector<std::unique_ptr<FadeOutput>> outputs;
+    outputs.push_back(std::make_unique<FadeOutput>());
+    outputs.back()->sceneId = b;  // the take routed it from a to b
+    outputs.push_back(std::make_unique<FadeOutput>());
+    outputs.back()->sceneId = off;
+    outputs.back()->enabled = false;
+
+    SceneFades fades;
+    const double start = 20.0;
+    fades.begin(outputs[0]->id, a, b, start, 1.0);
+    fades.begin(outputs[1]->id, a, off, start, 1.0);  // disabled: not heard
+    auto fadeOf = [&](const FadeOutput& o) { return fades.find(o.id); };
+
+    float lastA = 2.0f, lastB = -1.0f;
+    for (int frame = 0;; ++frame) {
+        const double now = start + frame / 60.0;
+        fades.retire(now, [](const UUID&, const SceneFade&) { return true; });
+        // The take made b the active scene; it is not raised to 1 while it fades in.
+        const auto weights = sceneAudioWeights(b, outputs, fadeOf, now);
+        const auto gains = sourceSceneGains(scenes, weights);
+        const float gainA = gains.count(clipA) ? gains.at(clipA) : 0.0f;
+        const float gainB = gains.count(clipB) ? gains.at(clipB) : 0.0f;
+        EXPECT_LE(gainA, lastA) << "frame " << frame;
+        EXPECT_GE(gainB, lastB) << "frame " << frame;
+        EXPECT_FLOAT_EQ(gains.at(shared), 1.0f) << "one sound in both scenes: no dip";
+        EXPECT_EQ(gains.count(clipOff), 0u);
+        if (fades.find(outputs[0]->id)) {
+            EXPECT_NEAR(gainA * gainA + gainB * gainB, 1.0f, 1e-5f) << "equal power";
+        }
+        lastA = gainA;
+        lastB = gainB;
+        if (fades.empty()) {
+            EXPECT_EQ(gains.count(clipA), 0u) << "the old scene ends gated, exactly as a cut";
+            EXPECT_EQ(gainB, 1.0f);
+            EXPECT_EQ(frame, 60);
+            break;
+        }
+        ASSERT_LT(frame, 100);
+    }
+    EXPECT_GT(lastB, 0.0f);
+
+    // With no fade the weights are the old audibility rule: active and live scenes at 1.
+    const auto still = sceneAudioWeights(a, outputs, [](const FadeOutput&) -> const SceneFade* { return nullptr; }, 0.0);
+    EXPECT_EQ(still.size(), 2u);
+    EXPECT_EQ(still.at(a), 1.0f);
+    EXPECT_EQ(still.at(b), 1.0f);
+}
+
+namespace {
+// A mixer input playing a constant 1.0, so its output is the gain it applies.
+class ConstantSource : public AudioSource {
+protected:
+    void pull(float* output, size_t frameCount, const AudioRenderContext&) override {
+        std::fill(output, output + frameCount * 2, 1.0f);
+    }
+};
+}  // namespace
+
+// The gain the mixer actually applies through a 1 s scene fade (audio thread side):
+// the control thread sets each source's volume once per 60 Hz frame, as syncSourceAudio
+// does (volume x scene gain), and at the end gates the outgoing source exactly as a
+// cut does; the callbacks (256 frames at 48 kHz) ramp between those values. The
+// outgoing gain only falls and ends at exactly 0, the incoming one only rises and ends
+// at exactly 1, and no sample steps by more than a small fraction (no click).
+TEST(SceneAudioFadeTest, AppliedGainIsMonotonicClickFreeAndEndsAtZeroAndOne) {
+    ConstantSource out;
+    ConstantSource in;
+    in.setMuted(true);  // gated before the take, as the scene fading in was
+    const float centre = std::cos(0.25f * 3.14159265f);  // constant-power pan at 0
+    const int rate = 48000;
+    const size_t block = 256;
+    std::vector<float> buffer(block * 2);
+    AudioRenderContext context;
+    context.sampleRate = rate;
+
+    SceneFade fade{UUID::generate(), UUID::generate(), 0.0, 1.0};
+    int frame = -1;
+    float lastOut = 1.0f, lastIn = 0.0f, worstStep = 0.0f;
+    std::vector<float> outGains, inGains;
+    for (size_t sample = 0; sample < static_cast<size_t>(rate) * 5 / 4; sample += block) {
+        const double now = static_cast<double>(sample) / rate;
+        // The control frames that have run by this callback.
+        while ((frame + 1) / 60.0 <= now) {
+            ++frame;
+            const double t = frame / 60.0;
+            const float mix = sceneFadeMix(fade, t);
+            if (mix >= 1.0f) {  // retired: the old scene is gated, the new one at full level
+                out.setVolume(1.0f);
+                out.setMuted(true);
+                in.setVolume(1.0f);
+            } else {
+                const CrossGain g = crossfadeGains(mix);
+                out.setVolume(g.out);
+                in.setVolume(g.in);
+            }
+            in.setMuted(false);
+        }
+        for (ConstantSource* source : {&out, &in}) {
+            source->render(buffer.data(), block, context);
+            std::vector<float>& gains = source == &out ? outGains : inGains;
+            for (size_t i = 0; i < block; ++i) gains.push_back(buffer[i * 2] / centre);
+        }
+    }
+    for (size_t i = 0; i < outGains.size(); ++i) {
+        EXPECT_LE(outGains[i], lastOut + 1e-6f) << "sample " << i;
+        EXPECT_GE(inGains[i], lastIn - 1e-6f) << "sample " << i;
+        worstStep = std::max({worstStep, std::abs(outGains[i] - lastOut), std::abs(inGains[i] - lastIn)});
+        lastOut = outGains[i];
+        lastIn = inGains[i];
+    }
+    EXPECT_EQ(outGains.back(), 0.0f);
+    EXPECT_NEAR(inGains.back(), 1.0f, 1e-6f);
+    EXPECT_LT(worstStep, 0.001f) << "a step this size per sample would click";
+    std::printf("[ fade ] %zu samples, worst per-sample gain step %.6f\n", outGains.size(), worstStep);
 }
 
 // A gated source stays in step and comes back in sync: gated for a stretch, then heard

@@ -29,6 +29,10 @@ struct GeneralPreferences {
 
     // UI complexity mode (ADR-042): 0 = Simple, 1 = Advanced. The last mode used.
     int uiMode = 0;
+
+    // Crossfade of a scene take from the 1-9 keys, MIDI and a one-argument OSC take
+    // (ADR-047 §5), in seconds, 0 to MAX_SCENE_FADE_SECONDS; 0 = a cut.
+    float sceneFadeSeconds = 0.0f;
 };
 
 // Limits the dialog offers and loading enforces.

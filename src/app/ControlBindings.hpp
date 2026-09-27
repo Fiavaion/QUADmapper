@@ -18,10 +18,12 @@
 #include "../project/Project.hpp"
 #include "../scene/Quad.hpp"
 #include "../scene/Scene.hpp"
+#include "../scene/SceneFade.hpp"
 #include "../source/SourceManager.hpp"
 #include "../source/TextureSource.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -36,7 +38,9 @@ namespace quadmapper {
 struct ControlBindingHost {
     std::vector<std::unique_ptr<Scene>>* scenes = nullptr;
     SourceManager* sources = nullptr;
-    std::function<void(int number)> takeScene;  // queue a take of scene `number` (1-based)
+    // Queue a take of scene `number` (1-based), fading over `fadeSeconds`; nullopt =
+    // the Preferences default (ADR-047 §5).
+    std::function<void(int number, std::optional<float> fadeSeconds)> takeScene;
     std::function<int()> activeSceneNumber;     // the active scene (1-based), 0 = none
     std::function<bool()> isBlackout;
     std::function<void(bool on)> setBlackout;
@@ -50,6 +54,43 @@ struct ControlBindingHost {
 };
 
 namespace control_bindings {
+
+// /qm/scene/take i n [f seconds] (ADR-047 §5): the scene number as an Index target
+// takes it (a number, rounded, 1 to 1e6; T counts as 1), and an optional fade time in
+// seconds (int or float, finite, >= 0; clamped to MAX_SCENE_FADE_SECONDS). Without
+// the second argument the take uses the Preferences default. Anything else, or more
+// than two arguments, is a bad message and takes nothing.
+struct SceneTakeRequest {
+    int number = 0;
+    std::optional<float> fadeSeconds;
+};
+
+inline std::optional<SceneTakeRequest> parseSceneTakeArgs(const std::vector<control::OscArg>& args) {
+    using control::OscArg;
+    if (args.empty() || args.size() > 2) return std::nullopt;
+    float n = 0.0f;
+    switch (args[0].type) {
+        case OscArg::Type::Int:   n = static_cast<float>(args[0].i); break;
+        case OscArg::Type::Float: n = args[0].f; break;
+        case OscArg::Type::True:  n = 1.0f; break;
+        case OscArg::Type::False: n = 0.0f; break;
+        default: return std::nullopt;
+    }
+    if (!std::isfinite(n) || n < 0.5f || n > 1.0e6f) return std::nullopt;
+    SceneTakeRequest request;
+    request.number = static_cast<int>(std::round(n));
+    if (args.size() == 2) {
+        float seconds = 0.0f;
+        switch (args[1].type) {
+            case OscArg::Type::Int:   seconds = static_cast<float>(args[1].i); break;
+            case OscArg::Type::Float: seconds = args[1].f; break;
+            default: return std::nullopt;
+        }
+        if (!std::isfinite(seconds) || seconds < 0.0f) return std::nullopt;
+        request.fadeSeconds = std::min(seconds, MAX_SCENE_FADE_SECONDS);
+    }
+    return request;
+}
 
 // UUID::fromString throws on malformed text; paths come from the network and files.
 inline UUID parseUuid(const std::string& text) {
@@ -131,17 +172,24 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
              if (!host.isMasterMuted) return std::nullopt;
              return host.isMasterMuted() ? 1.0f : 0.0f;
          }});
-    // /qm/scene/take i n: the nth scene, the same path as the 1-9 keys. OSC only (a
-    // MIDI control binds to a particular scene's take instead).
-    registry.addGlobal("/qm/scene/take",
-        {"", TargetKind::Index, 1.0f, 1.0e6f, false,
-         [host](const std::string&, float n) { if (host.takeScene) host.takeScene(static_cast<int>(n)); },
-         nullptr, /*exclusive=*/true});
+    // /qm/scene/take i n [f seconds]: the nth scene, the same path as the 1-9 keys,
+    // with an optional fade time (parseSceneTakeArgs). OSC only (a MIDI control binds
+    // to a particular scene's take instead).
+    ControlTarget take{"", TargetKind::Index, 1.0f, 1.0e6f, false,
+        [host](const std::string&, float n) { if (host.takeScene) host.takeScene(static_cast<int>(n), std::nullopt); },
+        nullptr, /*exclusive=*/true};
+    take.applyOscArgs = [host](const std::string&, const std::vector<control::OscArg>& args) {
+        const std::optional<SceneTakeRequest> request = parseSceneTakeArgs(args);
+        if (!request) return false;
+        if (host.takeScene) host.takeScene(request->number, request->fadeSeconds);
+        return true;
+    };
+    registry.addGlobal("/qm/scene/take", std::move(take));
     // /qm/scene/active i n: which scene is active, sent as OSC feedback so a radio
     // button on a control surface follows the show. Setting it takes that scene.
     registry.addGlobal("/qm/scene/active",
         {"", TargetKind::Index, 1.0f, 1.0e6f, false,
-         [host](const std::string&, float n) { if (host.takeScene) host.takeScene(static_cast<int>(n)); },
+         [host](const std::string&, float n) { if (host.takeScene) host.takeScene(static_cast<int>(n), std::nullopt); },
          [host](const std::string&) -> std::optional<float> {
              if (!host.activeSceneNumber) return std::nullopt;
              const int n = host.activeSceneNumber();
@@ -180,7 +228,7 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
         {"take", TargetKind::Trigger, 0.0f, 1.0f, true,
          [host](const std::string& id, float) {
              if (!host.scenes || !host.takeScene) return;
-             if (const int number = sceneNumber(*host.scenes, id)) host.takeScene(number);
+             if (const int number = sceneNumber(*host.scenes, id)) host.takeScene(number, std::nullopt);
          },
          nullptr, /*exclusive=*/true});
 

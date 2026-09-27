@@ -4,6 +4,7 @@
 #include "audio/AudioEngine.hpp"
 #include "core/Logger.hpp"
 #include "core/FileSystem.hpp"
+#include "scene/SceneFade.hpp"
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
@@ -36,6 +37,13 @@ void readInt(const json& section, const char* key, int& out, int min, int max) {
     if (it == section.end() || !it->is_number_integer()) return;
     const auto value = it->get<long long>();
     if (value >= min && value <= max) out = static_cast<int>(value);
+}
+
+void readFloat(const json& section, const char* key, float& out, float min, float max) {
+    auto it = section.find(key);
+    if (it == section.end() || !it->is_number()) return;
+    const double value = it->get<double>();
+    if (value >= min && value <= max) out = static_cast<float>(value);  // NaN fails both
 }
 
 void readString(const json& section, const char* key, std::string& out) {
@@ -152,6 +160,15 @@ bool PreferencesDialog::renderGeneralTab(EditorContext& ctx) {
     }
     ImGui::SameLine();
     appliesNote("(applies now; QUADmapper starts in the mode last used)");
+
+    ImGui::SeparatorText("Scene takes");
+    ImGui::SetNextItemWidth(200.0f);
+    // Applies while dragged; saved once, on release. Ctrl+click types a value.
+    ImGui::SliderFloat("Crossfade (seconds)", &general.sceneFadeSeconds, 0.0f, MAX_SCENE_FADE_SECONDS,
+                       "%.2f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+    changed |= ImGui::IsItemDeactivatedAfterEdit();
+    appliesNote("0 = a cut. For the 1-9 keys, MIDI and OSC /qm/scene/take n;");
+    appliesNote("/qm/scene/take n seconds sets its own.");
 
     ImGui::SeparatorText("Auto-save");
     changed |= ImGui::Checkbox("Save unsaved work to a recovery file", &general.autoSaveEnabled);
@@ -288,6 +305,7 @@ Result<void, Error> PreferencesDialog::loadFromFile(const std::filesystem::path&
         readInt(*gen, "autoSaveIntervalMinutes", general.autoSaveIntervalMinutes, MIN_AUTOSAVE_MINUTES,
                 MAX_AUTOSAVE_MINUTES);
         readInt(*gen, "uiMode", general.uiMode, 0, 1);
+        readFloat(*gen, "sceneFadeSeconds", general.sceneFadeSeconds, 0.0f, MAX_SCENE_FADE_SECONDS);
     }
 
     if (const json* perf = sectionOf(root, "performance")) {
@@ -329,6 +347,7 @@ Result<void, Error> PreferencesDialog::saveToFile(const std::filesystem::path& p
     gen["autoSaveEnabled"] = general.autoSaveEnabled;
     gen["autoSaveIntervalMinutes"] = general.autoSaveIntervalMinutes;
     gen["uiMode"] = general.uiMode;
+    gen["sceneFadeSeconds"] = general.sceneFadeSeconds;
     root["general"] = gen;
 
     json perf;
