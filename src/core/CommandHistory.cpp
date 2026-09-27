@@ -30,6 +30,15 @@ void CommandHistory::CompoundCommand::collectMediaIds(std::unordered_set<UUID>& 
     for (const auto& command : commands_) command->collectMediaIds(out);
 }
 
+void CommandHistory::CompoundCommand::remapMediaId(const UUID& from, const UUID& to) {
+    for (const auto& command : commands_) command->remapMediaId(from, to);
+}
+
+void CommandHistory::remapMediaId(const UUID& from, const UUID& to) {
+    for (const auto& command : commands_) command->remapMediaId(from, to);
+    if (compoundCommand_) compoundCommand_->remapMediaId(from, to);
+}
+
 void CommandHistory::collectMediaIds(std::unordered_set<UUID>& out) const {
     for (const auto& command : commands_) command->collectMediaIds(out);
     if (compoundCommand_) compoundCommand_->collectMediaIds(out);

@@ -462,8 +462,8 @@ void QuadListPanel::render(EditorContext& ctx) {
     ImGui::End();
 }
 
-// The active scene's 3D objects (ADR-052): select, rename, show/hide and delete.
-// Object edits are outside the undo history, which only holds quad commands.
+// The active scene's 3D objects (ADR-052): select, rename, show/hide and delete, each
+// an undo step (TD-16).
 void QuadListPanel::renderObjects(EditorContext& ctx) {
     EditorState& es = ctx.es;
     Scene& scene = es.activeScene();
@@ -481,7 +481,7 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
 
         bool visible = object.isVisible();
         if (ImGui::Checkbox("##objVisible", &visible)) {
-            object.setVisible(visible);
+            es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(object), visible));
             ctx.project->setModified(true);
         }
         ImGui::SetItemTooltip("Visible");
@@ -501,8 +501,10 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (ImGui::InputText("##objrename", objectNameBuf_, sizeof(objectNameBuf_),
                                  ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
-                object.setName(objectNameBuf_);
-                ctx.project->setModified(true);
+                if (object.getName() != objectNameBuf_) {
+                    es.commandHistory.execute(makeRenameObjectCommand(es.objectRef(object), objectNameBuf_));
+                    ctx.project->setModified(true);
+                }
                 objectRenaming_ = false;
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape)) objectRenaming_ = false;
@@ -532,30 +534,10 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
         ImGui::PopID();
     }
 
-    // Deleting an object loses its placement and cannot be undone yet: confirm first.
+    // Undoable like a quad delete, so no confirmation.
     if (!deleteId.isNull()) {
-        objectConfirmDeleteId_ = deleteId;
-        ImGui::OpenPopup("Delete Object?");
-    }
-    deleteId = UUID();
-    if (ImGui::BeginPopupModal("Delete Object?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        const MeshObject* target = scene.getObject(objectConfirmDeleteId_);
-        ImGui::Text("Delete '%s'? This cannot be undone.",
-                    target ? target->getName().c_str() : "object");
-        if (ImGui::Button("Delete")) {
-            deleteId = objectConfirmDeleteId_;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
-    if (!deleteId.isNull()) {
-        scene.deleteObject(deleteId);
-        objectConfirmDeleteId_ = UUID();
+        es.commandHistory.execute(
+            std::make_unique<DeleteObjectCommand>(ObjectRef{&es.quadResolver, scene.getId(), deleteId}));
         if (es.selectedObjectId == deleteId) es.selectedObjectId = UUID();
         if (objectRenameId_ == deleteId) objectRenaming_ = false;
         ctx.project->setModified(true);

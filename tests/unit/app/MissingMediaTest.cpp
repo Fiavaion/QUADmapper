@@ -116,6 +116,34 @@ TEST(MissingMediaTest, RebindMovesQuadsObjectsPathsAndMidiMappings) {
     EXPECT_TRUE(collectMissingMedia(fx.es).empty());
 }
 
+// TD-16: an object only the undo history holds (deleted), and an object media step,
+// come back on the relocated source, not on the missing id nothing resolves any more.
+TEST(MissingMediaTest, RebindMovesObjectsTheUndoHistoryHolds) {
+    MissingFixture fx;
+    Scene& scene = *fx.es.scenes[0];
+    MeshObject* held = scene.adoptObject(std::make_unique<MeshObject>());
+    held->getTexture().mediaId = fx.missingId;
+    const UUID heldId = held->getId();
+    fx.es.commandHistory.execute(
+        std::make_unique<DeleteObjectCommand>(ObjectRef{&fx.es.quadResolver, scene.getId(), heldId}));
+    // A media step on the fixture's object: None, so undo would put the missing id back.
+    TextureBinding none = fx.object->getTexture();
+    none.mediaId = UUID();
+    fx.es.commandHistory.execute(makeSetObjectTextureCommand(
+        ObjectRef{&fx.es.quadResolver, scene.getId(), fx.object->getId()}, none));
+
+    const UUID newId = UUID::generate();
+    rebindMissingSource(fx.es, fx.missingId, fx.oldPath, newId, "D:/found/clip.mp4", true);
+
+    fx.es.commandHistory.undo();  // the media step
+    EXPECT_EQ(fx.object->getTexture().mediaId, newId);
+    fx.es.commandHistory.undo();  // the delete
+    ASSERT_NE(scene.getObject(heldId), nullptr);
+    EXPECT_EQ(scene.getObject(heldId)->getTexture().mediaId, newId);
+    const auto referenced = referencedMediaIds(fx.es.scenes, fx.es.commandHistory);
+    EXPECT_EQ(referenced.count(fx.missingId), 0u);
+}
+
 TEST(MissingMediaTest, RelocateRefusesWhatItCannotUse) {
     MissingFixture fx;
     SourceManager sm;

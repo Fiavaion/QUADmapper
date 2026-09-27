@@ -40,6 +40,10 @@ public:
     // deleted quad). They must stay loaded while the command is in the history.
     virtual void collectMediaIds(std::unordered_set<UUID>& out) const { (void)out; }
 
+    // A media source was replaced by another (a missing file relocated): what this
+    // command would put back must use the new id.
+    virtual void remapMediaId(const UUID& from, const UUID& to) { (void)from; (void)to; }
+
 protected:
     Command() = default;
 };
@@ -88,6 +92,9 @@ public:
     // Command::collectMediaIds), including an open compound group.
     void collectMediaIds(std::unordered_set<UUID>& out) const;
 
+    // Command::remapMediaId on every step, including an open compound group.
+    void remapMediaId(const UUID& from, const UUID& to);
+
     // Get current stack sizes
     size_t getUndoCount() const { return undoIndex_; }
     size_t getRedoCount() const { return commands_.size() - undoIndex_; }
@@ -132,6 +139,7 @@ public:
     void addCommand(std::unique_ptr<Command> command);
     bool isEmpty() const { return commands_.empty(); }
     void collectMediaIds(std::unordered_set<UUID>& out) const override;
+    void remapMediaId(const UUID& from, const UUID& to) override;
 
 private:
     std::string description_;

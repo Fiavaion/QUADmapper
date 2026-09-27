@@ -200,6 +200,24 @@ void Scene::deleteObject(const UUID& id) {
                    objects_.end());
 }
 
+std::unique_ptr<MeshObject> Scene::takeObject(const UUID& id, size_t* index) {
+    for (size_t i = 0; i < objects_.size(); ++i) {
+        if (objects_[i]->getId() != id) continue;
+        std::unique_ptr<MeshObject> object = std::move(objects_[i]);
+        objects_.erase(objects_.begin() + static_cast<std::ptrdiff_t>(i));
+        if (index) *index = i;
+        return object;
+    }
+    return nullptr;
+}
+
+MeshObject* Scene::insertObject(std::unique_ptr<MeshObject> object, size_t index) {
+    if (!object || getObject(object->getId())) return nullptr;
+    const size_t at = std::min(index, objects_.size());
+    objects_.insert(objects_.begin() + static_cast<std::ptrdiff_t>(at), std::move(object));
+    return objects_[at].get();
+}
+
 MeshObject* Scene::getObject(const UUID& id) {
     for (const auto& object : objects_) {
         if (object->getId() == id) return object.get();

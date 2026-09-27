@@ -110,10 +110,12 @@ inline void rebindMissingSource(EditorState& es, const UUID& missingId, const st
             if (object && object->getTexture().mediaId == missingId) object->getTexture().mediaId = newId;
         }
     }
-    // Quads only an undo step holds re-bind from their media path once restored.
+    // Quads only an undo step holds re-bind from their media path once restored;
+    // objects and object media steps in the history are moved onto the new id.
     for (auto& [quadId, quadPath] : es.quadTexturePaths) {
         if (quadPath == oldPath) quadPath = newPath;
     }
+    es.commandHistory.remapMediaId(missingId, newId);
     const std::unordered_map<UUID, UUID> moved{{missingId, newId}};
     for (auto& mapping : es.midiMappings) {
         mapping.target = remapTargetPath(mapping.target, "source", moved);

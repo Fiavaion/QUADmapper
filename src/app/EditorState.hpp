@@ -366,14 +366,19 @@ struct EditorState {
     // viewport (ADR-042). Distinct from the corner/mesh drag latches.
     bool canvasMouseDownPrev = false;
 
-    // Undo/redo for quad edits, deletes and duplicates. Commands hold (scene id, quad
-    // id) and resolve through quadResolver, so a quad or scene destroyed while its
-    // commands are queued makes those steps safe no-ops.
+    // Undo/redo for quad and 3D-object edits, deletes and duplicates. Commands hold
+    // (scene id, quad or object id) and resolve through quadResolver, so a target or
+    // scene destroyed while its commands are queued makes those steps safe no-ops.
     CommandHistory commandHistory;
 
     // Stable command target for a quad of the active scene.
     QuadRef quadRef(const Quad& quad) {
         return QuadRef{&quadResolver, activeScene().getId(), quad.getId()};
+    }
+
+    // Stable command target for a 3D object of the active scene (TD-16).
+    ObjectRef objectRef(const MeshObject& object) {
+        return ObjectRef{&quadResolver, activeScene().getId(), object.getId()};
     }
 
     // Delete every selected quad of the active scene as ONE undo step, through

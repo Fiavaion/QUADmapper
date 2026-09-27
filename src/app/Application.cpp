@@ -1826,9 +1826,15 @@ void importObjectFile(EditorState& es, OutputManager* om, Project* project,
         return;
     }
     Scene& scene = es.activeScene();
-    MeshObject* object = scene.createObject(utf8FromPath(file.stem()));
-    object->setSourcePath(absolutePathString(file));
-    object->setMesh(std::move(mesh.value()));
+    auto created = std::make_unique<MeshObject>();
+    created->setName(utf8FromPath(file.stem()));
+    created->setSourcePath(absolutePathString(file));
+    created->setMesh(std::move(mesh.value()));
+    const UUID objectId = created->getId();
+    es.commandHistory.execute(std::make_unique<AddObjectCommand>(
+        es.quadResolver, scene.getId(), std::move(created), scene.getObjects().size()));
+    MeshObject* object = scene.getObject(objectId);
+    if (!object) return;
 
     OutputWindow* output = (om && scene.hasAssignedOutput())
                                ? om->getOutput(scene.getAssignedOutputId()) : nullptr;

@@ -4,7 +4,9 @@
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
 #include "Quad.hpp"
+#include "MeshObject.hpp"
 #include <functional>
+#include <type_traits>
 #include <string>
 #include <memory>
 #include <optional>
@@ -306,5 +308,146 @@ private:
     std::array<Vec2, 4> oldCorners_;
     Vec2 totalDelta_;
 };
+
+// ---- 3D objects (ADR-052, TD-16) ----------------------------------------------
+// Same rule as quads: a command holds (scene id, object id) and resolves them through
+// the QuadResolver on every execute/undo; a missing target is a logged no-op.
+
+// Stable handle to one 3D object in one scene.
+struct ObjectRef {
+    QuadResolver* resolver = nullptr;
+    UUID sceneId;
+    UUID objectId;
+
+    Scene* scene() const;
+    MeshObject* object() const;  // nullptr when the scene or the object is gone
+
+    bool sameTarget(const ObjectRef& other) const {
+        return sceneId == other.sceneId && objectId == other.objectId;
+    }
+};
+
+// Resolve ref for a command; logs and returns nullptr when the target is gone.
+MeshObject* resolveObjectForCommand(const ObjectRef& ref, const std::string& commandDescription);
+
+// Put a finished object (an import whose mesh has loaded) into a scene at `index`.
+// Undo takes the object back out and keeps it whole (mesh included, no copy); redo
+// puts the same object, same id, back where it was.
+class AddObjectCommand : public Command {
+public:
+    AddObjectCommand(QuadResolver& resolver, const UUID& sceneId,
+                     std::unique_ptr<MeshObject> object, size_t index);
+
+    bool execute() override;
+    bool undo() override;
+    std::string getDescription() const override;
+    void collectMediaIds(std::unordered_set<UUID>& out) const override;
+    void remapMediaId(const UUID& from, const UUID& to) override;
+
+    const UUID& getObjectId() const { return target_.objectId; }
+
+private:
+    ObjectRef target_;
+    std::unique_ptr<MeshObject> held_;  // the object while it is out of the scene
+    size_t index_;
+};
+
+// Delete an object. The command keeps it whole while deleted; undo puts it back at
+// its list position with the same id.
+class DeleteObjectCommand : public Command {
+public:
+    explicit DeleteObjectCommand(const ObjectRef& target);
+
+    bool execute() override;
+    bool undo() override;
+    std::string getDescription() const override;
+    void collectMediaIds(std::unordered_set<UUID>& out) const override;
+    void remapMediaId(const UUID& from, const UUID& to) override;
+
+private:
+    ObjectRef target_;
+    std::unique_ptr<MeshObject> held_;
+    size_t index_ = 0;
+};
+
+// Before/after value of one object property. Built by the make* functions below,
+// which read the old value from the live object. A mergeable command folds into the
+// previous one on the same object and property (a slider or drag is one step, as
+// for corner moves).
+template <typename T>
+class ObjectPropertyCommand : public Command {
+public:
+    using Apply = void (*)(MeshObject&, const T&);
+
+    ObjectPropertyCommand(std::string description, const ObjectRef& target, T oldValue,
+                          T newValue, Apply apply, bool mergeable)
+        : description_(std::move(description))
+        , target_(target)
+        , oldValue_(std::move(oldValue))
+        , newValue_(std::move(newValue))
+        , apply_(apply)
+        , mergeable_(mergeable)
+    {
+    }
+
+    bool execute() override { return applyValue(newValue_); }
+    bool undo() override { return applyValue(oldValue_); }
+    std::string getDescription() const override { return description_; }
+
+    bool canMergeWith(const Command& other) const override {
+        auto* next = dynamic_cast<const ObjectPropertyCommand<T>*>(&other);
+        return mergeable_ && next && next->mergeable_ && next->apply_ == apply_ &&
+               next->description_ == description_ && target_.sameTarget(next->target_);
+    }
+    void mergeWith(const Command& other) override {
+        if (auto* next = dynamic_cast<const ObjectPropertyCommand<T>*>(&other)) {
+            newValue_ = next->newValue_;
+        }
+    }
+
+    // A texture binding step can put either of its sources back on the object.
+    void collectMediaIds(std::unordered_set<UUID>& out) const override {
+        if constexpr (std::is_same_v<T, TextureBinding>) {
+            if (!oldValue_.mediaId.isNull()) out.insert(oldValue_.mediaId);
+            if (!newValue_.mediaId.isNull()) out.insert(newValue_.mediaId);
+        } else {
+            (void)out;
+        }
+    }
+    void remapMediaId(const UUID& from, const UUID& to) override {
+        if constexpr (std::is_same_v<T, TextureBinding>) {
+            if (oldValue_.mediaId == from) oldValue_.mediaId = to;
+            if (newValue_.mediaId == from) newValue_.mediaId = to;
+        } else {
+            (void)from;
+            (void)to;
+        }
+    }
+
+private:
+    bool applyValue(const T& value) {
+        MeshObject* object = resolveObjectForCommand(target_, description_);
+        if (!object) return false;
+        apply_(*object, value);
+        return true;
+    }
+
+    std::string description_;
+    ObjectRef target_;
+    T oldValue_;
+    T newValue_;
+    Apply apply_;
+    bool mergeable_;
+};
+
+// Object property commands. Each returns nullptr when the object does not exist
+// (CommandHistory::execute ignores a null command).
+std::unique_ptr<Command> makeSetObjectTransformCommand(const ObjectRef& target,
+                                                       const glm::mat4& transform, bool mergeable);
+std::unique_ptr<Command> makeSetObjectTextureCommand(const ObjectRef& target,
+                                                     const TextureBinding& texture);
+std::unique_ptr<Command> makeSetObjectVisibilityCommand(const ObjectRef& target, bool visible);
+std::unique_ptr<Command> makeSetObjectOpacityCommand(const ObjectRef& target, float opacity);
+std::unique_ptr<Command> makeRenameObjectCommand(const ObjectRef& target, const std::string& name);
 
 } // namespace quadmapper
