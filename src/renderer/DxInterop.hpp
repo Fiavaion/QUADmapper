@@ -2,6 +2,7 @@
 
 #include "core/YuvPicture.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -82,6 +83,11 @@ public:
     // Interop devices open (at most one per DxInterop, i.e. per SourceManager; it
     // lives until that is destroyed), for leak checks.
     static long liveDevices();
+
+    // The LUID of the adapter the current GL context renders on, from
+    // GL_EXT_memory_object_win32 / GL_EXT_semaphore_win32; false, with the reason in
+    // `why`, when the driver does not say. Needs a current GL context.
+    static bool glAdapterLuid(uint64_t& luid, std::string& why);
 
     DxInterop();   // no GL or D3D work until the first frame
     ~DxInterop();  // closes the interop device once no target holds it: GL context current

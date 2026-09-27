@@ -56,20 +56,6 @@ HMODULE loadSystemLibrary(const wchar_t* name) {
     return LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
 }
 
-// The adapter the current GL context renders on, when the driver says (see above).
-bool glAdapterLuid(LUID& luid) {
-    if (!glfwExtensionSupported("GL_EXT_memory_object_win32") && !glfwExtensionSupported("GL_EXT_semaphore_win32")) {
-        return false;
-    }
-    auto get = reinterpret_cast<PFNGLGETUNSIGNEDBYTEVEXTPROC>(glfwGetProcAddress("glGetUnsignedBytevEXT"));
-    if (!get) return false;
-    GLubyte bytes[sizeof(LUID)] = {};
-    get(GL_DEVICE_LUID_EXT, bytes);
-    if (glGetError() != GL_NO_ERROR) return false;
-    std::memcpy(&luid, bytes, sizeof(luid));
-    return true;
-}
-
 // Decoded frames opened per source: its GPU pool's textures, reused round-robin.
 constexpr size_t MAX_INPUTS = 16;
 constexpr UINT GROUP_WIDTH = 16;
@@ -405,6 +391,35 @@ bool DxInterop::available() {
     return available_;
 }
 
+bool DxInterop::glAdapterLuid(uint64_t& luid, std::string& why) {
+#ifdef _WIN32
+    if (!glfwExtensionSupported("GL_EXT_memory_object_win32") && !glfwExtensionSupported("GL_EXT_semaphore_win32")) {
+        why = "neither GL_EXT_memory_object_win32 nor GL_EXT_semaphore_win32";
+        return false;
+    }
+    auto get = reinterpret_cast<PFNGLGETUNSIGNEDBYTEVEXTPROC>(glfwGetProcAddress("glGetUnsignedBytevEXT"));
+    if (!get) {
+        why = "no glGetUnsignedBytevEXT";
+        return false;
+    }
+    // An error left by earlier GL work would read as this query failing: in the app the
+    // first zero-copy frame always met one, so the adapter check never ran.
+    while (glGetError() != GL_NO_ERROR) {}
+    GLubyte bytes[sizeof(luid)] = {};
+    get(GL_DEVICE_LUID_EXT, bytes);
+    if (const GLenum error = glGetError(); error != GL_NO_ERROR) {
+        why = "GL_DEVICE_LUID_EXT raised GL error " + std::to_string(error);
+        return false;
+    }
+    std::memcpy(&luid, bytes, sizeof(luid));
+    return true;
+#else
+    (void)luid;
+    why = "not Windows";
+    return false;
+#endif
+}
+
 bool DxInterop::openDevice(const GpuSurface& surface, std::string& why) {
 #ifdef _WIN32
     auto device = std::make_shared<InteropDevice>();
@@ -430,14 +445,19 @@ bool DxInterop::openDevice(const GpuSurface& surface, std::string& why) {
     // extension does not promise sharing between two GPUs (a driver may refuse it or copy
     // through system memory), so compare the adapters where GL names its own.
     bool otherAdapter = testHooks().adapterMismatch;
-    LUID glLuid{};
     DXGI_ADAPTER_DESC adapterDesc{};
-    if (!otherAdapter && adapter) {
-        if (glAdapterLuid(glLuid) && SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
-            otherAdapter = glLuid.LowPart != adapterDesc.AdapterLuid.LowPart ||
-                           glLuid.HighPart != adapterDesc.AdapterLuid.HighPart;
+    if (!otherAdapter && adapter && SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+        uint64_t decoderLuid = 0;
+        std::memcpy(&decoderLuid, &adapterDesc.AdapterLuid, sizeof(decoderLuid));
+        uint64_t glLuid = 0;
+        std::string luidWhy;
+        if (glAdapterLuid(glLuid, luidWhy)) {
+            otherAdapter = glLuid != decoderLuid;
+            Logger::info("Zero-copy video: OpenGL renders on GPU {} and the video decoders on GPU {}{}", glLuid,
+                         decoderLuid, otherAdapter ? " (different GPUs)" : " (the same GPU)");
         } else {
-            Logger::info("Zero-copy video: the OpenGL driver does not name its GPU; assuming the decoders'");
+            Logger::info("Zero-copy video: the OpenGL driver does not say which GPU it renders on ({}), "
+                         "so it is assumed to be the video decoders' GPU", luidWhy);
         }
     }
     using Create = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT,

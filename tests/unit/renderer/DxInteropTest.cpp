@@ -553,3 +553,38 @@ TEST(DxInterop, ReleasesEveryObjectItMade) {
     EXPECT_TRUE(GlObjectStats::Snapshot::capture().isFlat(glBefore))
         << GlObjectStats::Snapshot::capture().diff(glBefore);
 }
+
+// ADR-056 hybrid-GPU check: GL names the adapter it renders on, even when an earlier GL
+// call left an error pending (in the app one always was, so the check never ran), and
+// that adapter is one DXGI lists.
+TEST(DxInterop, GlNamesItsAdapterDespiteAPendingError) {
+    GLContext gl;
+    if (!gl.ok) GTEST_SKIP() << "no GL 3.3 context";
+    if (!glfwExtensionSupported("GL_EXT_memory_object_win32") && !glfwExtensionSupported("GL_EXT_semaphore_win32")) {
+        GTEST_SKIP() << "the driver does not name its GPU";
+    }
+    glEnable(0xFFFF);  // GL_INVALID_ENUM, left pending
+    uint64_t luid = 0;
+    std::string why;
+    ASSERT_TRUE(DxInterop::glAdapterLuid(luid, why)) << why;
+
+    using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
+    HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+    auto create = dxgi ? reinterpret_cast<CreateFactory>(GetProcAddress(dxgi, "CreateDXGIFactory1")) : nullptr;
+    IDXGIFactory1* factory = nullptr;
+    ASSERT_TRUE(create && SUCCEEDED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory))));
+    bool listed = false;
+    IDXGIAdapter1* adapter = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) == S_OK; ++i) {
+        DXGI_ADAPTER_DESC1 desc{};
+        adapter->GetDesc1(&desc);
+        uint64_t adapterLuid = 0;
+        std::memcpy(&adapterLuid, &desc.AdapterLuid, sizeof(adapterLuid));
+        listed = listed || adapterLuid == luid;
+        adapter->Release();
+    }
+    factory->Release();
+    FreeLibrary(dxgi);
+    EXPECT_TRUE(listed) << "GL's adapter " << luid << " is not one DXGI lists";
+}
+
