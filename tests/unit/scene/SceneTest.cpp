@@ -751,26 +751,121 @@ TEST_F(SceneFadeTest, TakingBackTheOutgoingSceneReversesWithoutAJump) {
     EXPECT_FLOAT_EQ(fades.mix(kOut, now + 0.6), 1.0f);
 }
 
-// Any other scene: the fade in progress completes at once (the scene fading in is on
-// screen) and the new fade starts from it.
-TEST_F(SceneFadeTest, TakingAThirdSceneFadesFromTheSceneFadingIn) {
+namespace {
+// How much of `scene` an output in `fade` shows at `now` (the picture weights the slice
+// shader mixes with).
+float onScreen(const SceneFade& fade, double now, const UUID& scene) {
+    const float mix = sceneFadeMix(fade, now);
+    const float next = fade.nested() ? fade.fromNextWeight : 0.0f;
+    float weight = 0.0f;
+    if (fade.fromSceneId == scene) weight += (1.0f - mix) * (1.0f - next);
+    if (fade.nested() && fade.fromNextSceneId == scene) weight += (1.0f - mix) * next;
+    if (fade.toSceneId == scene) weight += mix;
+    return weight;
+}
+}  // namespace
+
+// Any other scene: the fade in progress freezes at its mix (both scenes stay on screen)
+// and fades out as a whole while the new scene fades in. Nothing jumps at the take.
+TEST_F(SceneFadeTest, TakingAThirdSceneFadesFromTheFrozenMix) {
     SceneFades fades;
     fades.begin(kOut, kA, kB, 0.0, 1.0);
+    const SceneFade before = *fades.find(kOut);
     fades.begin(kOut, kB, kC, 0.4, 1.0);
     const SceneFade* fade = fades.find(kOut);
     ASSERT_NE(fade, nullptr);
-    EXPECT_EQ(fade->fromSceneId, kB);
+    EXPECT_EQ(fade->fromSceneId, kA);
+    EXPECT_EQ(fade->fromNextSceneId, kB);
+    EXPECT_FLOAT_EQ(fade->fromNextWeight, 0.4f);
     EXPECT_EQ(fade->toSceneId, kC);
-    EXPECT_FLOAT_EQ(fades.mix(kOut, 0.4), 0.0f);
+    for (const UUID& scene : {kA, kB, kC}) {
+        EXPECT_NEAR(onScreen(*fade, 0.4, scene), onScreen(before, 0.4, scene), 1e-6f) << "no jump";
+    }
+    EXPECT_NEAR(onScreen(*fade, 0.9, kA), 0.5f * 0.6f, 1e-6f) << "the frozen mix fades as a whole";
+    EXPECT_NEAR(onScreen(*fade, 0.9, kB), 0.5f * 0.4f, 1e-6f);
+    EXPECT_NEAR(onScreen(*fade, 0.9, kC), 0.5f, 1e-6f);
 
     // Taking the scene already fading in changes nothing: the fade carries on as it was.
     fades.begin(kOut, kC, kC, 0.9, 5.0);  // what OutputManager::takeScene would pass
     ASSERT_NE(fades.find(kOut), nullptr);
-    EXPECT_EQ(fades.find(kOut)->fromSceneId, kB);
+    EXPECT_EQ(fades.find(kOut)->fromNextSceneId, kB);
     EXPECT_FLOAT_EQ(fades.mix(kOut, 0.9), 0.5f) << "carries on at the original time";
 
     // A cut during a fade ends it.
     fades.begin(kOut, kC, kA, 0.7, 0.0);
+    EXPECT_TRUE(fades.empty());
+
+    // A third take at mix 0 (the same frame as the take before): only A is on screen.
+    fades.begin(kOut, kA, kB, 2.0, 1.0);
+    fades.begin(kOut, kB, kC, 2.0, 1.0);
+    ASSERT_NE(fades.find(kOut), nullptr);
+    EXPECT_EQ(fades.find(kOut)->fromSceneId, kA);
+    EXPECT_FALSE(fades.find(kOut)->nested());
+    // After the fade has finished (not yet retired) a take starts from its scene alone.
+    fades.begin(kOut, kC, kA, 3.5, 1.0);
+    ASSERT_NE(fades.find(kOut), nullptr);
+    EXPECT_EQ(fades.find(kOut)->fromSceneId, kC);
+    EXPECT_FALSE(fades.find(kOut)->nested());
+}
+
+// A fourth take during a nested fade collapses its frozen side into the scene that
+// dominates it, then follows the two-scene rules: only that side's minor scene jumps,
+// by at most half the outgoing weight.
+TEST_F(SceneFadeTest, AFourthTakeCollapsesTheFrozenSideIntoItsDominantScene) {
+    const UUID kD = UUID::generate();
+    for (const float frozen : {0.3f, 0.5f, 0.8f}) {
+        SCOPED_TRACE(frozen);
+        SceneFades fades;
+        fades.begin(kOut, kA, kB, 0.0, 1.0);
+        fades.begin(kOut, kB, kC, frozen, 1.0);  // A and B frozen at `frozen`
+        const SceneFade nested = *fades.find(kOut);
+        const double now = frozen + 0.25;       // C at 0.25
+        fades.begin(kOut, kC, kD, now, 1.0);
+        const SceneFade* fade = fades.find(kOut);
+        ASSERT_NE(fade, nullptr);
+        const UUID dominant = frozen >= 0.5f ? kB : kA;
+        EXPECT_EQ(fade->fromSceneId, dominant);
+        EXPECT_EQ(fade->fromNextSceneId, kC);
+        EXPECT_FLOAT_EQ(fade->fromNextWeight, 0.25f);
+        EXPECT_EQ(fade->toSceneId, kD);
+        EXPECT_NEAR(onScreen(*fade, now, kC), onScreen(nested, now, kC), 1e-6f) << "C does not jump";
+        float jump = 0.0f;
+        for (const UUID& scene : {kA, kB}) {
+            jump = std::max(jump, std::abs(onScreen(*fade, now, scene) - onScreen(nested, now, scene)));
+        }
+        EXPECT_LE(jump, 0.5f * 0.75f + 1e-6f);
+    }
+
+    // Taking back the dominant scene of the frozen side reverses the collapsed fade.
+    SceneFades fades;
+    fades.begin(kOut, kA, kB, 0.0, 1.0);
+    fades.begin(kOut, kB, kC, 0.8, 1.0);
+    fades.begin(kOut, kC, kB, 1.2, 1.0);  // C at 0.4: B comes back from 0.6
+    const SceneFade* fade = fades.find(kOut);
+    ASSERT_NE(fade, nullptr);
+    EXPECT_EQ(fade->fromSceneId, kC);
+    EXPECT_EQ(fade->toSceneId, kB);
+    EXPECT_FALSE(fade->nested());
+    EXPECT_NEAR(fades.mix(kOut, 1.2), 0.6f, 1e-6f);
+}
+
+// A stored fade that does not end on the scene the take starts from is stale (the
+// output was re-routed by hand, e.g. in the same frame as the take): the take fades
+// from what is on screen, not from the stored fade's scenes.
+TEST_F(SceneFadeTest, AStaleFadeIsIgnoredByTheNextTake) {
+    SceneFades fades;
+    fades.begin(kOut, kA, kB, 0.0, 1.0);
+    // Re-routed to C by hand (no fade ends it before the take), then a take to A.
+    fades.begin(kOut, kC, kA, 0.5, 1.0);
+    const SceneFade* fade = fades.find(kOut);
+    ASSERT_NE(fade, nullptr);
+    EXPECT_EQ(fade->fromSceneId, kC);
+    EXPECT_FALSE(fade->nested());
+    EXPECT_EQ(fade->toSceneId, kA);
+    EXPECT_FLOAT_EQ(fades.mix(kOut, 0.5), 0.0f) << "C, what is on screen, fully";
+
+    // A stale fade and a cut: nothing is left.
+    fades.begin(kOut, kB, kC, 0.6, 0.0);
     EXPECT_TRUE(fades.empty());
 }
 
@@ -785,6 +880,13 @@ TEST_F(SceneFadeTest, DeletingASceneEndsTheFadesInvolvingIt) {
     EXPECT_EQ(fades.find(o2), nullptr);
     EXPECT_NE(fades.find(o3), nullptr);
     fades.cancelOutput(o3);
+    EXPECT_TRUE(fades.empty());
+
+    // A scene frozen in a nested fade's outgoing side counts too.
+    fades.begin(kOut, kA, kB, 0.0, 1.0);
+    fades.begin(kOut, kB, kC, 0.5, 1.0);
+    ASSERT_TRUE(fades.find(kOut)->nested());
+    fades.cancelScene(kB);
     EXPECT_TRUE(fades.empty());
 }
 

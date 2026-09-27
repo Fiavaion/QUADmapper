@@ -92,6 +92,10 @@ public:
     // --- Diagnostics (and tests) ---
 
     AudioPlayhead playhead() const { return source_->playhead(); }
+    // The volume and mute the last update() gave the mixer input (the gain the
+    // callbacks ramp to: 0 while muted, else the volume).
+    float volume() const { return source_->getVolume(); }
+    bool muted() const { return source_->isMuted(); }
     // Drift measured by the last update(), in seconds; NaN when nothing was measurable.
     double lastDrift() const { return lastDrift_; }
     uint64_t resyncCount() const { return resyncCount_; }

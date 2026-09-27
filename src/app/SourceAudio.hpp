@@ -83,49 +83,18 @@ inline std::filesystem::path audioPathOf(const TextureSource& source) {
     return {};
 }
 
-// The scenes that are live: those an enabled one of `outputs` shows (a container of
+// How loud each heard scene is (the audibility rule, ADR-050 §2, with the scene
+// crossfades of ADR-047 §5). A source is heard only through a scene that is the
+// editor's active scene or that an enabled one of `outputs` shows (a container of
 // OutputWindow pointers, as OutputManager::getOutputs() returns; a template so this
-// header needs no output module). Several outputs may show one scene (ADR-047).
-template <typename Outputs>
-std::unordered_set<UUID> liveSceneIds(const Outputs& outputs) {
-    std::unordered_set<UUID> ids;
-    for (const auto& output : outputs) {
-        if (output && output->isEnabled() && !output->getSceneId().isNull()) {
-            ids.insert(output->getSceneId());
-        }
-    }
-    return ids;
-}
-
-// Which sources are heard: a source is audible only when a quad or 3D object using it
-// belongs to the editor's active scene or to a scene an enabled output shows. Sources
-// used only by other scenes keep decoding and stay in step, gated silent, so a scene
-// take switches the soundtrack with the picture.
-inline std::unordered_set<UUID> audibleSourceIds(const SceneList& scenes, const UUID& activeSceneId,
-                                                 const std::unordered_set<UUID>& liveScenes) {
-    std::unordered_set<UUID> ids;
-    for (const auto& scene : scenes) {
-        if (!scene) continue;
-        const bool heard = scene->getId() == activeSceneId || liveScenes.count(scene->getId()) > 0;
-        if (!heard) continue;
-        for (const auto& quad : scene->getQuadManager().getQuads()) {
-            if (!quad->getTexture().mediaId.isNull()) ids.insert(quad->getTexture().mediaId);
-        }
-        for (const auto& object : scene->getObjects()) {
-            if (!object->getTexture().mediaId.isNull()) ids.insert(object->getTexture().mediaId);
-        }
-    }
-    return ids;
-}
-
-// How loud each heard scene is: the audibility rule of audibleSourceIds with scene
-// crossfades (ADR-047 §5). 1 for the editor's active scene and for scenes an enabled
-// output shows; while an enabled output fades (`fadeOf(output)` returns its fade, as
-// OutputManager::sceneFade does, or null), the scene fading out is at
-// crossfadeGains(mix).out and the scene fading in at .in, the mix taken at `now`. A
-// scene several outputs weigh takes the largest weight. The active scene is not
-// raised to 1 while it fades in: a take makes it active at the start of its fade.
-// Scenes absent from the map are silent.
+// header needs no output module). Such scenes are at 1; while an enabled output fades
+// (`fadeOf(output)` returns its fade, as OutputManager::sceneFade does, or null), its
+// scenes are at sceneFadeAudioGains at `now` (the scene fading out at
+// crossfadeGains(mix).out, the one fading in at .in). A scene several outputs weigh
+// takes the largest weight. The active scene is not raised to 1 while it fades in: a
+// take makes it active at the start of its fade. Scenes absent from the map are
+// silent: their sources keep decoding and stay in step, gated, so a take switches the
+// soundtrack with the picture.
 template <typename Outputs, typename FadeOf>
 std::unordered_map<UUID, float> sceneAudioWeights(const UUID& activeSceneId, const Outputs& outputs,
                                                   FadeOf fadeOf, double now) {
@@ -139,9 +108,7 @@ std::unordered_map<UUID, float> sceneAudioWeights(const UUID& activeSceneId, con
     for (const auto& output : outputs) {
         if (!output || !output->isEnabled() || output->getSceneId().isNull()) continue;
         if (const SceneFade* fade = fadeOf(*output)) {
-            const CrossGain gains = crossfadeGains(sceneFadeMix(*fade, now));
-            raise(fade->fromSceneId, gains.out);
-            raise(fade->toSceneId, gains.in);
+            for (const SceneFadeLeg& leg : sceneFadeAudioGains(*fade, now)) raise(leg.sceneId, leg.weight);
             fadingIn.insert(fade->toSceneId);
         } else {
             raise(output->getSceneId(), 1.0f);
@@ -176,6 +143,18 @@ inline std::unordered_map<UUID, float> sourceSceneGains(const SceneList& scenes,
     return gains;
 }
 
+// Each heard source's gain now, from the editor's active scene and an output manager
+// (anything with getOutputs(), sceneFade(output) and frameTime(), as OutputManager).
+// The one rule for both the sound (syncSourceAudio) and the UI's "Silent" label.
+template <typename OutputSource>
+std::unordered_map<UUID, float> heardSourceGains(const SceneList& scenes, const UUID& activeSceneId,
+                                                 const OutputSource& outputs) {
+    const auto weights = sceneAudioWeights(
+        activeSceneId, outputs.getOutputs(), [&outputs](const auto& o) { return outputs.sceneFade(o); },
+        outputs.frameTime());
+    return sourceSceneGains(scenes, weights);
+}
+
 // Once per frame, after SourceManager::updateAll(): keep every video source's audio on
 // its clock (creating attachments as sources appear) and free the audio of sources
 // that are gone — released by the source GC, unloaded, or replaced by a project load.
@@ -198,7 +177,9 @@ inline void syncSourceAudio(AudioEngine& audio, SourceManager& sources,
         transport.muted = playable->isAudioMuted();
         auto gain = sceneGains.find(id);
         transport.gated = gain == sceneGains.end();
-        if (!transport.gated) transport.sceneGain = gain->second;  // gated: as a cut always was
+        // Gated: gain 0 as well as muted, so no callback can see the volume rise
+        // between the two stores at the end of a fade.
+        transport.sceneGain = transport.gated ? 0.0f : gain->second;
         audio.sync(id, path, transport);
     }
     audio.retainOnly(live);

@@ -992,14 +992,17 @@ TEST(VsyncHolderTest, FirstNonMinimisedOutputPacesTheLoop) {
     EXPECT_EQ(OutputManager::vsyncHolder({true, true}), -1);
 }
 
-// TD-12: the refresh rate most presented outputs share paces the loop; a tie goes to
-// the lower rate (no output is sent more frames than its display shows), then to list
-// order. Unknown rates (0) hold vsync only when no rate is known.
-TEST(VsyncHolderTest, TheSharedThenLowerRefreshRatePacesTheLoop) {
+// TD-12: the lowest known refresh rate among the presented outputs paces the loop, so no
+// display is sent more frames than it can show; a tie goes to list order. Unknown
+// rates (0) hold vsync only when no rate is known.
+TEST(VsyncHolderTest, TheLowestRefreshRatePacesTheLoop) {
     EXPECT_EQ(OutputManager::vsyncHolder({false, false}, {165, 60}), 1);   // measured rig
     EXPECT_EQ(OutputManager::vsyncHolder({false, false}, {60, 165}), 0);
-    EXPECT_EQ(OutputManager::vsyncHolder({false, false, false}, {50, 60, 60}), 1);  // majority
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false, false}, {50, 60, 60}), 0);  // not the majority
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false, false}, {60, 60, 50}), 2);
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false, false}, {60, 50, 50}), 1);  // tie: list order
     EXPECT_EQ(OutputManager::vsyncHolder({false, false, false}, {60, 60, 60}), 0);
+    EXPECT_EQ(OutputManager::vsyncHolder({false, false, false}, {144, 0, 120}), 2);  // unknown skipped
     EXPECT_EQ(OutputManager::vsyncHolder({true, false, false}, {50, 60, 165}), 1);  // minimised: never
     EXPECT_EQ(OutputManager::vsyncHolder({false, false}, {0, 144}), 1);   // a known rate wins
     EXPECT_EQ(OutputManager::vsyncHolder({false, false}, {0, 0}), 0);
@@ -2141,6 +2144,267 @@ TEST(SceneFadeRenderTest, BlackoutDuringAFadeIsBlackAndTheClockRunsOn) {
     const std::array<int, 3> later = rig.centre(rig.frameAt(0.75));
     EXPECT_NEAR(later[0], 60, 1);
     EXPECT_NEAR(later[2], 180, 1);
+}
+
+namespace {
+
+// Worst per-channel difference between `got` and weights[i] x refs[i] summed, over the
+// colour channels of every pixel.
+int worstAgainstMix(const std::vector<unsigned char>& got,
+                    const std::vector<std::pair<float, const std::vector<unsigned char>*>>& refs) {
+    int worst = 0;
+    for (const auto& ref : refs) {
+        if (ref.second->size() != got.size()) return 256;
+    }
+    for (size_t i = 0; i < got.size(); ++i) {
+        if (i % 4 == 3) continue;
+        float expected = 0.0f;
+        for (const auto& ref : refs) expected += ref.first * (*ref.second)[i];
+        worst = std::max(worst, static_cast<int>(std::lround(std::abs(got[i] - expected))));
+    }
+    return worst;
+}
+
+// Pixels the object covers in a frame (any colour channel lit).
+size_t litPixels(const std::vector<unsigned char>& px) {
+    size_t n = 0;
+    for (size_t i = 0; i < px.size(); i += 4) {
+        if (px[i] + px[i + 1] + px[i + 2] > 30) ++n;
+    }
+    return n;
+}
+
+// A scene holding the feature scene's textured cube and no quads.
+Scene* addCubeScene(FadeRig& rig) {
+    rig.scenes.push_back(std::make_unique<Scene>());
+    Scene* scene = rig.scenes.back().get();
+    scene->setCanvasSize(IVec2(rig.w, rig.h));
+    if (rig.media.empty()) rig.media.push_back(patternTexture(32, 4));
+    buildFeatureScene(*scene, {rig.media.front().get()}, rig.textures);
+    std::vector<UUID> quadIds;
+    for (const auto& quad : scene->getQuadManager().getQuads()) quadIds.push_back(quad->getId());
+    for (const UUID& id : quadIds) scene->getQuadManager().deleteQuad(id);
+    return scene;
+}
+
+// The output's projector fitted onto the cube.
+void fitProjectorToCube(FadeRig& rig, const Scene& scene) {
+    Vec3 lo, hi;
+    ASSERT_TRUE(scene.visibleObjectBounds(lo, hi));
+    rig.output->getProjector() = ProjectorCamera::fitToOutput(ProjectorCamera{}, rig.w, rig.h, &lo, &hi);
+}
+
+// Scenes filling their canvas with a patterned texture (every texel different).
+Scene* addPatternScene(FadeRig& rig, int seed, IVec2 canvas) {
+    rig.scenes.push_back(std::make_unique<Scene>());
+    Scene* scene = rig.scenes.back().get();
+    scene->setCanvasSize(canvas);
+    scene->setCanvasLocked(true);
+    rig.media.push_back(patternTexture(64, seed));
+    rig.textures[fullCanvasQuad(*scene)->getId()] = rig.media.back().get();
+    return scene;
+}
+
+}  // namespace
+
+// 3D objects dissolve exactly (ADR-047 §5): the same cube in both scenes stays as it
+// is through the fade (no ghosting of hidden faces, no dip), each scene's objects
+// rendering opaque into their own layer. The layers are allocated once for the fade
+// and released when it ends.
+TEST(SceneFadeRenderTest, TheSameObjectInBothScenesIsConstantThroughAFade) {
+    FadeRig rig;
+    if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    Scene* a = addCubeScene(rig);
+    Scene* b = addCubeScene(rig);
+    rig.manager.routeScene(*rig.output, a, rig.scenes);
+    fitProjectorToCube(rig, *a);
+    const std::vector<unsigned char> plain = rig.frameAt(100.0);
+    ASSERT_GT(litPixels(plain), 100u) << "the cube is in view";
+
+    const long framebuffers = GlObjectStats::framebuffers();
+    rig.manager.setFrameTime(100.0);
+    rig.manager.takeScene(*rig.output, b, rig.scenes, 1.0);
+    long during = 0;
+    for (double t : {0.25, 0.5, 0.75}) {
+        const std::vector<unsigned char> mid = rig.frameAt(100.0 + t);
+        ASSERT_NE(rig.manager.sceneFade(*rig.output), nullptr);
+        EXPECT_LE(worstDifference(mid, plain), 2) << "mix " << t;
+        if (during == 0) during = GlObjectStats::framebuffers();
+        EXPECT_EQ(GlObjectStats::framebuffers(), during) << "no allocation per frame of a fade";
+    }
+    EXPECT_GT(during, framebuffers + 1) << "object layers while fading";
+    EXPECT_LE(worstDifference(rig.frameAt(101.0), plain), 0);
+    rig.frameAt(101.1);
+    EXPECT_EQ(GlObjectStats::framebuffers(), framebuffers) << "layers and the old canvas released";
+}
+
+// An object fading in from black is its weight times its steady image, and one fading
+// out to a scene without objects is (1 - weight) times it; both within 2 levels.
+TEST(SceneFadeRenderTest, AnObjectFadesAsItsWeightTimesItsSteadyImage) {
+    FadeRig rig;
+    if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    Scene* cube = addCubeScene(rig);
+    rig.scenes.push_back(std::make_unique<Scene>());
+    Scene* empty = rig.scenes.back().get();
+    empty->setCanvasSize(IVec2(rig.w, rig.h));
+    rig.manager.routeScene(*rig.output, cube, rig.scenes);
+    fitProjectorToCube(rig, *cube);
+    const std::vector<unsigned char> plain = rig.frameAt(100.0);
+    ASSERT_GT(litPixels(plain), 100u);
+
+    OutputManager::showScene(*rig.output, nullptr, rig.scenes);
+    rig.frameAt(100.0);
+    rig.manager.setFrameTime(100.0);
+    rig.manager.takeScene(*rig.output, cube, rig.scenes, 1.0);
+    for (double t : {0.25, 0.5, 0.75}) {
+        EXPECT_LE(worstAgainstMix(rig.frameAt(100.0 + t), {{static_cast<float>(t), &plain}}), 2)
+            << "fading in from black, mix " << t;
+    }
+    rig.frameAt(102.0);
+    rig.manager.setFrameTime(200.0);
+    rig.manager.takeScene(*rig.output, empty, rig.scenes, 1.0);
+    for (double t : {0.25, 0.5, 0.75}) {
+        EXPECT_LE(worstAgainstMix(rig.frameAt(200.0 + t), {{static_cast<float>(1.0 - t), &plain}}), 2)
+            << "fading out to a scene without objects, mix " << t;
+    }
+}
+
+// The outgoing canvas is sampled through its own size and turn (patterned content, so
+// a flipped, unturned or rescaled read shows): mid-fade the frame is A(1 - m) + B m of
+// the two scenes' own frames, within 2 levels, when both canvases match (the texel
+// path), when the outgoing one is turned differently, and when it is another size.
+TEST(SceneFadeRenderTest, TheOutgoingCanvasIsSampledThroughItsOwnSizeAndTurn) {
+    struct Case {
+        const char* name;
+        Rotation rotation;   // the faded output's rotation
+        bool twinOutput;     // a second, unrotated output shows B throughout: B's canvas unturned
+        IVec2 canvasA;       // in units of the output's effective size
+    };
+    const Case cases[] = {{"same size and turn", Rotation::R0, false, IVec2(1, 1)},
+                          {"outgoing canvas turned, incoming not", Rotation::R90, true, IVec2(1, 1)},
+                          {"outgoing canvas half the size", Rotation::R0, false, IVec2(2, 2)}};
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.name);
+        FadeRig rig;
+        if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+        OutputWindow* twin = nullptr;
+        if (c.twinOutput) {
+            twin = rig.manager.createOutput("Twin");
+            ASSERT_NE(twin, nullptr);
+            glfwSetWindowSize(twin->getGLFWwindow(), rig.w, rig.h);
+            glfwMakeContextCurrent(rig.gl.win);
+        }
+        rig.output->setRotation(c.rotation);
+        const bool quarter = c.rotation == Rotation::R90 || c.rotation == Rotation::R270;
+        const IVec2 frameEffective = quarter ? IVec2(rig.h, rig.w) : IVec2(rig.w, rig.h);
+        Scene* a = addPatternScene(rig, 1, IVec2(frameEffective.x / c.canvasA.x, frameEffective.y / c.canvasA.y));
+        Scene* b = addPatternScene(rig, 2, frameEffective);
+        if (twin) OutputManager::showScene(*twin, b, rig.scenes);
+
+        OutputManager::showScene(*rig.output, b, rig.scenes);
+        const std::vector<unsigned char> frameB = rig.frameAt(50.0);
+        OutputManager::showScene(*rig.output, a, rig.scenes);
+        const std::vector<unsigned char> frameA = rig.frameAt(60.0);
+        ASSERT_GT(worstDifference(frameA, frameB), 60) << "the scenes differ";
+
+        rig.manager.setFrameTime(100.0);
+        rig.manager.takeScene(*rig.output, b, rig.scenes, 1.0);
+        for (double t : {0.25, 0.5}) {
+            const std::vector<unsigned char> mid = rig.frameAt(100.0 + t);
+            ASSERT_NE(rig.manager.sceneFade(*rig.output), nullptr);
+            const float m = static_cast<float>(t);
+            EXPECT_LE(worstAgainstMix(mid, {{1.0f - m, &frameA}, {m, &frameB}}), 2) << "mix " << t;
+        }
+        if (c.twinOutput) {
+            EXPECT_NE(rig.manager.sceneCanvasRotation(a->getId()), rig.manager.sceneCanvasRotation(b->getId()))
+                << "the case needs canvases in different turns";
+        }
+    }
+}
+
+// A take of a third scene mid-fade does not jump (ADR-047 §5): A -> B at mix 0.1, then
+// C. Frame after frame at 60 Hz the picture is (1 - m2)((1 - w)A + wB) + m2 C with w
+// frozen at 0.1, within 2 levels, both outgoing canvases drawn, and no frame differs
+// from the one before by more than one frame's step of the fade.
+TEST(SceneFadeRenderTest, AThirdTakeMidFadeDoesNotJump) {
+    FadeRig rig;
+    if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    Scene* a = addPatternScene(rig, 1, IVec2(rig.w, rig.h));
+    Scene* b = addPatternScene(rig, 2, IVec2(rig.w, rig.h));
+    Scene* c = addPatternScene(rig, 3, IVec2(rig.w, rig.h));
+    std::vector<std::vector<unsigned char>> alone;
+    for (Scene* s : {a, b, c}) {
+        OutputManager::showScene(*rig.output, s, rig.scenes);
+        alone.push_back(rig.frameAt(10.0));
+    }
+    // One frame's step: the largest change a 1 s fade makes in 1/60 s between any two
+    // of the scenes, plus rounding.
+    const int step = static_cast<int>(std::ceil(std::max({worstDifference(alone[0], alone[1]),
+                                                          worstDifference(alone[0], alone[2]),
+                                                          worstDifference(alone[1], alone[2])}) / 60.0)) + 2;
+
+    OutputManager::showScene(*rig.output, a, rig.scenes);
+    rig.frameAt(99.0);
+    const long oneCanvas = GlObjectStats::framebuffers();
+    const double start = 100.0;
+    rig.manager.setFrameTime(start);
+    rig.manager.takeScene(*rig.output, b, rig.scenes, 1.0);
+    std::vector<unsigned char> previous = rig.frameAt(start);
+    float frozen = -1.0f;
+    for (int frame = 1; frame <= 70; ++frame) {
+        const double now = start + frame / 60.0;
+        if (frame == 6) {  // A -> B at 0.1
+            rig.manager.setFrameTime(now);
+            rig.manager.takeScene(*rig.output, c, rig.scenes, 1.0);
+            const SceneFade* fade = rig.manager.sceneFade(*rig.output);
+            ASSERT_NE(fade, nullptr);
+            ASSERT_TRUE(fade->nested());
+            frozen = fade->fromNextWeight;
+            EXPECT_NEAR(frozen, 0.1f, 1e-4f);
+        }
+        const std::vector<unsigned char> current = rig.frameAt(now);
+        EXPECT_LE(worstDifference(current, previous), step) << "frame " << frame << " jumps";
+        if (frame >= 6 && rig.manager.sceneFade(*rig.output)) {
+            const float m2 = static_cast<float>((now - (start + 6 / 60.0)) / 1.0);
+            EXPECT_LE(worstAgainstMix(current, {{(1.0f - m2) * (1.0f - frozen), &alone[0]},
+                                                {(1.0f - m2) * frozen, &alone[1]},
+                                                {m2, &alone[2]}}), 2)
+                << "frame " << frame;
+            EXPECT_EQ(GlObjectStats::framebuffers(), oneCanvas + 2) << "A and B keep rendering";
+        }
+        previous = current;
+    }
+    EXPECT_TRUE(rig.manager.sceneFades().empty());
+    EXPECT_EQ(worstDifference(previous, alone[2]), 0) << "ends on C exactly";
+    EXPECT_EQ(GlObjectStats::framebuffers(), oneCanvas);
+}
+
+// The same rule for 3D objects: a cube only in B, A -> B, a take of C (no objects) at
+// B's 0.4. The cube stays at 0.4 at the take and fades with the frozen side.
+TEST(SceneFadeRenderTest, ObjectsFollowAThirdTakeWithoutAJump) {
+    FadeRig rig;
+    if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    Scene* b = addCubeScene(rig);
+    rig.scenes.push_back(std::make_unique<Scene>());
+    Scene* a = rig.scenes.back().get();
+    a->setCanvasSize(IVec2(rig.w, rig.h));
+    rig.scenes.push_back(std::make_unique<Scene>());
+    Scene* c = rig.scenes.back().get();
+    c->setCanvasSize(IVec2(rig.w, rig.h));
+    rig.manager.routeScene(*rig.output, b, rig.scenes);
+    fitProjectorToCube(rig, *b);
+    const std::vector<unsigned char> plain = rig.frameAt(10.0);
+    ASSERT_GT(litPixels(plain), 100u);
+
+    OutputManager::showScene(*rig.output, a, rig.scenes);
+    rig.frameAt(99.0);
+    rig.manager.setFrameTime(100.0);
+    rig.manager.takeScene(*rig.output, b, rig.scenes, 1.0);
+    const std::vector<unsigned char> before = rig.frameAt(100.4);
+    EXPECT_LE(worstAgainstMix(before, {{0.4f, &plain}}), 2);
+    rig.manager.takeScene(*rig.output, c, rig.scenes, 1.0);
+    EXPECT_LE(worstDifference(rig.frameAt(100.4), before), 1) << "no jump at the take";
+    EXPECT_LE(worstAgainstMix(rig.frameAt(100.9), {{0.2f, &plain}}), 2) << "fades with the frozen side";
 }
 
 } // namespace test

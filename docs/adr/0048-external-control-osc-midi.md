@@ -80,6 +80,13 @@ Added within the same module and the same socket; no new dependency, no format b
 - **14-bit MIDI CC.** A mapping may be `"bits": 14` (CC 0–31 as MSB with n + 32 as LSB). Learn upgrades a CC to 14-bit when the other half of the pair (either order) follows within 0.1 s on the same device and channel. Value mode then uses 0–16383; press/release edges come from the MSB. The MSB resets the LSB to 0 (MIDI 1.0) unless an LSB arrived since the last MSB within the window, so LSB-first controllers also land on the exact value. `.qmap` stays 3.3.0: `"bits"` is written only for 14 and a missing field means 7. NRPN/RPN are out of scope.
 - **Not done:** MIDI Timecode chase (needs WinMM SysEx buffers for full-frame messages and a seekable master timeline in the concurrently changing playback code) and MIDI clock; OSC bundle time tags are still ignored. These stay in TD-25.
 
+## Amendment 2 (2026-09-27): `/qm/scene/take` carries a fade time (ADR-047 §5, QM-121)
+
+A note for controller authors. `/qm/scene/take` now reads its whole argument list: `i n` takes scene n with the crossfade set in Preferences (default 0 s, a cut, as before), and `i n f seconds` (int or float, finite, ≥ 0, clamped to 60) takes it over that fade. Two changes for existing controllers:
+- A second argument used to be ignored, so `/qm/scene/take 3 1` cut to scene 3; it now fades to scene 3 over 1 s. Send the scene number alone to get the Preferences default, or `0` as the second argument to cut.
+- Three or more arguments, or a second argument that is not a number (or is negative or not finite), used to take the scene and now take nothing: the target rejects the message.
+Takes from MIDI and the other addresses are unchanged (they use the Preferences default).
+
 ## Alternatives considered
 1. **The full parameter registry first.** Rejected for now: it rewrites every panel to deliver a feature that needs about a dozen targets.
 2. **RtMidi / liblo / oscpack via vcpkg.** Rejected: WinMM and Winsock cover what is needed in a few hundred lines, and every dependency needs an ADR plus upkeep.

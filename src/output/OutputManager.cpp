@@ -63,6 +63,7 @@ void OutputManager::shutdown() {
         glfwMakeContextCurrent(mainWindow_);
         frames_.clear();
         canvases_.clear();
+        objectLayers_.clear();
         if (framesDrawn_ != nullptr) {
             glDeleteSync(framesDrawn_);
             framesDrawn_ = nullptr;
@@ -342,26 +343,18 @@ int OutputManager::monitorContaining(const std::vector<MonitorInfo>& monitors, I
 int OutputManager::vsyncHolder(const std::vector<bool>& iconified, const std::vector<int>& refreshHz) {
     auto rate = [&](size_t i) { return i < refreshHz.size() && refreshHz[i] > 0 ? refreshHz[i] : 0; };
     int holder = -1;
-    int holderShare = 0;
     for (size_t i = 0; i < iconified.size(); ++i) {
         if (iconified[i]) {
             continue;
         }
         if (holder < 0) {
             holder = static_cast<int>(i);  // with no rate known: the first one
-        }
-        const int hz = rate(i);
-        if (hz == 0) {
             continue;
         }
-        int share = 0;
-        for (size_t j = 0; j < iconified.size(); ++j) {
-            if (!iconified[j] && rate(j) == hz) ++share;
-        }
+        const int hz = rate(i);
         const int current = rate(static_cast<size_t>(holder));
-        if (current == 0 || share > holderShare || (share == holderShare && hz < current)) {
+        if (hz > 0 && (current == 0 || hz < current)) {
             holder = static_cast<int>(i);
-            holderShare = share;
         }
     }
     return holder;
@@ -695,7 +688,8 @@ bool OutputManager::retireSceneFades(const std::vector<std::unique_ptr<Scene>>& 
     return sceneFades_.retire(frameTime_, [&](const UUID& outputId, const SceneFade& fade) {
         const OutputWindow* output = getOutput(outputId);
         return output && output->getSceneId() == fade.toSceneId && known(fade.toSceneId) &&
-               (fade.fromSceneId.isNull() || known(fade.fromSceneId));
+               (fade.fromSceneId.isNull() || known(fade.fromSceneId)) &&
+               (fade.fromNextSceneId.isNull() || known(fade.fromNextSceneId));
     });
 }
 
@@ -714,7 +708,7 @@ bool OutputManager::sceneOnAnOutput(const UUID& sceneId) const {
     }
     return std::any_of(outputs_.begin(), outputs_.end(), [&](const auto& output) {
         const SceneFade* fade = sceneFade(*output);
-        return fade && fade->fromSceneId == sceneId;
+        return fade && (fade->fromSceneId == sceneId || fade->fromNextSceneId == sceneId);
     });
 }
 
@@ -804,8 +798,8 @@ void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& sc
     // The scenes outputs show, and those they are fading out of, each once.
     canvasScenes_.clear();
     auto addCanvasScene = [&](const UUID& id) {
-        const bool exists = std::any_of(scenes.begin(), scenes.end(),
-                                        [&](const auto& s) { return s && s->getId() == id; });
+        const bool exists = !id.isNull() && std::any_of(scenes.begin(), scenes.end(),
+                                                        [&](const auto& s) { return s && s->getId() == id; });
         if (exists && std::find(canvasScenes_.begin(), canvasScenes_.end(), id) == canvasScenes_.end()) {
             canvasScenes_.push_back(id);
         }
@@ -814,8 +808,9 @@ void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& sc
         if (const Scene* scene = sceneForOutput(scenes, *output)) {
             addCanvasScene(scene->getId());
         }
-        if (const SceneFade* fade = sceneFade(*output); fade && !fade->fromSceneId.isNull()) {
+        if (const SceneFade* fade = sceneFade(*output)) {
             addCanvasScene(fade->fromSceneId);
+            addCanvasScene(fade->fromNextSceneId);
         }
     }
     for (auto it = canvases_.begin(); it != canvases_.end();) {
@@ -848,7 +843,8 @@ void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& sc
         bool first = true;
         for (const auto& output : outputs_) {
             const SceneFade* fade = sceneFade(*output);
-            if (output->getSceneId() != sceneId && !(fade && fade->fromSceneId == sceneId)) continue;
+            const bool fadingOut = fade && (fade->fromSceneId == sceneId || fade->fromNextSceneId == sceneId);
+            if (output->getSceneId() != sceneId && !fadingOut) continue;
             if (first) {
                 canvas.rotation = output->getRotation();
                 first = false;
@@ -926,10 +922,23 @@ void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>
     glBlendFuncSeparate(static_cast<GLenum>(prevBlend[0]), static_cast<GLenum>(prevBlend[1]),
                         static_cast<GLenum>(prevBlend[2]), static_cast<GLenum>(prevBlend[3]));
 
+    // Object layers of outputs that no longer fade (or no longer exist) go.
+    for (auto it = objectLayers_.begin(); it != objectLayers_.end();) {
+        const OutputWindow* output = getOutput(it->first);
+        it = output && sceneFade(*output) ? std::next(it) : objectLayers_.erase(it);
+    }
+
     // Each output: its scene's objects from its projector (ADR-052), then its slices
     // of the scene's canvas over them. No scene stays black. During a crossfade the
-    // slices mix the canvas of the scene fading out into this one, and the objects of
-    // both scenes are drawn with their opacity scaled by their weight.
+    // slices mix the canvases of the scenes fading out into this one, and the objects
+    // are the same mix of each scene's own object image (renderFadeObjects).
+    auto findScene = [&](const UUID& id) -> const Scene* {
+        if (id.isNull()) return nullptr;
+        for (const auto& s : scenes) {
+            if (s && s->getId() == id) return s.get();
+        }
+        return nullptr;
+    };
     renderFrames(renderer, [&](const OutputWindow& output, IVec2 effectiveSize) {
         const Scene* scene = sceneForOutput(scenes, output);
         if (!scene) {
@@ -938,28 +947,31 @@ void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>
         const SceneFade* fade = sceneFade(output);
         Renderer::SliceFade sliceFade;
         const Scene* from = nullptr;
+        const Scene* fromNext = nullptr;
         if (fade) {
             sliceFade.mix = sceneFadeMix(*fade, frameTime_);
-            for (const auto& s : scenes) {
-                if (s && !fade->fromSceneId.isNull() && s->getId() == fade->fromSceneId) from = s.get();
-            }
+            sliceFade.fromNextWeight = fade->fromNextWeight;
+            from = findScene(fade->fromSceneId);
+            fromNext = findScene(fade->fromNextSceneId);
+            renderFadeObjects(output, effectiveSize, {from, fromNext, scene}, sliceFade, textures, renderer);
+        } else {
+            renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures);
         }
-        if (from && !from->getObjects().empty()) {
-            renderer.renderMeshObjects(from->getObjects(), output.getProjector(), textures,
-                                       1.0f - sliceFade.mix);
-            glClear(GL_DEPTH_BUFFER_BIT);  // each pass has its own depth range
-        }
-        renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures,
-                                   sliceFade.mix);
         const Framebuffer* canvas = sceneCanvas(scene->getId());
         if (!canvas || output.getSlices().empty()) {
             return;
         }
-        if (const Framebuffer* fromCanvas = from ? sceneCanvas(from->getId()) : nullptr) {
-            sliceFade.fromTexture = fromCanvas->colorTexture();
-            sliceFade.fromSize = from->getCanvasSize();
-            sliceFade.fromRotation = canvases_.at(from->getId()).rotation;
-        }
+        auto outgoing = [&](const Scene* s) {
+            Renderer::SliceFadeCanvas c;
+            if (const Framebuffer* target = s ? sceneCanvas(s->getId()) : nullptr) {
+                c.texture = target->colorTexture();
+                c.size = s->getCanvasSize();
+                c.rotation = canvases_.at(s->getId()).rotation;
+            }
+            return c;
+        };
+        sliceFade.from = outgoing(from);
+        sliceFade.fromNext = outgoing(fromNext);
         const Rotation canvasRotation = canvases_.at(scene->getId()).rotation;
         glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
         for (const Slice& slice : output.getSlices()) {
@@ -968,6 +980,67 @@ void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>
         }
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
     });
+}
+
+void OutputManager::renderFadeObjects(const OutputWindow& output, IVec2 effectiveSize,
+                                      const std::array<const Scene*, 3>& legs,
+                                      const Renderer::SliceFade& weights,
+                                      const std::unordered_map<UUID, Texture*>& textures,
+                                      Renderer& renderer) {
+    const bool anyObjects = std::any_of(legs.begin(), legs.end(), [](const Scene* s) {
+        return s && !s->getObjects().empty();
+    });
+    if (!anyObjects) {
+        return;
+    }
+    // The frame renderFrames bound (its viewport is the frame's size).
+    GLint frameFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &frameFbo);
+    GLint viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+
+    // Each scene's objects alone, opaque as without a fade, over transparent black. The
+    // incoming layer always exists (it is the pass's own canvas); an outgoing scene
+    // without objects needs none (an absent layer is black).
+    ObjectLayers& layers = objectLayers_[output.getId()];
+    std::array<uint32_t, 3> textureOf{0, 0, 0};
+    for (size_t i = 0; i < legs.size(); ++i) {
+        const Scene* scene = legs[i];
+        const bool incoming = i + 1 == legs.size();
+        if (!scene || (!incoming && scene->getObjects().empty())) {
+            continue;
+        }
+        std::unique_ptr<Framebuffer>& layer = layers.legs[i];
+        if (!layer) {
+            layer = std::make_unique<Framebuffer>(Framebuffer::Depth::With);
+        }
+        if (!layer->resize(viewport[2], viewport[3])) {
+            continue;
+        }
+        layer->bind();
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures);
+        textureOf[i] = layer->colorTexture();
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(frameFbo));
+    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+    if (textureOf[2] == 0) {
+        return;  // could not allocate: no objects this frame rather than a wrong mix
+    }
+
+    // Mix them into the black frame: a whole-frame slice of layers drawn exactly as the
+    // frame, so every pixel is the weighted sum of the texels under it (one rounding).
+    // The layers' alpha stays 0 (objects blend colour only), so the sum lands as is.
+    const Rotation rotation = output.getRotation();
+    Renderer::SliceFade mix = weights;
+    mix.from = Renderer::SliceFadeCanvas{textureOf[0], effectiveSize, rotation};
+    mix.fromNext = Renderer::SliceFadeCanvas{textureOf[1], effectiveSize, rotation};
+    objectLayerSlice_.input = CanvasRect{0.0f, 0.0f, static_cast<float>(effectiveSize.x),
+                                         static_cast<float>(effectiveSize.y)};
+    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+    renderer.renderSlice(objectLayerSlice_, textureOf[2], effectiveSize, rotation, effectiveSize, &mix);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
 }
 
 void OutputManager::renderPatternFrames(const Quad& patternQuad, const Texture* texture,

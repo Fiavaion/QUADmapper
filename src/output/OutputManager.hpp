@@ -9,6 +9,7 @@
 #include "renderer/Renderer.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/Framebuffer.hpp"
+#include <array>
 #include <chrono>
 #include <vector>
 #include <memory>
@@ -248,12 +249,12 @@ public:
      * Swap-interval policy (QM-090, TD-12): the index of the output that waits for
      * vblank; -1 if none, in which case the editor is the vsync'd window. A minimised
      * window's swap returns at once, so it must never be the one pacing the loop.
-     * Among the others: the refresh rate most of them share wins, a tie goes to the
-     * lower rate, then list order. So outputs sharing a rate get one new frame per
-     * refresh, and no output is sent more frames than its display can show (swaps
-     * with interval 0 beyond that are dropped, or torn where not composited).
-     * `refreshHz` gives each output's display rate (0 or missing = unknown: it
-     * holds vsync only when no rate is known). Pure.
+     * Among the others: the one with the lowest known refresh rate, the first in list
+     * order on a tie. The loop then runs at the slowest display's rate, so no display
+     * is sent more frames than it can show (outputs at a higher rate repeat frames),
+     * and outputs sharing that rate get one new frame per refresh. `refreshHz` gives
+     * each output's display rate (0 or missing = unknown: such an output holds vsync
+     * only when no rate is known). Pure.
      */
     static int vsyncHolder(const std::vector<bool>& iconified, const std::vector<int>& refreshHz = {});
 
@@ -629,6 +630,25 @@ private:
     // Scene crossfades in progress, by output (ADR-047 §5), and the frame clock.
     SceneFades sceneFades_;
     double frameTime_ = 0.0;
+
+    // During a fade whose scenes have 3D objects, each scene's objects render opaque
+    // into their own frame-sized colour + depth layer (outgoing, its frozen second
+    // scene, incoming), and the layers mix into the frame by weight through the slice
+    // pass, whole-frame and texel for texel (objectLayerSlice_). Main context; kept
+    // while the output fades, released at the next frame after it ends, so a fade
+    // allocates once and a show without fades never does.
+    struct ObjectLayers {
+        std::array<std::unique_ptr<Framebuffer>, 3> legs;
+    };
+    std::unordered_map<UUID, ObjectLayers> objectLayers_;
+    Slice objectLayerSlice_ = makeFullCanvasSlice(IVec2(1, 1));  // own id: its mesh is cached
+
+    // Draw a fading output's 3D objects as the exact dissolve of its scenes' object
+    // images (see objectLayers_). `legs` are the outgoing, frozen second and incoming
+    // scenes (null: none, black); the incoming one is never null.
+    void renderFadeObjects(const OutputWindow& output, IVec2 effectiveSize,
+                           const std::array<const Scene*, 3>& legs, const Renderer::SliceFade& weights,
+                           const std::unordered_map<UUID, Texture*>& textures, Renderer& renderer);
 
     // Each output's effective resolution, and whether it was fullscreen (or
     // borderless), when followOutputSizes last saw it.

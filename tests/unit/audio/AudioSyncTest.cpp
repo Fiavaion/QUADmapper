@@ -13,6 +13,9 @@
 
 #include <gtest/gtest.h>
 
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+
 #include "app/SourceAudio.hpp"
 #include "audio/AudioAttachment.hpp"
 #include "audio/AudioDecoder.hpp"
@@ -28,6 +31,7 @@
 #include "AudioTestMedia.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -1032,6 +1036,25 @@ TEST(AudioTransportTest, OnceIsSilentOnceEnded) {
 
 // ---- Which sources are heard (lead decision on ADR-050 §2) ---------------------
 
+namespace {
+struct FadeOutput {
+    UUID id = UUID::generate();
+    UUID sceneId;
+    bool enabled = true;
+    bool isEnabled() const { return enabled; }
+    const UUID& getSceneId() const { return sceneId; }
+};
+
+// The scene gains syncSourceAudio gets while no output fades.
+std::unordered_map<UUID, float> heardWithoutFades(const SceneList& scenes, const UUID& activeSceneId,
+                                                  const std::vector<std::unique_ptr<FadeOutput>>& outputs) {
+    auto noFade = [](const FadeOutput&) -> const SceneFade* { return nullptr; };
+    return sourceSceneGains(scenes, sceneAudioWeights(activeSceneId, outputs, noFade, 0.0));
+}
+}  // namespace
+
+// A source is heard, at full level, only through the editor's active scene or a scene
+// an enabled output shows (several outputs may show one scene, ADR-047).
 TEST(AudibleSourcesTest, ActiveSceneAndScenesOnEnabledOutputsAreHeard) {
     const UUID clipA = UUID::generate(), clipB = UUID::generate(), clipC = UUID::generate();
     const UUID clipD = UUID::generate(), shared = UUID::generate();
@@ -1043,14 +1066,19 @@ TEST(AudibleSourcesTest, ActiveSceneAndScenesOnEnabledOutputsAreHeard) {
         return scenes.back()->getId();
     };
     const UUID editing = makeScene({clipA, shared});  // active, on no output
-    const UUID onAir = makeScene({clipB});            // shown by an enabled output
+    const UUID onAir = makeScene({clipB});            // shown by two enabled outputs
     const UUID offAir = makeScene({clipC, shared});   // shown by a disabled output only
     makeScene({clipD});                               // edit-only, not active
     scenes.back()->getQuadManager().createQuad("empty");  // a quad with no media
-    // liveSceneIds of the outputs: only the enabled output's scene.
-    const std::unordered_set<UUID> live{onAir};
+    std::vector<std::unique_ptr<FadeOutput>> outputs;
+    for (const auto& [scene, enabled] : std::vector<std::pair<UUID, bool>>{
+             {onAir, true}, {onAir, true}, {offAir, false}, {UUID(), true}}) {
+        outputs.push_back(std::make_unique<FadeOutput>());
+        outputs.back()->sceneId = scene;
+        outputs.back()->enabled = enabled;
+    }
 
-    const auto heard = audibleSourceIds(scenes, editing, live);
+    const auto heard = heardWithoutFades(scenes, editing, outputs);
     EXPECT_TRUE(heard.count(clipA));
     EXPECT_TRUE(heard.count(clipB));
     EXPECT_TRUE(heard.count(shared));  // one heard scene is enough
@@ -1058,47 +1086,58 @@ TEST(AudibleSourcesTest, ActiveSceneAndScenesOnEnabledOutputsAreHeard) {
     EXPECT_FALSE(heard.count(clipD));
     EXPECT_FALSE(heard.count(UUID()));
     EXPECT_EQ(heard.size(), 3u);
+    for (const auto& [id, gain] : heard) EXPECT_EQ(gain, 1.0f);
 
     // A scene take moves the active scene: the soundtrack follows the picture.
-    const auto afterTake = audibleSourceIds(scenes, scenes[3]->getId(), live);
+    const auto afterTake = heardWithoutFades(scenes, scenes[3]->getId(), outputs);
     EXPECT_TRUE(afterTake.count(clipD));
     EXPECT_FALSE(afterTake.count(clipA));
     EXPECT_TRUE(afterTake.count(clipB));
     // Enabling the other output makes its scene live too.
-    EXPECT_TRUE(audibleSourceIds(scenes, editing, {onAir, offAir}).count(clipC));
+    outputs[2]->enabled = true;
+    EXPECT_TRUE(heardWithoutFades(scenes, editing, outputs).count(clipC));
     // No active scene and no enabled output: nothing is heard.
-    EXPECT_TRUE(audibleSourceIds(scenes, UUID(), {}).empty());
+    for (auto& output : outputs) output->enabled = false;
+    EXPECT_TRUE(heardWithoutFades(scenes, UUID(), outputs).empty());
 }
 
-// The live scenes follow the routing (ADR-047): the scenes enabled outputs show, each
-// once however many outputs show it.
-TEST(AudibleSourcesTest, LiveScenesAreThoseEnabledOutputsShow) {
-    struct FakeOutput {
-        UUID sceneId;
-        bool enabled = true;
-        bool isEnabled() const { return enabled; }
-        const UUID& getSceneId() const { return sceneId; }
-    };
-    const UUID shared = UUID::generate(), offAir = UUID::generate();
-    std::vector<std::unique_ptr<FakeOutput>> outputs;
-    outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{shared, true}));
-    outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{shared, true}));
-    outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{offAir, false}));
-    outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{UUID(), true}));
-    EXPECT_EQ(liveSceneIds(outputs), (std::unordered_set<UUID>{shared}));
+// heardSourceGains is the one rule the sound and the Video panel's "Silent" label
+// share: during a fade the clip fading out is still heard (not labelled silent), and
+// once the fade has ended it is not.
+TEST(AudibleSourcesTest, TheClipFadingOutIsHeardUntilTheFadeEnds) {
+    const UUID clipA = UUID::generate(), clipB = UUID::generate();
+    SceneList scenes;
+    for (const UUID& media : {clipA, clipB}) {
+        scenes.push_back(std::make_unique<Scene>());
+        scenes.back()->getQuadManager().createQuad("q")->getTexture().mediaId = media;
+    }
+    const UUID a = scenes[0]->getId(), b = scenes[1]->getId();
+    struct FakeOutputs {
+        std::vector<std::unique_ptr<FadeOutput>> outputs;
+        SceneFades fades;
+        double now = 0.0;
+        const std::vector<std::unique_ptr<FadeOutput>>& getOutputs() const { return outputs; }
+        const SceneFade* sceneFade(const FadeOutput& o) const { return fades.find(o.id); }
+        double frameTime() const { return now; }
+    } om;
+    om.outputs.push_back(std::make_unique<FadeOutput>());
+    om.outputs.back()->sceneId = b;
+    om.fades.begin(om.outputs.back()->id, a, b, 10.0, 1.0);
+
+    om.now = 10.25;
+    auto heard = heardSourceGains(scenes, b, om);
+    ASSERT_TRUE(heard.count(clipA)) << "fading out: heard, not silent";
+    EXPECT_NEAR(heard.at(clipA), crossfadeGains(0.25f).out, 1e-6f);
+    EXPECT_NEAR(heard.at(clipB), crossfadeGains(0.25f).in, 1e-6f);
+
+    om.now = 11.0;
+    om.fades.retire(om.now, [](const UUID&, const SceneFade&) { return true; });
+    heard = heardSourceGains(scenes, b, om);
+    EXPECT_FALSE(heard.count(clipA)) << "the fade is over: silent";
+    EXPECT_EQ(heard.at(clipB), 1.0f);
 }
 
 // ---- Scene crossfades (ADR-047 §5): both scenes heard, cross-gain ramped -----------
-
-namespace {
-struct FadeOutput {
-    UUID id = UUID::generate();
-    UUID sceneId;
-    bool enabled = true;
-    bool isEnabled() const { return enabled; }
-    const UUID& getSceneId() const { return sceneId; }
-};
-}  // namespace
 
 // A 1 s fade stepped at 60 Hz on the frame clock: the outgoing scene's source falls
 // and the incoming one rises, each monotonically, equal power, ending at exactly 0
@@ -1232,6 +1271,178 @@ TEST(SceneAudioFadeTest, AppliedGainIsMonotonicClickFreeAndEndsAtZeroAndOne) {
     EXPECT_NEAR(inGains.back(), 1.0f, 1e-6f);
     EXPECT_LT(worstStep, 0.001f) << "a step this size per sample would click";
     std::printf("[ fade ] %zu samples, worst per-sample gain step %.6f\n", outGains.size(), worstStep);
+}
+
+// The scene gain reaches the mixer input (control-thread side of the chain the app
+// runs each frame: sceneAudioWeights -> sourceSceneGains -> syncSourceAudio ->
+// AudioEngine::sync -> AudioAttachment::update). Through a 1 s fade at 60 Hz the gain
+// set on the outgoing source's mixer input is its equal-power weight, falling to 0,
+// and the incoming one's rises to 1. A gated source (before its take, and the old one
+// after the fade) is muted with volume 0, so no callback can ramp it up between the
+// two stores at the end of a fade.
+TEST(SceneAudioFadeTest, SyncAppliesTheSceneGainToTheMixerInput) {
+    const auto clip = audio_test::mediaPath(SYNC_CLIP);
+    if (clip.empty()) GTEST_SKIP() << "test media not present";
+    // SourceManager gives every source a GPU texture: a hidden GL 3.3 context.
+    struct HiddenGL {
+        GLFWwindow* win = nullptr;
+        HiddenGL() {
+            if (!glfwInit()) return;
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+            win = glfwCreateWindow(16, 16, "audio-fade", nullptr, nullptr);
+            glfwDefaultWindowHints();
+            if (!win) return;
+            glfwMakeContextCurrent(win);
+            if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress))) {
+                glfwDestroyWindow(win);
+                win = nullptr;
+            }
+        }
+        ~HiddenGL() {
+            if (win) glfwDestroyWindow(win);
+            glfwTerminate();
+        }
+    } gl;
+    if (!gl.win) GTEST_SKIP() << "No GL 3.3 context available";
+    AudioEngine engine(AudioEngine::Options{true});
+    ASSERT_TRUE(engine.open(""));
+    SourceManager sources;
+    const UUID clipA = sources.createVideoSource(clip);
+    const UUID clipB = sources.createVideoSource(clip);
+    ASSERT_FALSE(clipA.isNull());
+    ASSERT_FALSE(clipB.isNull());
+    ASSERT_NE(clipA, clipB);
+    ASSERT_TRUE(sources.getSource(clipA)->isReady());
+    ASSERT_TRUE(sources.getSource(clipB)->isReady());
+
+    SceneList scenes;
+    auto makeScene = [&](const UUID& media) {
+        scenes.push_back(std::make_unique<Scene>());
+        scenes.back()->getQuadManager().createQuad("q")->getTexture().mediaId = media;
+        return scenes.back()->getId();
+    };
+    const UUID a = makeScene(clipA);
+    const UUID b = makeScene(clipB);
+    std::vector<std::unique_ptr<FadeOutput>> outputs;
+    outputs.push_back(std::make_unique<FadeOutput>());
+    outputs.back()->sceneId = a;
+    SceneFades fades;
+    auto fadeOf = [&](const FadeOutput& o) { return fades.find(o.id); };
+    struct Applied {
+        float gain;
+        float volume;
+        bool muted;
+    };
+    auto applied = [&](const UUID& id) {
+        const AudioAttachment* attachment = engine.attachment(id);
+        EXPECT_NE(attachment, nullptr);
+        if (!attachment) return Applied{-1.0f, -1.0f, false};
+        return Applied{attachment->muted() ? 0.0f : attachment->volume(), attachment->volume(),
+                       attachment->muted()};
+    };
+    auto frame = [&](const UUID& active, double now) {
+        fades.retire(now, [](const UUID&, const SceneFade&) { return true; });
+        const auto weights = sceneAudioWeights(active, outputs, fadeOf, now);
+        syncSourceAudio(engine, sources, sourceSceneGains(scenes, weights));
+        return weights;
+    };
+
+    // Before the take: a at full level, b gated (muted, volume 0).
+    frame(a, 10.0);
+    EXPECT_EQ(applied(clipA).gain, 1.0f);
+    EXPECT_TRUE(applied(clipB).muted);
+    EXPECT_EQ(applied(clipB).volume, 0.0f);
+
+    const double start = 20.0;
+    outputs[0]->sceneId = b;
+    fades.begin(outputs[0]->id, a, b, start, 1.0);
+    float lastA = 2.0f, lastB = -1.0f;
+    int midFrames = 0;
+    for (int f = 0;; ++f) {
+        const double now = start + f / 60.0;
+        frame(b, now);
+        const Applied gainA = applied(clipA);
+        const Applied gainB = applied(clipB);
+        if (!fades.empty()) {
+            const CrossGain expected = crossfadeGains(sceneFadeMix(*fades.find(outputs[0]->id), now));
+            EXPECT_NEAR(gainA.gain, expected.out, 1e-6f) << "frame " << f;
+            EXPECT_NEAR(gainB.gain, expected.in, 1e-6f) << "frame " << f;
+            if (expected.out > 0.05f && expected.out < 0.95f) ++midFrames;
+        }
+        EXPECT_LE(gainA.gain, lastA) << "frame " << f;
+        EXPECT_GE(gainB.gain, lastB) << "frame " << f;
+        lastA = gainA.gain;
+        lastB = gainB.gain;
+        if (fades.empty()) {
+            EXPECT_TRUE(gainA.muted) << "the old scene ends gated, as a cut";
+            EXPECT_EQ(gainA.volume, 0.0f) << "gated at volume 0: no ramp up before the mute lands";
+            EXPECT_EQ(gainB.gain, 1.0f);
+            EXPECT_FALSE(gainB.muted);
+            break;
+        }
+        ASSERT_LT(f, 100);
+    }
+    EXPECT_GT(midFrames, 45) << "the gain ramps across the fade, not at its ends";
+    engine.retainOnly({});
+}
+
+// A take of a third scene during a fade (ADR-047 §5): the interrupted fade's gains
+// carry on exactly at the take, the two frozen scenes then fall together at their
+// frozen ratio while the new scene rises, all three at equal power, and at the end only
+// the new scene is heard.
+TEST(SceneAudioFadeTest, AThirdTakeCarriesOnTheFrozenGainsAtEqualPower) {
+    const UUID clipA = UUID::generate(), clipB = UUID::generate(), clipC = UUID::generate();
+    SceneList scenes;
+    auto makeScene = [&](const UUID& media) {
+        scenes.push_back(std::make_unique<Scene>());
+        scenes.back()->getQuadManager().createQuad("q")->getTexture().mediaId = media;
+        return scenes.back()->getId();
+    };
+    const UUID a = makeScene(clipA);
+    const UUID b = makeScene(clipB);
+    const UUID c = makeScene(clipC);
+    std::vector<std::unique_ptr<FadeOutput>> outputs;
+    outputs.push_back(std::make_unique<FadeOutput>());
+    SceneFades fades;
+    auto fadeOf = [&](const FadeOutput& o) { return fades.find(o.id); };
+    auto gainsAt = [&](const UUID& active, double now) {
+        fades.retire(now, [](const UUID&, const SceneFade&) { return true; });
+        auto gains = sourceSceneGains(scenes, sceneAudioWeights(active, outputs, fadeOf, now));
+        return std::array<float, 3>{gains.count(clipA) ? gains[clipA] : 0.0f,
+                                    gains.count(clipB) ? gains[clipB] : 0.0f,
+                                    gains.count(clipC) ? gains[clipC] : 0.0f};
+    };
+
+    outputs[0]->sceneId = b;
+    fades.begin(outputs[0]->id, a, b, 0.0, 1.0);
+    const std::array<float, 3> before = gainsAt(b, 0.3);
+    outputs[0]->sceneId = c;
+    fades.begin(outputs[0]->id, b, c, 0.3, 2.0);
+    const std::array<float, 3> atTake = gainsAt(c, 0.3);
+    EXPECT_NEAR(atTake[0], before[0], 1e-6f) << "no jump at the take";
+    EXPECT_NEAR(atTake[1], before[1], 1e-6f);
+    EXPECT_EQ(atTake[2], 0.0f);
+
+    std::array<float, 3> last = atTake;
+    for (int f = 1;; ++f) {
+        const double now = 0.3 + f / 60.0;
+        const std::array<float, 3> g = gainsAt(c, now);
+        if (fades.empty()) {
+            EXPECT_EQ(g, (std::array<float, 3>{0.0f, 0.0f, 1.0f}));
+            EXPECT_LE(std::abs(f - 120), 1) << "a 2 s fade at 60 Hz";
+            break;
+        }
+        EXPECT_NEAR(g[0] * g[0] + g[1] * g[1] + g[2] * g[2], 1.0f, 1e-5f) << "equal power, frame " << f;
+        EXPECT_NEAR(g[0] * before[1], g[1] * before[0], 1e-6f) << "a and b keep their frozen ratio";
+        EXPECT_LE(g[0], last[0]);
+        EXPECT_LE(g[1], last[1]);
+        EXPECT_GE(g[2], last[2]);
+        last = g;
+        ASSERT_LT(f, 200);
+    }
 }
 
 // A gated source stays in step and comes back in sync: gated for a stretch, then heard

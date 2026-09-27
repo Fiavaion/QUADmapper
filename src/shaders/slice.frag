@@ -21,12 +21,19 @@ uniform vec4 u_BlendGamma;
 uniform vec4 u_BlendCurve;
 uniform float u_BlackLevel;
 // Scene crossfade (ADR-047 §5): below 1, the canvas mixes in over u_From, the canvas
-// of the scene fading out, sampled at the same normalized canvas point.
+// of the scene fading out, sampled at the same normalized canvas point. After a take
+// during a fade the outgoing side is a frozen mix: u_From and u_FromNext at
+// u_FromNextWeight.
 uniform float u_Mix;          // weight of u_Canvas; 1 = no fade
 uniform sampler2D u_From;
 uniform int u_FromMode;       // 0 nothing (transparent), 1 texel under the pixel, 2 filtered
 uniform vec2 u_FromSize;      // its canvas pixels, unrotated
 uniform int u_FromRotation;
+uniform float u_FromNextWeight;  // 0: the outgoing side is u_From alone
+uniform sampler2D u_FromNext;
+uniform int u_FromNextMode;
+uniform vec2 u_FromNextSize;
+uniform int u_FromNextRotation;
 
 // Linear-light ramp: ramp(t) + ramp(1 - t) == 1 for every curve p.
 float ramp(float t, float p) {
@@ -57,6 +64,20 @@ vec2 turnedSize(vec2 size, int rotation) {
     return (rotation == 1 || rotation == 3) ? size.yx : size;
 }
 
+// An outgoing canvas at a normalized canvas point (mode as u_FromMode).
+vec4 sampleFrom(sampler2D canvas, int mode, vec2 size, int rotation, vec2 canvasN) {
+    if (mode == 1) {
+        vec2 texSize = turnedSize(size, rotation);
+        vec2 t = canvasTexCoord(canvasN, rotation);
+        ivec2 texel = clamp(ivec2(floor(t * texSize)), ivec2(0), ivec2(texSize) - 1);
+        return texelFetch(canvas, texel, 0);
+    }
+    if (mode == 2) {
+        return texture(canvas, canvasTexCoord(canvasN, rotation));
+    }
+    return vec4(0.0);
+}
+
 void main() {
     vec2 uv = v_TexCoordQ.xy / v_TexCoordQ.z;
     vec2 inSlice = uv * u_Input.zw;
@@ -76,14 +97,10 @@ void main() {
     if (u_Mix < 1.0) {
         // Both canvases hold colour premultiplied by coverage, so a linear mix of the
         // two is itself a canvas; the blend zones and black level below act on it.
-        vec4 from = vec4(0.0);
-        if (u_FromMode == 1) {
-            vec2 fromTexSize = turnedSize(u_FromSize, u_FromRotation);
-            vec2 ft = canvasTexCoord(canvasN, u_FromRotation);
-            ivec2 texel = clamp(ivec2(floor(ft * fromTexSize)), ivec2(0), ivec2(fromTexSize) - 1);
-            from = texelFetch(u_From, texel, 0);
-        } else if (u_FromMode == 2) {
-            from = texture(u_From, canvasTexCoord(canvasN, u_FromRotation));
+        vec4 from = sampleFrom(u_From, u_FromMode, u_FromSize, u_FromRotation, canvasN);
+        if (u_FromNextWeight > 0.0) {
+            vec4 next = sampleFrom(u_FromNext, u_FromNextMode, u_FromNextSize, u_FromNextRotation, canvasN);
+            from = mix(from, next, u_FromNextWeight);
         }
         c = mix(from, c, u_Mix);
     }

@@ -2350,11 +2350,8 @@ void Application::buildEditorProject(Project& out) {
 void Application::syncAudio() {
     if (!m_audioEngine || !m_sourceManager || !m_editorState || !m_outputManager) return;
     const EditorState& es = *m_editorState;
-    const OutputManager& om = *m_outputManager;
-    const auto weights = sceneAudioWeights(
-        es.activeSceneId, om.getOutputs(), [&om](const OutputWindow& o) { return om.sceneFade(o); },
-        om.frameTime());
-    syncSourceAudio(*m_audioEngine, *m_sourceManager, sourceSceneGains(es.scenes, weights));
+    syncSourceAudio(*m_audioEngine, *m_sourceManager,
+                    heardSourceGains(es.scenes, es.activeSceneId, *m_outputManager));
 }
 
 void Application::applyProjectAudio() {

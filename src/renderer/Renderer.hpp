@@ -50,19 +50,15 @@ public:
     // not compare between them. Depth state is the caller's (renderMeshObjects sets
     // it). The GPU mesh is cached per object and re-uploaded only when the object's
     // mesh revision changes (MeshObject::getMeshRevision, TD-15).
-    // `opacityScale` multiplies the object's opacity (a scene crossfade, ADR-047 §5).
     void renderMeshObject(const MeshObject& object, const ProjectorCamera& camera,
-                          const Texture* texture, float nearZ, float farZ,
-                          float opacityScale = 1.0f);
+                          const Texture* texture, float nearZ, float farZ);
 
     // Draw every visible object through `camera` with the depth test on (off again
     // afterwards) and culling off; textures come from `textures` by object id. Call
     // before the quads, after clearing the depth buffer for the frame.
-    // `opacityScale` multiplies every object's opacity (a scene crossfade).
     void renderMeshObjects(const std::vector<std::unique_ptr<MeshObject>>& objects,
                            const ProjectorCamera& camera,
-                           const std::unordered_map<UUID, Texture*>& textures,
-                           float opacityScale = 1.0f);
+                           const std::unordered_map<UUID, Texture*>& textures);
 
     // Draw one slice of a scene canvas into the bound output frame (ADR-047 §4): the
     // slice's input rectangle of `canvasTexture` through its warp, faded by its blend
@@ -78,12 +74,20 @@ public:
     // During a scene crossfade (ADR-047 §5) `fade` names the canvas the slice's own
     // canvas is mixing in over: the same slice rectangle, in normalized canvas terms,
     // is sampled from both and mixed before the blend zones and black level, so they
-    // apply to the mix exactly as to one scene. Null: no fade (the pass is unchanged).
+    // apply to the mix exactly as to one scene. A fade from a frozen mix of two scenes
+    // (a take during a fade) names both outgoing canvases and the second one's weight
+    // among them. Null: no fade (the pass is unchanged). The output frame's 3D object
+    // layers mix through the same pass (OutputManager).
+    struct SliceFadeCanvas {
+        uint32_t texture = 0;                 // 0: nothing (transparent, black)
+        IVec2 size = IVec2(0, 0);             // its canvas pixels, unrotated
+        Rotation rotation = Rotation::R0;
+    };
     struct SliceFade {
         float mix = 1.0f;                     // weight of `canvasTexture`, 0-1
-        uint32_t fromTexture = 0;             // 0: fading in from nothing (transparent)
-        IVec2 fromSize = IVec2(0, 0);         // its canvas pixels, unrotated
-        Rotation fromRotation = Rotation::R0;
+        SliceFadeCanvas from;                 // the outgoing canvas
+        SliceFadeCanvas fromNext;             // the outgoing side's second canvas, if any
+        float fromNextWeight = 0.0f;          // its weight within the outgoing side, 0-1
     };
     void renderSlice(const Slice& slice, uint32_t canvasTexture, IVec2 canvasSize,
                      Rotation canvasRotation, IVec2 outputSize, const SliceFade* fade = nullptr);

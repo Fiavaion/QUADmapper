@@ -53,8 +53,6 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#include <dwmapi.h>
-#pragma comment(lib, "dwmapi.lib")
 #endif
 
 namespace quadmapper {
@@ -1084,35 +1082,15 @@ json BenchRunner::runSameFrame() {
     return r;
 }
 
-namespace {
-
-// The desktop compositor's counters (Windows DWM, the whole desktop), or null.
-json dwmTiming() {
-#ifdef _WIN32
-    DWM_TIMING_INFO info{};
-    info.cbSize = sizeof(info);
-    if (FAILED(DwmGetCompositionTimingInfo(nullptr, &info))) return json();
-    const double rate = info.rateRefresh.uiDenominator
-                            ? static_cast<double>(info.rateRefresh.uiNumerator) / info.rateRefresh.uiDenominator
-                            : 0.0;
-    return json{{"refresh_hz", round3(rate)}, {"refresh_count", info.cRefresh},
-                {"frames_displayed", info.cFramesDisplayed}, {"frames_dropped", info.cFramesDropped},
-                {"frames_missed", info.cFramesMissed}, {"frame", info.cFrame}};
-#else
-    return json();
-#endif
-}
-
-}  // namespace
-
 // TD-12 (ADR-047 §6): how each projector output presents. Every output goes fullscreen
 // on its own monitor (as perform mode does, borderless or exclusive) with the app's
-// own vsync pacing: the first output holds vsync (interval 1), the rest swap with
-// interval 0. For each output: the time between its swaps (after SwapBuffers returns),
+// own vsync pacing: OutputManager::vsyncHolder picks the output that holds vsync
+// (interval 1; the lowest refresh rate), the rest swap with interval 0. Each case runs
+// the outputs in monitor order and in reverse, so list order cannot decide the holder
+// unnoticed. For each output: the time between its swaps (after SwapBuffers returns),
 // a 1 ms histogram, and presents per refresh of the monitor it is on (1 = one new
 // frame each refresh; < 1 = frames repeat, uneven motion; > 1 = more frames than the
-// display can show, dropped or, where the swap is not composited, torn). The DWM
-// counters (the compositor, whole desktop) are sampled around each case. Tearing
+// display can show, dropped or, where the swap is not composited, torn). Tearing
 // itself cannot be seen from software; the configuration that can tear (interval 0
 // on an output the compositor does not compose) is reported.
 json BenchRunner::runPresent() {
@@ -1137,12 +1115,12 @@ json BenchRunner::runPresent() {
     struct Case {
         const char* name;
         bool exclusive;
-        bool reversed;  // the outputs' monitors in reverse order: the other one holds vsync
+        bool reversed;  // the outputs on the monitors in reverse order
     };
-    const Case cases[] = {{"borderless, vsync held by the output on monitor 0", false, false},
-                          {"borderless, vsync held by the output on the last monitor", false, true},
-                          {"exclusive, vsync held by the output on monitor 0", true, false},
-                          {"exclusive, vsync held by the output on the last monitor", true, true}};
+    const Case cases[] = {{"borderless, outputs in monitor order", false, false},
+                          {"borderless, outputs in reverse monitor order", false, true},
+                          {"exclusive, outputs in monitor order", true, false},
+                          {"exclusive, outputs in reverse monitor order", true, true}};
     json results = json::array();
     for (const Case& c : cases) {
         std::vector<int> monitorOf(static_cast<size_t>(count));
@@ -1165,7 +1143,6 @@ json BenchRunner::runPresent() {
         std::unordered_map<UUID, int> intervals;
         std::vector<double> loop;
         Clock::time_point lastLoop{};
-        const json dwmBefore = dwmTiming();
         const Clock::time_point begin = Clock::now();
         while (!aborted_ && seconds(begin, Clock::now()) < cfg_.seconds) {
             const Frame f = step();
@@ -1177,7 +1154,6 @@ json BenchRunner::runPresent() {
             }
         }
         const double elapsed = seconds(begin, Clock::now());
-        const json dwmAfter = dwmTiming();
 
         json perOutput = json::array();
         o = 0;
@@ -1193,8 +1169,8 @@ json BenchRunner::runPresent() {
             std::vector<int> histogram(41, 0);  // 1 ms bins; the last one is >= 40 ms
             for (double g : gaps) histogram[static_cast<size_t>(std::min(40.0, std::floor(g)))]++;
             const double presentsPerSecond = static_cast<double>(t.size()) / elapsed;
-            // A swap that returns within 1.5 ms of the previous one is a present the
-            // display could not have shown on its own refresh (interval 0 bursts).
+            // A swap that returns within half a refresh of the previous one is a present
+            // the display could not have shown on its own refresh (interval 0 bursts).
             const auto early = std::count_if(gaps.begin(), gaps.end(), [&](double g) {
                 return refresh > 0.0 && g < 0.5 * 1000.0 / refresh;
             });
@@ -1213,18 +1189,8 @@ json BenchRunner::runPresent() {
                 {"swaps_closer_than_half_a_refresh", early},
                 {"histogram_1ms", histogram}});
         }
-        json dwm;
-        if (!dwmBefore.is_null() && !dwmAfter.is_null()) {
-            auto delta = [&](const char* key) {
-                return dwmAfter[key].get<double>() - dwmBefore[key].get<double>();
-            };
-            dwm = json{{"refresh_hz", dwmAfter["refresh_hz"]}, {"refreshes", delta("refresh_count")},
-                       {"frames_displayed", delta("frames_displayed")},
-                       {"frames_dropped", delta("frames_dropped")}, {"frames_missed", delta("frames_missed")}};
-        }
         results.push_back(json{{"case", c.name}, {"seconds", round3(elapsed)},
-                               {"loop_frame_ms", summarize(loop)}, {"outputs", perOutput},
-                               {"dwm", dwm}});
+                               {"loop_frame_ms", summarize(loop)}, {"outputs", perOutput}});
         for (auto& output : outputs().getOutputs()) {
             output->goWindowed();
         }
