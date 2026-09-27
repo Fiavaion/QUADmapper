@@ -90,3 +90,11 @@ The gate misses only for 10-bit HEVC: 16 × 1080p25 P010 runs at 30–32 fps wit
   - (b) Uploading 10-bit sources as 8-bit, optionally dithered. That is an image-quality decision for the owner.
 
   TD-19 tracks the choice.
+
+## Amendment 3 (Loop without a codec restart, TD-30, 2026-09-27)
+16 × `5sec.mp4` (1080p30, 5 s) lost frames at every loop: decode lag p99 228 ms on the quiet machine, 0.3–0.6 s under load.
+
+- **Cause.** At the end of each Loop pass the decoder drained, then `avcodec_flush_buffers` and a seek to 0. The flush makes FFmpeg's H.264 and HEVC decoders set up again at the next keyframe (`get_format` is called again). With D3D11VA that means a new GPU decoder and surface pool, created one stream at a time on the shared device, ~50 ms each. Instrumented: every stream reached the end with 7 frames queued, then waited 0.8 s (under load) for its next frame, and all 16 got it within 2 ms of each other. The demuxer seek took 1–30 ms.
+- **Change.** In Loop, when the demuxer reaches the end, it goes back to the clip's first frame (by time, or by byte where a time seek lands late, as MPEG-TS does). That packet is sent straight after the last one, as a stream with a keyframe there, if it is a clean entry point: a keyframe, and for H.264/HEVC an IDR or BLA picture (other keyframes may be followed by pictures that refer back across them). The frames held for reordering come out first; the first frame whose time goes back starts the next leg. Otherwise the old drain-and-restart runs.
+- **Unchanged.** The PlaybackClock and every frame's due time (ADR-050); Ping-Pong, which still restarts at each reflection and seeks per group on the reverse leg; seeks; the readback, zero-copy and software paths all take frames as before.
+- **Evidence.** `get_format` runs only at open. `VideoDecoderLoopSeam.*` and `HardwareLoopSeam.*` (readback and zero-copy) check that the next pass is queued before the seam with contiguous due times and no restart (`VideoDecoder::decoderRestarts`). Release A/B under load: decode lag p99 323–581 → 33 ms, worst stream 95.3–99.0% → 99.6–99.9%; greenCrystals and 10-bit HEVC unchanged. Numbers are in TD-30 (resolved).

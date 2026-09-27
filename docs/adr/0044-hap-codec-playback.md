@@ -174,3 +174,16 @@ Phasing and the shared types, so the producer (A1) and consumer (A3/A4) agree:
   **Done (QM-082):** the linked FFmpeg turned out to have no HAP encoder (built without
   libsnappy), so frames are encoded in-house (`src/video/HapFrameEncoder`, stb_dxt vendored in
   `external/stb` with owner approval) and muxed by FFmpeg (`src/video/HapExport`).
+
+## Amendment 1 (uploads through pixel buffers, TD-31, 2026-09-27)
+
+16 × 1080p HapQ on 2 outputs ran at 115 fps with p99 26 ms on the quiet machine. The streams start together, so all 16 present on the same render frame, and on that frame the main thread paid for each of them twice:
+
+- `glCompressedTexSubImage2D` from client memory: ~0.5 ms per 2 MB frame, the driver copying the bytes on the calling thread. The texture was never respecified (16 creates in 5000 uploads), and the YCoCg shader was not a cost.
+- Releasing the previous frame's 2 MB vector: `HapFileSource::update` averaged 0.4 ms a call. The demux thread allocated a fresh vector for every frame.
+
+Changes, within §3 and §6 (the upload stays on the main thread):
+
+- **Frame buffers are reused.** `HapFileSource` keeps a pool (the queue's 8 + 4). The demux thread decodes into a buffer no one else holds (`use_count() == 1`), through a `parseHapFrame` overload that reuses the caller's buffers. A frame carries its bytes as a shared handle, `FrameData::compressed`, instead of `pixels`, so dropping a frame on the main thread frees nothing. `FrameData::nextCompressed` offers the frame queued next.
+- **Uploads go through pixel buffers.** `CompressedUploader` (renderer) gives each HAP source two PBOs, as ADR-055 §3 does for YUV planes. The main thread maps a buffer, the uploader's copier thread fills it, and the frame expected next is prefetched. The main thread then only unmaps and issues `glCompressedTexSubImage2D` from the buffer, which returns at once. The texture is allocated once, storage only.
+- **Evidence.** `HapUploadTest.PixelBufferUploadsMatchTheFrameWithAndWithoutPrefetch` reads each upload back, prefetched or not. `HapPlayback.FrameBuffersAreReusedButNeverWhileHeld` checks that a held buffer is never handed out again and that reuse stays within the pool. Release A/B, 10 runs each, machine under load: main-thread uploads 4.0–7.0 → 0.27–0.69 ms per frame, p99 40–84 → 18–35 ms, fps 38–65 → 73–105. The quiet-machine gate (p99 ≤ 16.7 ms, 100% presented) is still to be measured: TD-31.
