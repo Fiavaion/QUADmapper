@@ -74,9 +74,16 @@ Slice makeFullCanvasSlice(IVec2 canvasSize);
 // True when the warp maps the unit square onto the whole output unchanged.
 bool isIdentityWarp(const QuadGeometry& warp);
 
+// True for the slicing every output starts with: one slice of the whole `canvas`,
+// unwarped, with no blend zone and no black level.
+bool isDefaultSlicing(const std::vector<Slice>& slices, IVec2 canvas);
+
 // Scale every slice's input rectangle and blend widths from one canvas size to
 // another, keeping them at the same place on the picture (a scene change or a canvas
-// resize). A non-positive size on either side leaves the slices unchanged.
+// resize). Rectangle edges that land within 1/1000 pixel of a whole pixel are put on
+// it, so a slice of the whole old canvas becomes exactly the whole new canvas (and
+// keeps the exact-copy path). A non-positive size on either side leaves the slices
+// unchanged.
 void rescaleSlices(std::vector<Slice>& slices, IVec2 from, IVec2 to);
 
 // Linear-light blend ramp at t in [0, 1] (0 = the slice edge, 1 = the inner side of

@@ -42,6 +42,45 @@ TEST(SliceTest, RescaleKeepsSlicesAtTheSamePlaceOnThePicture) {
     EXPECT_EQ(slices[0].input, (CanvasRect{1920.0f, 270.0f, 1920.0f, 540.0f}));
 }
 
+// A slice of the whole canvas stays exactly the whole canvas through any rescale, so
+// it keeps the exact-copy path and the lone-output canvas keeps following (800 ->
+// 1920 in float was 1920.0001).
+TEST(SliceTest, RescaleOfTheWholeCanvasIsExactlyTheWholeCanvas) {
+    const int sizes[] = {480, 540, 600, 720, 768, 800, 900, 1024, 1050, 1080, 1200, 1280,
+                         1360, 1366, 1440, 1600, 1680, 1920, 2048, 2160, 2560, 3840};
+    for (int a : sizes) {
+        for (int b : sizes) {
+            // Every pair, on both axes: a x b -> b x a.
+            std::vector<Slice> slices{makeFullCanvasSlice(IVec2(a, b))};
+            rescaleSlices(slices, IVec2(a, b), IVec2(b, a));
+            EXPECT_TRUE(isDefaultSlicing(slices, IVec2(b, a)))
+                << a << "x" << b << " -> " << b << "x" << a << ": " << slices[0].input.width << " x "
+                << slices[0].input.height;
+        }
+    }
+    // Edges that land on whole pixels are exact too.
+    std::vector<Slice> half{makeFullCanvasSlice(IVec2(800, 600))};
+    half[0].input = CanvasRect{400.0f, 0.0f, 400.0f, 600.0f};
+    rescaleSlices(half, IVec2(800, 600), IVec2(1920, 1080));
+    EXPECT_EQ(half[0].input, (CanvasRect{960.0f, 0.0f, 960.0f, 1080.0f}));
+}
+
+TEST(SliceTest, DefaultSlicingIsOneUntouchedWholeCanvasSlice) {
+    const IVec2 canvas(1280, 800);
+    std::vector<Slice> slices{makeFullCanvasSlice(canvas)};
+    EXPECT_TRUE(isDefaultSlicing(slices, canvas));
+    EXPECT_FALSE(isDefaultSlicing(slices, IVec2(1920, 1080)));
+    EXPECT_FALSE(isDefaultSlicing({}, canvas));
+    slices[0].blackLevel = 0.01f;
+    EXPECT_FALSE(isDefaultSlicing(slices, canvas));
+    slices[0].blackLevel = 0.0f;
+    slices[0].blend[SLICE_EDGE_BOTTOM].width = 1.0f;
+    EXPECT_FALSE(isDefaultSlicing(slices, canvas));
+    slices[0].blend[SLICE_EDGE_BOTTOM].width = 0.0f;
+    slices.push_back(makeFullCanvasSlice(canvas));
+    EXPECT_FALSE(isDefaultSlicing(slices, canvas));
+}
+
 // The ramp's defining property: two facing ramps add to one at every point, for any
 // curve, so two projectors' light sums flat across the overlap.
 TEST(SliceTest, FacingRampsSumToOneForEveryCurve) {

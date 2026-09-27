@@ -25,19 +25,34 @@ bool isIdentityWarp(const QuadGeometry& warp) {
            c[3] == Vec2(0.0f, 1.0f) && !warp.hasResidualSurface() && !warp.hasBezierEdges();
 }
 
+bool isDefaultSlicing(const std::vector<Slice>& slices, IVec2 canvas) {
+    if (slices.size() != 1) return false;
+    const Slice& only = slices.front();
+    const CanvasRect whole{0.0f, 0.0f, static_cast<float>(canvas.x), static_cast<float>(canvas.y)};
+    return only.input == whole && isIdentityWarp(only.warp) &&
+           only.blend == std::array<BlendEdge, SLICE_EDGE_COUNT>{} && only.blackLevel == 0.0f;
+}
+
 void rescaleSlices(std::vector<Slice>& slices, IVec2 from, IVec2 to) {
     if (from.x <= 0 || from.y <= 0 || to.x <= 0 || to.y <= 0 || from == to) return;
-    const float sx = static_cast<float>(to.x) / static_cast<float>(from.x);
-    const float sy = static_cast<float>(to.y) / static_cast<float>(from.y);
+    // In double, value * to / from is exact for whole pixels (800 -> 1920 gives 1920,
+    // not 1920.0001), and a hair off a whole pixel is snapped onto it.
+    auto scale = [](float value, int toSize, int fromSize) {
+        const double scaled = static_cast<double>(value) * toSize / fromSize;
+        const double whole = std::round(scaled);
+        return static_cast<float>(std::abs(scaled - whole) < 1e-3 ? whole : scaled);
+    };
     for (Slice& slice : slices) {
-        slice.input.x *= sx;
-        slice.input.y *= sy;
-        slice.input.width *= sx;
-        slice.input.height *= sy;
-        slice.blend[SLICE_EDGE_LEFT].width *= sx;
-        slice.blend[SLICE_EDGE_RIGHT].width *= sx;
-        slice.blend[SLICE_EDGE_TOP].width *= sy;
-        slice.blend[SLICE_EDGE_BOTTOM].width *= sy;
+        CanvasRect& in = slice.input;
+        const float left = scale(in.x, to.x, from.x);
+        const float top = scale(in.y, to.y, from.y);
+        const float right = scale(in.x + in.width, to.x, from.x);
+        const float bottom = scale(in.y + in.height, to.y, from.y);
+        in = CanvasRect{left, top, right - left, bottom - top};
+        slice.blend[SLICE_EDGE_LEFT].width = scale(slice.blend[SLICE_EDGE_LEFT].width, to.x, from.x);
+        slice.blend[SLICE_EDGE_RIGHT].width = scale(slice.blend[SLICE_EDGE_RIGHT].width, to.x, from.x);
+        slice.blend[SLICE_EDGE_TOP].width = scale(slice.blend[SLICE_EDGE_TOP].width, to.y, from.y);
+        slice.blend[SLICE_EDGE_BOTTOM].width = scale(slice.blend[SLICE_EDGE_BOTTOM].width, to.y, from.y);
     }
 }
 
