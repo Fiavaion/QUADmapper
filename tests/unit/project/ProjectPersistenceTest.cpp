@@ -88,7 +88,7 @@ TEST_F(ProjectPersistenceTest, WriterEmitsV32WithSourcesTable) {
 
     const auto json = nlohmann::json::parse(serializer.serialize(projectWithBoundQuad(src, "")));
 
-    EXPECT_EQ(json["version"], "3.3.0");
+    EXPECT_EQ(json["version"], "3.4.0");
     ASSERT_TRUE(json["sources"].is_array());
     ASSERT_EQ(json["sources"].size(), 1u);
     EXPECT_EQ(json["sources"][0]["kind"], "procedural");
@@ -498,13 +498,13 @@ TEST_F(ProjectPersistenceTest, BadUuidsOnSceneGroupOutputAreTolerated) {
     ASSERT_TRUE(result.isSuccess()) << result.error();
     const auto& scene = project.getScenes()[0];
     EXPECT_FALSE(scene.id.isNull());
-    EXPECT_TRUE(scene.assignedOutputId.isNull());
     ASSERT_EQ(scene.groups.size(), 1u);
     EXPECT_FALSE(scene.groups[0].getId().isNull());
     EXPECT_EQ(scene.groups[0].getMemberQuadIds().size(), 1u);  // only the valid member
     EXPECT_FALSE(scene.groups[0].getParentGroup().has_value());
     ASSERT_EQ(project.getOutputs().size(), 1u);
     EXPECT_FALSE(project.getOutputs()[0].id.isNull());
+    EXPECT_TRUE(project.getOutputs()[0].sceneId.isNull());  // the bad assignment routes nothing
 }
 
 TEST_F(ProjectPersistenceTest, GridCoordsAreSortedDedupedAndNanRejected) {
@@ -631,7 +631,7 @@ TEST_F(ProjectPersistenceTest, MeshOutsideTheShowFolderFallsBackToItsAbsolutePat
     const auto& saved = json["scenes"][0]["objects"][0];
     EXPECT_EQ(saved["path"], "../../library/props/column.obj");
     EXPECT_EQ(saved["absPath"], utf8FromPath(mesh));
-    EXPECT_EQ(json["version"], "3.3.0");
+    EXPECT_EQ(json["version"], "3.4.0");
 
     // Round trip in place: the relative path resolves.
     auto loaded = ProjectSerializer::load(file);
@@ -1020,6 +1020,7 @@ TEST(ProjectFixtureTest, EveryHistoricalFormatLoads) {
         {"v3.2-objects-projector.qmap", 1, 1},
         {"v3.3-control-audio-lock.qmap", 1, 1},
         {"v3.3-mesh-keystone.qmap", 1, 2},
+        {"v3.4-canvas-slices.qmap", 1, 1},
     };
     for (const auto& e : expected) {
         auto loaded = ProjectSerializer::load(dir / e.file);
@@ -1033,6 +1034,163 @@ TEST(ProjectFixtureTest, EveryHistoricalFormatLoads) {
         if (entry.path().extension() == ".qmap") ++onDisk;
     }
     EXPECT_EQ(onDisk, std::size(expected)) << "a fixture was added without a load check";
+}
+
+// ADR-047 §7: every file before 3.4 comes in as the same show on the canvas model:
+// each routed output shows its scene through one whole-canvas slice with no warp and
+// no blend, and the canvas is that output's effective resolution (else 1920x1080).
+TEST(ProjectFixtureTest, PreCanvasFixturesMigrateToOneFullSlicePerRoutedOutput) {
+    const fs::path dir = QM_PROJECT_FIXTURES_DIR;
+    for (const char* file : {"v1.0-flat.qmap", "v1.2-flat-grid.qmap", "v2.0-scenes.qmap",
+                             "v3.0-scenes-outputs.qmap", "v3.1-sources.qmap",
+                             "v3.2-objects-projector.qmap", "v3.3-control-audio-lock.qmap",
+                             "v3.3-mesh-keystone.qmap"}) {
+        SCOPED_TRACE(file);
+        auto loaded = ProjectSerializer::load(dir / file);
+        ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+        const Project& p = loaded.value();
+        for (const auto& output : p.getOutputs()) {
+            if (output.sceneId.isNull()) {
+                EXPECT_TRUE(output.slices.empty());
+                continue;
+            }
+            const auto scene = std::find_if(p.getScenes().begin(), p.getScenes().end(),
+                                            [&](const auto& s) { return s.id == output.sceneId; });
+            ASSERT_NE(scene, p.getScenes().end());
+            const bool quarter = output.rotationDegrees == 90 || output.rotationDegrees == 270;
+            const IVec2 effective = quarter ? IVec2(output.resolution.y, output.resolution.x)
+                                            : output.resolution;
+            EXPECT_EQ(scene->canvas, effective);
+            ASSERT_EQ(output.slices.size(), 1u);
+            const Slice& slice = output.slices[0];
+            EXPECT_EQ(slice.input, (CanvasRect{0.0f, 0.0f, static_cast<float>(effective.x),
+                                               static_cast<float>(effective.y)}));
+            EXPECT_TRUE(isIdentityWarp(slice.warp));
+            for (const BlendEdge& edge : slice.blend) EXPECT_EQ(edge.width, 0.0f);
+            EXPECT_EQ(slice.blackLevel, 0.0f);
+        }
+        for (const auto& scene : p.getScenes()) {
+            const bool shown = std::any_of(p.getOutputs().begin(), p.getOutputs().end(),
+                                           [&](const auto& o) { return o.sceneId == scene.id; });
+            if (!shown) EXPECT_EQ(scene.canvas, IVec2(1920, 1080));
+        }
+    }
+
+    // The v3.0 fixture routes its one scene to its one output.
+    auto v30 = ProjectSerializer::load(dir / "v3.0-scenes-outputs.qmap");
+    ASSERT_TRUE(v30.isSuccess());
+    EXPECT_EQ(v30.value().getOutputs()[0].sceneId, v30.value().getScenes()[0].id);
+}
+
+// A pre-3.4 output on its side: the canvas is portrait, as the editor laid it out.
+TEST(ProjectFixtureTest, PreCanvasRotatedOutputGetsAPortraitCanvas) {
+    const std::string json = R"({"version": "3.3.0", "name": "S",
+        "scenes": [{"id": "6a1b2c3d-0000-4000-8000-0000000000c1", "name": "A",
+                    "assignedOutputId": "6a1b2c3d-0000-4000-8000-0000000000e1", "quads": []},
+                   {"id": "6a1b2c3d-0000-4000-8000-0000000000c2", "name": "B",
+                    "assignedOutputId": "6a1b2c3d-0000-4000-8000-0000000000e1", "quads": []}],
+        "outputs": [{"id": "6a1b2c3d-0000-4000-8000-0000000000e1", "name": "P",
+                     "resolution": [1280, 800], "rotation": 270},
+                    {"id": "6a1b2c3d-0000-4000-8000-0000000000e2", "name": "Q"}]})";
+    Project p;
+    ASSERT_TRUE(ProjectSerializer().deserialize(json, p).isSuccess());
+    // Two scenes named output P: it showed the first, as the old routing drew.
+    EXPECT_EQ(p.getOutputs()[0].sceneId.toString(), "6a1b2c3d-0000-4000-8000-0000000000c1");
+    EXPECT_EQ(p.getScenes()[0].canvas, IVec2(800, 1280));
+    EXPECT_EQ(p.getScenes()[1].canvas, IVec2(1920, 1080));
+    EXPECT_EQ(p.getOutputs()[0].slices[0].input, (CanvasRect{0.0f, 0.0f, 800.0f, 1280.0f}));
+    EXPECT_TRUE(p.getOutputs()[1].sceneId.isNull());
+    EXPECT_TRUE(p.getOutputs()[1].slices.empty());
+}
+
+TEST(ProjectFixtureTest, V34FixtureKeepsCanvasRoutingAndBlendedSlices) {
+    auto loaded = ProjectSerializer::load(fs::path(QM_PROJECT_FIXTURES_DIR) / "v3.4-canvas-slices.qmap");
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const Project& p = loaded.value();
+    ASSERT_EQ(p.getScenes().size(), 1u);
+    EXPECT_EQ(p.getScenes()[0].canvas, IVec2(3200, 1080));
+    ASSERT_EQ(p.getOutputs().size(), 2u);
+    for (const auto& output : p.getOutputs()) {
+        EXPECT_EQ(output.sceneId, p.getScenes()[0].id);  // one scene on both projectors
+        ASSERT_EQ(output.slices.size(), 1u);
+    }
+    const Slice& left = p.getOutputs()[0].slices[0];
+    const Slice& right = p.getOutputs()[1].slices[0];
+    EXPECT_EQ(left.input, (CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}));
+    EXPECT_EQ(right.input, (CanvasRect{1280.0f, 0.0f, 1920.0f, 1080.0f}));
+    EXPECT_FLOAT_EQ(left.blend[SLICE_EDGE_RIGHT].width, 640.0f);
+    EXPECT_FLOAT_EQ(right.blend[SLICE_EDGE_LEFT].width, 640.0f);
+    EXPECT_FLOAT_EQ(right.blend[SLICE_EDGE_LEFT].gamma, 2.2f);
+    EXPECT_FLOAT_EQ(right.blend[SLICE_EDGE_LEFT].curve, 2.0f);
+    EXPECT_FLOAT_EQ(right.blackLevel, 0.02f);
+    EXPECT_TRUE(isIdentityWarp(left.warp));
+    EXPECT_FALSE(isIdentityWarp(right.warp));  // a slight keystone on the right projector
+    EXPECT_EQ(right.warp.getCorners()[1], Vec2(0.98f, 0.0f));
+    EXPECT_EQ(right.id.toString(), "5a1b2c3d-0000-4000-8000-0000000000a2");
+}
+
+// Round trip of the canvas model: canvas, routing (two outputs on one scene) and every
+// slice field, including a grid warp, survive save -> load unchanged.
+TEST(ProjectFixtureTest, CanvasSlicesRoundTrip) {
+    auto first = ProjectSerializer::load(fs::path(QM_PROJECT_FIXTURES_DIR) / "v3.4-canvas-slices.qmap");
+    ASSERT_TRUE(first.isSuccess());
+    Project p = first.value();
+    Slice& grid = p.getOutputs()[1].slices[0];
+    grid.warp.setMeshMode(MeshMode::MESH_EDIT);
+    grid.warp.setUniformGrid(2);
+    grid.warp.setMeshVertex(1, 1, Vec2(0.01f, -0.02f));
+    grid.blend[SLICE_EDGE_TOP] = BlendEdge{12.5f, 1.8f, 3.0f};
+    grid.name = "Right, warped";
+
+    ProjectSerializer serializer;
+    const std::string json = serializer.serialize(p);
+    Project back;
+    ASSERT_TRUE(serializer.deserialize(json, back).isSuccess());
+    ASSERT_EQ(back.getOutputs().size(), 2u);
+    EXPECT_EQ(back.getScenes()[0].canvas, IVec2(3200, 1080));
+    for (size_t o = 0; o < 2; ++o) {
+        const auto& a = p.getOutputs()[o];
+        const auto& b = back.getOutputs()[o];
+        EXPECT_EQ(b.sceneId, a.sceneId);
+        ASSERT_EQ(b.slices.size(), a.slices.size());
+        const Slice& s = a.slices[0];
+        const Slice& t = b.slices[0];
+        EXPECT_EQ(t.id, s.id);
+        EXPECT_EQ(t.name, s.name);
+        EXPECT_EQ(t.input, s.input);
+        EXPECT_EQ(t.blend, s.blend);
+        EXPECT_FLOAT_EQ(t.blackLevel, s.blackLevel);
+        EXPECT_EQ(t.warp.getCorners(), s.warp.getCorners());
+        EXPECT_EQ(t.warp.getMeshMode(), s.warp.getMeshMode());
+        EXPECT_EQ(t.warp.getMeshVertices(), s.warp.getMeshVertices());
+    }
+    EXPECT_EQ(serializer.serialize(back), json);  // stable
+}
+
+// Untrusted slice values are bounded; a malformed slice fails the load.
+TEST(ProjectFixtureTest, SliceValuesAreBoundedOnLoad) {
+    const std::string good = R"({"version": "3.4.0", "name": "S", "scenes": [],
+        "outputs": [{"name": "P", "slices": [{"input": [0, 0, -5, 1e9],
+            "blend": {"left": {"width": -3, "gamma": 0, "curve": 99}}, "blackLevel": 7}]}]})";
+    Project p;
+    ASSERT_TRUE(ProjectSerializer().deserialize(good, p).isSuccess());
+    const Slice& s = p.getOutputs()[0].slices[0];
+    EXPECT_EQ(s.input.width, 1.0f);
+    EXPECT_EQ(s.input.height, 16384.0f);
+    EXPECT_EQ(s.blend[SLICE_EDGE_LEFT].width, 0.0f);
+    EXPECT_EQ(s.blend[SLICE_EDGE_LEFT].gamma, MIN_BLEND_GAMMA);
+    EXPECT_EQ(s.blend[SLICE_EDGE_LEFT].curve, MAX_BLEND_CURVE);
+    EXPECT_EQ(s.blackLevel, MAX_BLACK_LEVEL);
+    EXPECT_FALSE(s.id.isNull());
+
+    for (const char* bad : {R"("slices": 3)", R"("slices": [4])", R"("slices": [{"input": [1, 2]}])",
+                            R"("slices": [{"blend": {"left": 1}}])"}) {
+        SCOPED_TRACE(bad);
+        const std::string json = std::string(R"({"version": "3.4.0", "name": "S", "scenes": [],
+            "outputs": [{"name": "P", )") + bad + "}]}";
+        Project q;
+        EXPECT_FALSE(ProjectSerializer().deserialize(json, q).isSuccess());
+    }
 }
 
 TEST(ProjectFixtureTest, V31FixtureKeepsProceduralAndTheMissingVideo) {

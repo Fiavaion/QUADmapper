@@ -62,6 +62,7 @@ void OutputManager::shutdown() {
         GLFWwindow* previousContext = glfwGetCurrentContext();
         glfwMakeContextCurrent(mainWindow_);
         frames_.clear();
+        canvases_.clear();
         if (framesDrawn_ != nullptr) {
             glDeleteSync(framesDrawn_);
             framesDrawn_ = nullptr;
@@ -134,6 +135,7 @@ void OutputManager::deleteOutput(const UUID& id) {
 
         (*it)->destroy();
         outputs_.erase(it);
+        releaseUnshownCanvases();
         LOG_INFO("Deleted output '{}' (remaining: {})", name, outputs_.size());
         if (outputRemovedCallback_) {
             outputRemovedCallback_(id);
@@ -572,56 +574,228 @@ Result<void, Error> OutputManager::togglePerformMode(bool borderless) {
 }
 
 const Scene* OutputManager::sceneForOutput(
-        const std::vector<std::unique_ptr<Scene>>& scenes, const UUID& outputId) {
-    if (outputId.isNull()) {
+        const std::vector<std::unique_ptr<Scene>>& scenes, const OutputWindow& output) {
+    const UUID& sceneId = output.getSceneId();
+    if (sceneId.isNull()) {
         return nullptr;
     }
     for (const auto& scene : scenes) {
-        if (scene && scene->getAssignedOutputId() == outputId) {
+        if (scene && scene->getId() == sceneId) {
             return scene.get();
         }
     }
     return nullptr;
 }
 
-namespace {
-
-// What a projector shows of its scene: the 3D objects from this output's projector
-// camera (ADR-052), then the quads on top in z-order. renderQuad(...false) keeps it
-// clean (no selection outlines / editor handles). The depth buffer must be clear.
-void drawOutputScene(const Scene& scene, const OutputWindow& output, Renderer& renderer,
-                     const std::unordered_map<UUID, Texture*>& textures) {
-    renderer.renderMeshObjects(scene.getObjects(), output.getProjector(), textures);
-    for (const Quad* quad : scene.getQuadsByZOrder()) {
-        if (!quad || !quad->isVisible()) {
-            continue;
-        }
-        const Texture* tex = nullptr;
-        auto it = textures.find(quad->getId());
-        if (it != textures.end()) {
-            tex = it->second;
-        }
-        renderer.renderQuad(*quad, tex, /*selected=*/false);
+void OutputManager::showScene(OutputWindow& output, const Scene* scene,
+                              const std::vector<std::unique_ptr<Scene>>& scenes) {
+    if (!scene) {
+        output.setSceneId(UUID::null());
+        return;
     }
+    if (output.getSlices().empty()) {
+        output.getSlices().push_back(makeFullCanvasSlice(scene->getCanvasSize()));
+    } else if (const Scene* shown = sceneForOutput(scenes, output)) {
+        rescaleSlices(output.getSlices(), shown->getCanvasSize(), scene->getCanvasSize());
+    }
+    output.setSceneId(scene->getId());
 }
 
-}  // namespace
+bool OutputManager::followOutputSizes(std::vector<std::unique_ptr<Scene>>& scenes) {
+    bool changed = false;
+    for (const auto& output : outputs_) {
+        const IVec2 now = output->getEffectiveResolution();
+        auto known = knownSizes_.find(output->getId());
+        if (known == knownSizes_.end()) {
+            knownSizes_.emplace(output->getId(), now);
+            continue;
+        }
+        const IVec2 before = known->second;
+        known->second = now;
+        if (before == now) continue;
+
+        Scene* scene = nullptr;
+        for (auto& s : scenes) {
+            if (s && s->getId() == output->getSceneId()) { scene = s.get(); break; }
+        }
+        auto& slices = output->getSlices();
+        if (!scene || scene->getCanvasSize() != before || slices.size() != 1) continue;
+        const Slice& only = slices.front();
+        const CanvasRect whole{0.0f, 0.0f, static_cast<float>(before.x), static_cast<float>(before.y)};
+        const bool isDefault = only.input == whole && isIdentityWarp(only.warp) &&
+                               only.blend == std::array<BlendEdge, SLICE_EDGE_COUNT>{} &&
+                               only.blackLevel == 0.0f;
+        const bool alone = std::none_of(outputs_.begin(), outputs_.end(), [&](const auto& o) {
+            return o.get() != output.get() && o->getSceneId() == scene->getId();
+        });
+        if (!isDefault || !alone) continue;
+        scene->setCanvasSize(now);
+        slices.front().input = CanvasRect{0.0f, 0.0f, static_cast<float>(scene->getCanvasSize().x),
+                                          static_cast<float>(scene->getCanvasSize().y)};
+        changed = true;
+    }
+    for (auto it = knownSizes_.begin(); it != knownSizes_.end();) {
+        it = getOutput(it->first) ? std::next(it) : knownSizes_.erase(it);
+    }
+    return changed;
+}
+
+OutputWindow* OutputManager::firstOutputShowing(const UUID& sceneId) const {
+    if (sceneId.isNull()) {
+        return nullptr;
+    }
+    for (const auto& output : outputs_) {
+        if (output && output->getSceneId() == sceneId) {
+            return output.get();
+        }
+    }
+    return nullptr;
+}
+
+const Framebuffer* OutputManager::sceneCanvas(const UUID& sceneId) const {
+    auto it = canvases_.find(sceneId);
+    if (it == canvases_.end() || !it->second.target || !it->second.target->valid()) {
+        return nullptr;
+    }
+    return it->second.target.get();
+}
+
+void OutputManager::releaseUnshownCanvases() {
+    if (canvases_.empty() || mainWindow_ == nullptr) {
+        return;
+    }
+    GLFWwindow* previousContext = glfwGetCurrentContext();
+    glfwMakeContextCurrent(mainWindow_);
+    for (auto it = canvases_.begin(); it != canvases_.end();) {
+        if (!firstOutputShowing(it->first)) {
+            it = canvases_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    glfwMakeContextCurrent(previousContext);
+}
+
+void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& scenes,
+                                   const std::unordered_map<UUID, Texture*>& textures,
+                                   Renderer& renderer) {
+    // The scenes outputs show, each once.
+    canvasScenes_.clear();
+    for (const auto& output : outputs_) {
+        const Scene* scene = sceneForOutput(scenes, *output);
+        if (scene && std::find(canvasScenes_.begin(), canvasScenes_.end(), scene->getId()) ==
+                         canvasScenes_.end()) {
+            canvasScenes_.push_back(scene->getId());
+        }
+    }
+    for (auto it = canvases_.begin(); it != canvases_.end();) {
+        if (std::find(canvasScenes_.begin(), canvasScenes_.end(), it->first) == canvasScenes_.end()) {
+            it = canvases_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (blackout_) {
+        return;  // every frame is black; the canvases are kept for when it lifts
+    }
+
+    // Colour blends over black exactly as the quads used to blend into the frame;
+    // alpha accumulates coverage, so the frame can composite the canvas over the
+    // 3D objects it draws first.
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    for (const UUID& sceneId : canvasScenes_) {
+        const Scene* scene = nullptr;
+        for (const auto& s : scenes) {
+            if (s && s->getId() == sceneId) { scene = s.get(); break; }
+        }
+        SceneCanvas& canvas = canvases_[sceneId];
+        if (!canvas.target) {
+            canvas.target = std::make_unique<Framebuffer>();
+        }
+        // The rotation all its outputs share, else none.
+        bool first = true;
+        for (const auto& output : outputs_) {
+            if (output->getSceneId() != sceneId) continue;
+            if (first) {
+                canvas.rotation = output->getRotation();
+                first = false;
+            } else if (output->getRotation() != canvas.rotation) {
+                canvas.rotation = Rotation::R0;
+                break;
+            }
+        }
+        const IVec2 size = scene->getCanvasSize();
+        const bool quarterTurn = canvas.rotation == Rotation::R90 || canvas.rotation == Rotation::R270;
+        if (!canvas.target->resize(quarterTurn ? size.y : size.x, quarterTurn ? size.x : size.y)) {
+            continue;
+        }
+        renderer.setOutputRotation(canvas.rotation);
+        canvas.target->bind();  // also sets the viewport to the canvas size
+        glDisable(GL_DEPTH_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        // Clean: no selection outlines or editor handles.
+        for (const Quad* quad : scene->getQuadsByZOrder()) {
+            if (!quad || !quad->isVisible()) {
+                continue;
+            }
+            auto tex = textures.find(quad->getId());
+            renderer.renderQuad(*quad, tex != textures.end() ? tex->second : nullptr,
+                                /*selected=*/false);
+        }
+    }
+    renderer.setOutputRotation(Rotation::R0);
+    renderer.endFrame();
+}
 
 void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>& scenes,
                                        const std::unordered_map<UUID, Texture*>& textures,
                                        Renderer& renderer) {
-    // Only the scene assigned to THIS output (ADR-039 routing); none stays black.
-    renderFrames(renderer, [&](const OutputWindow& output) {
-        if (const Scene* scene = sceneForOutput(scenes, output.getId())) {
-            drawOutputScene(*scene, output, renderer, textures);
+    if (!mainWindow_) {
+        return;
+    }
+    GLint prevFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+    GLint prevViewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, prevViewport);
+    GLint prevBlend[4] = {GL_ONE, GL_ZERO, GL_ONE, GL_ZERO};
+    glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlend[0]);
+    glGetIntegerv(GL_BLEND_DST_RGB, &prevBlend[1]);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlend[2]);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlend[3]);
+    renderCanvases(scenes, textures, renderer);
+    // renderFrames saves and restores this state again around the frames.
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+    glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+    glBlendFuncSeparate(static_cast<GLenum>(prevBlend[0]), static_cast<GLenum>(prevBlend[1]),
+                        static_cast<GLenum>(prevBlend[2]), static_cast<GLenum>(prevBlend[3]));
+
+    // Each output: its scene's objects from its projector (ADR-052), then its slices
+    // of the scene's canvas over them. No scene stays black.
+    renderFrames(renderer, [&](const OutputWindow& output, IVec2 effectiveSize) {
+        const Scene* scene = sceneForOutput(scenes, output);
+        if (!scene) {
+            return;
         }
+        renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures);
+        const Framebuffer* canvas = sceneCanvas(scene->getId());
+        if (!canvas || output.getSlices().empty()) {
+            return;
+        }
+        const Rotation canvasRotation = canvases_.at(scene->getId()).rotation;
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+        for (const Slice& slice : output.getSlices()) {
+            renderer.renderSlice(slice, canvas->colorTexture(), scene->getCanvasSize(),
+                                 canvasRotation, effectiveSize);
+        }
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
     });
 }
 
 void OutputManager::renderPatternFrames(const Quad& patternQuad, const Texture* texture,
                                         Renderer& renderer) {
     // One fullscreen identity quad carrying the calibration texture.
-    renderFrames(renderer, [&](const OutputWindow&) {
+    renderFrames(renderer, [&](const OutputWindow&, IVec2) {
         renderer.renderQuad(patternQuad, texture, /*selected=*/false);
     });
 }
@@ -637,8 +811,8 @@ IVec2 OutputManager::frameSize(const OutputWindow& output) {
     return output.getResolution();  // no window yet, or it is minimised (0 x 0)
 }
 
-void OutputManager::renderFrames(Renderer& renderer,
-                                 const std::function<void(const OutputWindow&)>& draw) {
+void OutputManager::renderFrames(
+        Renderer& renderer, const std::function<void(const OutputWindow&, IVec2)>& draw) {
     if (!mainWindow_) {
         return;
     }
@@ -686,8 +860,10 @@ void OutputManager::renderFrames(Renderer& renderer,
         if (blackout_) {
             continue;  // the projector shows black, and so does its preview
         }
-        renderer.setOutputRotation(output->getRotation());
-        draw(*output);
+        const Rotation rotation = output->getRotation();
+        renderer.setOutputRotation(rotation);
+        const bool quarterTurn = rotation == Rotation::R90 || rotation == Rotation::R270;
+        draw(*output, quarterTurn ? IVec2(size.y, size.x) : size);
     }
 
     // The editor canvas shares this Renderer and is never rotated.

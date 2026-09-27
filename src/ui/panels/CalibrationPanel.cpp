@@ -99,7 +99,7 @@ void CalibrationPanel::render(EditorContext& ctx) {
     CalibrationSession& cal = es.calibration;
     auto& points = output->getCalibrationPoints();
     ProjectorCamera& projector = output->getProjector();
-    const Scene* scene = OutputManager::sceneForOutput(es.scenes, output->getId());
+    const Scene* scene = OutputManager::sceneForOutput(es.scenes, *output);
     auto setModified = [&]() { if (ctx.project) ctx.project->setModified(true); };
 
     if (cal.selected >= static_cast<int>(points.size())) cal.selected = -1;
@@ -404,7 +404,7 @@ void CalibrationPanel::drawCanvasOverlay(EditorContext& ctx) {
     EditorState& es = ctx.es;
     OutputWindow* output = calibratingOutput(ctx);
     // Only while the canvas shows the projector being calibrated.
-    if (!output || es.activeScene().getAssignedOutputId() != output->getId()) return;
+    if (!output || output->getSceneId() != es.activeScene().getId()) return;
     if (es.canvasRegionSize.x < 1.0f || es.canvasRegionSize.y < 1.0f) return;
 
     const CalibrationSession& cal = es.calibration;

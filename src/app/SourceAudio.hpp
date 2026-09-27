@@ -80,29 +80,30 @@ inline std::filesystem::path audioPathOf(const TextureSource& source) {
     return {};
 }
 
-// The outputs a scene can be live on: every enabled one of `outputs` (a container of
+// The scenes that are live: those an enabled one of `outputs` shows (a container of
 // OutputWindow pointers, as OutputManager::getOutputs() returns; a template so this
-// header needs no output module).
+// header needs no output module). Several outputs may show one scene (ADR-047).
 template <typename Outputs>
-std::unordered_set<UUID> enabledOutputIds(const Outputs& outputs) {
+std::unordered_set<UUID> liveSceneIds(const Outputs& outputs) {
     std::unordered_set<UUID> ids;
     for (const auto& output : outputs) {
-        if (output && output->isEnabled()) ids.insert(output->getId());
+        if (output && output->isEnabled() && !output->getSceneId().isNull()) {
+            ids.insert(output->getSceneId());
+        }
     }
     return ids;
 }
 
 // Which sources are heard: a source is audible only when a quad or 3D object using it
-// belongs to the editor's active scene or to a scene assigned to an enabled output.
-// Sources used only by other scenes keep decoding and stay in step, gated silent, so a
-// scene take switches the soundtrack with the picture.
+// belongs to the editor's active scene or to a scene an enabled output shows. Sources
+// used only by other scenes keep decoding and stay in step, gated silent, so a scene
+// take switches the soundtrack with the picture.
 inline std::unordered_set<UUID> audibleSourceIds(const SceneList& scenes, const UUID& activeSceneId,
-                                                 const std::unordered_set<UUID>& enabledOutputs) {
+                                                 const std::unordered_set<UUID>& liveScenes) {
     std::unordered_set<UUID> ids;
     for (const auto& scene : scenes) {
         if (!scene) continue;
-        const bool heard = scene->getId() == activeSceneId ||
-                           (scene->hasAssignedOutput() && enabledOutputs.count(scene->getAssignedOutputId()));
+        const bool heard = scene->getId() == activeSceneId || liveScenes.count(scene->getId()) > 0;
         if (!heard) continue;
         for (const auto& quad : scene->getQuadManager().getQuads()) {
             if (!quad->getTexture().mediaId.isNull()) ids.insert(quad->getTexture().mediaId);

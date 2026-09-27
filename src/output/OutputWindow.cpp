@@ -16,25 +16,6 @@ OutputWindow::~OutputWindow() {
     destroy();
 }
 
-void OutputWindow::assignScene(const UUID& sceneId) {
-    if (!hasScene(sceneId)) {
-        assignedScenes_.push_back(sceneId);
-        LOG_DEBUG("OutputWindow '{}': assigned scene {}", name_, sceneId.toString());
-    }
-}
-
-void OutputWindow::removeScene(const UUID& sceneId) {
-    auto it = std::find(assignedScenes_.begin(), assignedScenes_.end(), sceneId);
-    if (it != assignedScenes_.end()) {
-        assignedScenes_.erase(it);
-        LOG_DEBUG("OutputWindow '{}': removed scene {}", name_, sceneId.toString());
-    }
-}
-
-bool OutputWindow::hasScene(const UUID& sceneId) const {
-    return std::find(assignedScenes_.begin(), assignedScenes_.end(), sceneId) != assignedScenes_.end();
-}
-
 Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
     if (window_ != nullptr) {
         return Err("OutputWindow already created");

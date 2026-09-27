@@ -167,11 +167,11 @@ void MainMenuBar::render(EditorContext& ctx) {
             if (ctx.project) ctx.project->setModified(true);
         }
         ImGui::Separator();
-        // Projector calibration (ADR-052): the output the active scene is routed to,
+        // Projector calibration (ADR-052): the first output showing the active scene,
         // else the first output.
         OutputWindow* toCalibrate = nullptr;
         if (ctx.outputManager) {
-            toCalibrate = ctx.outputManager->getOutput(es.activeScene().getAssignedOutputId());
+            toCalibrate = ctx.outputManager->firstOutputShowing(es.activeScene().getId());
             if (!toCalibrate && !ctx.outputManager->getOutputs().empty()) {
                 toCalibrate = ctx.outputManager->getOutputs().front().get();
             }
@@ -182,8 +182,7 @@ void MainMenuBar::render(EditorContext& ctx) {
             if (calibrating) {
                 es.endCalibration();
             } else {
-                es.beginCalibration(toCalibrate->getId(), toCalibrate->getCalibrationPoints(),
-                                    toCalibrate->getProjector());
+                es.beginCalibration(*toCalibrate);
             }
         }
         ImGui::Separator();

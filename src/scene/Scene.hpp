@@ -21,6 +21,11 @@ struct SceneViewState {
     bool snapToGrid = false;
 };
 
+// A canvas when nothing gives another size (ADR-047 §1), and the largest allowed.
+constexpr int DEFAULT_CANVAS_WIDTH = 1920;
+constexpr int DEFAULT_CANVAS_HEIGHT = 1080;
+constexpr int MAX_CANVAS_DIMENSION = 16384;
+
 class Scene {
 public:
     Scene();
@@ -33,11 +38,11 @@ public:
     bool isActive() const { return isActive_; }
     void setActive(bool active) { isActive_ = active; }
 
-    // Output routing (ADR-039): the output window this scene projects to. At most
-    // one output per scene; null means the scene is edit-only (not projected).
-    const UUID& getAssignedOutputId() const { return assignedOutputId_; }
-    void setAssignedOutputId(const UUID& id) { assignedOutputId_ = id; }
-    bool hasAssignedOutput() const { return !assignedOutputId_.isNull(); }
+    // The scene's canvas in pixels (ADR-047 §1). Quads and objects stay normalized
+    // [0, 1] in canvas space; outputs show slices of the canvas (OutputWindow). Each
+    // side is clamped to [1, MAX_CANVAS_DIMENSION].
+    IVec2 getCanvasSize() const { return canvasSize_; }
+    void setCanvasSize(IVec2 size);
 
     // View state access
     SceneViewState& getViewState() { return viewState_; }
@@ -103,7 +108,7 @@ public:
     // Deep copy under a fresh scene id (duplicate scene). Quads, groups and 3D objects
     // get fresh ids; group membership and parents follow the new ids; texture bindings
     // keep their media ids, so the copy shares its sources (ADR-040). The copy keeps the
-    // name and view, is inactive and is not assigned to an output. quadIdMap, when
+    // name, view and canvas size, is inactive and no output shows it. quadIdMap, when
     // given, receives source quad id -> copy quad id.
     std::unique_ptr<Scene> duplicate(std::unordered_map<UUID, UUID>* quadIdMap = nullptr) const;
 
@@ -111,7 +116,7 @@ private:
     UUID id_;
     std::string name_;
     bool isActive_ = false;
-    UUID assignedOutputId_;  // output this scene projects to (null = edit-only)
+    IVec2 canvasSize_ = IVec2(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
     SceneViewState viewState_;
     QuadManager quadManager_;
     std::vector<std::unique_ptr<QuadGroup>> groups_;
@@ -127,13 +132,6 @@ using SceneList = std::vector<std::unique_ptr<Scene>>;
 // Position of the scene with this id, or -1.
 int findSceneIndex(const SceneList& scenes, const UUID& sceneId);
 
-// Route a scene to an output. One scene per output: any other scene on that output is
-// unassigned. A null outputId clears the scene's assignment.
-void assignSceneToOutput(SceneList& scenes, const UUID& sceneId, const UUID& outputId);
-
-// Unassign every scene routed to this output (it was removed). True if any was.
-bool clearOutputAssignments(SceneList& scenes, const UUID& outputId);
-
 // "<baseName> copy", else "<baseName> copy 2", "... copy 3": the first no scene uses.
 std::string uniqueSceneCopyName(const SceneList& scenes, const std::string& baseName);
 
@@ -141,27 +139,30 @@ std::string uniqueSceneCopyName(const SceneList& scenes, const std::string& base
 // False (and no change) when either index is out of range or they are equal.
 bool moveScene(SceneList& scenes, size_t from, size_t to);
 
-// Live-show scene take (US-008): what pressing number key N does.
+// Live-show scene take (US-008, ADR-047 §5): what pressing number key N does.
+// An output and the scene it shows (null = none).
 struct SceneTakeOutput {
     UUID id;
     bool enabled = true;
+    UUID sceneId;
 };
 
 struct SceneTake {
     enum class Kind {
         None,      // nothing to do (out of range, or scene N is already active and live)
         Activate,  // make scene N active; routing unchanged
-        Route      // route scene N to outputId (taking it from its scene), make N active
+        Route      // show scene N on every output in outputIds, make N active
     };
     Kind kind = Kind::None;
     UUID sceneId;
-    UUID outputId;
+    std::vector<UUID> outputIds;
 };
 
-// Decide the take for scene `number` (1-based, list order). An assignment to an output
-// that is not in `outputs` (deleted) counts as no assignment. If scene N is assigned,
-// it just becomes active. Otherwise it is routed to O: the output the active scene is
-// on, else the first enabled output; with no O it just becomes active.
+// Decide the take for scene `number` (1-based, list order). If an output in `outputs`
+// already shows scene N, it just becomes active. Otherwise it goes on every output that
+// shows the active scene, so a blended group of projectors changes together; when no
+// output shows the active scene, on the first enabled output; with none, N just
+// becomes active.
 SceneTake planSceneTake(const SceneList& scenes, const UUID& activeSceneId, int number,
                         const std::vector<SceneTakeOutput>& outputs);
 

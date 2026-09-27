@@ -191,7 +191,7 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
         Project::SceneData sd;
         sd.id = sc.getId();
         sd.name = sc.getName();
-        sd.assignedOutputId = sc.getAssignedOutputId();
+        sd.canvas = sc.getCanvasSize();
         const SceneViewState& vs = sc.getViewState();
         sd.view.pan = vs.panOffset;
         sd.view.zoom = vs.zoomLevel;
@@ -227,7 +227,11 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
 
     if (om) {
         for (const auto& outPtr : om->getOutputs()) {
-            if (outPtr) project.getOutputs().push_back(outputToData(*outPtr));
+            if (!outPtr) continue;
+            Project::OutputData od = outputToData(*outPtr);
+            // A deleted scene is no longer shown; its id is not written.
+            if (!OutputManager::sceneForOutput(es.scenes, *outPtr)) od.sceneId = UUID::null();
+            project.getOutputs().push_back(std::move(od));
         }
     }
 
@@ -260,10 +264,10 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                                 SourceManager* sm) {
     clearProjectContent(es, sm);  // before any of the new project's sources exist
 
-    // Rebuild outputs from the file (v3) so scene assignments remap onto the freshly
-    // created output ids. v1/v2 files carry no outputs — keep the existing ones (e.g.
-    // the startup default Projector 1) untouched.
-    std::unordered_map<UUID, UUID> outputRemap;  // saved output id -> live output id
+    // Rebuild outputs from the file (v3), each with the scene it shows (scene ids are
+    // kept on load) and its slices. v1/v2 files carry no outputs: keep the existing
+    // ones (e.g. the startup default Projector 1) as hardware, but their routing and
+    // slices belonged to the show being replaced.
     if (om && !project.getOutputs().empty()) {
         std::vector<UUID> existing;
         for (const auto& o : om->getOutputs()) {
@@ -275,10 +279,15 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             OutputWindow* ow = om->createOutput(od.name);
             if (!ow) continue;
             applyOutputData(od, *ow);
-            outputRemap[od.id] = ow->getId();
         }
         // Shown in the Output panel now; F11 and hotplug resolve again (QM-090).
         om->resolveOutputs();
+    } else if (om) {
+        for (const auto& o : om->getOutputs()) {
+            if (!o) continue;
+            o->setSceneId(UUID::null());
+            o->getSlices().clear();
+        }
     }
 
     // v3.1 sources (ADR-046), created lazily the first time a quad references one:
@@ -320,10 +329,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
     for (const auto& sd : project.getScenes()) {
         auto scene = std::make_unique<Scene>(sd.id);
         scene->setName(sd.name);
-        if (!sd.assignedOutputId.isNull()) {
-            auto it = outputRemap.find(sd.assignedOutputId);
-            scene->setAssignedOutputId(it != outputRemap.end() ? it->second : UUID::null());
-        }
+        scene->setCanvasSize(sd.canvas);
         SceneViewState& vs = scene->getViewState();
         vs.panOffset = sd.view.pan;
         vs.zoomLevel = sd.view.zoom;
@@ -508,15 +514,13 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
     requestMeshLoads(es);
 
     // Preserve "launch is aimed at the projector": if outputs exist but no scene is
-    // assigned to any (e.g. a v1/v2 file), route the active scene to the first output
+    // shown on any (e.g. a v1/v2 file), route the active scene to the first output
     // so it still projects on F11.
     if (om && !om->getOutputs().empty()) {
-        bool anyAssigned = false;
-        for (const auto& scenePtr : es.scenes) {
-            if (scenePtr && scenePtr->hasAssignedOutput()) { anyAssigned = true; break; }
-        }
-        if (!anyAssigned) {
-            es.activeScene().setAssignedOutputId(om->getOutputs().front()->getId());
+        const bool anyShown = std::any_of(om->getOutputs().begin(), om->getOutputs().end(),
+                                          [&](const auto& o) { return o && OutputManager::sceneForOutput(es.scenes, *o); });
+        if (!anyShown) {
+            OutputManager::showScene(*om->getOutputs().front(), &es.activeScene(), es.scenes);
         }
     }
 
@@ -896,11 +900,8 @@ bool Application::initializeComponents() {
         m_editorState->statusTimer = 4.0f;
     });
     m_outputManager->setSceneKeyCallback([this](int sceneNumber) { queueSceneTake(sceneNumber); });
-    // A removed output must not stay the target of a scene (it would take that
-    // scene off the take keys' routing and resurface as a dangling id in the file).
-    m_outputManager->setOutputRemovedCallback([this](const UUID& outputId) {
-        if (clearOutputAssignments(m_editorState->scenes, outputId)) m_project->setModified(true);
-    });
+    // Outputs, their routing and slices are saved with the show.
+    m_outputManager->setOutputRemovedCallback([this](const UUID&) { m_project->setModified(true); });
     Logger::info("Output manager initialized with {} monitors", m_outputManager->getMonitorCount());
 
     // ADR-039 P2: create the default output and route the default scene to it. The
@@ -912,7 +913,9 @@ bool Application::initializeComponents() {
         OutputWindow* defaultOutput = m_outputManager->createOutput("Projector 1");
         if (defaultOutput) {
             m_outputManager->resolveOutputs();
-            m_editorState->activeScene().setAssignedOutputId(defaultOutput->getId());
+            Scene& scene = m_editorState->activeScene();
+            scene.setCanvasSize(defaultOutput->getEffectiveResolution());
+            OutputManager::showScene(*defaultOutput, &scene, m_editorState->scenes);
             Logger::info("Default scene assigned to output '{}' on monitor {}",
                          defaultOutput->getName(), defaultOutput->getMonitor());
         }
@@ -1175,7 +1178,7 @@ void Application::render() {
             const OutputWindow* calibrated =
                 m_outputManager ? m_outputManager->getOutput(es.calibratingOutputId) : nullptr;
             canvasKeys = calibrated &&
-                         es.activeScene().getAssignedOutputId() == es.calibratingOutputId &&
+                         calibrated->getSceneId() == es.activeScene().getId() &&
                          !calibrated->getCalibrationPoints().empty();
         }
         claimCanvasEditingKeys(canvasKeys);
@@ -1866,9 +1869,13 @@ void adoptObjectMeshes(EditorState& es, OutputManager* om, Project* project) {
         Scene* scene = es.quadResolver.findScene(done.sceneId);
         MeshObject* object = scene ? scene->getObject(done.objectId) : nullptr;
         if (!object) continue;
-        OutputWindow* output = (om && scene->hasAssignedOutput())
-                                   ? om->getOutput(scene->getAssignedOutputId()) : nullptr;
-        if (output && !output->getProjector().calibrated) {
+        // Frame every uncalibrated projector showing the scene on its objects.
+        for (size_t i = 0; om && i < om->getOutputs().size(); ++i) {
+            OutputWindow* output = om->getOutputs()[i].get();
+            if (!output || output->getSceneId() != scene->getId() ||
+                output->getProjector().calibrated) {
+                continue;
+            }
             Vec3 boxMin, boxMax;
             object->worldBounds(boxMin, boxMax);
             const IVec2 res = output->getEffectiveResolution();
@@ -1889,11 +1896,7 @@ void Application::takeSceneByNumber(int number) {
     // Calibration edits the scene routed to the calibrated output; keep it there.
     if (!es.calibratingOutputId.isNull()) return;
 
-    std::vector<SceneTakeOutput> outputs;
-    for (const auto& output : m_outputManager->getOutputs()) {
-        if (output) outputs.push_back({output->getId(), output->isEnabled()});
-    }
-    const SceneTake take = es.takeScene(number, outputs);
+    const SceneTake take = es.takeScene(number, *m_outputManager);
     if (take.kind == SceneTake::Kind::None) return;
     // Takes run inside render(), after the frame-boundary fit and before this frame's
     // projector frames are drawn: re-fit now so those frames are framed for the scene
@@ -1903,9 +1906,12 @@ void Application::takeSceneByNumber(int number) {
     const Scene& scene = es.activeScene();
     if (take.kind == SceneTake::Kind::Route) {
         m_project->setModified(true);
-        const OutputWindow* output = m_outputManager->getOutput(take.outputId);
+        const OutputWindow* output = m_outputManager->getOutput(take.outputIds.front());
+        const std::string where = take.outputIds.size() > 1
+                                      ? std::to_string(take.outputIds.size()) + " outputs"
+                                      : (output ? output->getName() : std::string("output"));
         snprintf(es.statusMessage, sizeof(es.statusMessage), "Scene %d: %s on %s", number,
-                 scene.getName().c_str(), output ? output->getName().c_str() : "output");
+                 scene.getName().c_str(), where.c_str());
     } else {
         snprintf(es.statusMessage, sizeof(es.statusMessage), "Scene %d: %s", number,
                  scene.getName().c_str());
@@ -2036,10 +2042,11 @@ void Application::runFrameBoundaryTasks() {
 // Every render and calibration path then reads a camera that is already right.
 void Application::fitProjectorsToOutputs() {
     if (!m_outputManager) return;
+    if (m_outputManager->followOutputSizes(m_editorState->scenes)) m_project->setModified(true);
     for (const auto& output : m_outputManager->getOutputs()) {
         if (!output) continue;
         const IVec2 size = output->getEffectiveResolution();
-        const Scene* scene = OutputManager::sceneForOutput(m_editorState->scenes, output->getId());
+        const Scene* scene = OutputManager::sceneForOutput(m_editorState->scenes, *output);
         Vec3 lo, hi;
         const bool framed = scene && scene->visibleObjectBounds(lo, hi);
         output->getProjector() = ProjectorCamera::fitToOutput(
@@ -2165,13 +2172,15 @@ void Application::performNewProject() {
     es.midiMappings.clear();  // show content; the Control panel's device choices stay
 
     // One default scene with one quad, still aimed at the first output. Outputs are
-    // hardware setup, not show content, so New keeps them. Their projector calibration is show
-    // content (it belongs to the objects it was made for), so it starts over.
+    // hardware setup, not show content, so New keeps them. Their projector calibration,
+    // routing and slices are show content (saved in the .qmap), so they start over.
     if (m_outputManager) {
         for (const auto& output : m_outputManager->getOutputs()) {
             if (!output) continue;
             output->getProjector() = ProjectorCamera{};
             output->getCalibrationPoints().clear();
+            output->setSceneId(UUID::null());
+            output->getSlices().clear();
         }
     }
     es.endCalibration();
@@ -2180,7 +2189,9 @@ void Application::performNewProject() {
     Quad* quad = scene.getQuadManager().createQuad("Quad 1");
     if (quad) scene.getQuadManager().selectQuad(quad->getId());
     if (m_outputManager && !m_outputManager->getOutputs().empty()) {
-        scene.setAssignedOutputId(m_outputManager->getOutputs().front()->getId());
+        OutputWindow& first = *m_outputManager->getOutputs().front();
+        scene.setCanvasSize(first.getEffectiveResolution());
+        OutputManager::showScene(first, &scene, es.scenes);
     }
 
     *m_project = Project();
@@ -2296,7 +2307,7 @@ void Application::syncAudio() {
     if (!m_audioEngine || !m_sourceManager || !m_editorState || !m_outputManager) return;
     const EditorState& es = *m_editorState;
     syncSourceAudio(*m_audioEngine, *m_sourceManager,
-                    audibleSourceIds(es.scenes, es.activeSceneId, enabledOutputIds(m_outputManager->getOutputs())));
+                    audibleSourceIds(es.scenes, es.activeSceneId, liveSceneIds(m_outputManager->getOutputs())));
 }
 
 void Application::applyProjectAudio() {

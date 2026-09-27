@@ -268,6 +268,13 @@ private:
     bool showOutputs(int count);
     void applyVsync();
     UUID outputId(int index) { return outputs().getOutputs()[static_cast<size_t>(index)]->getId(); }
+    // Show a scene on output `index` (through a full-canvas slice).
+    void route(const UUID& sceneId, int index) {
+        const int at = findSceneIndex(es().scenes, sceneId);
+        OutputManager::showScene(*outputs().getOutputs()[static_cast<size_t>(index)],
+                                 at >= 0 ? es().scenes[static_cast<size_t>(at)].get() : nullptr,
+                                 es().scenes);
+    }
     GLFWkeyfun editorKeyCallback();
     std::vector<UUID> proceduralSet(int variant);
     void fillQuadGrid(Scene& scene, int count, const std::vector<UUID>& media, bool variety);
@@ -318,6 +325,10 @@ void BenchRunner::resetShow() {
     e.commandHistory.clear();
     e.scenes.clear();
     e.setActiveScene(e.activeScene().getId());  // lazily recreates one scene
+    for (auto& output : outputs().getOutputs()) {
+        output->setSceneId(UUID::null());
+        output->getSlices().clear();
+    }
     e.quadTextures.clear();
     e.quadTexturePaths.clear();
     e.activeVideoSourceId = UUID::null();
@@ -500,7 +511,7 @@ json BenchRunner::runQuads(int outputCount) {
         Scene& scene = (o == 0) ? es().activeScene()
                                 : *es().addScene("Bench scene " + std::to_string(o + 1));
         fillQuadGrid(scene, cfg_.quads, media, /*variety=*/true);
-        es().assignSceneToOutput(scene.getId(), outputId(o));
+        route(scene.getId(), o);
         sceneIds.push_back(scene.getId());
     }
     es().setActiveScene(sceneIds.front());
@@ -571,7 +582,7 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
         Scene& scene = (o == 0) ? es().activeScene()
                                 : *es().addScene("Bench videos " + std::to_string(o + 1));
         fillQuadGrid(scene, cfg_.videos, media, /*variety=*/false);
-        es().assignSceneToOutput(scene.getId(), outputId(o));
+        route(scene.getId(), o);
         sceneIds.push_back(scene.getId());
     }
     es().setActiveScene(sceneIds.front());
@@ -689,11 +700,11 @@ json BenchRunner::runSceneSwitch() {
     }
     // Output 0 is the switched projector; any other output keeps one fixed scene.
     es().setActiveScene(sceneIds.front());
-    es().assignSceneToOutput(sceneIds.front(), outputId(0));
+    route(sceneIds.front(), 0);
     for (int o = 1; o < cfg_.outputs; ++o) {
         Scene* fixed = es().addScene("Bench fixed " + std::to_string(o + 1));
         fillQuadGrid(*fixed, quadsPerScene, proceduralSet(o), true);
-        es().assignSceneToOutput(fixed->getId(), outputId(o));
+        route(fixed->getId(), o);
     }
     es().setActiveScene(sceneIds.front());
     const UUID projector = outputId(0);
@@ -732,7 +743,7 @@ json BenchRunner::runSceneSwitch() {
             continue;
         }
         current = next;
-        const Scene* shown = OutputManager::sceneForOutput(es().scenes, projector);
+        const Scene* shown = OutputManager::sceneForOutput(es().scenes, *outputs().getOutput(projector));
         if (!shown || shown->getId() != sceneIds[current]) ++wrongScene;
         toOutput.push_back(ms(requested, f.presented));
         toEditor.push_back(ms(requested, f.editorSwapped));
@@ -769,11 +780,11 @@ json BenchRunner::runLatency() {
 
     Scene& scene = es().activeScene();
     fillQuadGrid(scene, 16, proceduralSet(0), /*variety=*/false);
-    es().assignSceneToOutput(scene.getId(), outputId(0));
+    route(scene.getId(), 0);
     for (int o = 1; o < cfg_.outputs; ++o) {
         Scene* other = es().addScene("Bench other " + std::to_string(o + 1));
         fillQuadGrid(*other, 16, proceduralSet(o), false);
-        es().assignSceneToOutput(other->getId(), outputId(o));
+        route(other->getId(), o);
     }
     es().setActiveScene(scene.getId());
     Quad* quad = scene.getQuadManager().getQuads().front().get();
@@ -870,7 +881,7 @@ json BenchRunner::runDrift() {
     quad->getGeometry().setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f),
                                     Vec2(0.0f, 1.0f)});
     quad->getTexture().mediaId = id;
-    es().assignSceneToOutput(scene.getId(), outputId(0));
+    route(scene.getId(), 0);
 
     step();
     applyVsync();
@@ -961,7 +972,7 @@ json BenchRunner::runSameFrame() {
                                     Vec2(0.0f, 1.0f)});
     es().addScene("Bench black");
     const UUID projector = outputId(0);
-    es().assignSceneToOutput(lit.getId(), projector);
+    route(lit.getId(), 0);
     es().setActiveScene(lit.getId());
     GLFWwindow* window = app_.m_window;
     const GLFWkeyfun keyCallback = editorKeyCallback();
@@ -1091,9 +1102,9 @@ int BenchRunner::run() {
     auto emptyShow = [&]() {
         resetShow();
         if (!showOutputs(leakOutputs)) return false;
-        es().assignSceneToOutput(es().activeScene().getId(), outputId(0));
+        route(es().activeScene().getId(), 0);
         for (int o = 1; o < leakOutputs; ++o) {
-            es().assignSceneToOutput(es().addScene("Bench empty")->getId(), outputId(o));
+            route(es().addScene("Bench empty")->getId(), o);
         }
         return true;
     };

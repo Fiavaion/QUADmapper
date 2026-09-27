@@ -7,6 +7,7 @@
 #include "scene/MeshObject.hpp"
 #include "scene/MeshSubdivision.hpp"
 #include "scene/ProjectorCamera.hpp"
+#include "scene/Slice.hpp"
 #include <glm/glm.hpp>
 #include <memory>
 #include <cstdint>
@@ -58,6 +59,19 @@ public:
     void renderMeshObjects(const std::vector<std::unique_ptr<MeshObject>>& objects,
                            const ProjectorCamera& camera,
                            const std::unordered_map<UUID, Texture*>& textures);
+
+    // Draw one slice of a scene canvas into the bound output frame (ADR-047 §4): the
+    // slice's input rectangle of `canvasTexture` through its warp, faded by its blend
+    // zones, lifted by its black level. The texture holds the canvas (canvasSize
+    // pixels, unrotated) drawn with output rotation `canvasRotation`. The output
+    // rotation applies as for quads. `outputSize` is the frame's unrotated (effective)
+    // size: an unwarped slice whose input is exactly that size copies texel for texel,
+    // so an output showing a whole canvas of its own size, drawn in its rotation, is
+    // unchanged by the pass. The caller sets the blend function (the canvas is
+    // composited with ONE, ONE_MINUS_SRC_ALPHA). The warp's mesh is cached by slice
+    // id, like a quad's.
+    void renderSlice(const Slice& slice, uint32_t canvasTexture, IVec2 canvasSize,
+                     Rotation canvasRotation, IVec2 outputSize);
 
     // Render selection outline for a quad
     void renderQuadOutline(const Quad& quad, const glm::vec4& color, float lineWidth = 2.0f);
@@ -122,9 +136,9 @@ private:
     bool tessellate(const QuadGeometry& geometry);
     // Upload gridVertices_ as GL_LINES and draw them with the outline shader.
     void drawGridLines(const glm::vec4& color, float lineWidth);
-    // The quad's GPU mesh, tessellated and uploaded on first draw or when its
-    // geometry changed since the last upload.
-    const GpuQuad& quadBuffersFor(const Quad& quad);
+    // The GPU mesh of a quad or slice (by its id), tessellated and uploaded on first
+    // draw or when its geometry changed since the last upload.
+    const GpuQuad& surfaceBuffersFor(const UUID& id, const QuadGeometry& geometry);
     void updateOutlineBuffers(const Quad& quad);
     void createDefaultTexture();
 
@@ -153,6 +167,7 @@ private:
     ShaderProgram mesh3dShader_;  // mesh3d.vert + quad.frag (ADR-052)
     ShaderProgram outlineShader_;
     ShaderProgram handleShader_;
+    ShaderProgram sliceShader_;  // slice.vert + slice.frag (ADR-047)
     Texture defaultTexture_;
 
     // OpenGL objects for outline

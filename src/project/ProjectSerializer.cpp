@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -42,15 +43,28 @@ namespace quadmapper {
 //         - objects[].absPath: the mesh's absolute path, written beside a relative
 //           "path" (TD-16). A reader tries "path" first, then "absPath"; missing =
 //           "path" only.
+//   3.4 = scene canvas -> output slices (ADR-047), additive:
+//         - scenes[].canvas: [width, height] in pixels.
+//         - outputs[].sceneId: the scene the output shows (several outputs may show
+//           one scene), and outputs[].slices: [{id, name, input: [x, y, w, h] canvas
+//           pixels, warp: quad geometry in output space, blend: {left, right, top,
+//           bottom: {width, gamma, curve}}, blackLevel}].
+//         - scenes[].assignedOutputId is still written (the first output showing
+//           the scene) so 3.0-3.3 readers keep their routing; 3.4 readers ignore it.
+//         Files before 3.4 are migrated on load: output.sceneId from the scene whose
+//         assignedOutputId names it, canvas = that output's effective (rotated)
+//         resolution, else 1920x1080, and one full-canvas slice with no warp and no
+//         blend on every output that shows a scene.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
-static constexpr const char* kSceneFormatVersion = "3.3.0";
+static constexpr const char* kSceneFormatVersion = "3.4.0";
 
 // Load-time clamps for untrusted values (ADR-046 §3).
 static constexpr int kMaxMonitorIndex = 63;
 static constexpr int kMaxOutputDimension = 16384;
 static constexpr size_t kMaxCalibrationPoints = 4096;
+static constexpr size_t kMaxSlicesPerOutput = 256;
 static constexpr float kMinPlaybackSpeed = 0.1f;  // VideoPlayer::setSpeed range
 static constexpr float kMaxPlaybackSpeed = 4.0f;
 
@@ -560,12 +574,18 @@ static void loadQuadIntoScene(Project::SceneData& scene, const nlohmann::json& q
 // Serialize one scene DTO to a v3 "scenes" element. A quad's mediaId is written only
 // when it names an entry of the "sources" table (knownSourceIds).
 static nlohmann::json serializeScene(const Project::SceneData& scene,
-                                     const std::unordered_set<UUID>& knownSourceIds) {
+                                     const std::unordered_set<UUID>& knownSourceIds,
+                                     const std::vector<Project::OutputData>& outputs) {
     nlohmann::json j;
     j["id"] = scene.id.toString();
     j["name"] = scene.name;
-    if (!scene.assignedOutputId.isNull()) {
-        j["assignedOutputId"] = scene.assignedOutputId.toString();
+    j["canvas"] = nlohmann::json::array({scene.canvas.x, scene.canvas.y});
+    // For 3.0-3.3 readers, which route one output per scene (3.4 reads outputs[].sceneId).
+    for (const auto& output : outputs) {
+        if (output.sceneId == scene.id) {
+            j["assignedOutputId"] = output.id.toString();
+            break;
+        }
     }
     j["view"] = {
         {"pan", serializeVec2(scene.view.pan)},
@@ -597,16 +617,22 @@ static nlohmann::json serializeScene(const Project::SceneData& scene,
 }
 
 // Deserialize a v2/v3 "scenes" element into a scene DTO. v2 elements simply lack
-// the v3-only fields (assignedOutputId/view/id), which fall back to defaults.
-static Project::SceneData deserializeScene(const nlohmann::json& j) {
+// the v3-only fields (assignedOutputId/view/id), which fall back to defaults; a
+// missing canvas is left for the pre-3.4 migration. `assignedOutputId` receives the
+// pre-3.4 routing (null when absent or malformed).
+static Project::SceneData deserializeScene(const nlohmann::json& j, UUID& assignedOutputId) {
     Project::SceneData scene;
     scene.id = parseIdOrNull(j);
     if (scene.id.isNull()) {
         scene.id = UUID::generate();  // generate a fresh id so every scene is addressable
     }
     scene.name = j.contains("name") ? j["name"].get<std::string>() : "Scene";
-    if (j.contains("assignedOutputId")) {
-        scene.assignedOutputId = parseUuidOrNull(j["assignedOutputId"]);  // bad id = unassigned
+    assignedOutputId = j.contains("assignedOutputId") ? parseUuidOrNull(j["assignedOutputId"])
+                                                      : UUID::null();
+    if (j.contains("canvas")) {
+        const auto& c = checkedArray(j["canvas"], 2);
+        scene.canvas = IVec2(std::clamp(c[0].get<int>(), 1, kMaxOutputDimension),
+                             std::clamp(c[1].get<int>(), 1, kMaxOutputDimension));
     }
     if (j.contains("view") && j["view"].is_object()) {
         const auto& v = j["view"];
@@ -723,6 +749,73 @@ static void deserializeProjector(const nlohmann::json& j, Project::OutputData& o
     }
 }
 
+// ---- Output slices (.qmap v3.4, ADR-047) --------------------------------------
+
+static const char* const kSliceEdgeNames[SLICE_EDGE_COUNT] = {"left", "right", "top", "bottom"};
+
+static nlohmann::json serializeSlice(const Slice& slice) {
+    nlohmann::json blend;
+    for (int e = 0; e < SLICE_EDGE_COUNT; ++e) {
+        const BlendEdge& edge = slice.blend[static_cast<size_t>(e)];
+        blend[kSliceEdgeNames[e]] = {{"width", edge.width}, {"gamma", edge.gamma}, {"curve", edge.curve}};
+    }
+    nlohmann::json j;
+    j["id"] = slice.id.toString();
+    j["name"] = slice.name;
+    j["input"] = nlohmann::json::array({slice.input.x, slice.input.y, slice.input.width,
+                                        slice.input.height});
+    j["warp"] = serializeQuadGeometry(slice.warp);
+    j["blend"] = blend;
+    j["blackLevel"] = slice.blackLevel;
+    return j;
+}
+
+// Untrusted values are bounded like every other vector: a rectangle must have a
+// positive size, a blend width cannot be negative, gamma and curve stay in range.
+static Slice deserializeSlice(const nlohmann::json& j) {
+    if (!j.is_object()) throw std::runtime_error("Malformed project file: expected a slice object");
+    Slice slice;
+    slice.id = parseIdOrNull(j);
+    if (slice.id.isNull()) slice.id = UUID::generate();
+    if (j.contains("name")) slice.name = j["name"].get<std::string>();
+    if (j.contains("input")) {
+        const auto& r = checkedArray(j["input"], 4);
+        const float limit = static_cast<float>(kMaxOutputDimension);
+        slice.input.x = std::clamp(readFiniteFloat(r[0]), -limit, limit);
+        slice.input.y = std::clamp(readFiniteFloat(r[1]), -limit, limit);
+        slice.input.width = std::clamp(readFiniteFloat(r[2]), 1.0f, limit);
+        slice.input.height = std::clamp(readFiniteFloat(r[3]), 1.0f, limit);
+    }
+    if (j.contains("warp")) {
+        if (!j["warp"].is_object()) throw std::runtime_error("Malformed project file: expected a slice warp");
+        deserializeQuadGeometry(j["warp"], slice.warp);
+    }
+    if (j.contains("blend")) {
+        const auto& blend = j["blend"];
+        if (!blend.is_object()) throw std::runtime_error("Malformed project file: expected a blend object");
+        for (int e = 0; e < SLICE_EDGE_COUNT; ++e) {
+            const auto it = blend.find(kSliceEdgeNames[e]);
+            if (it == blend.end()) continue;
+            if (!it->is_object()) throw std::runtime_error("Malformed project file: bad blend edge");
+            BlendEdge& edge = slice.blend[static_cast<size_t>(e)];
+            if (it->contains("width")) {
+                edge.width = std::clamp(readFiniteFloat((*it)["width"]), 0.0f,
+                                        static_cast<float>(kMaxOutputDimension));
+            }
+            if (it->contains("gamma")) {
+                edge.gamma = std::clamp(readFiniteFloat((*it)["gamma"]), MIN_BLEND_GAMMA, MAX_BLEND_GAMMA);
+            }
+            if (it->contains("curve")) {
+                edge.curve = std::clamp(readFiniteFloat((*it)["curve"]), MIN_BLEND_CURVE, MAX_BLEND_CURVE);
+            }
+        }
+    }
+    if (j.contains("blackLevel")) {
+        slice.blackLevel = std::clamp(readFiniteFloat(j["blackLevel"]), 0.0f, MAX_BLACK_LEVEL);
+    }
+    return slice;
+}
+
 static nlohmann::json serializeOutput(const Project::OutputData& output) {
     nlohmann::json j;
     j["id"] = output.id.toString();
@@ -737,6 +830,14 @@ static nlohmann::json serializeOutput(const Project::OutputData& output) {
     j["rotation"] = output.rotationDegrees;
     j["enabled"] = output.enabled;
     j["projector"] = serializeProjector(output);
+    if (!output.sceneId.isNull()) {
+        j["sceneId"] = output.sceneId.toString();
+    }
+    nlohmann::json slices = nlohmann::json::array();
+    for (const Slice& slice : output.slices) {
+        slices.push_back(serializeSlice(slice));
+    }
+    j["slices"] = slices;
     return j;
 }
 
@@ -784,6 +885,20 @@ static Project::OutputData deserializeOutput(const nlohmann::json& j) {
         // Files before v3.2: an uncalibrated projector with the default lens for this output.
         output.projector.intrinsics =
             ProjectorIntrinsics::fromThrowRatio(1.5f, output.resolution.x, output.resolution.y);
+    }
+    // v3.4 routing (ADR-047); earlier files are migrated in loadProjectModel.
+    if (j.contains("sceneId")) {
+        output.sceneId = parseUuidOrNull(j["sceneId"]);  // bad id = no scene
+    }
+    if (j.contains("slices")) {
+        const auto& slices = j["slices"];
+        if (!slices.is_array()) throw std::runtime_error("Malformed project file: expected a slices array");
+        if (slices.size() > kMaxSlicesPerOutput) {
+            throw std::runtime_error("Malformed project file: too many slices");
+        }
+        for (const auto& sliceJson : slices) {
+            output.slices.push_back(deserializeSlice(sliceJson));
+        }
     }
     return output;
 }
@@ -1093,6 +1208,39 @@ static void resolveQuadSources(Project& project) {
     }
 }
 
+// True for a file of format 3.4 or later, which stores canvases, output routing and
+// slices (ADR-047). The version was validated before the model is loaded.
+static bool hasCanvasSlices(const nlohmann::json& json) {
+    const std::string version = json["version"].get<std::string>();
+    int major = 0, minor = 0;
+    if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) < 1) return false;
+    return major > 3 || (major == 3 && minor >= 4);
+}
+
+// Pre-3.4 files (ADR-047 §7): each output shows the scene whose assignedOutputId
+// named it (the first such scene in list order, as the old routing drew), through one
+// full-canvas slice with no warp and no blend. A scene's canvas is its output's
+// effective resolution (rotated, as the editor laid the quads out on it), else
+// 1920x1080. Outputs no scene named show nothing and get no slice.
+static void migrateToCanvasSlices(Project& project, const std::vector<UUID>& assignedOutputIds) {
+    auto& scenes = project.getScenes();
+    for (size_t i = 0; i < scenes.size(); ++i) {
+        scenes[i].canvas = IVec2(1920, 1080);
+    }
+    for (auto& output : project.getOutputs()) {
+        for (size_t i = 0; i < scenes.size() && i < assignedOutputIds.size(); ++i) {
+            if (assignedOutputIds[i] != output.id) continue;
+            const bool quarterTurn = output.rotationDegrees == 90 || output.rotationDegrees == 270;
+            const IVec2 effective = quarterTurn ? IVec2(output.resolution.y, output.resolution.x)
+                                                : output.resolution;
+            scenes[i].canvas = effective;  // a scene named one output at most
+            output.sceneId = scenes[i].id;
+            output.slices.assign(1, makeFullCanvasSlice(scenes[i].canvas));
+            break;
+        }
+    }
+}
+
 // Rebuild the flat quads_/texturePaths_/groups_ as the union of every scene, so
 // flat consumers (and the existing flat-API tests) keep working after a v3 load.
 static void flattenScenesToFlat(Project& project) {
@@ -1124,9 +1272,12 @@ static void loadProjectModel(const nlohmann::json& json, Project& project,
     }
 
     auto& scenes = project.getScenes();
+    std::vector<UUID> assignedOutputIds;  // parallel to scenes: pre-3.4 routing
     if (json.contains("scenes") && json["scenes"].is_array()) {
         for (const auto& sceneJson : json["scenes"]) {
-            scenes.push_back(deserializeScene(sceneJson));
+            UUID assignedOutputId;
+            scenes.push_back(deserializeScene(sceneJson, assignedOutputId));
+            assignedOutputIds.push_back(assignedOutputId);
             if (sceneJson.is_object() && sceneJson.contains("objects")) {
                 const auto& objectsJson = sceneJson["objects"];
                 if (!objectsJson.is_array()) {
@@ -1168,6 +1319,9 @@ static void loadProjectModel(const nlohmann::json& json, Project& project,
             project.getOutputs().push_back(deserializeOutput(outputJson));
         }
     }
+    if (!hasCanvasSlices(json)) {
+        migrateToCanvasSlices(project, assignedOutputIds);
+    }
 
     if (json.contains("sources") && json["sources"].is_array()) {
         for (const auto& sourceJson : json["sources"]) {
@@ -1205,7 +1359,7 @@ static nlohmann::json buildProjectJson(const Project& project, const fs::path& b
 
         nlohmann::json scenesJson = nlohmann::json::array();
         for (const auto& scene : project.getScenes()) {
-            nlohmann::json sceneJson = serializeScene(scene, sourceIds);
+            nlohmann::json sceneJson = serializeScene(scene, sourceIds, project.getOutputs());
             if (!scene.objects.empty()) {
                 nlohmann::json objectsJson = nlohmann::json::array();
                 for (const auto& object : scene.objects) {

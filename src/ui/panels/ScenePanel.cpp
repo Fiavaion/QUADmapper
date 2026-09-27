@@ -11,6 +11,7 @@
 
 #include <imgui.h>
 #include <cstring>
+#include <string>
 
 namespace quadmapper {
 
@@ -28,6 +29,10 @@ void ScenePanel::renderActionButtons(EditorContext& ctx) {
         // which blanks the canvas/Quad List and reads as "nothing happened"; seed a
         // starter quad so the new scene is immediately usable (like the first scene).
         if (Scene* s = es.addScene(es.generateUniqueSceneName())) {
+            // Its canvas takes the first output's resolution (ADR-047 §1).
+            if (ctx.outputManager && !ctx.outputManager->getOutputs().empty()) {
+                s->setCanvasSize(ctx.outputManager->getOutputs().front()->getEffectiveResolution());
+            }
             if (Quad* q = s->getQuadManager().createQuad("Quad 1")) {
                 s->getQuadManager().selectQuad(q->getId());
             }
@@ -42,7 +47,7 @@ void ScenePanel::renderActionButtons(EditorContext& ctx) {
         if (es.duplicateScene(es.activeSceneId) && ctx.project) ctx.project->setModified(true);
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Copy the active scene (unassigned) and make the copy active");
+        ImGui::SetTooltip("Copy the active scene (on no output) and make the copy active");
     }
 
     ImGui::SameLine();
@@ -154,34 +159,33 @@ void ScenePanel::renderSceneList(EditorContext& ctx) {
             }
         }
 
-        // Per-scene output assignment dropdown.
+        // The outputs showing this scene (ADR-047: several may). Each entry toggles
+        // whether that output shows it; an output shows one scene, so turning this
+        // one on replaces the scene it showed.
         ImGui::SameLine();
         ImGui::SetNextItemWidth(150.0f);
-        const UUID& assignedId = scene->getAssignedOutputId();
-        const char* previewName = "(no output)";
+        std::string shownOn;
         if (om) {
-            if (const OutputWindow* assigned = om->getOutput(assignedId)) {
-                previewName = assigned->getName().c_str();
+            for (const auto& output : om->getOutputs()) {
+                if (!output || output->getSceneId() != scene->getId()) continue;
+                shownOn += (shownOn.empty() ? "" : ", ") + output->getName();
             }
         }
-        if (ImGui::BeginCombo("##output", previewName)) {
-            if (ImGui::Selectable("(no output)", !scene->hasAssignedOutput())) {
-                es.assignSceneToOutput(scene->getId(), UUID::null());
-                if (ctx.project) ctx.project->setModified(true);
-            }
+        if (ImGui::BeginCombo("##output", shownOn.empty() ? "(no output)" : shownOn.c_str())) {
             if (om) {
                 for (const auto& output : om->getOutputs()) {
                     if (!output) continue;
-                    bool selected = (output->getId() == assignedId);
-                    if (ImGui::Selectable(output->getName().c_str(), selected)) {
-                        es.assignSceneToOutput(scene->getId(), output->getId());
+                    const bool shows = output->getSceneId() == scene->getId();
+                    if (ImGui::Selectable(output->getName().c_str(), shows,
+                                          ImGuiSelectableFlags_DontClosePopups)) {
+                        OutputManager::showScene(*output, shows ? nullptr : scene, es.scenes);
                         if (ctx.project) ctx.project->setModified(true);
                     }
-                    if (selected) ImGui::SetItemDefaultFocus();
                 }
             }
             ImGui::EndCombo();
         }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Outputs showing this scene");
 
         ImGui::PopID();
     }

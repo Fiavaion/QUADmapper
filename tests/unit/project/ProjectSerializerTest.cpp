@@ -436,12 +436,14 @@ TEST(ProjectSerializerV3Test, V3RoundTripScenesAndOutputs) {
     out.resolution = IVec2(1280, 720);
     out.rotationDegrees = 90;
     out.enabled = true;
-    original.getOutputs().push_back(out);
 
     Project::SceneData s1;
     s1.id = UUID::generate();
     s1.name = "Stage";
-    s1.assignedOutputId = outputId;  // routed to the projector
+    s1.canvas = IVec2(720, 1280);
+    out.sceneId = s1.id;  // routed to the projector
+    out.slices.push_back(makeFullCanvasSlice(s1.canvas));
+    original.getOutputs().push_back(out);
     s1.view.zoom = 2.5f;
     {
         Quad q; q.setName("StageQuad");
@@ -456,24 +458,27 @@ TEST(ProjectSerializerV3Test, V3RoundTripScenesAndOutputs) {
     original.getScenes().push_back(std::move(s2));
 
     std::string json = serializer.serialize(original);
-    EXPECT_NE(json.find("\"version\": \"3.3.0\""), std::string::npos);
+    EXPECT_NE(json.find("\"version\": \"3.4.0\""), std::string::npos);
     EXPECT_NE(json.find("scenes"), std::string::npos);
     EXPECT_NE(json.find("outputs"), std::string::npos);
+    // 3.0-3.3 readers still find the routing where they look for it.
+    EXPECT_NE(json.find("\"assignedOutputId\": \"" + outputId.toString() + "\""), std::string::npos);
 
     Project loaded;
     ASSERT_TRUE(serializer.deserialize(json, loaded).isSuccess());
 
     ASSERT_EQ(loaded.getScenes().size(), 2u);
     EXPECT_EQ(loaded.getScenes()[0].name, "Stage");
-    EXPECT_EQ(loaded.getScenes()[0].assignedOutputId, outputId);
-    EXPECT_FALSE(loaded.getScenes()[0].assignedOutputId.isNull());
+    EXPECT_EQ(loaded.getScenes()[0].canvas, IVec2(720, 1280));
     EXPECT_NEAR(loaded.getScenes()[0].view.zoom, 2.5f, 1e-4f);
     ASSERT_EQ(loaded.getScenes()[0].quads.size(), 1u);
     EXPECT_EQ(loaded.getScenes()[0].quads[0].getName(), "StageQuad");
     EXPECT_EQ(loaded.getScenes()[0].texturePaths[0], "media/stage.png");
-    EXPECT_TRUE(loaded.getScenes()[1].assignedOutputId.isNull());
 
     ASSERT_EQ(loaded.getOutputs().size(), 1u);
+    EXPECT_EQ(loaded.getOutputs()[0].sceneId, loaded.getScenes()[0].id);
+    ASSERT_EQ(loaded.getOutputs()[0].slices.size(), 1u);
+    EXPECT_EQ(loaded.getOutputs()[0].slices[0].input, (CanvasRect{0.0f, 0.0f, 720.0f, 1280.0f}));
     EXPECT_EQ(loaded.getOutputs()[0].id, outputId);
     EXPECT_EQ(loaded.getOutputs()[0].name, "Projector 1");
     EXPECT_EQ(loaded.getOutputs()[0].monitor, 1);
@@ -741,7 +746,7 @@ TEST(ProjectSerializerControlTest, FourteenBitMappingsRoundTripAndSevenBitStaysU
     original.getMidiMappings() = {fine, coarse};
 
     const std::string json = serializer.serialize(original);
-    EXPECT_NE(json.find("\"version\": \"3.3.0\""), std::string::npos);
+    EXPECT_NE(json.find("\"version\": \"3.4.0\""), std::string::npos);
     size_t bitsFields = 0;
     for (size_t at = json.find("\"bits\""); at != std::string::npos; at = json.find("\"bits\"", at + 1)) {
         ++bitsFields;

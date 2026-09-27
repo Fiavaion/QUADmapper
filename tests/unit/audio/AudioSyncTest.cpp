@@ -1034,22 +1034,22 @@ TEST(AudioTransportTest, OnceIsSilentOnceEnded) {
 TEST(AudibleSourcesTest, ActiveSceneAndScenesOnEnabledOutputsAreHeard) {
     const UUID clipA = UUID::generate(), clipB = UUID::generate(), clipC = UUID::generate();
     const UUID clipD = UUID::generate(), shared = UUID::generate();
-    const UUID outputOn = UUID::generate(), outputOff = UUID::generate();
     SceneList scenes;
-    auto makeScene = [&](std::vector<UUID> media, const UUID& output) {
+    auto makeScene = [&](std::vector<UUID> media) {
         auto scene = std::make_unique<Scene>();
         for (const UUID& m : media) scene->getQuadManager().createQuad("q")->getTexture().mediaId = m;
-        scene->setAssignedOutputId(output);
         scenes.push_back(std::move(scene));
         return scenes.back()->getId();
     };
-    const UUID editing = makeScene({clipA, shared}, UUID());  // active, on no output
-    makeScene({clipB}, outputOn);                              // live on an enabled output
-    makeScene({clipC, shared}, outputOff);                     // on a disabled output
-    makeScene({clipD}, UUID());                                // edit-only, not active
-    scenes.back()->getQuadManager().createQuad("empty");       // a quad with no media
+    const UUID editing = makeScene({clipA, shared});  // active, on no output
+    const UUID onAir = makeScene({clipB});            // shown by an enabled output
+    const UUID offAir = makeScene({clipC, shared});   // shown by a disabled output only
+    makeScene({clipD});                               // edit-only, not active
+    scenes.back()->getQuadManager().createQuad("empty");  // a quad with no media
+    // liveSceneIds of the outputs: only the enabled output's scene.
+    const std::unordered_set<UUID> live{onAir};
 
-    const auto heard = audibleSourceIds(scenes, editing, {outputOn});
+    const auto heard = audibleSourceIds(scenes, editing, live);
     EXPECT_TRUE(heard.count(clipA));
     EXPECT_TRUE(heard.count(clipB));
     EXPECT_TRUE(heard.count(shared));  // one heard scene is enough
@@ -1059,14 +1059,32 @@ TEST(AudibleSourcesTest, ActiveSceneAndScenesOnEnabledOutputsAreHeard) {
     EXPECT_EQ(heard.size(), 3u);
 
     // A scene take moves the active scene: the soundtrack follows the picture.
-    const auto afterTake = audibleSourceIds(scenes, scenes[3]->getId(), {outputOn});
+    const auto afterTake = audibleSourceIds(scenes, scenes[3]->getId(), live);
     EXPECT_TRUE(afterTake.count(clipD));
     EXPECT_FALSE(afterTake.count(clipA));
     EXPECT_TRUE(afterTake.count(clipB));
     // Enabling the other output makes its scene live too.
-    EXPECT_TRUE(audibleSourceIds(scenes, editing, {outputOn, outputOff}).count(clipC));
+    EXPECT_TRUE(audibleSourceIds(scenes, editing, {onAir, offAir}).count(clipC));
     // No active scene and no enabled output: nothing is heard.
     EXPECT_TRUE(audibleSourceIds(scenes, UUID(), {}).empty());
+}
+
+// The live scenes follow the routing (ADR-047): the scenes enabled outputs show, each
+// once however many outputs show it.
+TEST(AudibleSourcesTest, LiveScenesAreThoseEnabledOutputsShow) {
+    struct FakeOutput {
+        UUID sceneId;
+        bool enabled = true;
+        bool isEnabled() const { return enabled; }
+        const UUID& getSceneId() const { return sceneId; }
+    };
+    const UUID shared = UUID::generate(), offAir = UUID::generate();
+    std::vector<std::unique_ptr<FakeOutput>> outputs;
+    outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{shared, true}));
+    outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{shared, true}));
+    outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{offAir, false}));
+    outputs.push_back(std::make_unique<FakeOutput>(FakeOutput{UUID(), true}));
+    EXPECT_EQ(liveSceneIds(outputs), (std::unordered_set<UUID>{shared}));
 }
 
 // A gated source stays in step and comes back in sync: gated for a stretch, then heard

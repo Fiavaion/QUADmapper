@@ -4,6 +4,7 @@
 #include "core/Types.hpp"
 #include "core/Result.hpp"
 #include "scene/ProjectorCamera.hpp"
+#include "scene/Slice.hpp"
 #include <functional>
 #include <memory>
 #include <string>
@@ -119,12 +120,15 @@ public:
     bool isEnabled() const { return enabled_; }
     void setEnabled(bool e) { enabled_ = e; }
 
-    // Scene assignments - which scenes are rendered to this output
-    const std::vector<UUID>& getAssignedScenes() const { return assignedScenes_; }
-    void assignScene(const UUID& sceneId);
-    void removeScene(const UUID& sceneId);
-    bool hasScene(const UUID& sceneId) const;
-    void clearScenes() { assignedScenes_.clear(); }
+    // Routing (ADR-047 §2): the one scene this output shows (null = none, black).
+    // Several outputs may show the same scene. An id no scene has counts as none.
+    const UUID& getSceneId() const { return sceneId_; }
+    void setSceneId(const UUID& sceneId) { sceneId_ = sceneId; }
+
+    // The slices of the scene's canvas this output shows, drawn in order. An output
+    // starts with none; whoever routes a scene to it gives it one (makeFullCanvasSlice).
+    std::vector<Slice>& getSlices() { return slices_; }
+    const std::vector<Slice>& getSlices() const { return slices_; }
 
     // GLFW window management
     /**
@@ -251,7 +255,8 @@ private:
     bool enabled_ = true;
 
     // Scene assignments
-    std::vector<UUID> assignedScenes_;
+    UUID sceneId_;
+    std::vector<Slice> slices_;
 
     // GLFW window
     GLFWwindow* window_ = nullptr;

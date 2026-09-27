@@ -47,6 +47,11 @@ bool Renderer::initialize() {
         return false;
     }
 
+    if (!sliceShader_.create(shaders::SLICE_VERT, shaders::SLICE_FRAG)) {
+        Logger::error("Failed to create slice shader");
+        return false;
+    }
+
     // Create buffers (each quad's surface buffers are made on first draw)
     createCornerIndexBuffer();
     createOutlineBuffers();
@@ -83,6 +88,7 @@ void Renderer::shutdown() {
     mesh3dShader_.destroy();
     outlineShader_.destroy();
     handleShader_.destroy();
+    sliceShader_.destroy();
     defaultTexture_.destroy();
 
     if (outlineVAO_ != 0) {
@@ -254,9 +260,8 @@ bool sameSurface(const QuadGeometry& a, const QuadGeometry& b) {
 
 }  // namespace
 
-const GpuQuad& Renderer::quadBuffersFor(const Quad& quad) {
-    const QuadGeometry& geometry = quad.getGeometry();
-    std::unique_ptr<GpuQuad>& slot = quadCache_[quad.getId()];
+const GpuQuad& Renderer::surfaceBuffersFor(const UUID& id, const QuadGeometry& geometry) {
+    std::unique_ptr<GpuQuad>& slot = quadCache_[id];
     const bool fresh = !slot;
     if (fresh) {
         slot = std::make_unique<GpuQuad>();
@@ -355,12 +360,50 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture) {
     renderQuad(quad, texture, false);
 }
 
+void Renderer::renderSlice(const Slice& slice, uint32_t canvasTexture, IVec2 canvasSize,
+                           Rotation canvasRotation, IVec2 outputSize) {
+    if (!initialized_ || canvasTexture == 0 || canvasSize.x <= 0 || canvasSize.y <= 0 ||
+        slice.input.width <= 0.0f || slice.input.height <= 0.0f) {
+        return;
+    }
+    const GpuQuad& gpu = surfaceBuffersFor(slice.id, slice.warp);
+
+    // Texel for texel when nothing scales: an unwarped slice exactly the frame's size,
+    // starting on a pixel boundary.
+    const CanvasRect& in = slice.input;
+    const bool exact = isIdentityWarp(slice.warp) &&
+                       in.width == static_cast<float>(outputSize.x) &&
+                       in.height == static_cast<float>(outputSize.y) &&
+                       in.x == std::floor(in.x) && in.y == std::floor(in.y);
+
+    useSurfaceProgram(sliceShader_);
+    sliceShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
+    sliceShader_.setInt("u_Canvas", 0);
+    sliceShader_.setVec2("u_CanvasSize", glm::vec2(canvasSize));
+    sliceShader_.setInt("u_CanvasRotation", static_cast<int>(canvasRotation) / 90);
+    sliceShader_.setVec4("u_Input", glm::vec4(in.x, in.y, in.width, in.height));
+    sliceShader_.setInt("u_Exact", exact ? 1 : 0);
+    const auto& b = slice.blend;
+    sliceShader_.setVec4("u_BlendWidth", glm::vec4(b[SLICE_EDGE_LEFT].width, b[SLICE_EDGE_RIGHT].width,
+                                                   b[SLICE_EDGE_TOP].width, b[SLICE_EDGE_BOTTOM].width));
+    sliceShader_.setVec4("u_BlendGamma", glm::vec4(b[SLICE_EDGE_LEFT].gamma, b[SLICE_EDGE_RIGHT].gamma,
+                                                   b[SLICE_EDGE_TOP].gamma, b[SLICE_EDGE_BOTTOM].gamma));
+    sliceShader_.setVec4("u_BlendCurve", glm::vec4(b[SLICE_EDGE_LEFT].curve, b[SLICE_EDGE_RIGHT].curve,
+                                                   b[SLICE_EDGE_TOP].curve, b[SLICE_EDGE_BOTTOM].curve));
+    sliceShader_.setFloat("u_BlackLevel", slice.blackLevel);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, canvasTexture);
+    glBindVertexArray(gpu.vao);
+    glDrawElements(GL_TRIANGLES, gpu.indexCount, GL_UNSIGNED_INT, nullptr);
+}
+
 void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selected) {
     if (!initialized_ || !quad.isVisible()) {
         return;
     }
 
-    const GpuQuad& gpu = quadBuffersFor(quad);
+    const GpuQuad& gpu = surfaceBuffersFor(quad.getId(), quad.getGeometry());
 
     // Uniforms equal to the previous draw's are skipped (ShaderProgram), and the
     // program, texture and VAO stay bound until the next draw or endFrame().

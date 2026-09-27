@@ -788,6 +788,29 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
             selectedOutput->setName(outputName_);
         }
 
+        // The scene this output shows (ADR-047); several outputs may show one scene.
+        ImGui::Text("Scene:");
+        const Scene* shown = OutputManager::sceneForOutput(es.scenes, *selectedOutput);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##OutputScene", shown ? shown->getName().c_str() : "(no scene)")) {
+            if (ImGui::Selectable("(no scene)", shown == nullptr)) {
+                OutputManager::showScene(*selectedOutput, nullptr, es.scenes);
+                if (ctx.project) ctx.project->setModified(true);
+            }
+            for (const auto& scene : es.scenes) {
+                if (!scene) continue;
+                ImGui::PushID(scene.get());
+                const bool isShown = scene.get() == shown;
+                if (ImGui::Selectable(scene->getName().c_str(), isShown) && !isShown) {
+                    OutputManager::showScene(*selectedOutput, scene.get(), es.scenes);
+                    if (ctx.project) ctx.project->setModified(true);
+                }
+                if (isShown) ImGui::SetItemDefaultFocus();
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+
         ImGui::Separator();
 
         // Monitor dropdown
@@ -882,8 +905,7 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
         const bool calibratingThis = es.calibratingOutputId == selectedOutput->getId();
         ImGui::BeginDisabled(calibratingThis);
         if (ImGui::Button("Calibrate Projector...")) {
-            es.beginCalibration(selectedOutput->getId(), selectedOutput->getCalibrationPoints(),
-                                selectedOutput->getProjector());
+            es.beginCalibration(*selectedOutput);
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Pair points on the 3D objects with projector pixels to solve "

@@ -21,12 +21,17 @@ inline Project::OutputData outputToData(const OutputWindow& output) {
     data.enabled = output.isEnabled();
     data.projector = output.getProjector();
     data.calibrationPoints = output.getCalibrationPoints();
+    data.sceneId = output.getSceneId();
+    data.slices = output.getSlices();
     return data;
 }
 
 // Load sets the desired monitor only; OutputManager::resolveOutputs picks the
-// connected display.
+// connected display. Scene ids keep their saved values on load, so sceneId applies
+// as saved.
 inline void applyOutputData(const Project::OutputData& data, OutputWindow& output) {
+    output.setSceneId(data.sceneId);
+    output.getSlices() = data.slices;
     output.setName(data.name);
     output.setDesiredMonitor({data.monitorName, data.monitorPosition, data.monitor});
     output.setResolution(data.resolution);

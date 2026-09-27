@@ -13,7 +13,10 @@
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdio>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -216,21 +219,81 @@ TEST(OutputManagerTest, OutputFramesAreSafeWhenNotInitialized) {
     EXPECT_EQ(manager.outputFrame(output->getId()), nullptr);
 }
 
-TEST(OutputManagerTest, SceneForOutputRoutesByAssignedOutputId) {
+TEST(OutputManagerTest, SceneForOutputRoutesByTheOutputsSceneId) {
     std::vector<std::unique_ptr<Scene>> scenes;
-    auto a = std::make_unique<Scene>();
-    auto b = std::make_unique<Scene>();
-    UUID outA = UUID::generate();
-    UUID outB = UUID::generate();
-    a->setAssignedOutputId(outA);
-    // b intentionally left unassigned
-    Scene* aPtr = a.get();
-    scenes.push_back(std::move(a));
-    scenes.push_back(std::move(b));
+    scenes.push_back(std::make_unique<Scene>());
+    scenes.push_back(std::make_unique<Scene>());
+    const Scene* a = scenes[0].get();
+    OutputWindow outA, outB, outC, outD;
+    outA.setSceneId(a->getId());
+    outB.setSceneId(a->getId());          // several outputs may show one scene (ADR-047)
+    outD.setSceneId(UUID::generate());    // a scene that no longer exists
 
-    EXPECT_EQ(OutputManager::sceneForOutput(scenes, outA), aPtr);   // routed
-    EXPECT_EQ(OutputManager::sceneForOutput(scenes, outB), nullptr); // nothing assigned
-    EXPECT_EQ(OutputManager::sceneForOutput(scenes, UUID::null()), nullptr);
+    EXPECT_EQ(OutputManager::sceneForOutput(scenes, outA), a);
+    EXPECT_EQ(OutputManager::sceneForOutput(scenes, outB), a);
+    EXPECT_EQ(OutputManager::sceneForOutput(scenes, outC), nullptr);  // shows nothing
+    EXPECT_EQ(OutputManager::sceneForOutput(scenes, outD), nullptr);
+}
+
+// Routing a scene gives an output without slices one slice of the whole canvas; an
+// output's slices keep their place on the picture when it changes to a scene with
+// another canvas size; routing nothing leaves the slices for the next scene.
+TEST(OutputManagerTest, ShowSceneGivesAFullCanvasSliceAndRescalesSlices) {
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    scenes.push_back(std::make_unique<Scene>());
+    scenes[0]->setCanvasSize(IVec2(1920, 1080));
+    scenes[1]->setCanvasSize(IVec2(3840, 2160));
+    OutputWindow output;
+
+    OutputManager::showScene(output, scenes[0].get(), scenes);
+    EXPECT_EQ(output.getSceneId(), scenes[0]->getId());
+    ASSERT_EQ(output.getSlices().size(), 1u);
+    EXPECT_EQ(output.getSlices()[0].input, (CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}));
+    EXPECT_TRUE(isIdentityWarp(output.getSlices()[0].warp));
+    EXPECT_FALSE(output.getSlices()[0].id.isNull());
+
+    output.getSlices()[0].input = CanvasRect{960.0f, 0.0f, 960.0f, 1080.0f};  // right half
+    output.getSlices()[0].blend[SLICE_EDGE_LEFT].width = 100.0f;
+    OutputManager::showScene(output, scenes[1].get(), scenes);
+    ASSERT_EQ(output.getSlices().size(), 1u);
+    EXPECT_EQ(output.getSlices()[0].input, (CanvasRect{1920.0f, 0.0f, 1920.0f, 2160.0f}));
+    EXPECT_FLOAT_EQ(output.getSlices()[0].blend[SLICE_EDGE_LEFT].width, 200.0f);
+
+    OutputManager::showScene(output, nullptr, scenes);
+    EXPECT_TRUE(output.getSceneId().isNull());
+    EXPECT_EQ(output.getSlices().size(), 1u);
+}
+
+// A lone output's default slice keeps the canvas at the output's size through a
+// resolution or rotation change; a blended group's canvas does not move.
+TEST(OutputManagerTest, CanvasFollowsALoneOutputsSize) {
+    OutputManager manager;
+    OutputWindow* lone = manager.createOutput("Lone");
+    OutputWindow* left = manager.createOutput("Left");
+    OutputWindow* right = manager.createOutput("Right");
+    ASSERT_NE(lone, nullptr);
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    scenes.push_back(std::make_unique<Scene>());
+    scenes[1]->setCanvasSize(IVec2(3840, 1080));
+    OutputManager::showScene(*lone, scenes[0].get(), scenes);
+    OutputManager::showScene(*left, scenes[1].get(), scenes);
+    OutputManager::showScene(*right, scenes[1].get(), scenes);
+    EXPECT_FALSE(manager.followOutputSizes(scenes));  // first sight: sizes recorded
+
+    lone->setRotation(Rotation::R90);
+    left->setResolution(IVec2(1280, 720));
+    EXPECT_TRUE(manager.followOutputSizes(scenes));
+    EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(1080, 1920));
+    EXPECT_EQ(lone->getSlices()[0].input, (CanvasRect{0.0f, 0.0f, 1080.0f, 1920.0f}));
+    EXPECT_EQ(scenes[1]->getCanvasSize(), IVec2(3840, 1080));  // two outputs show it
+
+    // A slice that was edited (a blend zone) keeps its canvas too.
+    lone->getSlices()[0].blend[SLICE_EDGE_RIGHT].width = 50.0f;
+    lone->setRotation(Rotation::R0);
+    EXPECT_FALSE(manager.followOutputSizes(scenes));
+    EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(1080, 1920));
 }
 
 TEST(OutputManagerTest, CreateMultipleOutputsAndDelete) {
@@ -981,6 +1044,7 @@ void buildFeatureScene(Scene& scene, const std::vector<Texture*>& media,
 struct ReadbackCase {
     Rotation rotation;
     bool blackout;
+    bool quadsOnly = false;  // the scene without its 3D object: every pixel must match
 };
 
 class RenderOnceReadbackTest : public ::testing::TestWithParam<ReadbackCase> {};
@@ -1014,7 +1078,12 @@ TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
     std::vector<std::unique_ptr<Scene>> scenes;
     scenes.push_back(std::make_unique<Scene>());
     Scene& scene = *scenes.front();
-    scene.setAssignedOutputId(output->getId());
+    // An old show as migrated (ADR-047 §7): the canvas is the output's effective
+    // size, shown through one whole-canvas slice with no warp and no blend. The
+    // extra canvas pass must not change one pixel on the projector (gate a).
+    const bool quarterTurn = param.rotation == Rotation::R90 || param.rotation == Rotation::R270;
+    scene.setCanvasSize(quarterTurn ? IVec2(h, w) : IVec2(w, h));
+    OutputManager::showScene(*output, &scene, scenes);
     std::unordered_map<UUID, Texture*> textures;
     buildFeatureScene(scene, {mediaA.get(), mediaB.get(), mediaC.get()}, textures);
     Vec3 objectsMin, objectsMax;
@@ -1022,6 +1091,7 @@ TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
     const IVec2 effective = output->getEffectiveResolution();
     output->getProjector() = ProjectorCamera::fitToOutput(
         ProjectorCamera{}, effective.x, effective.y, &objectsMin, &objectsMax);
+    if (param.quadsOnly) scene.deleteObject(scene.getObjects().front()->getId());
 
     // New path, part 1: the editor context draws the output's frame.
     Renderer editorRenderer;
@@ -1033,7 +1103,7 @@ TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
     EXPECT_EQ(frame->height(), h);
     glFinish();
 
-    std::vector<unsigned char> direct, copied;
+    std::vector<unsigned char> direct, copied, quadsOnly;
     {
         output->makeContextCurrent();
 
@@ -1058,13 +1128,14 @@ TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
         direct = readBound(w, h);
 
         // The cube must be in the picture, or the comparison would not cover 3D.
-        if (!param.blackout) {
+        if (!param.blackout && !param.quadsOnly) {
             glDisable(GL_DEPTH_TEST);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             for (const Quad* quad : scene.getQuadsByZOrder()) {
                 outputRenderer.renderQuad(*quad, textures.at(quad->getId()), false);
             }
-            EXPECT_NE(readBound(w, h), direct) << "the 3D object drew nothing";
+            quadsOnly = readBound(w, h);
+            EXPECT_NE(quadsOnly, direct) << "the 3D object drew nothing";
         }
 
         // New path, part 2: the output context copies the frame into its framebuffer.
@@ -1102,7 +1173,37 @@ TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
             ++lit;
         }
     }
-    EXPECT_EQ(differing, 0u) << "of " << direct.size() / 4 << " pixels";
+    // ADR-047 gate a. Wherever no 3D object shows, the canvas pass changes no pixel.
+    // Where a translucent quad lies over a 3D object the old path blended the quad
+    // straight onto the object, while the new one blends it into the 8-bit canvas
+    // first and composites that over the object: two roundings instead of one, at
+    // most 2 levels apart. Objects cannot go through the shared canvas, as each
+    // projector sees them from its own camera (ADR-047 §4).
+    size_t differingOffObjects = 0;
+    size_t differingOnObjects = 0;
+    int worstOnObjects = 0;
+    for (size_t i = 0; i < direct.size(); i += 4) {
+        int delta = 0;
+        for (size_t c = 0; c < 3; ++c) {
+            delta = std::max(delta, std::abs(int(direct[i + c]) - int(copied[i + c])));
+        }
+        if (delta == 0) continue;
+        const bool onObject = !quadsOnly.empty() &&
+                              (quadsOnly[i] != direct[i] || quadsOnly[i + 1] != direct[i + 1] ||
+                               quadsOnly[i + 2] != direct[i + 2]);
+        if (onObject) {
+            ++differingOnObjects;
+            worstOnObjects = std::max(worstOnObjects, delta);
+        } else {
+            ++differingOffObjects;
+        }
+    }
+    EXPECT_EQ(differing, differingOffObjects + differingOnObjects);
+    if (param.quadsOnly || param.blackout) EXPECT_EQ(differing, 0u) << "byte-identical";
+    EXPECT_EQ(differingOffObjects, 0u) << "of " << direct.size() / 4 << " pixels";
+    EXPECT_LE(worstOnObjects, 2) << differingOnObjects << " pixels differ over the 3D object";
+    std::printf("[ readback ] %zu of %zu pixels identical; %zu over the 3D object differ by <= %d\n",
+                direct.size() / 4 - differing, direct.size() / 4, differingOnObjects, worstOnObjects);
     EXPECT_EQ(translucent, 0u) << "frame pixels with alpha below 255";
     if (param.blackout) {
         EXPECT_EQ(lit, 0u);  // the projector is black, and so is its frame
@@ -1122,10 +1223,12 @@ INSTANTIATE_TEST_SUITE_P(
     RotationsAndBlackout, RenderOnceReadbackTest,
     ::testing::Values(ReadbackCase{Rotation::R0, false}, ReadbackCase{Rotation::R90, false},
                       ReadbackCase{Rotation::R180, false}, ReadbackCase{Rotation::R270, false},
-                      ReadbackCase{Rotation::R90, true}),
+                      ReadbackCase{Rotation::R90, true},
+                      ReadbackCase{Rotation::R0, false, true}, ReadbackCase{Rotation::R90, false, true},
+                      ReadbackCase{Rotation::R180, false, true}, ReadbackCase{Rotation::R270, false, true}),
     [](const ::testing::TestParamInfo<ReadbackCase>& info) {
         return "R" + std::to_string(static_cast<int>(info.param.rotation)) +
-               (info.param.blackout ? "_Blackout" : "");
+               (info.param.blackout ? "_Blackout" : "") + (info.param.quadsOnly ? "_QuadsOnly" : "");
     });
 
 // An output with no assigned scene shows black, and a deleted output's frame goes.
@@ -1267,6 +1370,206 @@ TEST(RenderOnceTest, DestroyedOutputWindowFreesItsCopierAndARecreatedOneWorks) {
     renderer.shutdown();
     manager.shutdown();
     EXPECT_EQ(GlObjectStats::framebuffers(), framebuffersBefore - 1) << "frame and copier freed";
+}
+
+// ---------------------------------------------------------------------------
+// Scene canvas -> output slices (ADR-047): readback of the composed frames.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// An output frame's pixels (RGBA, bottom-up rows), read in the editor context.
+std::vector<unsigned char> readFrame(const Framebuffer& frame) {
+    Framebuffer target;
+    if (!target.resize(frame.width(), frame.height())) return {};
+    target.bind();
+    FrameCopy copy;
+    copy.copy(frame, frame.width(), frame.height());
+    std::vector<unsigned char> pixels = readBound(frame.width(), frame.height());
+    Framebuffer::unbind();
+    return pixels;
+}
+
+// A quad over the whole canvas.
+Quad* fullCanvasQuad(Scene& scene) {
+    Quad* quad = scene.getQuadManager().createQuad("Full");
+    quad->getGeometry().setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f),
+                                    Vec2(0.0f, 1.0f)});
+    return quad;
+}
+
+}  // namespace
+
+// Gate b (ADR-047 §8), on the GPU: two outputs show one canvas, overlapping by half a
+// frame with facing gamma-2.2 blend zones. Full-white content: the two projectors'
+// light (pixel value ^ 2.2) sums to 1 within 2% at every column of the overlap, and
+// each projector is at full white outside it.
+TEST(CanvasSliceRenderTest, TwoOutputOverlapSumsToFlatLinearLight) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* left = manager.createOutput("Left");
+    OutputWindow* right = manager.createOutput("Right");
+    ASSERT_NE(left, nullptr);
+    ASSERT_NE(right, nullptr);
+    for (OutputWindow* o : {left, right}) glfwSetWindowSize(o->getGLFWwindow(), 256, 32);
+    int w = 0, h = 0, rw = 0, rh = 0;
+    glfwGetFramebufferSize(left->getGLFWwindow(), &w, &h);
+    glfwGetFramebufferSize(right->getGLFWwindow(), &rw, &rh);
+    ASSERT_GT(w, 16);
+    ASSERT_EQ(w, rw);
+    ASSERT_EQ(h, rh);
+    glfwMakeContextCurrent(gl.win);
+
+    const int overlap = w / 2;
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    Scene& scene = *scenes.front();
+    scene.setCanvasSize(IVec2(2 * w - overlap, h));
+    fullCanvasQuad(scene);  // no texture: the renderer's white
+    OutputManager::showScene(*left, &scene, scenes);
+    OutputManager::showScene(*right, &scene, scenes);
+    Slice& a = left->getSlices()[0];
+    Slice& b = right->getSlices()[0];
+    a.input = CanvasRect{0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)};
+    b.input = CanvasRect{static_cast<float>(w - overlap), 0.0f, static_cast<float>(w), static_cast<float>(h)};
+    a.blend[SLICE_EDGE_RIGHT] = BlendEdge{static_cast<float>(overlap), 2.2f, 2.0f};
+    b.blend[SLICE_EDGE_LEFT] = BlendEdge{static_cast<float>(overlap), 2.2f, 2.0f};
+
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    manager.renderOutputFrames(scenes, textures, renderer);
+    ASSERT_NE(manager.sceneCanvas(scene.getId()), nullptr);
+    const std::vector<unsigned char> lp = readFrame(*manager.outputFrame(left->getId()));
+    const std::vector<unsigned char> rp = readFrame(*manager.outputFrame(right->getId()));
+    ASSERT_EQ(lp.size(), static_cast<size_t>(w) * h * 4);
+    ASSERT_EQ(rp.size(), lp.size());
+
+    const int row = h / 2;
+    auto red = [&](const std::vector<unsigned char>& px, int x) {
+        return static_cast<int>(px[(static_cast<size_t>(row) * w + x) * 4]);
+    };
+    double worst = 0.0;
+    for (int x = w - overlap; x < w; ++x) {  // canvas column x
+        const double la = std::pow(red(lp, x) / 255.0, 2.2);
+        const double lb = std::pow(red(rp, x - (w - overlap)) / 255.0, 2.2);
+        worst = std::max(worst, std::abs(la + lb - 1.0));
+        EXPECT_NEAR(la + lb, 1.0, 0.02) << "canvas column " << x;
+    }
+    std::printf("[ blend ] overlap %d px: worst |light sum - 1| = %.4f\n", overlap, worst);
+    EXPECT_EQ(red(lp, 2), 255);           // left alone
+    EXPECT_EQ(red(rp, w - 3), 255);       // right alone
+    EXPECT_LT(red(lp, w - 1), 60);        // the left fades out at its edge...
+    EXPECT_LT(red(rp, 0), 60);            // ...and the right in
+    for (size_t i = 3; i < lp.size(); i += 4) ASSERT_EQ(lp[i], 255) << "the frame stays opaque";
+
+    renderer.shutdown();
+    manager.shutdown();
+}
+
+// The canvas is drawn once per shown scene and released when no output shows the
+// scene any more, when its last output is removed, and at shutdown (stress_smoke's
+// GL object counts stay flat).
+TEST(CanvasSliceRenderTest, CanvasLivesWhileAnOutputShowsItsScene) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* a = manager.createOutput("A");
+    OutputWindow* b = manager.createOutput("B");
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    for (OutputWindow* o : {a, b}) glfwSetWindowSize(o->getGLFWwindow(), 32, 32);
+    glfwMakeContextCurrent(gl.win);
+
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    Scene& scene = *scenes.front();
+    scene.setCanvasSize(IVec2(64, 32));
+    fullCanvasQuad(scene);
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    const long before = GlObjectStats::framebuffers();
+
+    OutputManager::showScene(*a, &scene, scenes);
+    OutputManager::showScene(*b, &scene, scenes);
+    manager.renderOutputFrames(scenes, textures, renderer);
+    EXPECT_EQ(GlObjectStats::framebuffers(), before + 3) << "two frames, one canvas for both";
+
+    OutputManager::showScene(*b, nullptr, scenes);
+    manager.renderOutputFrames(scenes, textures, renderer);
+    EXPECT_NE(manager.sceneCanvas(scene.getId()), nullptr);  // a still shows it
+    EXPECT_EQ(GlObjectStats::framebuffers(), before + 3);
+
+    OutputManager::showScene(*a, nullptr, scenes);
+    manager.renderOutputFrames(scenes, textures, renderer);
+    EXPECT_EQ(manager.sceneCanvas(scene.getId()), nullptr);
+    EXPECT_EQ(GlObjectStats::framebuffers(), before + 2) << "canvas of an unshown scene released";
+
+    OutputManager::showScene(*a, &scene, scenes);
+    manager.renderOutputFrames(scenes, textures, renderer);
+    EXPECT_EQ(GlObjectStats::framebuffers(), before + 3);
+    manager.deleteOutput(a->getId());
+    EXPECT_EQ(manager.sceneCanvas(scene.getId()), nullptr) << "its last output went";
+    EXPECT_EQ(GlObjectStats::framebuffers(), before + 1);
+
+    OutputManager::showScene(*b, &scene, scenes);
+    manager.renderOutputFrames(scenes, textures, renderer);
+    renderer.shutdown();
+    manager.shutdown();
+    EXPECT_EQ(GlObjectStats::framebuffers(), before);
+}
+
+// A slice shows its input rectangle of the canvas, through its warp: a canvas whose
+// left half is white, shown by a slice of that half only, fills the whole frame; the
+// same slice squeezed into the left half of the output by its warp leaves the right
+// half black.
+TEST(CanvasSliceRenderTest, SliceShowsItsInputThroughItsWarp) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* output = manager.createOutput("Warped");
+    ASSERT_NE(output, nullptr);
+    glfwSetWindowSize(output->getGLFWwindow(), 64, 32);
+    int w = 0, h = 0;
+    glfwGetFramebufferSize(output->getGLFWwindow(), &w, &h);
+    glfwMakeContextCurrent(gl.win);
+
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    Scene& scene = *scenes.front();
+    scene.setCanvasSize(IVec2(2 * w, h));
+    Quad* quad = scene.getQuadManager().createQuad("Left half");
+    quad->getGeometry().setCorners({Vec2(0.0f, 0.0f), Vec2(0.5f, 0.0f), Vec2(0.5f, 1.0f),
+                                    Vec2(0.0f, 1.0f)});
+    OutputManager::showScene(*output, &scene, scenes);
+    output->getSlices()[0].input = CanvasRect{0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)};
+
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    auto pixelAt = [&](int x) {
+        manager.renderOutputFrames(scenes, textures, renderer);
+        const auto px = readFrame(*manager.outputFrame(output->getId()));
+        return static_cast<int>(px[(static_cast<size_t>(h / 2) * w + x) * 4]);
+    };
+    EXPECT_EQ(pixelAt(2), 255);
+    EXPECT_EQ(pixelAt(w - 3), 255) << "the left half of the canvas fills the frame";
+
+    output->getSlices()[0].warp.setCorners({Vec2(0.0f, 0.0f), Vec2(0.5f, 0.0f), Vec2(0.5f, 1.0f),
+                                            Vec2(0.0f, 1.0f)});
+    EXPECT_EQ(pixelAt(2), 255);
+    EXPECT_EQ(pixelAt(w - 3), 0) << "warped into the left half of the output";
+
+    renderer.shutdown();
+    manager.shutdown();
 }
 
 } // namespace test

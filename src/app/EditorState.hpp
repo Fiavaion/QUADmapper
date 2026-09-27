@@ -185,18 +185,26 @@ struct EditorState {
         return true;
     }
 
-    // Assign a scene to an output, enforcing one-scene-per-output (sceneForOutput
-    // returns the first match, so a shared output would be ambiguous). Passing a
-    // null outputId clears the assignment.
-    void assignSceneToOutput(const UUID& sceneId, const UUID& outputId) {
-        quadmapper::assignSceneToOutput(scenes, sceneId, outputId);
-    }
-
-    // Live-show take of scene `number` (1-9 keys, US-008; see planSceneTake). Returns
-    // what was done; Kind::Route changed the routing (a saved project change).
-    SceneTake takeScene(int number, const std::vector<SceneTakeOutput>& outputs) {
-        const SceneTake take = planSceneTake(scenes, activeScene().getId(), number, outputs);
-        if (take.kind == SceneTake::Kind::Route) assignSceneToOutput(take.sceneId, take.outputId);
+    // Live-show take of scene `number` (1-9 keys, US-008, ADR-047 §5; see
+    // planSceneTake). Returns what was done; Kind::Route changed the routing of every
+    // output in take.outputIds (a saved project change).
+    SceneTake takeScene(int number, OutputManager& outputs) {
+        std::vector<SceneTakeOutput> routing;
+        for (const auto& output : outputs.getOutputs()) {
+            if (!output) continue;
+            const Scene* shown = OutputManager::sceneForOutput(scenes, *output);
+            routing.push_back({output->getId(), output->isEnabled(),
+                               shown ? shown->getId() : UUID::null()});
+        }
+        const SceneTake take = planSceneTake(scenes, activeScene().getId(), number, routing);
+        if (take.kind == SceneTake::Kind::Route) {
+            const Scene* target = scenes[static_cast<size_t>(findSceneIndex(scenes, take.sceneId))].get();
+            for (const UUID& id : take.outputIds) {
+                if (OutputWindow* output = outputs.getOutput(id)) {
+                    OutputManager::showScene(*output, target, scenes);
+                }
+            }
+        }
         if (take.kind != SceneTake::Kind::None) setActiveScene(take.sceneId);
         return take;
     }
@@ -371,15 +379,12 @@ struct EditorState {
     OutputCalibrationResolver outputResolver{calibratingOutputId, calibration};
     OutputRef outputRef(const UUID& outputId) { return OutputRef{&outputResolver, outputId}; }
 
-    // Enter calibration on an output. The scene routed to it becomes the active one,
-    // so the canvas shows that projector.
-    void beginCalibration(const UUID& outputId, const std::vector<CalibrationPoint>& points,
-                          const ProjectorCamera& projector) {
-        for (auto& s : scenes) {
-            if (s && s->getAssignedOutputId() == outputId) { setActiveScene(s->getId()); break; }
-        }
-        calibratingOutputId = outputId;
-        calibration.begin(points, projector);
+    // Enter calibration on an output. The scene it shows becomes the active one, so
+    // the canvas shows that projector.
+    void beginCalibration(const OutputWindow& output) {
+        if (findSceneIndex(scenes, output.getSceneId()) >= 0) setActiveScene(output.getSceneId());
+        calibratingOutputId = output.getId();
+        calibration.begin(output.getCalibrationPoints(), output.getProjector());
     }
     void endCalibration() {
         calibratingOutputId = UUID::null();

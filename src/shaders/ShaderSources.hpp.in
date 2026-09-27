@@ -42,5 +42,14 @@ inline const char* HANDLE_FRAG = R"GLSL(
 @HANDLE_FRAG_SOURCE@
 )GLSL";
 
+// A slice of a scene canvas composed into an output frame (ADR-047).
+inline const char* SLICE_VERT = R"GLSL(
+@SLICE_VERT_SOURCE@
+)GLSL";
+
+inline const char* SLICE_FRAG = R"GLSL(
+@SLICE_FRAG_SOURCE@
+)GLSL";
+
 } // namespace shaders
 } // namespace quadmapper

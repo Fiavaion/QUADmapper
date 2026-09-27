@@ -390,7 +390,7 @@ struct RoutingFixture {
     // Calibrate `output`, move its point 1 by `dx` and record the step as the panel does.
     void calibrationStep(OutputWindow& output, float dx) {
         if (es.calibratingOutputId != output.getId()) {
-            es.beginCalibration(output.getId(), output.getCalibrationPoints(), output.getProjector());
+            es.beginCalibration(output);
         }
         output.getCalibrationPoints()[0].pixel.x += dx;
         es.calibration.noteEdit("Move calibration point 1", CalibrationSession::moveKey(0));
@@ -428,12 +428,12 @@ TEST(UndoRoutingTest, CalibratingUndoesOnlyThatOutputsCalibrationSteps) {
     EXPECT_FLOAT_EQ(fx.quad->getOpacity(), 1.0f);
 
     // Redo: the quad step first, which calibration holds back.
-    fx.es.beginCalibration(fx.a->getId(), fx.a->getCalibrationPoints(), fx.a->getProjector());
+    fx.es.beginCalibration(*fx.a);
     EXPECT_FALSE(canRedoStep(fx.es));
     EXPECT_FALSE(redoStep(fx.es, &heldBack));
     fx.es.endCalibration();
     ASSERT_TRUE(redoStep(fx.es));
-    fx.es.beginCalibration(fx.a->getId(), fx.a->getCalibrationPoints(), fx.a->getProjector());
+    fx.es.beginCalibration(*fx.a);
     EXPECT_TRUE(canRedoStep(fx.es));
     ASSERT_TRUE(redoStep(fx.es));
     EXPECT_FLOAT_EQ(fx.a->getCalibrationPoints()[0].pixel.x, 110.0f);
@@ -443,7 +443,7 @@ TEST(UndoRoutingTest, AnotherOutputsCalibrationStepIsHeldBack) {
     RoutingFixture fx;
     fx.calibrationStep(*fx.a, 10.0f);
     fx.es.endCalibration();
-    fx.es.beginCalibration(fx.b->getId(), fx.b->getCalibrationPoints(), fx.b->getProjector());
+    fx.es.beginCalibration(*fx.b);
     std::string heldBack;
     EXPECT_FALSE(undoStep(fx.es, &heldBack));
     EXPECT_EQ(heldBack, "Move calibration point 1");

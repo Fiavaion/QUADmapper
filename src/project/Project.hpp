@@ -6,6 +6,7 @@
 #include "scene/Quad.hpp"
 #include "scene/QuadGroup.hpp"
 #include "scene/ProjectorCamera.hpp"
+#include "scene/Slice.hpp"
 #include <glm/glm.hpp>
 #include <optional>
 #include <string>
@@ -49,7 +50,7 @@ public:
     struct SceneData {
         UUID id;
         std::string name;
-        UUID assignedOutputId;                 // null = edit-only (not projected)
+        IVec2 canvas = IVec2(1920, 1080);      // canvas size in pixels (.qmap v3.4, ADR-047)
         SceneViewData view;
         std::vector<Quad> quads;
         std::vector<std::string> texturePaths;  // parallel to quads
@@ -74,6 +75,11 @@ public:
         // from (.qmap v3.2, ADR-052).
         ProjectorCamera projector;
         std::vector<CalibrationPoint> calibrationPoints;
+        // The scene this output shows (null = none) and its slices of that scene's
+        // canvas (.qmap v3.4, ADR-047). Older files are migrated on load: the scene
+        // whose assignedOutputId named this output, one full-canvas slice.
+        UUID sceneId;
+        std::vector<Slice> slices;
     };
 
     // Media sources bound to quads (.qmap v3.1 "sources" table, ADR-046). A quad

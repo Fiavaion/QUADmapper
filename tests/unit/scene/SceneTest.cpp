@@ -6,6 +6,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <unordered_map>
 
 namespace quadmapper {
@@ -197,12 +198,12 @@ TEST(SceneTest, DeleteGroupRemovesFromScene) {
 namespace {
 
 // A scene exercising everything a duplicate must carry: two quads (one bound to media,
-// warped, selected), a nested group holding both, a 3D object, a view, an output.
-std::unique_ptr<Scene> richScene(const UUID& mediaId, const UUID& outputId) {
+// warped, selected), a nested group holding both, a 3D object, a view, a canvas size.
+std::unique_ptr<Scene> richScene(const UUID& mediaId) {
     auto scene = std::make_unique<Scene>();
     scene->setName("Stage");
     scene->setActive(true);
-    scene->setAssignedOutputId(outputId);
+    scene->setCanvasSize(IVec2(3840, 1200));
     scene->getViewState().panOffset = Vec2(0.25f, -0.5f);
     scene->getViewState().zoomLevel = 2.0f;
     scene->getViewState().gridVisible = false;
@@ -242,7 +243,7 @@ bool sceneHasQuad(const Scene& scene, const UUID& id) { return scene.getQuadMana
 
 TEST(SceneDuplicateTest, CopyHasFreshIdsAndTheSameContent) {
     const UUID media = UUID::generate();
-    auto source = richScene(media, UUID::generate());
+    auto source = richScene(media);
     std::unordered_map<UUID, UUID> quadIds;
 
     auto copy = source->duplicate(&quadIds);
@@ -251,7 +252,7 @@ TEST(SceneDuplicateTest, CopyHasFreshIdsAndTheSameContent) {
     EXPECT_NE(copy->getId(), source->getId());
     EXPECT_EQ(copy->getName(), "Stage");
     EXPECT_FALSE(copy->isActive());
-    EXPECT_FALSE(copy->hasAssignedOutput());
+    EXPECT_EQ(copy->getCanvasSize(), IVec2(3840, 1200));
     EXPECT_EQ(copy->getViewState().panOffset, Vec2(0.25f, -0.5f));
     EXPECT_FLOAT_EQ(copy->getViewState().zoomLevel, 2.0f);
     EXPECT_FALSE(copy->getViewState().gridVisible);
@@ -277,7 +278,7 @@ TEST(SceneDuplicateTest, CopyHasFreshIdsAndTheSameContent) {
 }
 
 TEST(SceneDuplicateTest, GroupsGetFreshIdsWithRemappedMembersAndParents) {
-    auto source = richScene(UUID::generate(), UUID());
+    auto source = richScene(UUID::generate());
     std::unordered_map<UUID, UUID> quadIds;
     auto copy = source->duplicate(&quadIds);
 
@@ -310,7 +311,7 @@ TEST(SceneDuplicateTest, GroupsGetFreshIdsWithRemappedMembersAndParents) {
 
 TEST(SceneDuplicateTest, ObjectsAreCopiedWithFreshIds) {
     const UUID media = UUID::generate();
-    auto source = richScene(media, UUID());
+    auto source = richScene(media);
     auto copy = source->duplicate();
 
     ASSERT_EQ(copy->getObjects().size(), 1u);
@@ -325,7 +326,7 @@ TEST(SceneDuplicateTest, ObjectsAreCopiedWithFreshIds) {
 }
 
 TEST(SceneDuplicateTest, SelectionFollowsTheCopy) {
-    auto source = richScene(UUID(), UUID());
+    auto source = richScene(UUID());
     std::unordered_map<UUID, UUID> quadIds;
     auto copy = source->duplicate(&quadIds);
 
@@ -336,7 +337,7 @@ TEST(SceneDuplicateTest, SelectionFollowsTheCopy) {
 }
 
 TEST(SceneDuplicateTest, CopyIsIndependentOfTheSource) {
-    auto source = richScene(UUID(), UUID());
+    auto source = richScene(UUID());
     auto copy = source->duplicate();
     const auto before = source->getQuads()[0]->getGeometry().getCorners();
 
@@ -365,7 +366,7 @@ TEST(SceneDuplicateTest, EmptySceneDuplicates) {
 TEST(SceneDuplicateTest, MediaReferencesCountTheCopy) {
     const UUID media = UUID::generate();
     SceneList scenes;
-    scenes.push_back(richScene(media, UUID()));
+    scenes.push_back(richScene(media));
     scenes.push_back(scenes[0]->duplicate());
     scenes.erase(scenes.begin());  // only the copy still uses the media
     CommandHistory history;
@@ -439,59 +440,50 @@ TEST(SceneListTest, FindSceneIndex) {
     EXPECT_EQ(findSceneIndex(scenes, UUID()), -1);
 }
 
-TEST(SceneListTest, AssignSceneToOutputIsOneScenePerOutput) {
-    SceneList scenes = namedScenes({"A", "B"});
-    const UUID out = UUID::generate();
-    assignSceneToOutput(scenes, scenes[0]->getId(), out);
-    EXPECT_EQ(scenes[0]->getAssignedOutputId(), out);
-
-    assignSceneToOutput(scenes, scenes[1]->getId(), out);
-    EXPECT_EQ(scenes[1]->getAssignedOutputId(), out);
-    EXPECT_FALSE(scenes[0]->hasAssignedOutput());
-
-    assignSceneToOutput(scenes, scenes[1]->getId(), UUID());
-    EXPECT_FALSE(scenes[1]->hasAssignedOutput());
+TEST(SceneCanvasTest, DefaultIsFullHdAndSizeIsClamped) {
+    Scene scene;
+    EXPECT_EQ(scene.getCanvasSize(), IVec2(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT));
+    scene.setCanvasSize(IVec2(3840, 1080));
+    EXPECT_EQ(scene.getCanvasSize(), IVec2(3840, 1080));
+    scene.setCanvasSize(IVec2(0, 100000));
+    EXPECT_EQ(scene.getCanvasSize(), IVec2(1, MAX_CANVAS_DIMENSION));
 }
 
-TEST(SceneListTest, RemovedOutputIsClearedFromEveryScene) {
-    SceneList scenes = namedScenes({"A", "B", "C"});
-    const UUID removed = UUID::generate();
-    const UUID kept = UUID::generate();
-    scenes[0]->setAssignedOutputId(removed);
-    scenes[1]->setAssignedOutputId(kept);
-
-    EXPECT_TRUE(clearOutputAssignments(scenes, removed));
-    EXPECT_FALSE(scenes[0]->hasAssignedOutput());
-    EXPECT_EQ(scenes[1]->getAssignedOutputId(), kept);
-    EXPECT_FALSE(scenes[2]->hasAssignedOutput());
-
-    EXPECT_FALSE(clearOutputAssignments(scenes, removed));  // nothing left to clear
-    EXPECT_FALSE(clearOutputAssignments(scenes, UUID()));   // null never matches unassigned
-    EXPECT_FALSE(scenes[2]->hasAssignedOutput());
-}
-
-// ---- Scene take, keys 1-9 (US-008) ----------------------------------------------
+// ---- Scene take, keys 1-9 (US-008, ADR-047 §5) ----------------------------------
 
 class SceneTakeTest : public ::testing::Test {
 protected:
     void SetUp() override {
         scenes = namedScenes({"A", "B", "C"});
-        scenes[0]->setAssignedOutputId(out1);  // A on air on output 1
+        outputs = {{out1, true, id(0)}, {out2, true, UUID()}};  // A on air on output 1
     }
 
     // What EditorState::takeScene does with the plan.
     SceneTake take(int number) {
         const SceneTake t = planSceneTake(scenes, active, number, outputs);
-        if (t.kind == SceneTake::Kind::Route) assignSceneToOutput(scenes, t.sceneId, t.outputId);
+        if (t.kind == SceneTake::Kind::Route) {
+            for (SceneTakeOutput& o : outputs) {
+                if (std::find(t.outputIds.begin(), t.outputIds.end(), o.id) != t.outputIds.end()) {
+                    o.sceneId = t.sceneId;
+                }
+            }
+        }
         if (t.kind != SceneTake::Kind::None) active = t.sceneId;
         return t;
     }
 
     const UUID& id(size_t i) const { return scenes[i]->getId(); }
+    UUID shownOn(const UUID& output) const {
+        for (const SceneTakeOutput& o : outputs) {
+            if (o.id == output) return o.sceneId;
+        }
+        return UUID();
+    }
 
     const UUID out1 = UUID::generate();
     const UUID out2 = UUID::generate();
-    std::vector<SceneTakeOutput> outputs{{out1, true}, {out2, true}};
+    const UUID out3 = UUID::generate();
+    std::vector<SceneTakeOutput> outputs;
     SceneList scenes;
     UUID active;  // set in each test
 };
@@ -505,76 +497,71 @@ TEST_F(SceneTakeTest, OutOfRangeDoesNothing) {
     EXPECT_EQ(planSceneTake(none, UUID(), 1, outputs).kind, SceneTake::Kind::None);
 }
 
-TEST_F(SceneTakeTest, UnassignedSceneTakesTheActiveScenesOutput) {
+TEST_F(SceneTakeTest, UnshownSceneTakesTheActiveScenesOutput) {
     active = id(0);
     const SceneTake t = take(2);
 
     EXPECT_EQ(t.kind, SceneTake::Kind::Route);
     EXPECT_EQ(t.sceneId, id(1));
-    EXPECT_EQ(t.outputId, out1);
-    EXPECT_EQ(scenes[1]->getAssignedOutputId(), out1);
-    EXPECT_FALSE(scenes[0]->hasAssignedOutput());  // previous scene leaves the output
+    EXPECT_EQ(t.outputIds, std::vector<UUID>{out1});
+    EXPECT_EQ(shownOn(out1), id(1));  // the previous scene leaves the output
+    EXPECT_TRUE(shownOn(out2).isNull());
     EXPECT_EQ(active, id(1));
 }
 
-TEST_F(SceneTakeTest, SceneWithItsOwnOutputJustBecomesActive) {
+TEST_F(SceneTakeTest, ShownSceneJustBecomesActive) {
     active = id(0);
-    scenes[2]->setAssignedOutputId(out2);
+    outputs[1].sceneId = id(2);
     const SceneTake t = take(3);
 
     EXPECT_EQ(t.kind, SceneTake::Kind::Activate);
     EXPECT_EQ(t.sceneId, id(2));
-    EXPECT_EQ(scenes[0]->getAssignedOutputId(), out1);  // routing unchanged
-    EXPECT_EQ(scenes[2]->getAssignedOutputId(), out2);
+    EXPECT_EQ(shownOn(out1), id(0));  // routing unchanged
+    EXPECT_EQ(shownOn(out2), id(2));
     EXPECT_EQ(active, id(2));
 }
 
 TEST_F(SceneTakeTest, ActiveLiveSceneIsANoOp) {
     active = id(0);
     EXPECT_EQ(take(1).kind, SceneTake::Kind::None);
-    EXPECT_EQ(scenes[0]->getAssignedOutputId(), out1);
+    EXPECT_EQ(shownOn(out1), id(0));
 }
 
 TEST_F(SceneTakeTest, UnroutedActiveSceneFallsBackToTheFirstEnabledOutput) {
-    scenes[0]->setAssignedOutputId(UUID());
-    outputs = {{out1, false}, {out2, true}};
+    outputs = {{out1, false, UUID()}, {out2, true, UUID()}};
     active = id(0);
     const SceneTake t = take(2);
 
     EXPECT_EQ(t.kind, SceneTake::Kind::Route);
-    EXPECT_EQ(t.outputId, out2);
-    EXPECT_EQ(scenes[1]->getAssignedOutputId(), out2);
+    EXPECT_EQ(t.outputIds, std::vector<UUID>{out2});
+    EXPECT_EQ(shownOn(out2), id(1));
 }
 
-TEST_F(SceneTakeTest, FallbackOutputIsTakenFromTheSceneHoldingIt) {
-    // Active A is unrouted; C holds the first enabled output. B takes it from C.
-    scenes[0]->setAssignedOutputId(UUID());
-    scenes[2]->setAssignedOutputId(out1);
+TEST_F(SceneTakeTest, FallbackOutputIsTakenFromTheSceneOnIt) {
+    // Active A is on no output; C is on the first enabled output. B takes it from C.
+    outputs = {{out1, true, id(2)}, {out2, true, UUID()}};
     active = id(0);
     take(2);
-
-    EXPECT_EQ(scenes[1]->getAssignedOutputId(), out1);
-    EXPECT_FALSE(scenes[2]->hasAssignedOutput());
+    EXPECT_EQ(shownOn(out1), id(1));
 }
 
 TEST_F(SceneTakeTest, UnroutedActiveSceneTakesTheFallbackOutputItself) {
-    scenes[0]->setAssignedOutputId(UUID());
+    outputs[0].sceneId = UUID();
     active = id(0);
     const SceneTake t = take(1);
 
     EXPECT_EQ(t.kind, SceneTake::Kind::Route);
-    EXPECT_EQ(scenes[0]->getAssignedOutputId(), out1);
+    EXPECT_EQ(shownOn(out1), id(0));
 }
 
 TEST_F(SceneTakeTest, NoOutputAtAllJustActivates) {
-    scenes[0]->setAssignedOutputId(UUID());
-    outputs = {{out1, false}};
+    outputs = {{out1, false, UUID()}};
     active = id(0);
 
     EXPECT_EQ(take(1).kind, SceneTake::Kind::None);
     const SceneTake t = take(3);
     EXPECT_EQ(t.kind, SceneTake::Kind::Activate);
-    EXPECT_FALSE(scenes[2]->hasAssignedOutput());
+    EXPECT_TRUE(shownOn(out1).isNull());
     EXPECT_EQ(active, id(2));
 
     outputs.clear();
@@ -582,34 +569,18 @@ TEST_F(SceneTakeTest, NoOutputAtAllJustActivates) {
 }
 
 TEST_F(SceneTakeTest, ActiveSceneOnADisabledOutputStillHandsItOver) {
-    outputs = {{out1, false}, {out2, true}};
+    outputs = {{out1, false, id(0)}, {out2, true, UUID()}};
     active = id(0);
     const SceneTake t = take(2);
-    EXPECT_EQ(t.outputId, out1);  // O is the active scene's output, enabled or not
-}
-
-TEST_F(SceneTakeTest, AssignmentToADeletedOutputCountsAsNone) {
-    const UUID deleted = UUID::generate();
-    scenes[1]->setAssignedOutputId(deleted);
-    active = id(0);
-    const SceneTake t = take(2);
-    EXPECT_EQ(t.kind, SceneTake::Kind::Route);
-    EXPECT_EQ(scenes[1]->getAssignedOutputId(), out1);
-
-    // Active scene on a deleted output: fall back to the first enabled one.
-    scenes[1]->setAssignedOutputId(deleted);
-    scenes[0]->setAssignedOutputId(UUID());
-    const SceneTake u = take(1);
-    EXPECT_EQ(u.kind, SceneTake::Kind::Route);
-    EXPECT_EQ(u.outputId, out1);
+    EXPECT_EQ(t.outputIds, std::vector<UUID>{out1});  // the active scene's output, enabled or not
 }
 
 TEST_F(SceneTakeTest, UnknownActiveSceneFallsBack) {
     active = UUID();
-    scenes[0]->setAssignedOutputId(UUID());
+    outputs[0].sceneId = UUID();
     const SceneTake t = take(3);
     EXPECT_EQ(t.kind, SceneTake::Kind::Route);
-    EXPECT_EQ(t.outputId, out1);
+    EXPECT_EQ(t.outputIds, std::vector<UUID>{out1});
 }
 
 TEST_F(SceneTakeTest, NumberingFollowsListOrder) {
@@ -626,21 +597,40 @@ TEST_F(SceneTakeTest, TakingBackAndForthKeepsOneSceneOnTheOutput) {
     take(2);
     take(3);
     take(1);
-    EXPECT_EQ(scenes[0]->getAssignedOutputId(), out1);
-    EXPECT_FALSE(scenes[1]->hasAssignedOutput());
-    EXPECT_FALSE(scenes[2]->hasAssignedOutput());
+    EXPECT_EQ(shownOn(out1), id(0));
+    EXPECT_TRUE(shownOn(out2).isNull());
     EXPECT_EQ(active, id(0));
 }
 
 TEST_F(SceneTakeTest, SecondOutputRoutingIsLeftAlone) {
     // Two projectors: A on 1, B on 2. From A, taking C swaps output 1 only.
-    scenes[1]->setAssignedOutputId(out2);
+    outputs[1].sceneId = id(1);
     active = id(0);
     take(3);
-    EXPECT_EQ(scenes[2]->getAssignedOutputId(), out1);
-    EXPECT_FALSE(scenes[0]->hasAssignedOutput());
-    EXPECT_EQ(scenes[1]->getAssignedOutputId(), out2);
+    EXPECT_EQ(shownOn(out1), id(2));
+    EXPECT_EQ(shownOn(out2), id(1));
 }
+
+// ADR-047 §5: a blended group (every output showing the active scene) changes
+// together; an output showing another scene is left alone.
+TEST_F(SceneTakeTest, BlendedGroupChangesTogether) {
+    outputs = {{out1, true, id(0)}, {out2, true, id(0)}, {out3, true, id(1)}};
+    active = id(0);
+    const SceneTake t = take(3);
+
+    EXPECT_EQ(t.kind, SceneTake::Kind::Route);
+    EXPECT_EQ(t.outputIds, (std::vector<UUID>{out1, out2}));
+    EXPECT_EQ(shownOn(out1), id(2));
+    EXPECT_EQ(shownOn(out2), id(2));
+    EXPECT_EQ(shownOn(out3), id(1));
+
+    // And back: the whole group again.
+    take(1);
+    EXPECT_EQ(shownOn(out1), id(0));
+    EXPECT_EQ(shownOn(out2), id(0));
+    EXPECT_EQ(shownOn(out3), id(1));
+}
+
 
 } // namespace test
 } // namespace quadmapper

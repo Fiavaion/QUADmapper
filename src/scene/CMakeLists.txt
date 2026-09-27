@@ -28,6 +28,8 @@ add_library(quadmapper_scene STATIC
     ObjLoader.hpp
     ObjLoader.cpp
     MediaReferences.hpp
+    Slice.hpp
+    Slice.cpp
 )
 
 target_include_directories(quadmapper_scene

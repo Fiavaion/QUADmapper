@@ -157,10 +157,9 @@ void ViewportEditor::render(EditorContext& ctx) {
         regionH = static_cast<float>(winHeight);
     }
 
-    // Canvas aspect from the active scene's assigned output (getEffectiveResolution
-    // already swaps W/H for 90/270 rotation, so portrait is automatic). 16:9 default.
-    // That output's projector also draws the scene's 3D objects (ADR-052); with no
-    // output the default camera stands in, as it would for a fresh output.
+    // Canvas aspect from the active scene's canvas (ADR-047). The projector of an
+    // output showing the scene also draws its 3D objects (ADR-052); with no output
+    // the default camera stands in, as it would for a fresh output.
     float canvasAspect = 16.0f / 9.0f;
     // No output: a fresh output's camera (16:9), framed on the scene's objects.
     Vec3 objectsMin, objectsMax;
@@ -170,18 +169,16 @@ void ViewportEditor::render(EditorContext& ctx) {
         haveObjects ? &objectsMax : nullptr);
     const ProjectorCamera* canvasProjector = &defaultProjector;
     OutputWindow* canvasOutput = nullptr;
+    const IVec2 canvasSize = es.activeScene().getCanvasSize();
+    canvasAspect = static_cast<float>(canvasSize.x) / static_cast<float>(canvasSize.y);
     if (m_outputManager) {
-        const UUID outId = es.activeScene().getAssignedOutputId();
-        if (!outId.isNull()) {
-            if (OutputWindow* ow = m_outputManager->getOutput(outId)) {
-                canvasOutput = ow;
-                canvasProjector = &ow->getProjector();
-                IVec2 res = ow->getEffectiveResolution();
-                if (res.x > 0 && res.y > 0) {
-                    canvasAspect = static_cast<float>(res.x) / static_cast<float>(res.y);
-                }
-            }
-        }
+        // The projector being calibrated when it shows this scene, else the first
+        // output showing it.
+        OutputWindow* calibrated = m_outputManager->getOutput(es.calibratingOutputId);
+        canvasOutput = calibrated && calibrated->getSceneId() == es.activeScene().getId()
+                           ? calibrated
+                           : m_outputManager->firstOutputShowing(es.activeScene().getId());
+        if (canvasOutput) canvasProjector = &canvasOutput->getProjector();
     }
 
     const float regionAspect = (regionH > 0.0f) ? regionW / regionH : 1.0f;

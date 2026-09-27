@@ -34,7 +34,7 @@ void OutputPreviewPanel::renderContent(EditorContext& ctx) {
         if (!output) continue;
         ImGui::PushID(i++);
 
-        const Scene* scene = OutputManager::sceneForOutput(ctx.es.scenes, output->getId());
+        const Scene* scene = OutputManager::sceneForOutput(ctx.es.scenes, *output);
         ImGui::Text("%s", output->getName().c_str());
         ImGui::SameLine();
         if (scene) {

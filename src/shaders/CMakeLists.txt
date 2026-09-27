@@ -10,6 +10,8 @@ file(READ ${CMAKE_CURRENT_SOURCE_DIR}/outline.vert OUTLINE_VERT_SOURCE)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/outline.frag OUTLINE_FRAG_SOURCE)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/handle.vert HANDLE_VERT_SOURCE)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/handle.frag HANDLE_FRAG_SOURCE)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/slice.vert SLICE_VERT_SOURCE)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/slice.frag SLICE_FRAG_SOURCE)
 
 # Configure shader source header
 configure_file(
@@ -37,6 +39,8 @@ set(SHADER_FILES
     outline.frag
     handle.vert
     handle.frag
+    slice.vert
+    slice.frag
 )
 
 # Add shader files to a custom target for IDE visibility

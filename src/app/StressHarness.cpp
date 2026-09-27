@@ -196,10 +196,10 @@ int Application::runStress(const StressConfig& cfg) {
     }
     quad->getTexture().mediaId = sourceId;
 
-    // Assign the active scene to output 0.
+    // Show the active scene on output 0.
     const auto& outputs = m_outputManager->getOutputs();
     if (!outputs.empty()) {
-        es.assignSceneToOutput(scene.getId(), outputs.front()->getId());
+        OutputManager::showScene(*outputs.front(), &scene, es.scenes);
     }
 
     // ---- Helper: one full cycle with wedge watchdog + pause/resume (H3/H4) --

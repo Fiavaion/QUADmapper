@@ -91,91 +91,24 @@ TEST(OutputWindowTest, SetFullscreenUpdatesState) {
     EXPECT_FALSE(window.isFullscreen());
 }
 
-TEST(OutputWindowTest, NoAssignedScenesInitially) {
+TEST(OutputWindowTest, ShowsNoSceneAndNoSlicesInitially) {
     OutputWindow window;
 
-    EXPECT_TRUE(window.getAssignedScenes().empty());
+    EXPECT_TRUE(window.getSceneId().isNull());
+    EXPECT_TRUE(window.getSlices().empty());
 }
 
-TEST(OutputWindowTest, AssignSceneAddsToList) {
+TEST(OutputWindowTest, ShowsTheSceneItWasGiven) {
     OutputWindow window;
-    UUID sceneId = UUID::generate();
+    const UUID first = UUID::generate();
+    const UUID second = UUID::generate();
 
-    window.assignScene(sceneId);
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 1);
-    EXPECT_TRUE(window.hasScene(sceneId));
-}
-
-TEST(OutputWindowTest, AssignSceneDoesNotDuplicate) {
-    OutputWindow window;
-    UUID sceneId = UUID::generate();
-
-    window.assignScene(sceneId);
-    window.assignScene(sceneId);  // Assign same scene again
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 1);
-}
-
-TEST(OutputWindowTest, AssignMultipleScenes) {
-    OutputWindow window;
-    UUID scene1 = UUID::generate();
-    UUID scene2 = UUID::generate();
-    UUID scene3 = UUID::generate();
-
-    window.assignScene(scene1);
-    window.assignScene(scene2);
-    window.assignScene(scene3);
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 3);
-    EXPECT_TRUE(window.hasScene(scene1));
-    EXPECT_TRUE(window.hasScene(scene2));
-    EXPECT_TRUE(window.hasScene(scene3));
-}
-
-TEST(OutputWindowTest, RemoveSceneRemovesFromList) {
-    OutputWindow window;
-    UUID sceneId = UUID::generate();
-
-    window.assignScene(sceneId);
-    EXPECT_TRUE(window.hasScene(sceneId));
-
-    window.removeScene(sceneId);
-    EXPECT_FALSE(window.hasScene(sceneId));
-    EXPECT_TRUE(window.getAssignedScenes().empty());
-}
-
-TEST(OutputWindowTest, RemoveNonexistentSceneIsNoOp) {
-    OutputWindow window;
-    UUID scene1 = UUID::generate();
-    UUID scene2 = UUID::generate();
-
-    window.assignScene(scene1);
-    window.removeScene(scene2);  // Try to remove scene that wasn't added
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 1);
-    EXPECT_TRUE(window.hasScene(scene1));
-}
-
-TEST(OutputWindowTest, ClearScenesRemovesAll) {
-    OutputWindow window;
-
-    window.assignScene(UUID::generate());
-    window.assignScene(UUID::generate());
-    window.assignScene(UUID::generate());
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 3);
-
-    window.clearScenes();
-
-    EXPECT_TRUE(window.getAssignedScenes().empty());
-}
-
-TEST(OutputWindowTest, HasSceneReturnsFalseForUnknown) {
-    OutputWindow window;
-    UUID unknownId = UUID::generate();
-
-    EXPECT_FALSE(window.hasScene(unknownId));
+    window.setSceneId(first);
+    EXPECT_EQ(window.getSceneId(), first);
+    window.setSceneId(second);  // one scene at a time: the new one replaces it
+    EXPECT_EQ(window.getSceneId(), second);
+    window.setSceneId(UUID::null());
+    EXPECT_TRUE(window.getSceneId().isNull());
 }
 
 TEST(OutputWindowTest, PositionDefaultIs100_100) {

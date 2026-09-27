@@ -28,6 +28,7 @@ add_quadmapper_test(test_scene
     scene/RayPickTest.cpp
     scene/CalibrationSessionTest.cpp
     scene/CropInsetsTest.cpp
+    scene/SliceTest.cpp
 )
 target_link_libraries(test_scene PRIVATE quadmapper_scene quadmapper_core)
 
@@ -188,6 +189,7 @@ add_quadmapper_test(test_control_app
     app/MissingMediaTest.cpp
     app/ReplaceMediaTest.cpp
     app/MeshEditKeysTest.cpp
+    app/SceneTakeRoutingTest.cpp
 )
 target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_control
     quadmapper_project quadmapper_scene quadmapper_source quadmapper_core)

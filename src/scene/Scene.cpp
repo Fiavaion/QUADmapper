@@ -8,6 +8,11 @@ Scene::Scene() : id_(UUID::generate()), name_("New Scene") {}
 
 Scene::Scene(const UUID& id) : id_(id), name_("New Scene") {}
 
+void Scene::setCanvasSize(IVec2 size) {
+    canvasSize_ = IVec2(std::clamp(size.x, 1, MAX_CANVAS_DIMENSION),
+                        std::clamp(size.y, 1, MAX_CANVAS_DIMENSION));
+}
+
 void Scene::resetView() {
     viewState_ = SceneViewState();
 }
@@ -242,6 +247,7 @@ std::unique_ptr<Scene> Scene::duplicate(std::unordered_map<UUID, UUID>* quadIdMa
     auto copy = std::make_unique<Scene>();
     copy->name_ = name_;
     copy->viewState_ = viewState_;
+    copy->canvasSize_ = canvasSize_;
     copy->nextGroupNumber_ = nextGroupNumber_;
 
     std::unordered_map<UUID, UUID> quadIds;
@@ -303,31 +309,6 @@ int findSceneIndex(const SceneList& scenes, const UUID& sceneId) {
     return -1;
 }
 
-void assignSceneToOutput(SceneList& scenes, const UUID& sceneId, const UUID& outputId) {
-    if (!outputId.isNull()) {
-        for (auto& s : scenes) {
-            if (s && s->getId() != sceneId && s->getAssignedOutputId() == outputId) {
-                s->setAssignedOutputId(UUID::null());
-            }
-        }
-    }
-    for (auto& s : scenes) {
-        if (s && s->getId() == sceneId) { s->setAssignedOutputId(outputId); break; }
-    }
-}
-
-bool clearOutputAssignments(SceneList& scenes, const UUID& outputId) {
-    if (outputId.isNull()) return false;
-    bool cleared = false;
-    for (auto& s : scenes) {
-        if (s && s->getAssignedOutputId() == outputId) {
-            s->setAssignedOutputId(UUID::null());
-            cleared = true;
-        }
-    }
-    return cleared;
-}
-
 std::string uniqueSceneCopyName(const SceneList& scenes, const std::string& baseName) {
     auto taken = [&](const std::string& name) {
         return std::any_of(scenes.begin(), scenes.end(),
@@ -356,34 +337,30 @@ SceneTake planSceneTake(const SceneList& scenes, const UUID& activeSceneId, int 
     const Scene* target = scenes[static_cast<size_t>(number - 1)].get();
     if (!target) return take;
 
-    auto outputExists = [&](const UUID& id) {
-        return !id.isNull() && std::any_of(outputs.begin(), outputs.end(),
-                                           [&](const SceneTakeOutput& o) { return o.id == id; });
-    };
-    const bool targetIsActive = target->getId() == activeSceneId;
     take.sceneId = target->getId();
+    const bool targetIsActive = take.sceneId == activeSceneId;
 
-    if (outputExists(target->getAssignedOutputId())) {
-        if (!targetIsActive) take.kind = SceneTake::Kind::Activate;
-        return take;
-    }
-
-    UUID output;
-    const int activeIndex = findSceneIndex(scenes, activeSceneId);
-    if (activeIndex >= 0 && outputExists(scenes[static_cast<size_t>(activeIndex)]->getAssignedOutputId())) {
-        output = scenes[static_cast<size_t>(activeIndex)]->getAssignedOutputId();
-    } else {
+    auto shows = [](const SceneTakeOutput& o, const UUID& sceneId) {
+        return !o.id.isNull() && !sceneId.isNull() && o.sceneId == sceneId;
+    };
+    const bool targetShown = std::any_of(outputs.begin(), outputs.end(),
+                                         [&](const SceneTakeOutput& o) { return shows(o, take.sceneId); });
+    if (!targetShown) {
         for (const SceneTakeOutput& o : outputs) {
-            if (o.enabled && !o.id.isNull()) { output = o.id; break; }
+            if (shows(o, activeSceneId)) take.outputIds.push_back(o.id);
+        }
+        if (take.outputIds.empty()) {
+            for (const SceneTakeOutput& o : outputs) {
+                if (o.enabled && !o.id.isNull()) { take.outputIds.push_back(o.id); break; }
+            }
         }
     }
 
-    if (output.isNull()) {
-        if (!targetIsActive) take.kind = SceneTake::Kind::Activate;
-        return take;
+    if (!take.outputIds.empty()) {
+        take.kind = SceneTake::Kind::Route;
+    } else if (!targetIsActive) {
+        take.kind = SceneTake::Kind::Activate;
     }
-    take.kind = SceneTake::Kind::Route;
-    take.outputId = output;
     return take;
 }
 

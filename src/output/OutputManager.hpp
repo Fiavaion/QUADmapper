@@ -277,7 +277,7 @@ public:
     static bool isBlackoutKey(int key, int action, int mods);
 
     // Called with the id of every output deleteOutput removes, after it is gone, so
-    // the owner can drop references to it (scene routing).
+    // the owner can drop references to it and mark the show changed.
     using OutputRemovedCallback = std::function<void(const UUID& outputId)>;
     void setOutputRemovedCallback(OutputRemovedCallback callback) {
         outputRemovedCallback_ = std::move(callback);
@@ -374,16 +374,19 @@ public:
 
     /**
      * Draw every output's frame into its render target, in the CURRENT (main) GL
-     * context with the main context's `renderer`. An output shows the one scene
-     * whose assignedOutputId is its id (ADR-039): the scene's 3D objects through the
-     * output's projector camera (ADR-052), then its quads in z-order, clean (no
-     * selection or editor handles), turned by the output's rotation (QM-087).
-     * With no assigned scene, or during blackout, the frame is black. The target is
-     * the output window's framebuffer size. The frame is opaque (alpha 1 everywhere,
-     * translucent quads blend colour only), so the preview can draw it blended.
-     * Restores the framebuffer binding, viewport and blend function; leaves the
-     * renderer's rotation at R0 for the editor canvas.
-     * @param scenes    The project's scenes (read-only); each may target one output
+     * context with the main context's `renderer` (ADR-047 §4, ADR-054).
+     *  1. Each scene that an output shows is drawn once into its canvas texture, at
+     *     the scene's canvas size: its quads in z-order, clean (no selection or
+     *     editor handles), colour blended over black with coverage in alpha.
+     *  2. Each output's frame: the scene's 3D objects through the output's projector
+     *     camera (ADR-052), then the output's slices of the canvas composited over
+     *     them, all turned by the output's rotation (QM-087).
+     * With no scene, or during blackout, the frame is black (no canvas is drawn in
+     * blackout). The target is the output window's framebuffer size. The frame is
+     * opaque (alpha 1 everywhere), so the preview can draw it blended. Restores the
+     * framebuffer binding, viewport and blend function; leaves the renderer's
+     * rotation at R0 for the editor canvas.
+     * @param scenes    The project's scenes (read-only)
      * @param textures  Map of quad/object UUID -> Texture* (pointers owned by EditorState)
      */
     void renderOutputFrames(const std::vector<std::unique_ptr<Scene>>& scenes,
@@ -391,11 +394,39 @@ public:
                             Renderer& renderer);
 
     /**
-     * Pure routing decision: the scene assigned to a given output id, or nullptr if
-     * none. Static + side-effect-free so the routing rule is unit-testable without GL.
+     * Pure routing decision: the scene the output shows (its sceneId), or nullptr
+     * when it shows none or no scene has that id. Static and side-effect-free so the
+     * routing rule is unit-testable without GL.
      */
     static const Scene* sceneForOutput(const std::vector<std::unique_ptr<Scene>>& scenes,
-                                       const UUID& outputId);
+                                       const OutputWindow& output);
+
+    /**
+     * Route `scene` to `output` (null = show nothing). An output without slices
+     * gets one slice of the whole canvas; slices it has keep their place on the
+     * picture when the canvas size changes (rescaleSlices from the scene it showed).
+     */
+    static void showScene(OutputWindow& output, const Scene* scene,
+                          const std::vector<std::unique_ptr<Scene>>& scenes);
+
+    /**
+     * Once per frame: a scene shown by one output alone, through its default slice
+     * (the whole canvas, no warp, no blend), whose canvas is that output's effective
+     * resolution, keeps following that resolution when it changes (a resolution or
+     * rotation edit), as the editor canvas did before canvases (ADR-047 part A).
+     * Every other scene keeps its canvas size. Returns true when a canvas changed.
+     */
+    bool followOutputSizes(std::vector<std::unique_ptr<Scene>>& scenes);
+
+    /** The first output (list order) that shows this scene, or nullptr. */
+    OutputWindow* firstOutputShowing(const UUID& sceneId) const;
+
+    /**
+     * A scene's canvas as drawn by the last renderOutputFrames, or nullptr when no
+     * output showed it. Bottom-up colour texture, like outputFrame, turned by the
+     * rotation all outputs showing the scene share (unturned when they differ).
+     */
+    const Framebuffer* sceneCanvas(const UUID& sceneId) const;
 
     /**
      * Like renderOutputFrames, but every output's frame is one fullscreen calibration
@@ -437,8 +468,18 @@ private:
     void clearPerformModeKeyCallbacks();
 
     // Draw every output's frame (see renderOutputFrames); `draw` issues the content
-    // draws after the black clear, with the output's rotation set on `renderer`.
-    void renderFrames(Renderer& renderer, const std::function<void(const OutputWindow&)>& draw);
+    // draws after the black clear, with the output's rotation set on `renderer`. It
+    // gets the frame's effective (unrotated) size.
+    void renderFrames(Renderer& renderer,
+                      const std::function<void(const OutputWindow&, IVec2 effectiveSize)>& draw);
+
+    // Step 1 of renderOutputFrames: draw the canvas of every scene an output shows,
+    // and release the canvases of scenes no output shows.
+    void renderCanvases(const std::vector<std::unique_ptr<Scene>>& scenes,
+                        const std::unordered_map<UUID, Texture*>& textures, Renderer& renderer);
+
+    // Release the canvases of scenes no output shows (after an output is removed).
+    void releaseUnshownCanvases();
 
     // The size an output's frame is drawn at: its window's framebuffer, or its
     // resolution while it has no window or the window is minimised.
@@ -478,6 +519,21 @@ private:
     // in the MAIN GL context and are destroyed in shutdown()/deleteOutput() with it
     // current; their colour textures are shared with the output contexts.
     std::unordered_map<UUID, std::unique_ptr<Framebuffer>> frames_;
+
+    // Each shown scene's canvas (ADR-047), keyed by scene UUID; main context, like
+    // frames_. It is drawn turned by the rotation every output showing the scene
+    // shares (R0 when they differ), so one rotated projector's canvas rasterizes
+    // exactly as its frame did before canvases. canvasScenes_ is per-frame scratch
+    // (reused, so no allocation).
+    struct SceneCanvas {
+        std::unique_ptr<Framebuffer> target;
+        Rotation rotation = Rotation::R0;
+    };
+    std::unordered_map<UUID, SceneCanvas> canvases_;
+    std::vector<UUID> canvasScenes_;
+
+    // Each output's effective resolution when followOutputSizes last saw it.
+    std::unordered_map<UUID, IVec2> knownSizes_;
 
     // Signalled when the frames drawn by renderFrames are complete; each output
     // context waits on it on the GPU before copying (a change made in one context is
