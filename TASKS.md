@@ -11,6 +11,23 @@ Last Updated: 2026-09-26 (Session 23)
 - Blocked: 0
 - Plan of record: [docs/audits/2026-09-25-foundation-audit.md](docs/audits/2026-09-25-foundation-audit.md) §8
 
+## Session 24 (2026-09-27) — ADR-047 scene canvas → output slices
+
+- **QM-120 DONE** — ADR-047 part A: scene canvas in pixels, routing on the output
+  (`sceneId`, several outputs per scene), slices (input rect, warp through the ADR-049
+  evaluator, L/R/T/B blend zones with gamma and curve, black level), canvas drawn once per
+  shown scene and composed per output by the slice shader, takes swap a blended group
+  together, `.qmap` 3.4.0 with migration from 3.x (fixture v3.4-canvas-slices.qmap). Pixel
+  identity by readback (byte-identical without 3D objects at every rotation; ≤ 2 levels where
+  translucent quads lie over a 3D object), blend flatness 0.5% on the GPU. GUI-checked: the
+  v3.4 fixture's left projector fades over the overlap on the second monitor; an old keystone
+  show projects as in the editor. Bench still needs a quiet-machine rerun (see ADR-047
+  Amendment 1).
+- **QM-121 TODO** — ADR-047 part B: Output-panel slice editor (Tab/arrows/Shift/Alt on the
+  warp corners), auto-blend of facing edges + blend test pattern, canvas size editing in the
+  Scenes panel, scene crossfades (§5 fade times, OSC `/qm/scene/take i n f`, audio
+  cross-gain), TD-12 per-output presentation (§6), calibration with non-identity slices.
+
 ## Session 23 (2026-09-26) — PRD MVP gaps, audio, OSC/MIDI (committed on dev, not pushed)
 
 - **QM-100 DONE** — scene take keys 1–9 + numpad (physical keys, any layout; blocked while
