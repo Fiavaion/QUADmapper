@@ -987,6 +987,41 @@ TEST_F(SliceCommandsTest, SliceEditAppliesAndUndoes) {
     EXPECT_EQ(now().slices.size(), 2u);
 }
 
+// A take or routing rescales an output's slices to another canvas without an undo step
+// (ADR-047 Amendment 5): undo and redo fit their snapshot to the canvas the output's
+// slices are made for now, so the projector keeps the part of the picture recorded.
+TEST_F(SliceCommandsTest, UndoAndRedoFitTheSnapshotToTheOutputsCanvasNow) {
+    OutputSlices after = start_;
+    after.slices[0].input = CanvasRect{960.0f, 0.0f, 960.0f, 1080.0f};
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Slice input", "", start_, after));
+
+    // Routed to a canvas twice the size (not an undo step).
+    OutputSlices& live = outputs_.outputs[id_];
+    rescaleSlices(live.slices, live.canvas, IVec2(3840, 2160));
+    live.canvas = IVec2(3840, 2160);
+
+    ASSERT_TRUE(history_.undo());
+    EXPECT_EQ(now().canvas, IVec2(3840, 2160));
+    EXPECT_EQ(now().slices[0].input, (CanvasRect{0.0f, 0.0f, 3840.0f, 2160.0f}));
+    ASSERT_TRUE(history_.redo());
+    EXPECT_EQ(now().canvas, IVec2(3840, 2160));
+    EXPECT_EQ(now().slices[0].input, (CanvasRect{1920.0f, 0.0f, 1920.0f, 2160.0f}));
+}
+
+// Edits of one key merge only while the output's canvas stays the same: a step never
+// spans a routing change.
+TEST_F(SliceCommandsTest, EditsAcrossACanvasChangeDoNotMerge) {
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Move", "corner", start_,
+                                                        withCorner(start_, 0, Vec2(0.1f, 0.0f))));
+    OutputSlices& live = outputs_.outputs[id_];
+    rescaleSlices(live.slices, live.canvas, IVec2(960, 540));
+    live.canvas = IVec2(960, 540);
+    const OutputSlices before = now();
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Move", "corner", before,
+                                                        withCorner(before, 0, Vec2(0.2f, 0.0f))));
+    EXPECT_EQ(history_.getUndoCount(), 2u);
+}
+
 // Nudges (or a drag) of one warp corner are one undo step; another corner is another.
 TEST_F(SliceCommandsTest, EditsOfOneTargetMergeIntoOneStep) {
     OutputSlices a = withCorner(start_, 1, Vec2(0.99f, 0.0f));
@@ -1038,7 +1073,7 @@ TEST_F(SliceCommandsTest, EditOfARemovedOutputIsASafeNoOp) {
 TEST_F(SceneCommandsTest, SetSceneCanvasCommandSetsSizeAndLockAndUndoes) {
     const Vec2 corner = manager().createQuad()->getGeometry().getCorners()[2];
     history_->execute(std::make_unique<SetSceneCanvasCommand>(
-        resolver_, scene().getId(), CanvasSetting{IVec2(1920, 1080), false},
+        resolver_, nullptr, scene().getId(), CanvasSetting{IVec2(1920, 1080), false},
         CanvasSetting{IVec2(3840, 1080), true}));
     EXPECT_EQ(scene().getCanvasSize(), IVec2(3840, 1080));
     EXPECT_TRUE(scene().isCanvasLocked());

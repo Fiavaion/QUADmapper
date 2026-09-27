@@ -70,10 +70,17 @@ void editSlices(EditorState& es, OutputWindow& output, const std::string& descri
         es.outputRef(output.getId()), description, mergeKey, std::move(before), std::move(after)));
 }
 
-// Merge key for moves of one warp corner of one slice (keyboard, mouse or the
-// Inspector's fields): all of them are one target.
-inline std::string sliceWarpCornerKey(const UUID& sliceId, int corner) {
-    return "warp " + sliceId.toString() + " " + std::to_string(corner);
+// A slice input rectangle as typed into the slice editor, kept on `canvas`: x and y in
+// 0..size - 1, width and height at least 1 and no further than the canvas's far edge.
+inline CanvasRect clampInputToCanvas(const CanvasRect& input, IVec2 canvas) {
+    const float w = static_cast<float>(std::max(canvas.x, 1));
+    const float h = static_cast<float>(std::max(canvas.y, 1));
+    CanvasRect r;
+    r.x = std::clamp(input.x, 0.0f, w - 1.0f);
+    r.y = std::clamp(input.y, 0.0f, h - 1.0f);
+    r.width = std::clamp(input.width, 1.0f, w - r.x);
+    r.height = std::clamp(input.height, 1.0f, h - r.y);
+    return r;
 }
 
 // One frame of canvas keys on the edited slice's warp, the quad corner model
@@ -100,13 +107,15 @@ inline bool applySliceWarpKeys(const CanvasKeys& keys, EditorState& es, OutputWi
 // Auto-blend (ADR-047 §3): every facing edge of overlapping slices of different
 // outputs that show `sceneId` gets the overlap's width, gamma 2.2 and the default
 // curve (autoBlendEdges); other edges keep their values. One undo step. Returns how
-// many edges were set: 0 (and no step) when no two outputs' slices overlap.
+// many edges were set: 0 (and no step) when no two outputs' slices overlap. The output
+// being calibrated takes no part: calibration needs its default slicing (canCalibrate).
 inline int autoBlendScene(EditorState& es, OutputManager& outputs, const UUID& sceneId) {
     std::vector<OutputWindow*> shown;
     std::vector<SlicePlacement> placements;
     std::vector<std::pair<size_t, size_t>> where;  // placement -> (output, slice)
     for (const auto& output : outputs.getOutputs()) {
         if (!output || sceneId.isNull() || output->getSceneId() != sceneId) continue;
+        if (output->getId() == es.calibratingOutputId) continue;
         for (size_t s = 0; s < output->getSlices().size(); ++s) {
             placements.push_back(SlicePlacement{output->getId(), output->getSlices()[s].input});
             where.emplace_back(shown.size(), s);
@@ -139,10 +148,10 @@ inline int autoBlendScene(EditorState& es, OutputManager& outputs, const UUID& s
 // Set a scene's canvas size (clamped to 1..MAX_CANVAS_DIMENSION, as on load) and
 // whether it is fixed (Scene::isCanvasLocked), as one undo step. Quads keep their
 // normalized positions; the slices of every output showing the scene are rescaled to
-// the new size (rescaleSlices), so they keep their place on the picture. Returns false
-// (no step) when nothing changes or there is no such scene.
-inline bool setSceneCanvas(EditorState& es, OutputManager* outputs, const UUID& sceneId,
-                           IVec2 size, bool locked) {
+// the new size (rescaleSlices, through es.outputResolver), so they keep their place on
+// the picture, and so are those of the outputs showing it when the step is undone or
+// redone. Returns false (no step) when nothing changes or there is no such scene.
+inline bool setSceneCanvas(EditorState& es, const UUID& sceneId, IVec2 size, bool locked) {
     const int index = findSceneIndex(es.scenes, sceneId);
     if (index < 0) return false;
     Scene& scene = *es.scenes[static_cast<size_t>(index)];
@@ -152,21 +161,8 @@ inline bool setSceneCanvas(EditorState& es, OutputManager* outputs, const UUID& 
                               locked};
     if (after.size == before.size && after.locked == before.locked) return false;
 
-    es.commandHistory.beginCompoundCommand("Canvas size");
-    es.commandHistory.execute(
-        std::make_unique<SetSceneCanvasCommand>(es.quadResolver, sceneId, before, after));
-    if (outputs && after.size != before.size) {
-        for (const auto& output : outputs->getOutputs()) {
-            if (!output || output->getSceneId() != sceneId) continue;
-            OutputSlices was{output->getSlices(), output->getSlicesCanvas()};
-            const IVec2 from = (was.canvas.x > 0 && was.canvas.y > 0) ? was.canvas : before.size;
-            OutputSlices rescaled{was.slices, after.size};
-            rescaleSlices(rescaled.slices, from, after.size);
-            es.commandHistory.execute(std::make_unique<SliceEditCommand>(
-                es.outputRef(output->getId()), "Canvas size", "", std::move(was), std::move(rescaled)));
-        }
-    }
-    es.commandHistory.endCompoundCommand();
+    es.commandHistory.execute(std::make_unique<SetSceneCanvasCommand>(
+        es.quadResolver, &es.outputResolver, sceneId, before, after));
     return true;
 }
 

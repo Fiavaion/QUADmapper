@@ -2,14 +2,15 @@
 
 // Which step Ctrl+Z / Ctrl+Y and Edit > Undo / Redo take (TD-17).
 //
-// There is one history, in the order things were done: quad, 3D-object and calibration
-// steps together. While a projector is being calibrated, only that output's calibration
-// steps are undone or redone. When the next step is anything else (a quad edit made
-// before calibration started, or another output's calibration) nothing happens and the
-// caller says why, so a Ctrl+Z meant for a misplaced point never moves a quad hidden
-// behind the calibration view. Outside calibration every step is taken in order; a
-// calibration step still applies to its output by id and is a no-op once that output
-// is gone.
+// There is one history, in the order things were done: quad, 3D-object, calibration
+// and slice steps together. While a projector is being calibrated, only that output's
+// calibration steps are undone or redone; while a slice warp is edited on the canvas
+// (ADR-047 Amendment 5), only that output's slice steps. When the next step is anything
+// else (a quad edit made before the mode started, or another output's step) nothing
+// happens and the caller says why, so a Ctrl+Z meant for a misplaced point or corner
+// never moves a quad hidden behind the calibration or warp view. Outside both modes
+// every step is taken in order; an output's step still applies to its output by id and
+// is a no-op once that output is gone.
 
 #include "EditorState.hpp"
 #include "scene/Commands.hpp"
@@ -20,9 +21,20 @@ namespace quadmapper {
 
 inline bool isUndoStepAllowed(const EditorState& es, const Command* step) {
     if (!step) return false;
-    if (es.calibratingOutputId.isNull()) return true;
-    const auto* calibration = dynamic_cast<const CalibrationEditCommand*>(step);
-    return calibration && calibration->getOutputId() == es.calibratingOutputId;
+    if (!es.calibratingOutputId.isNull()) {
+        const auto* calibration = dynamic_cast<const CalibrationEditCommand*>(step);
+        return calibration && calibration->getOutputId() == es.calibratingOutputId;
+    }
+    if (!es.sliceWarpOutputId.isNull()) {
+        const auto* slice = dynamic_cast<const SliceEditCommand*>(step);
+        return slice && slice->getOutputId() == es.sliceWarpOutputId;
+    }
+    return true;
+}
+
+// The mode that held a step back, for the status line ("Leave ... to undo").
+inline const char* undoScopeName(const EditorState& es) {
+    return es.calibratingOutputId.isNull() ? "slice warp editing" : "calibration";
 }
 
 inline bool canUndoStep(const EditorState& es) {

@@ -134,7 +134,7 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
     // ---- Input rectangle -----------------------------------------------------------
     float rect[4] = {slice.input.x, slice.input.y, slice.input.width, slice.input.height};
     if (ImGui::DragFloat4("Input (px)", rect, 1.0f, 0.0f, 0.0f, "%.0f")) {
-        const CanvasRect input{rect[0], rect[1], std::max(1.0f, rect[2]), std::max(1.0f, rect[3])};
+        const CanvasRect input = clampInputToCanvas(CanvasRect{rect[0], rect[1], rect[2], rect[3]}, canvas);
         edit("Slice input", "input", [&](Slice& s) { s.input = input; });
     }
     ImGui::SetItemTooltip("x, y, width, height of the part of the canvas this slice shows,\n"

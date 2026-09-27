@@ -476,6 +476,9 @@ public:
     /** A scene is being deleted: fades from or to it end at once. */
     void cancelSceneFades(const UUID& sceneId) { sceneFades_.cancelScene(sceneId); }
 
+    /** The show is being replaced (New, Open, recovery): every fade ends at once. */
+    void clearSceneFades() { sceneFades_.clear(); }
+
     /** The first output (list order) that shows this scene, or nullptr. */
     OutputWindow* firstOutputShowing(const UUID& sceneId) const;
 

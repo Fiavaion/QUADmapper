@@ -147,7 +147,8 @@ void MainMenuBar::render(EditorContext& ctx) {
     }
 
     if (ImGui::BeginMenu("Edit")) {
-        // While calibrating, only that output's calibration steps (UndoRouting.hpp).
+        // While calibrating or editing a slice warp, only that output's calibration or
+        // slice steps (UndoRouting.hpp).
         if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndoStep(es))) {
             if (undoStep(es) && ctx.project) ctx.project->setModified(true);
         }

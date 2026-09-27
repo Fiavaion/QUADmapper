@@ -261,7 +261,7 @@ static bool isFileSource(const Project::SourceData& source) {
 // its mesh path with an empty mesh) and collectMissingMedia() lists them to relocate.
 static void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
                                 SourceManager* sm) {
-    clearProjectContent(es, sm);  // before any of the new project's sources exist
+    clearProjectContent(es, sm, om);  // before any of the new project's sources exist
 
     // Rebuild outputs from the file (v3), each with the scene it shows (scene ids are
     // kept on load) and its slices. v1/v2 files carry no outputs: keep the existing
@@ -1389,8 +1389,8 @@ void Application::render() {
         saveProject();
     }
 
-    // Undo/redo also run while calibrating, on that output's calibration steps only
-    // (UndoRouting.hpp, TD-17).
+    // Undo/redo also run while calibrating or editing a slice warp, on that output's
+    // calibration or slice steps only (UndoRouting.hpp, TD-17).
     const bool undoKey = editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false);
     const bool redoKey = editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false);
     if (undoKey || redoKey) {
@@ -1398,8 +1398,8 @@ void Application::render() {
         if (undoKey ? undoStep(es, &heldBack) : redoStep(es, &heldBack)) {
             m_project->setModified(true);
         } else if (!heldBack.empty()) {
-            snprintf(es.statusMessage, sizeof(es.statusMessage), "Leave calibration to %s: %s",
-                     undoKey ? "undo" : "redo", heldBack.c_str());
+            snprintf(es.statusMessage, sizeof(es.statusMessage), "Leave %s to %s: %s",
+                     undoScopeName(es), undoKey ? "undo" : "redo", heldBack.c_str());
             es.statusTimer = 3.0f;
         }
     }
@@ -2210,7 +2210,7 @@ void Application::performNewProject() {
 
     dropQueuedSceneTakes();
     cancelMissingMediaSearch();
-    clearProjectContent(es, m_sourceManager.get());
+    clearProjectContent(es, m_sourceManager.get(), m_outputManager.get());
     es.currentTexturePath[0] = '\0';
     es.midiMappings.clear();  // show content; the Control panel's device choices stay
 

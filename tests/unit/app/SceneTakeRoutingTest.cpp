@@ -4,8 +4,12 @@
 // through real commands and undo. No GL context needed.
 #include "app/EditorState.hpp"
 #include "app/MeshEditKeys.hpp"
+#include "app/ProjectReplace.hpp"
 #include "app/SliceEditing.hpp"
+#include "app/UndoRouting.hpp"
 #include <gtest/gtest.h>
+
+#include <string>
 
 using namespace quadmapper;
 
@@ -178,7 +182,12 @@ TEST(SliceEditingTest, QuadKeysAreUnaffectedWhileTheSliceEditorIsNotActive) {
     ASSERT_EQ(canvasKeyOwner(rig.es, &rig.om), CanvasKeyOwner::Quad);
 
     const Vec2 tl = rig.quad->getGeometry().getCorners()[0];
-    EXPECT_FALSE(rig.press(tabKey()));                  // selects TL
+    EXPECT_FALSE(rig.press(tabKey(/*shift=*/true)));    // Shift+Tab from none: BL
+    EXPECT_EQ(rig.es.cornerSelectedVertex, 3);
+    EXPECT_FALSE(rig.press(tabKey(/*shift=*/true)));    // backwards: BR
+    EXPECT_EQ(rig.es.cornerSelectedVertex, 2);
+    EXPECT_FALSE(rig.press(tabKey()));                  // forwards: BL
+    EXPECT_FALSE(rig.press(tabKey()));                  // wraps to TL
     EXPECT_EQ(rig.es.cornerSelectedVertex, 0);
     EXPECT_TRUE(rig.press(rightKey(/*shift=*/true)));   // 10x
     EXPECT_TRUE(rig.press(rightKey(false, /*alt=*/true)));  // 0.1x
@@ -284,7 +293,7 @@ TEST(SliceEditingTest, AutoBlendSetsTheFacingEdgesAsOneUndoStep) {
 TEST(SliceEditingTest, CanvasResizeRescalesSlicesLocksAndUndoes) {
     SliceRig rig;
     const Vec2 quadCorner = rig.quad->getGeometry().getCorners()[2];
-    ASSERT_TRUE(setSceneCanvas(rig.es, &rig.om, rig.wide, IVec2(6400, 2160), true));
+    ASSERT_TRUE(setSceneCanvas(rig.es, rig.wide, IVec2(6400, 2160), true));
     Scene& wide = *rig.es.scenes[0];
     EXPECT_EQ(wide.getCanvasSize(), IVec2(6400, 2160));
     EXPECT_TRUE(wide.isCanvasLocked());
@@ -314,14 +323,190 @@ TEST(SliceEditingTest, CanvasResizeRescalesSlicesLocksAndUndoes) {
     EXPECT_EQ(rig.right->getSlices()[0].input, (CanvasRect{2560.0f, 0.0f, 3840.0f, 2160.0f}));
 
     // Clamped like the loader; no change, no step.
-    ASSERT_TRUE(setSceneCanvas(rig.es, &rig.om, rig.wide, IVec2(100000, 0), true));
+    ASSERT_TRUE(setSceneCanvas(rig.es, rig.wide, IVec2(100000, 0), true));
     EXPECT_EQ(wide.getCanvasSize(), IVec2(MAX_CANVAS_DIMENSION, 1));
     const size_t steps = rig.es.commandHistory.getUndoCount();
-    EXPECT_FALSE(setSceneCanvas(rig.es, &rig.om, rig.wide, IVec2(MAX_CANVAS_DIMENSION, 1), true));
+    EXPECT_FALSE(setSceneCanvas(rig.es, rig.wide, IVec2(MAX_CANVAS_DIMENSION, 1), true));
     EXPECT_EQ(rig.es.commandHistory.getUndoCount(), steps);
     // Unlocking alone is a step too.
-    EXPECT_TRUE(setSceneCanvas(rig.es, &rig.om, rig.wide, wide.getCanvasSize(), false));
+    EXPECT_TRUE(setSceneCanvas(rig.es, rig.wide, wide.getCanvasSize(), false));
     EXPECT_FALSE(wide.isCanvasLocked());
+}
+
+namespace {
+
+// A scene of half the wide canvas's size, taken as key 4.
+UUID addHalfScene(SliceRig& rig) {
+    Scene* half = rig.es.addScene("Half");
+    half->setCanvasSize(IVec2(1600, 540));
+    rig.es.setActiveScene(rig.wide);
+    return half->getId();
+}
+
+}  // namespace
+
+// Takes rescale slices without an undo step (ADR-047 Amendment 5): undoing and redoing
+// an edit made on the old canvas keeps the slice where the take put it on the new one.
+TEST(SliceEditingTest, UndoAfterATakeToAnotherCanvasFitsTheCanvasShownNow) {
+    SliceRig rig;
+    const UUID half = addHalfScene(rig);
+    editSlices(rig.es, *rig.right, "Black level", "black",
+               [](std::vector<Slice>& s) { s[0].blackLevel = 0.1f; });
+    rig.es.takeScene(4, rig.om);
+    ASSERT_EQ(rig.right->getSceneId(), half);
+    const CanvasRect onHalf{640.0f, 0.0f, 960.0f, 540.0f};
+    ASSERT_EQ(rig.right->getSlices()[0].input, onHalf);
+
+    ASSERT_TRUE(rig.es.commandHistory.undo());
+    EXPECT_FLOAT_EQ(rig.right->getSlices()[0].blackLevel, 0.0f);
+    EXPECT_EQ(rig.right->getSlices()[0].input, onHalf);
+    EXPECT_FLOAT_EQ(rig.right->getSlices()[0].blend[SLICE_EDGE_LEFT].width, 320.0f);
+    EXPECT_EQ(rig.right->getSlicesCanvas(), IVec2(1600, 540));
+    ASSERT_TRUE(rig.es.commandHistory.redo());
+    EXPECT_FLOAT_EQ(rig.right->getSlices()[0].blackLevel, 0.1f);
+    EXPECT_EQ(rig.right->getSlices()[0].input, onHalf);
+}
+
+// Nudges of one corner before and after a take are two steps, each undone onto the
+// canvas shown now.
+TEST(SliceEditingTest, NudgesDoNotMergeAcrossATake) {
+    SliceRig rig;
+    addHalfScene(rig);
+    rig.es.beginSliceWarp(*rig.right, rig.right->getSlices()[0].id);
+    applySliceWarpKeys(tabKey(), rig.es, *rig.right);
+    ASSERT_TRUE(applySliceWarpKeys(rightKey(), rig.es, *rig.right));
+    rig.es.takeScene(4, rig.om);
+    ASSERT_TRUE(applySliceWarpKeys(rightKey(), rig.es, *rig.right));
+    EXPECT_EQ(rig.es.commandHistory.getUndoCount(), 2u);
+
+    ASSERT_TRUE(rig.es.commandHistory.undo());
+    EXPECT_NEAR(rig.right->getSlices()[0].warp.getCorners()[0].x, 0.001f, 1e-6f);
+    ASSERT_TRUE(rig.es.commandHistory.undo());
+    EXPECT_TRUE(isIdentityWarp(rig.right->getSlices()[0].warp));
+    EXPECT_EQ(rig.right->getSlices()[0].input, (CanvasRect{640.0f, 0.0f, 960.0f, 540.0f}));
+}
+
+// Undoing a canvas resize rescales every output showing the scene at that moment,
+// including one routed to it after the resize.
+TEST(SliceEditingTest, UndoOfACanvasResizeRescalesOutputsRoutedSince) {
+    SliceRig rig;
+    Scene& wide = *rig.es.scenes[0];
+    ASSERT_TRUE(setSceneCanvas(rig.es, rig.wide, IVec2(6400, 2160), true));
+    rig.om.routeScene(*rig.side, &wide, rig.es.scenes);
+    ASSERT_EQ(rig.side->getSlices()[0].input, (CanvasRect{0.0f, 0.0f, 6400.0f, 2160.0f}));
+
+    ASSERT_TRUE(rig.es.commandHistory.undo());
+    EXPECT_EQ(rig.side->getSlices()[0].input, (CanvasRect{0.0f, 0.0f, 3200.0f, 1080.0f}));
+    EXPECT_EQ(rig.side->getSlicesCanvas(), IVec2(3200, 1080));
+    EXPECT_EQ(rig.right->getSlices()[0].input, (CanvasRect{1280.0f, 0.0f, 1920.0f, 1080.0f}));
+    ASSERT_TRUE(rig.es.commandHistory.redo());
+    EXPECT_EQ(rig.side->getSlices()[0].input, (CanvasRect{0.0f, 0.0f, 6400.0f, 2160.0f}));
+    EXPECT_EQ(rig.side->getSlicesCanvas(), IVec2(6400, 2160));
+}
+
+// Esc (or the slice editor's button) mid-drag leaves the corner where the operator put
+// it, as one undo step, as the mouse release would have.
+TEST(SliceEditingTest, LeavingWarpEditingMidDragRecordsTheDrag) {
+    SliceRig rig;
+    rig.es.beginSliceWarp(*rig.right, rig.right->getSlices()[0].id);
+    // The press and the held drag, as ViewportEditor's editSliceWarp does them.
+    rig.es.sliceWarpDraggedCorner = rig.es.sliceWarpSelectedCorner = 0;
+    rig.es.sliceWarpDragStartPos = rig.right->getSlices()[0].warp.getCorners()[0];
+    rig.es.sliceWarpDragBefore = OutputSlices{rig.right->getSlices(), rig.right->getSlicesCanvas()};
+    rig.right->getSlices()[0].warp.setCorner(0, Vec2(0.2f, 0.2f));
+
+    rig.es.endSliceWarp();
+    EXPECT_EQ(rig.right->getSlices()[0].warp.getCorners()[0], Vec2(0.2f, 0.2f));
+    EXPECT_EQ(rig.es.sliceWarpDraggedCorner, -1);
+    ASSERT_TRUE(rig.es.commandHistory.canUndo());
+    EXPECT_EQ(rig.es.commandHistory.getUndoDescription(), "Move slice warp corner");
+    ASSERT_TRUE(rig.es.commandHistory.undo());
+    EXPECT_TRUE(isIdentityWarp(rig.right->getSlices()[0].warp));
+    // Leaving with no drag records nothing.
+    rig.es.beginSliceWarp(*rig.right, rig.right->getSlices()[0].id);
+    rig.es.endSliceWarp();
+    EXPECT_FALSE(rig.es.commandHistory.canUndo());
+}
+
+// While a slice warp is edited, Ctrl+Z / Ctrl+Y take only that output's slice steps: a
+// quad edit hidden behind the warp view, or another output's slices, are held back.
+TEST(SliceEditingTest, WarpEditingUndoesOnlyThatOutputsSliceSteps) {
+    SliceRig rig;
+    const Vec2 quadTl = rig.quad->getGeometry().getCorners()[0];
+    rig.press(tabKey());
+    ASSERT_TRUE(rig.press(rightKey()));  // a quad step
+    editSlices(rig.es, *rig.right, "Black level", "black",
+               [](std::vector<Slice>& s) { s[0].blackLevel = 0.1f; });
+    editSlices(rig.es, *rig.left, "Black level", "black",
+               [](std::vector<Slice>& s) { s[0].blackLevel = 0.2f; });
+
+    rig.es.beginSliceWarp(*rig.left, rig.left->getSlices()[0].id);
+    EXPECT_TRUE(canUndoStep(rig.es));
+    ASSERT_TRUE(undoStep(rig.es));
+    EXPECT_FLOAT_EQ(rig.left->getSlices()[0].blackLevel, 0.0f);
+    std::string heldBack;
+    EXPECT_FALSE(canUndoStep(rig.es));
+    EXPECT_FALSE(undoStep(rig.es, &heldBack));
+    EXPECT_EQ(heldBack, "Black level");
+    EXPECT_FLOAT_EQ(rig.right->getSlices()[0].blackLevel, 0.1f);
+    EXPECT_STREQ(undoScopeName(rig.es), "slice warp editing");
+
+    rig.es.endSliceWarp();
+    ASSERT_TRUE(undoStep(rig.es));  // the right output's step
+    ASSERT_TRUE(undoStep(rig.es));  // the quad's
+    EXPECT_EQ(rig.quad->getGeometry().getCorners()[0], quadTl);
+
+    rig.es.beginSliceWarp(*rig.left, rig.left->getSlices()[0].id);
+    EXPECT_FALSE(canRedoStep(rig.es)) << "the quad step is next to redo";
+    EXPECT_FALSE(redoStep(rig.es));
+    EXPECT_EQ(rig.quad->getGeometry().getCorners()[0], quadTl);
+}
+
+// Auto-blend never changes the slicing of the output being calibrated, which must stay
+// its default (canCalibrate), even when another output's slice overlaps it.
+TEST(SliceEditingTest, AutoBlendLeavesTheCalibratingOutputAlone) {
+    SliceRig rig;
+    OutputManager::showScene(*rig.side, rig.es.scenes[0].get(), rig.es.scenes);
+    rig.es.beginCalibration(*rig.side);
+    ASSERT_EQ(rig.es.calibratingOutputId, rig.side->getId());
+    rig.right->getSlices()[0].input = CanvasRect{2800.0f, 0.0f, 1920.0f, 1080.0f};  // past the side's right edge
+
+    EXPECT_EQ(autoBlendScene(rig.es, rig.om, rig.wide), 0);
+    EXPECT_TRUE(rig.es.canCalibrate(*rig.side));
+
+    rig.right->getSlices()[0].input = CanvasRect{1280.0f, 0.0f, 1920.0f, 1080.0f};
+    EXPECT_EQ(autoBlendScene(rig.es, rig.om, rig.wide), 2) << "the other outputs still blend";
+    EXPECT_TRUE(rig.es.canCalibrate(*rig.side));
+}
+
+// The slice editor's input rectangle stays on the canvas.
+TEST(SliceEditingTest, InputRectIsClampedToTheCanvas) {
+    const IVec2 canvas(3200, 1080);
+    EXPECT_EQ(clampInputToCanvas(CanvasRect{1280.0f, 0.0f, 1920.0f, 1080.0f}, canvas),
+              (CanvasRect{1280.0f, 0.0f, 1920.0f, 1080.0f}));
+    EXPECT_EQ(clampInputToCanvas(CanvasRect{-10.0f, -5.0f, 5000.0f, 2000.0f}, canvas),
+              (CanvasRect{0.0f, 0.0f, 3200.0f, 1080.0f}));
+    EXPECT_EQ(clampInputToCanvas(CanvasRect{2800.0f, 0.0f, 1920.0f, 1080.0f}, canvas),
+              (CanvasRect{2800.0f, 0.0f, 400.0f, 1080.0f}));
+    EXPECT_EQ(clampInputToCanvas(CanvasRect{3500.0f, 2000.0f, 0.0f, -3.0f}, canvas),
+              (CanvasRect{3199.0f, 1079.0f, 1.0f, 1.0f}));
+}
+
+// File > New / Open / recovery: the next show's projectors show the show, not the
+// test pattern or a fade from the old show, and no slice editing carries over.
+TEST(SliceEditingTest, ProjectReplaceEndsSliceEditingTheTestPatternAndFades) {
+    SliceRig rig;
+    rig.es.beginSliceWarp(*rig.left, rig.left->getSlices()[0].id);
+    rig.om.setBlendTestPattern(true);
+    rig.om.setFrameTime(10.0);
+    rig.es.takeScene(3, rig.om, 1.0);
+    ASSERT_FALSE(rig.om.sceneFades().empty());
+
+    clearProjectContent(rig.es, nullptr, &rig.om);
+    EXPECT_TRUE(rig.es.sliceWarpOutputId.isNull());
+    EXPECT_TRUE(rig.es.selectedSliceId.isNull());
+    EXPECT_FALSE(rig.om.isBlendTestPattern());
+    EXPECT_TRUE(rig.om.sceneFades().empty());
 }
 
 // ---- Crossfaded takes (ADR-047 §5, QM-121) ------------------------------------------

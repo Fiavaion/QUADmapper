@@ -231,7 +231,7 @@ TEST(SavedTransportTest, ReleasingAClipRemembersItsTransport) {
     EXPECT_TRUE(t.timelineLocked);
     EXPECT_FLOAT_EQ(t.speed, 0.5f);
 
-    clearProjectContent(es, &sm);  // a new project forgets them
+    clearProjectContent(es, &sm, nullptr);  // a new project forgets them
     EXPECT_TRUE(es.releasedTransports.empty());
 }
 
@@ -343,7 +343,7 @@ TEST(ClearProjectContentTest, ReleasesTheOldProjectsMediaAndRecordsButKeepsTheBi
     fx.es.missingSources.emplace(missing.id, missing);
     fx.es.showMissingMedia = true;
 
-    clearProjectContent(fx.es, &fx.sm);
+    clearProjectContent(fx.es, &fx.sm, nullptr);
 
     EXPECT_FALSE(fx.es.commandHistory.canUndo());
     EXPECT_TRUE(fx.es.scenes.empty());
@@ -694,7 +694,7 @@ TEST(MeshLoadsTest, APlaceholderDeletedAndRestoredWhileLoadingStillImports) {
 TEST(MeshLoadsTest, NewOrLoadCancelsEveryParse) {
     MeshLoadFixture fx;
     beginObjectImport(fx.es, "prop", fx.writeObj("prop.obj", 50));
-    clearProjectContent(fx.es, nullptr);  // what New, Load and recovery run
+    clearProjectContent(fx.es, nullptr, nullptr);  // what New, Load and recovery run
 
     EXPECT_TRUE(fx.es.meshLoads.tickets.empty());
     EXPECT_TRUE(fx.es.meshLoads.imports.empty());
@@ -778,7 +778,7 @@ TEST(MeshLoadsTest, NewOrLoadDropsARelocationInProgress) {
     fx.adoptAll();
     const MissingMediaItem item = collectMissingMedia(fx.es).at(0);
     ASSERT_EQ(relocateMissingItem(fx.es, nullptr, item, pathFromUtf8(fx.writeObj("prop.obj", 50))), "");
-    clearProjectContent(fx.es, nullptr);
+    clearProjectContent(fx.es, nullptr, nullptr);
     EXPECT_TRUE(fx.es.meshLoads.relocations.empty());
     fx.waitIdle();
     EXPECT_TRUE(adoptLoadedMeshes(fx.es).empty());

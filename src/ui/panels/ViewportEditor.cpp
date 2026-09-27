@@ -141,15 +141,7 @@ void editSliceWarp(EditorState& es, OutputWindow& output, const Vec2& mouseNorm,
                 if (project) project->setModified(true);
             }
         } else {
-            if (corners[static_cast<size_t>(dragged)] != es.sliceWarpDragStartPos) {
-                OutputSlices after{slices, output.getSlicesCanvas()};
-                es.commandHistory.execute(std::make_unique<SliceEditCommand>(
-                    es.outputRef(output.getId()), "Move slice warp corner",
-                    sliceWarpCornerKey(es.selectedSliceId, dragged), es.sliceWarpDragBefore,
-                    std::move(after)));
-            }
-            es.sliceWarpSelectedCorner = dragged;
-            dragged = -1;
+            es.finishSliceWarpDrag();
         }
     } else {
         es.sliceWarpHoveredCorner = -1;

@@ -13,17 +13,28 @@
 namespace quadmapper {
 
 // Forget the open project's content, in this order:
-//  1. the undo history, before the scenes its commands point into;
+//  1. slice warp editing and the slice selection (a corner drag in progress is recorded
+//     and then dropped with the history), the blend test pattern and the scene
+//     crossfades in progress on `outputs` (null: none), so the next show's projectors
+//     show the show;
+//  2. the undo history, before the scenes its commands point into;
 //     then every OBJ parse in progress (MeshLoads.hpp);
-//  2. the scenes, their per-quad bindings, the object selection and any calibration;
-//  3. the project's sources, released now (the media bin's own sources stay, so its
+//  3. the scenes, their per-quad bindings, the object selection and any calibration;
+//  4. the project's sources, released now (the media bin's own sources stay, so its
 //     items remain assignable), so the next project's media opens fresh instead of
 //     inheriting live decoders found by path; with them go the pause-while-unseen and
 //     released-transport records, which name sources of this project only;
-//  4. the missing-media records.
-// Call before the next project creates any source. Outputs, MIDI mappings and the
-// Application's own queues (scene takes, the missing-media search) are the caller's.
-inline void clearProjectContent(EditorState& es, SourceManager* sm) {
+//  5. the missing-media records.
+// Call before the next project creates any source. The outputs themselves, MIDI
+// mappings and the Application's own queues (scene takes, the missing-media search) are
+// the caller's.
+inline void clearProjectContent(EditorState& es, SourceManager* sm, OutputManager* outputs) {
+    es.endSliceWarp();
+    es.selectedSliceId = UUID();
+    if (outputs) {
+        outputs->setBlendTestPattern(false);
+        outputs->clearSceneFades();
+    }
     es.commandHistory.clear();
     cancelMeshLoads(es);  // before the scenes the parses would fill (TD-16a)
     es.selectedObjectId = UUID();

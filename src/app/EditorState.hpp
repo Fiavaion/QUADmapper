@@ -82,11 +82,27 @@ public:
         return true;
     }
 
+    void rescaleSceneSlices(const UUID& sceneId, IVec2 from, IVec2 to) override {
+        if (!outputs_ || sceneId.isNull()) return;
+        for (const auto& output : outputs_->getOutputs()) {
+            if (!output || output->getSceneId() != sceneId) continue;
+            const IVec2 made = output->getSlicesCanvas();
+            rescaleSlices(output->getSlices(), (made.x > 0 && made.y > 0) ? made : from, to);
+            output->setSlicesCanvas(to);
+        }
+    }
+
 private:
     const UUID& calibratingOutputId_;
     CalibrationSession& session_;
     OutputManager* outputs_ = nullptr;
 };
+
+// Merge key for moves of one warp corner of one slice (keyboard, mouse or the
+// Inspector's fields): all of them are one target.
+inline std::string sliceWarpCornerKey(const UUID& sliceId, int corner) {
+    return "warp " + sliceId.toString() + " " + std::to_string(corner);
+}
 
 // Bookkeeping for the meshes EditorState::objLoads is parsing (TD-16a, MeshLoads.hpp).
 struct MeshLoadState {
@@ -451,13 +467,39 @@ struct EditorState {
     // calibrating (calibration owns the canvas then).
     void beginSliceWarp(const OutputWindow& output, const UUID& sliceId) {
         if (!calibratingOutputId.isNull()) return;
+        finishSliceWarpDrag();
         sliceWarpOutputId = output.getId();
         selectedSliceId = sliceId;
         sliceWarpSelectedCorner = sliceWarpHoveredCorner = sliceWarpDraggedCorner = -1;
     }
+    // Leaving warp editing (Esc, the slice editor's button, calibration) with a corner
+    // drag in progress keeps the corner where the operator put it, as one undo step.
     void endSliceWarp() {
+        finishSliceWarpDrag();
         sliceWarpOutputId = UUID::null();
         sliceWarpSelectedCorner = sliceWarpHoveredCorner = sliceWarpDraggedCorner = -1;
+    }
+
+    // End the corner drag in progress, if any (the mouse released, or warp editing
+    // left mid-drag): a corner that moved becomes one undo step from
+    // sliceWarpDragBefore, merged with the corner's other moves. Nothing is recorded
+    // when the output or the slice is gone.
+    void finishSliceWarpDrag() {
+        const int corner = sliceWarpDraggedCorner;
+        if (corner < 0 || corner >= 4) return;
+        sliceWarpDraggedCorner = -1;
+        sliceWarpSelectedCorner = corner;
+        OutputSlices now;
+        if (!outputResolver.readSlices(sliceWarpOutputId, now)) return;
+        const auto slice = std::find_if(now.slices.begin(), now.slices.end(),
+                                        [&](const Slice& s) { return s.id == selectedSliceId; });
+        if (slice == now.slices.end() ||
+            slice->warp.getCorners()[static_cast<size_t>(corner)] == sliceWarpDragStartPos) {
+            return;
+        }
+        commandHistory.execute(std::make_unique<SliceEditCommand>(
+            outputRef(sliceWarpOutputId), "Move slice warp corner",
+            sliceWarpCornerKey(selectedSliceId, corner), sliceWarpDragBefore, std::move(now)));
     }
 
     // Grid-division insert tool (ADR-038 Tier 1 batch 3b). When armed, a click in

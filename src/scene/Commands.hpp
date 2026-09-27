@@ -490,6 +490,14 @@ public:
         (void)slices;
         return false;
     }
+    // A scene's canvas changed from `from` to `to`: rescale the slices of every output
+    // showing the scene now (rescaleSlices) from the canvas each was made for (`from`
+    // when an output has none recorded).
+    virtual void rescaleSceneSlices(const UUID& sceneId, IVec2 from, IVec2 to) {
+        (void)sceneId;
+        (void)from;
+        (void)to;
+    }
 };
 
 // Stable handle to one output's calibration.
@@ -534,8 +542,14 @@ private:
 // One slice edit on one output (add, remove, input rectangle, warp corner, blend
 // edge, black level, auto-blend) as the output's whole slice list before and after.
 // Consecutive edits with the same non-empty mergeKey on the same output merge into one
-// undo step (a drag, a run of arrow-key nudges on one warp corner). A removed or
-// re-created output resolves to nothing and the step is a logged no-op.
+// undo step (a drag, a run of arrow-key nudges on one warp corner), unless the output's
+// slices were rescaled to another canvas in between. A removed or re-created output
+// resolves to nothing and the step is a logged no-op.
+//
+// The snapshots are in the canvas pixels of their moment. Takes, routing and canvas
+// adoption rescale an output's slices without an undo step, so a snapshot is rescaled
+// from its canvas to the canvas the output's slices are made for now before it is
+// applied: the projector keeps showing the part of the picture the step recorded.
 class SliceEditCommand : public Command {
 public:
     SliceEditCommand(const OutputRef& target, std::string description, std::string mergeKey,
@@ -547,6 +561,8 @@ public:
 
     bool canMergeWith(const Command& other) const override;
     void mergeWith(const Command& other) override;
+
+    const UUID& getOutputId() const { return target_.outputId; }
 
 private:
     bool apply(const OutputSlices& slices);
@@ -565,12 +581,14 @@ struct CanvasSetting {
 };
 
 // Set a scene's canvas setting. Quads are normalized, so they keep their place; the
-// slices of the outputs showing the scene are rescaled by SliceEditCommands recorded
-// in the same compound step (EditorState::setSceneCanvas).
+// slices of every output showing the scene when the step is done, undone or redone are
+// rescaled to the new size through `outputs` (OutputResolver::rescaleSceneSlices), so
+// an output routed to the scene after the edit follows its undo too. `outputs` may be
+// null (no outputs to follow).
 class SetSceneCanvasCommand : public Command {
 public:
-    SetSceneCanvasCommand(QuadResolver& resolver, const UUID& sceneId, CanvasSetting before,
-                          CanvasSetting after);
+    SetSceneCanvasCommand(QuadResolver& resolver, OutputResolver* outputs, const UUID& sceneId,
+                          CanvasSetting before, CanvasSetting after);
 
     bool execute() override { return apply(after_); }
     bool undo() override { return apply(before_); }
@@ -580,6 +598,7 @@ private:
     bool apply(const CanvasSetting& setting);
 
     QuadResolver& resolver_;
+    OutputResolver* outputs_;
     UUID sceneId_;
     CanvasSetting before_;
     CanvasSetting after_;

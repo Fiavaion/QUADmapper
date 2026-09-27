@@ -732,18 +732,25 @@ SliceEditCommand::SliceEditCommand(const OutputRef& target, std::string descript
 }
 
 bool SliceEditCommand::apply(const OutputSlices& slices) {
-    if (!target_.resolver || !target_.resolver->writeSlices(target_.outputId, slices)) {
+    OutputSlices current;
+    if (!target_.resolver || !target_.resolver->readSlices(target_.outputId, current)) {
         LOG_WARNING("'{}': output {} no longer exists; skipped", description_,
                     target_.outputId.toString());
         return false;
     }
-    return true;
+    auto known = [](IVec2 size) { return size.x > 0 && size.y > 0; };
+    OutputSlices fitted = slices;
+    if (known(fitted.canvas) && known(current.canvas) && fitted.canvas != current.canvas) {
+        rescaleSlices(fitted.slices, fitted.canvas, current.canvas);
+        fitted.canvas = current.canvas;
+    }
+    return target_.resolver->writeSlices(target_.outputId, fitted);
 }
 
 bool SliceEditCommand::canMergeWith(const Command& other) const {
     auto* next = dynamic_cast<const SliceEditCommand*>(&other);
     return next && !mergeKey_.empty() && next->mergeKey_ == mergeKey_ &&
-           target_.sameTarget(next->target_);
+           target_.sameTarget(next->target_) && next->before_.canvas == after_.canvas;
 }
 
 void SliceEditCommand::mergeWith(const Command& other) {
@@ -752,9 +759,11 @@ void SliceEditCommand::mergeWith(const Command& other) {
     }
 }
 
-SetSceneCanvasCommand::SetSceneCanvasCommand(QuadResolver& resolver, const UUID& sceneId,
-                                             CanvasSetting before, CanvasSetting after)
+SetSceneCanvasCommand::SetSceneCanvasCommand(QuadResolver& resolver, OutputResolver* outputs,
+                                             const UUID& sceneId, CanvasSetting before,
+                                             CanvasSetting after)
     : resolver_(resolver)
+    , outputs_(outputs)
     , sceneId_(sceneId)
     , before_(before)
     , after_(after)
@@ -767,8 +776,12 @@ bool SetSceneCanvasCommand::apply(const CanvasSetting& setting) {
         LOG_WARNING("'{}': scene {} no longer exists; skipped", getDescription(), sceneId_.toString());
         return false;
     }
+    const IVec2 was = scene->getCanvasSize();
     scene->setCanvasSize(setting.size);
     scene->setCanvasLocked(setting.locked);
+    if (outputs_ && scene->getCanvasSize() != was) {
+        outputs_->rescaleSceneSlices(sceneId_, was, scene->getCanvasSize());
+    }
     return true;
 }
 

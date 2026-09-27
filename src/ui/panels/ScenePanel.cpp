@@ -83,7 +83,7 @@ void ScenePanel::renderCanvasControls(EditorContext& ctx) {
         canvasSceneId_ = scene.getId();
     }
     auto apply = [&](IVec2 newSize, bool locked) {
-        if (setSceneCanvas(es, ctx.outputManager, scene.getId(), newSize, locked) && ctx.project) {
+        if (setSceneCanvas(es, scene.getId(), newSize, locked) && ctx.project) {
             ctx.project->setModified(true);
         }
     };
