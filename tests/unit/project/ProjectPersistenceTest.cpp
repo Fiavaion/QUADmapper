@@ -9,6 +9,7 @@
 #include "scene/Quad.hpp"
 #include "scene/QuadGeometry.hpp"
 #include "scene/ObjLoader.hpp"
+#include "scene/Scene.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -1038,7 +1039,8 @@ TEST(ProjectFixtureTest, EveryHistoricalFormatLoads) {
 
 // ADR-047 §7: every file before 3.4 comes in as the same show on the canvas model:
 // each routed output shows its scene through one whole-canvas slice with no warp and
-// no blend, and the canvas is that output's effective resolution (else 1920x1080).
+// no blend, and the canvas is that output's effective resolution (a scene no output
+// shows: the first output's, else 1920x1080).
 TEST(ProjectFixtureTest, PreCanvasFixturesMigrateToOneFullSlicePerRoutedOutput) {
     const fs::path dir = QM_PROJECT_FIXTURES_DIR;
     for (const char* file : {"v1.0-flat.qmap", "v1.2-flat-grid.qmap", "v2.0-scenes.qmap",
@@ -1069,10 +1071,16 @@ TEST(ProjectFixtureTest, PreCanvasFixturesMigrateToOneFullSlicePerRoutedOutput) 
             for (const BlendEdge& edge : slice.blend) EXPECT_EQ(edge.width, 0.0f);
             EXPECT_EQ(slice.blackLevel, 0.0f);
         }
+        IVec2 unshown(1920, 1080);
+        if (!p.getOutputs().empty()) {
+            const auto& first = p.getOutputs().front();
+            const bool quarter = first.rotationDegrees == 90 || first.rotationDegrees == 270;
+            unshown = quarter ? IVec2(first.resolution.y, first.resolution.x) : first.resolution;
+        }
         for (const auto& scene : p.getScenes()) {
             const bool shown = std::any_of(p.getOutputs().begin(), p.getOutputs().end(),
                                            [&](const auto& o) { return o.sceneId == scene.id; });
-            if (!shown) EXPECT_EQ(scene.canvas, IVec2(1920, 1080));
+            if (!shown) EXPECT_EQ(scene.canvas, unshown);
         }
     }
 
@@ -1097,10 +1105,52 @@ TEST(ProjectFixtureTest, PreCanvasRotatedOutputGetsAPortraitCanvas) {
     // Two scenes named output P: it showed the first, as the old routing drew.
     EXPECT_EQ(p.getOutputs()[0].sceneId.toString(), "6a1b2c3d-0000-4000-8000-0000000000c1");
     EXPECT_EQ(p.getScenes()[0].canvas, IVec2(800, 1280));
-    EXPECT_EQ(p.getScenes()[1].canvas, IVec2(1920, 1080));
+    EXPECT_EQ(p.getScenes()[1].canvas, IVec2(800, 1280));  // shown nowhere: the first output's
     EXPECT_EQ(p.getOutputs()[0].slices[0].input, (CanvasRect{0.0f, 0.0f, 800.0f, 1280.0f}));
     EXPECT_TRUE(p.getOutputs()[1].sceneId.isNull());
     EXPECT_TRUE(p.getOutputs()[1].slices.empty());
+}
+
+// A pre-3.4 scene no output shows is most likely taken to the first projector: its
+// canvas is that output's effective resolution, not a fixed 1920x1080, so it is not
+// resampled onto the projector and the editor has the projector's aspect.
+TEST(ProjectFixtureTest, PreCanvasUnshownSceneTakesTheFirstOutputsResolution) {
+    const std::string json = R"({"version": "3.3.0", "name": "S",
+        "scenes": [{"id": "6a1b2c3d-0000-4000-8000-0000000000c1", "name": "A", "quads": []},
+                   {"id": "6a1b2c3d-0000-4000-8000-0000000000c2", "name": "B",
+                    "assignedOutputId": "6a1b2c3d-0000-4000-8000-0000000000e2", "quads": []}],
+        "outputs": [{"id": "6a1b2c3d-0000-4000-8000-0000000000e1", "name": "P",
+                     "resolution": [1280, 800]},
+                    {"id": "6a1b2c3d-0000-4000-8000-0000000000e2", "name": "Q",
+                     "resolution": [1024, 768]}]})";
+    Project p;
+    ASSERT_TRUE(ProjectSerializer().deserialize(json, p).isSuccess());
+    EXPECT_EQ(p.getScenes()[0].canvas, IVec2(1280, 800));
+    EXPECT_EQ(p.getScenes()[1].canvas, IVec2(1024, 768));  // shown by Q
+    EXPECT_TRUE(p.getOutputs()[0].sceneId.isNull());
+
+    // No outputs at all (v1/v2, or a v3 file without any): 1920x1080.
+    Project q;
+    ASSERT_TRUE(ProjectSerializer()
+                    .deserialize(R"({"version": "3.3.0", "name": "S", "scenes": [{"name": "A"}]})", q)
+                    .isSuccess());
+    EXPECT_EQ(q.getScenes()[0].canvas, IVec2(1920, 1080));
+}
+
+// A 3.4 output that names a scene but carries no slices shows that scene through one
+// whole-canvas slice, not black.
+TEST(ProjectFixtureTest, RoutedOutputWithoutSlicesGetsAWholeCanvasSlice) {
+    const std::string json = R"({"version": "3.4.0", "name": "S",
+        "scenes": [{"id": "6a1b2c3d-0000-4000-8000-0000000000c1", "name": "A",
+                    "canvas": [1280, 800], "quads": []}],
+        "outputs": [{"name": "P", "sceneId": "6a1b2c3d-0000-4000-8000-0000000000c1"},
+                    {"name": "Q"}]})";
+    Project p;
+    ASSERT_TRUE(ProjectSerializer().deserialize(json, p).isSuccess());
+    ASSERT_EQ(p.getOutputs()[0].slices.size(), 1u);
+    EXPECT_EQ(p.getOutputs()[0].slices[0].input, (CanvasRect{0.0f, 0.0f, 1280.0f, 800.0f}));
+    EXPECT_TRUE(isIdentityWarp(p.getOutputs()[0].slices[0].warp));
+    EXPECT_TRUE(p.getOutputs()[1].slices.empty()) << "an unrouted output has nothing to slice";
 }
 
 TEST(ProjectFixtureTest, V34FixtureKeepsCanvasRoutingAndBlendedSlices) {

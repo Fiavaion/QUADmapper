@@ -1,10 +1,11 @@
 #include "ProjectSerializer.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
+#include "scene/Scene.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <charconv>
 #include <cmath>
-#include <cstdio>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -53,8 +54,10 @@ namespace quadmapper {
 //           the scene) so 3.0-3.3 readers keep their routing; 3.4 readers ignore it.
 //         Files before 3.4 are migrated on load: output.sceneId from the scene whose
 //         assignedOutputId names it, canvas = that output's effective (rotated)
-//         resolution, else 1920x1080, and one full-canvas slice with no warp and no
-//         blend on every output that shows a scene.
+//         resolution (a scene no output shows: the first output's, else 1920x1080),
+//         and one full-canvas slice with no warp and no blend on every output that
+//         shows a scene. A 3.4 output with a sceneId and no slices gets one
+//         full-canvas slice. Canvases are clamped to MAX_CANVAS_DIMENSION.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
@@ -631,8 +634,8 @@ static Project::SceneData deserializeScene(const nlohmann::json& j, UUID& assign
                                                       : UUID::null();
     if (j.contains("canvas")) {
         const auto& c = checkedArray(j["canvas"], 2);
-        scene.canvas = IVec2(std::clamp(c[0].get<int>(), 1, kMaxOutputDimension),
-                             std::clamp(c[1].get<int>(), 1, kMaxOutputDimension));
+        scene.canvas = IVec2(std::clamp(c[0].get<int>(), 1, MAX_CANVAS_DIMENSION),
+                             std::clamp(c[1].get<int>(), 1, MAX_CANVAS_DIMENSION));
     }
     if (j.contains("view") && j["view"].is_object()) {
         const auto& v = j["view"];
@@ -1212,31 +1215,59 @@ static void resolveQuadSources(Project& project) {
 // slices (ADR-047). The version was validated before the model is loaded.
 static bool hasCanvasSlices(const nlohmann::json& json) {
     const std::string version = json["version"].get<std::string>();
+    const char* end = version.data() + version.size();
     int major = 0, minor = 0;
-    if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) < 1) return false;
+    const auto [afterMajor, majorError] = std::from_chars(version.data(), end, major);
+    if (majorError != std::errc()) return false;
+    if (afterMajor != end && *afterMajor == '.') std::from_chars(afterMajor + 1, end, minor);
     return major > 3 || (major == 3 && minor >= 4);
+}
+
+static IVec2 effectiveResolution(const Project::OutputData& output) {
+    const bool quarterTurn = output.rotationDegrees == 90 || output.rotationDegrees == 270;
+    return quarterTurn ? IVec2(output.resolution.y, output.resolution.x) : output.resolution;
+}
+
+static IVec2 clampCanvas(IVec2 size) {
+    return IVec2(std::clamp(size.x, 1, MAX_CANVAS_DIMENSION), std::clamp(size.y, 1, MAX_CANVAS_DIMENSION));
 }
 
 // Pre-3.4 files (ADR-047 §7): each output shows the scene whose assignedOutputId
 // named it (the first such scene in list order, as the old routing drew), through one
 // full-canvas slice with no warp and no blend. A scene's canvas is its output's
-// effective resolution (rotated, as the editor laid the quads out on it), else
-// 1920x1080. Outputs no scene named show nothing and get no slice.
+// effective resolution (rotated, as the editor laid the quads out on it). A scene no
+// output shows gets the first output's effective resolution, the projector it is most
+// likely taken to, else 1920x1080. Outputs no scene named show nothing and get no
+// slice.
 static void migrateToCanvasSlices(Project& project, const std::vector<UUID>& assignedOutputIds) {
     auto& scenes = project.getScenes();
+    const auto& outputs = project.getOutputs();
+    const IVec2 unshown = outputs.empty() ? IVec2(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)
+                                          : clampCanvas(effectiveResolution(outputs.front()));
     for (size_t i = 0; i < scenes.size(); ++i) {
-        scenes[i].canvas = IVec2(1920, 1080);
+        scenes[i].canvas = unshown;
     }
     for (auto& output : project.getOutputs()) {
         for (size_t i = 0; i < scenes.size() && i < assignedOutputIds.size(); ++i) {
             if (assignedOutputIds[i] != output.id) continue;
-            const bool quarterTurn = output.rotationDegrees == 90 || output.rotationDegrees == 270;
-            const IVec2 effective = quarterTurn ? IVec2(output.resolution.y, output.resolution.x)
-                                                : output.resolution;
-            scenes[i].canvas = effective;  // a scene named one output at most
+            scenes[i].canvas = clampCanvas(effectiveResolution(output));  // a scene named one output at most
             output.sceneId = scenes[i].id;
             output.slices.assign(1, makeFullCanvasSlice(scenes[i].canvas));
             break;
+        }
+    }
+}
+
+// A 3.4 output that names a scene but has no slices would show nothing: it gets one
+// whole-canvas slice, as routing that scene to it would give.
+static void sliceRoutedOutputs(Project& project) {
+    for (auto& output : project.getOutputs()) {
+        if (output.sceneId.isNull() || !output.slices.empty()) continue;
+        for (const auto& scene : project.getScenes()) {
+            if (scene.id == output.sceneId) {
+                output.slices.assign(1, makeFullCanvasSlice(scene.canvas));
+                break;
+            }
         }
     }
 }
@@ -1319,7 +1350,9 @@ static void loadProjectModel(const nlohmann::json& json, Project& project,
             project.getOutputs().push_back(deserializeOutput(outputJson));
         }
     }
-    if (!hasCanvasSlices(json)) {
+    if (hasCanvasSlices(json)) {
+        sliceRoutedOutputs(project);
+    } else {
         migrateToCanvasSlices(project, assignedOutputIds);
     }
 
