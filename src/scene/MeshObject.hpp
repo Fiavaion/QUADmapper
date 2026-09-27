@@ -10,8 +10,10 @@
 
 #include <glm/glm.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace quadmapper {
@@ -49,8 +51,22 @@ public:
     const std::string& getSourcePath() const { return sourcePath_; }
     void setSourcePath(const std::string& path) { sourcePath_ = path; }
 
-    MeshData& getMesh() { return mesh_; }
     const MeshData& getMesh() const { return mesh_; }
+    // Every way to change the mesh gives it a new revision (TD-15), which is what the
+    // renderer's GPU copy is keyed on: replace it whole with setMesh, or edit it in
+    // place through editMesh. editMesh bumps the revision when called, so call it for
+    // each edit and do not keep the reference past the frame.
+    void setMesh(MeshData mesh) {
+        mesh_ = std::move(mesh);
+        meshRevision_ = nextMeshRevision();
+    }
+    MeshData& editMesh() {
+        meshRevision_ = nextMeshRevision();
+        return mesh_;
+    }
+    // Unique across every object in the process, so two meshes never share one: a
+    // copy (duplicate scene, undo snapshot) keeps it because it holds the same data.
+    uint64_t getMeshRevision() const { return meshRevision_; }
 
     // Model -> world.
     const glm::mat4& getTransform() const { return transform_; }
@@ -68,10 +84,16 @@ public:
     void worldBounds(Vec3& min, Vec3& max) const;
 
 private:
+    static uint64_t nextMeshRevision() {
+        static std::atomic<uint64_t> counter{0};
+        return ++counter;
+    }
+
     UUID id_;
     std::string name_ = "Object";
     std::string sourcePath_;
     MeshData mesh_;
+    uint64_t meshRevision_ = nextMeshRevision();
     glm::mat4 transform_{1.0f};
     TextureBinding texture_;
     bool visible_ = true;

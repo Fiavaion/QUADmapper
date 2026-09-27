@@ -14,7 +14,7 @@ namespace {
 // A square of half-size `half` in the z = `z` plane of its model space, two triangles.
 std::unique_ptr<MeshObject> makeSquare(float z, float half) {
     auto object = std::make_unique<MeshObject>();
-    MeshData& mesh = object->getMesh();
+    MeshData& mesh = object->editMesh();
     mesh.positions = {Vec3(-half, -half, z), Vec3(half, -half, z), Vec3(half, half, z),
                       Vec3(-half, half, z)};
     mesh.indices = {0, 1, 2, 0, 2, 3};

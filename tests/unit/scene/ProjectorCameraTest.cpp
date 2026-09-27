@@ -140,7 +140,7 @@ TEST(ProjectorCameraTest, FitToOutputWithoutObjectsOrSizeIsANoOpPose) {
 
 TEST(MeshObjectTest, WorldBoundsFollowTheTransform) {
     MeshObject object;
-    object.getMesh().positions = {Vec3(0, 0, 0), Vec3(1, 2, 3)};
+    object.editMesh().positions = {Vec3(0, 0, 0), Vec3(1, 2, 3)};
     object.setTransform(glm::translate(glm::mat4(1.0f), glm::vec3(10, 0, 0)));
     Vec3 lo, hi;
     object.worldBounds(lo, hi);

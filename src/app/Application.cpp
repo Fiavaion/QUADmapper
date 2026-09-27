@@ -472,7 +472,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                       : od.missing      ? Err<MeshData>("file not found")
                                         : loadObj(pathFromUtf8(od.path));
             if (mesh) {
-                object->getMesh() = std::move(mesh.value());
+                object->setMesh(std::move(mesh.value()));
             } else {
                 Logger::warning("3D object '{}': mesh not loaded ({})", od.name,
                                 mesh.error().message);
@@ -1828,7 +1828,7 @@ void importObjectFile(EditorState& es, OutputManager* om, Project* project,
     Scene& scene = es.activeScene();
     MeshObject* object = scene.createObject(utf8FromPath(file.stem()));
     object->setSourcePath(absolutePathString(file));
-    object->getMesh() = std::move(mesh.value());
+    object->setMesh(std::move(mesh.value()));
 
     OutputWindow* output = (om && scene.hasAssignedOutput())
                                ? om->getOutput(scene.getAssignedOutputId()) : nullptr;

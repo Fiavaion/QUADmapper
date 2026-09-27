@@ -17,6 +17,43 @@ TEST(SceneTest, DefaultSceneIsEmpty) {
     EXPECT_FALSE(scene.getId().isNull());
 }
 
+// TD-15: the renderer keys its GPU copy of a mesh on this revision.
+TEST(MeshObjectTest, MeshRevisionChangesOnEveryMeshMutationOnly) {
+    MeshObject a;
+    MeshObject b;
+    EXPECT_NE(a.getMeshRevision(), b.getMeshRevision());  // unique across objects
+
+    uint64_t last = a.getMeshRevision();
+    MeshData data;
+    data.positions = {Vec3(0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f)};
+    data.indices = {0, 1, 2};
+    a.setMesh(data);
+    EXPECT_NE(a.getMeshRevision(), last);
+    last = a.getMeshRevision();
+
+    a.editMesh().positions[1].x = 2.0f;  // in place: same storage, same sizes
+    EXPECT_NE(a.getMeshRevision(), last);
+    last = a.getMeshRevision();
+
+    // Nothing else touches it.
+    a.setName("Renamed");
+    a.setVisible(false);
+    a.setOpacity(0.5f);
+    a.setTransform(glm::mat4(2.0f));
+    a.getTexture().mediaId = UUID::generate();
+    (void)a.getMesh();
+    EXPECT_EQ(a.getMeshRevision(), last);
+
+    // A copy holds the same data, so it keeps the revision; a new mesh on it does not
+    // collide with anything the original ever had.
+    MeshObject copy(a);
+    EXPECT_EQ(copy.getMeshRevision(), last);
+    EXPECT_EQ(a.cloneWithId(UUID::generate()).getMeshRevision(), last);
+    copy.setMesh(data);
+    EXPECT_NE(copy.getMeshRevision(), last);
+    EXPECT_NE(copy.getMeshRevision(), a.getMeshRevision());
+}
+
 TEST(SceneTest, CreateQuadAddsToScene) {
     Scene scene;
 
@@ -150,8 +187,8 @@ std::unique_ptr<Scene> richScene(const UUID& mediaId, const UUID& outputId) {
     b->setParentGroup(inner->getId());
 
     MeshObject* object = scene->createObject("Box");
-    object->getMesh().positions = {Vec3(0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f)};
-    object->getMesh().indices = {0, 1, 2};
+    object->editMesh().positions = {Vec3(0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f)};
+    object->editMesh().indices = {0, 1, 2};
     object->getTexture().mediaId = mediaId;
     object->setOpacity(0.25f);
 
@@ -268,7 +305,7 @@ TEST(SceneDuplicateTest, CopyIsIndependentOfTheSource) {
     corners[0] = Vec2(0.3f, 0.3f);
     copy->getQuads()[0]->getGeometry().setCorners(corners);
     copy->getGroups()[0]->setName("Renamed");
-    copy->getObjects()[0]->getMesh().positions.clear();
+    copy->getObjects()[0]->editMesh().positions.clear();
     copy->deleteQuad(copy->getQuads()[1]->getId());
 
     EXPECT_EQ(source->getQuads()[0]->getGeometry().getCorners(), before);

@@ -94,7 +94,7 @@ std::unique_ptr<Texture> solidTexture(unsigned char r, unsigned char g, unsigned
 // Two triangles over the model-space square [-h, h]^2 at z = 0, facing +Z.
 std::unique_ptr<MeshObject> makeSquare(float half, bool withUvs = true) {
     auto object = std::make_unique<MeshObject>();
-    MeshData& mesh = object->getMesh();
+    MeshData& mesh = object->editMesh();
     mesh.positions = {Vec3(-half, half, 0), Vec3(half, half, 0),
                       Vec3(half, -half, 0), Vec3(-half, -half, 0)};
     if (withUvs) {
@@ -113,7 +113,7 @@ std::unique_ptr<MeshObject> makeImageRect(const ProjectorCamera& cam, float u0, 
                     (v - cam.intrinsics.cy) / cam.intrinsics.fy, 1.0f);
     };
     auto object = std::make_unique<MeshObject>();
-    MeshData& mesh = object->getMesh();
+    MeshData& mesh = object->editMesh();
     mesh.positions = {ray(u0, v0), ray(u1, v0), ray(u1, v1), ray(u0, v1)};
     mesh.uvs = {Vec2(0, 0), Vec2(1, 0), Vec2(1, 1), Vec2(0, 1)};
     mesh.indices = {0, 3, 1, 1, 3, 2};
@@ -447,10 +447,71 @@ TEST(MeshObjectRenderTest, MeshUploadsOnceAndRebuildsWhenReplaced) {
     EXPECT_EQ(GlObjectStats::vertexArrays(), vaos);  // no re-upload for an unchanged mesh
     EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers);
 
-    objects[0]->getMesh() = makeSquare(0.45f)->getMesh();  // replaced: same counts, new data
+    objects[0]->setMesh(makeSquare(0.45f)->getMesh());  // replaced: same counts, new data
     EXPECT_TRUE(whiteAtEdge());
     EXPECT_EQ(GlObjectStats::vertexArrays(), vaos);  // old buffers freed, new ones made
     EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers);
+
+    Framebuffer::unbind();
+    renderer.shutdown();
+}
+
+// TD-15: an in-place edit of an interior vertex keeps the storage, the sizes and the
+// first and last vertices, which is all the old change check looked at. The mesh
+// revision still changes, so the GPU copy is rebuilt and the edit shows.
+TEST(MeshObjectRenderTest, InPlaceInteriorVertexEditIsPickedUp) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    constexpr int W = 64, H = 64;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    Framebuffer fbo;
+    ASSERT_TRUE(fbo.resize(W, H));
+    fbo.bind();
+
+    const ProjectorCamera cam = lookAtCamera(Vec3(0.0f, 0.0f, 2.0f), Vec3(0.0f), W, H);
+    std::vector<std::unique_ptr<MeshObject>> objects;
+    objects.push_back(std::make_unique<MeshObject>());
+    {
+        // A fan around the centre vertex (index 1, neither first nor last) over the
+        // square [-0.1, 0.1]^2.
+        MeshData& mesh = objects[0]->editMesh();
+        mesh.positions = {Vec3(-0.1f, 0.1f, 0), Vec3(0.0f, 0.0f, 0), Vec3(0.1f, 0.1f, 0),
+                          Vec3(0.1f, -0.1f, 0), Vec3(-0.1f, -0.1f, 0)};
+        mesh.indices = {1, 0, 4, 1, 4, 3, 1, 3, 2, 1, 2, 0};
+    }
+    const Vec2 probe = projected(cam, glm::mat4(1.0f), Vec3(0.3f, 0.0f, 0.0f));
+    auto whiteAtProbe = [&] {
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        renderer.renderMeshObjects(objects, cam, {});
+        return isWhite(readImage(W, H)[static_cast<int>(probe.y) * W + static_cast<int>(probe.x)]);
+    };
+
+    EXPECT_FALSE(whiteAtProbe());
+    const MeshData& before = objects[0]->getMesh();
+    const Vec3* storage = before.positions.data();
+    const Vec3 first = before.positions.front();
+    const Vec3 last = before.positions.back();
+    const uint64_t revision = objects[0]->getMeshRevision();
+    const long vaos = GlObjectStats::vertexArrays();
+    const long buffers = GlObjectStats::vertexBuffers();
+
+    objects[0]->editMesh().positions[1] = Vec3(0.4f, 0.0f, 0.0f);  // pull the centre out
+
+    const MeshData& after = objects[0]->getMesh();
+    ASSERT_EQ(after.positions.data(), storage);  // what the old check compared: unchanged
+    ASSERT_EQ(after.positions.front(), first);
+    ASSERT_EQ(after.positions.back(), last);
+    EXPECT_NE(objects[0]->getMeshRevision(), revision);
+    EXPECT_TRUE(whiteAtProbe());
+    EXPECT_EQ(GlObjectStats::vertexArrays(), vaos);  // rebuilt, the old buffers freed
+    EXPECT_EQ(GlObjectStats::vertexBuffers(), buffers);
+
+    // Drawing again without an edit does not upload again.
+    EXPECT_TRUE(whiteAtProbe());
+    EXPECT_EQ(GlObjectStats::vertexArrays(), vaos);
 
     Framebuffer::unbind();
     renderer.shutdown();
@@ -524,7 +585,7 @@ TEST(MeshObjectRenderTest, StillImagesShowUprightOnQuadsAndObjects) {
                                                          ProjectorIntrinsics::fromThrowRatio(1.5f, W, H));
     std::vector<std::unique_ptr<MeshObject>> objects;
     objects.push_back(std::make_unique<MeshObject>());
-    objects[0]->getMesh() = mesh.value();
+    objects[0]->setMesh(mesh.value());
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     renderer.renderMeshObjects(objects, cam, {{objects[0]->getId(), &texture}});
     image = readImage(W, H);

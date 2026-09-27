@@ -424,8 +424,9 @@ void Renderer::applySurfaceUniforms(ShaderProgram& shader, const TextureBinding&
 }
 
 // A MeshObject's vertex data on the GPU (ADR-052): interleaved position + uv, and
-// indices, owned RAII. Built once per MeshData; the recorded storage lets the
-// Renderer tell when the object's mesh was replaced and must be uploaded again.
+// indices, owned RAII. Built from one mesh revision (TD-15); the Renderer uploads
+// again when the object's revision differs, whether its mesh was replaced or edited
+// in place.
 struct GpuMesh {
     GLuint vao = 0;
     GLuint vbo = 0;
@@ -434,8 +435,11 @@ struct GpuMesh {
     Vec3 boundsMin{0.0f};    // model space
     Vec3 boundsMax{0.0f};
     uint64_t lastPass = 0;
+    uint64_t revision = 0;   // MeshObject::getMeshRevision() of the uploaded data
 
-    explicit GpuMesh(const MeshData& mesh) : source_(signature(mesh)) { upload(mesh); }
+    explicit GpuMesh(const MeshObject& object) : revision(object.getMeshRevision()) {
+        upload(object.getMesh());
+    }
     ~GpuMesh() {
         if (vao != 0) { glDeleteVertexArrays(1, &vao); GlObjectStats::onVertexArrayDestroyed(); }
         if (vbo != 0) { glDeleteBuffers(1, &vbo); GlObjectStats::onVertexBufferDestroyed(); }
@@ -444,38 +448,7 @@ struct GpuMesh {
     GpuMesh(const GpuMesh&) = delete;
     GpuMesh& operator=(const GpuMesh&) = delete;
 
-    bool builtFrom(const MeshData& mesh) const { return signature(mesh) == source_; }
-
 private:
-    // Storage identity plus the end vertices: constant-time, and it changes whenever
-    // the MeshData is replaced (a reload or a different mesh).
-    struct Signature {
-        const void* positions = nullptr;
-        const void* uvs = nullptr;
-        const void* indices = nullptr;
-        size_t positionCount = 0, uvCount = 0, indexCount = 0;
-        Vec3 first{0.0f}, last{0.0f};
-        bool operator==(const Signature& o) const {
-            return positions == o.positions && uvs == o.uvs && indices == o.indices &&
-                   positionCount == o.positionCount && uvCount == o.uvCount &&
-                   indexCount == o.indexCount && first == o.first && last == o.last;
-        }
-    };
-    static Signature signature(const MeshData& m) {
-        Signature s;
-        s.positions = m.positions.data();
-        s.uvs = m.uvs.data();
-        s.indices = m.indices.data();
-        s.positionCount = m.positions.size();
-        s.uvCount = m.uvs.size();
-        s.indexCount = m.indices.size();
-        if (!m.positions.empty()) {
-            s.first = m.positions.front();
-            s.last = m.positions.back();
-        }
-        return s;
-    }
-
     void upload(const MeshData& mesh) {
         const size_t vertexCount = mesh.positions.size();
         const size_t indexTotal = mesh.triangleCount() * 3;
@@ -531,8 +504,6 @@ private:
 
         indexCount = static_cast<GLsizei>(indexTotal);
     }
-
-    Signature source_;
 };
 
 const GpuMesh* Renderer::meshBuffersFor(const MeshObject& object) {
@@ -542,9 +513,9 @@ const GpuMesh* Renderer::meshBuffersFor(const MeshObject& object) {
         return nullptr;
     }
     std::unique_ptr<GpuMesh>& slot = meshCache_[object.getId()];
-    if (!slot || !slot->builtFrom(mesh)) {
+    if (!slot || slot->revision != object.getMeshRevision()) {
         slot.reset();  // free the old buffers before allocating the new ones
-        slot = std::make_unique<GpuMesh>(mesh);
+        slot = std::make_unique<GpuMesh>(object);
     }
     slot->lastPass = meshPass_;
     return slot->indexCount > 0 ? slot.get() : nullptr;

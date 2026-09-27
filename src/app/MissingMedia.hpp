@@ -161,7 +161,7 @@ inline std::string relocateMissingMesh(EditorState& es, const std::string& oldPa
         if (!scene) continue;
         for (const auto& object : scene->getObjects()) {
             if (!object || object->getSourcePath() != oldPath || !isMeshMissing(*object)) continue;
-            object->getMesh() = mesh.value();
+            object->setMesh(mesh.value());
             object->setSourcePath(path);
             ++relocated;
         }
