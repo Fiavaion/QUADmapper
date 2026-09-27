@@ -171,3 +171,6 @@ Phasing and the shared types, so the producer (A1) and consumer (A3/A4) agree:
 - **Convert-to-HAP** (QM-082, proposed): an in-app dialog that transcodes a source to HAP via the
   FFmpeg we already link (`-c:v hap -format hap_q`). MultiMon shipped this; for us it is even cheaper
   since FFmpeg is present. Pairs naturally with playback but is a separate, smaller task.
+  **Done (QM-082):** the linked FFmpeg turned out to have no HAP encoder (built without
+  libsnappy), so frames are encoded in-house (`src/video/HapFrameEncoder`, stb_dxt vendored in
+  `external/stb` with owner approval) and muxed by FFmpeg (`src/video/HapExport`).

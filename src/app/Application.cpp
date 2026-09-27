@@ -5,6 +5,7 @@
 #include "MediaAssign.hpp"
 #include "MissingMedia.hpp"
 #include "ProjectReplace.hpp"
+#include "ReplaceMedia.hpp"
 #include "OutputPersistence.hpp"
 #include "ControlBindings.hpp"
 #include "../control/ExternalControl.hpp"
@@ -1103,6 +1104,13 @@ void Application::render() {
         mediaBinPanel.setMediaLibrary(m_mediaLibrary.get());
         mediaBinPanel.setThumbnailCache(m_thumbnailCache.get());
         mediaBinPanel.setSourceManager(m_sourceManager.get());
+        mediaBinPanel.setReplaceInShowCallback(
+            [this](const std::filesystem::path& original, const std::filesystem::path& converted) {
+                if (!m_sourceManager) return std::string("Media cannot be loaded right now.");
+                std::string error = replaceClipInShow(*m_editorState, *m_sourceManager, original, converted);
+                if (error.empty() && m_project) m_project->setModified(true);
+                return error;
+            });
         mediaBinPanel.setVisible(true);  // Make visible by default
         mediaBinInitialized = true;
     }
@@ -1676,6 +1684,7 @@ void Application::render() {
     }
 
     renderMissingMediaDialog();
+    es.mediaBinPanel.renderConversions();  // Convert to HAP progress (QM-082)
     // Unsaved-changes / recovery modals (ADR-046); drawn last so they sit on top.
     renderSessionDialogs();
 

@@ -5,6 +5,10 @@ add_library(quadmapper_video STATIC
     VideoDecoder.cpp
     PngWriter.hpp
     PngWriter.cpp
+    HapFrameEncoder.hpp
+    HapFrameEncoder.cpp
+    HapExport.hpp
+    HapExport.cpp
     VideoPlayer.hpp
     VideoPlayer.cpp
     VideoPlaybackState.hpp
@@ -34,6 +38,8 @@ target_link_libraries(quadmapper_video
     PUBLIC
         quadmapper_core
         quadmapper_media
+    PRIVATE
+        stb  # stb_dxt: BC1/BC3 blocks for Convert to HAP
 )
 
 # Link FFmpeg libraries if found

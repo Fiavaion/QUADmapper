@@ -93,6 +93,7 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
         video/VideoDecoderSeekTest.cpp
         video/VideoPlayerPlaybackTest.cpp
         source/HapPlaybackTest.cpp
+        video/HapExportTest.cpp           # QM-082 Convert to HAP, end to end
         video/RealMediaPlaybackBench.cpp  # opt-in (DISABLED_), needs local media
         video/HardwareDecodeTest.cpp      # ADR-055; needs local media + a D3D11 video decoder
         video/ColourBarsPlaybackTest.cpp  # ADR-055 colour gate; needs a GL 3.3 context
@@ -119,8 +120,9 @@ target_link_libraries(test_source PRIVATE quadmapper_source quadmapper_core)
 # HAP frame parser tests (QM-080 A2) — pure CPU, no GL context required
 add_quadmapper_test(test_hap
     source/HapFrameParserTest.cpp
+    video/HapFrameEncoderTest.cpp  # QM-082 encoder, checked through the parser
 )
-target_link_libraries(test_hap PRIVATE quadmapper_source quadmapper_core)
+target_link_libraries(test_hap PRIVATE quadmapper_source quadmapper_video quadmapper_core)
 
 # Source GL pipeline tests — real GL 3.3 context (skip-if-absent). Proves a video
 # file decodes/uploads through SourceManager (ADR-040 P3). Separate target so the
@@ -183,6 +185,7 @@ target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws
 add_quadmapper_test(test_control_app
     control/ControlBindingsTest.cpp
     app/MissingMediaTest.cpp
+    app/ReplaceMediaTest.cpp
 )
 target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_control
     quadmapper_project quadmapper_scene quadmapper_source quadmapper_core)

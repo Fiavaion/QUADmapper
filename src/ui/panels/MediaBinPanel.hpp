@@ -16,6 +16,7 @@ namespace quadmapper {
 
 class MediaLibrary;
 class MediaItem;
+class HapConvertWindow;
 class SourceManager;
 class ThumbnailCache;
 class Texture;
@@ -107,6 +108,16 @@ public:
     using ProceduralEditCallback = std::function<void(const UUID&)>;
     void setProceduralEditCallback(ProceduralEditCallback callback) { proceduralEditCallback_ = std::move(callback); }
 
+    // Convert to HAP (QM-082): the progress window for conversions started from the
+    // context menu. Drawn every frame, whichever tab is showing.
+    void renderConversions();
+
+    // "Replace in show" on a finished conversion: moves what shows the original clip
+    // onto the converted file. Returns why not, or empty.
+    using ReplaceInShowCallback = std::function<std::string(const std::filesystem::path& original,
+                                                            const std::filesystem::path& converted)>;
+    void setReplaceInShowCallback(ReplaceInShowCallback callback) { replaceInShowCallback_ = std::move(callback); }
+
 private:
     // Render the import button and controls
     void renderControls();
@@ -166,6 +177,10 @@ private:
 
     // Procedural edit callback
     ProceduralEditCallback proceduralEditCallback_;
+
+    // Convert to HAP conversions and their window (created on first use)
+    std::unique_ptr<HapConvertWindow> hapConvert_;
+    ReplaceInShowCallback replaceInShowCallback_;
 
     // Search and filter state
     char searchFilter_[256] = "";

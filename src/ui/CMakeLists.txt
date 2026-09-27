@@ -34,6 +34,8 @@ add_library(quadmapper_ui STATIC
     dialogs/PreferencesDialog.cpp
     dialogs/OutputConfigDialog.hpp
     dialogs/OutputConfigDialog.cpp
+    dialogs/HapConvertWindow.hpp
+    dialogs/HapConvertWindow.cpp
     widgets/QuadCornerWidget.hpp
     widgets/QuadCornerWidget.cpp
     widgets/PlaybackControls.hpp

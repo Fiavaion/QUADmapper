@@ -6,6 +6,7 @@
 #include "source/SourceManager.hpp"
 #include "source/procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
+#include "ui/dialogs/HapConvertWindow.hpp"
 #include "video/VideoDecoder.hpp"
 #include <imgui.h>
 #include <vector>
@@ -499,6 +500,26 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
             mediaLibrary_->removeItem(item->getId());
         }
 
+        // Re-encode as HAP beside the original (QM-082); runs in the background.
+        if (item->getType() == MediaType::VIDEO) {
+            ImGui::Separator();
+            for (const auto variant : {hap::HapVariant::Hap, hap::HapVariant::HapQ}) {
+                const bool busy = hapConvert_ && hapConvert_->isConverting(item->getPath(), variant);
+                const char* label = variant == hap::HapVariant::Hap ? "Convert to HAP..." : "Convert to HAP Q...";
+                if (ImGui::MenuItem(label, busy ? "converting" : nullptr, false, !busy)) {
+                    if (!hapConvert_) hapConvert_ = std::make_unique<HapConvertWindow>();
+                    hapConvert_->start(item->getPath(), variant);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", variant == hap::HapVariant::Hap
+                                                ? "Write a HAP copy beside this file: GPU-ready frames that decode\n"
+                                                  "cheaply, so many clips play at once and Ping-Pong runs smoothly."
+                                                : "Write a HAP Q copy beside this file: like HAP with truer colour,\n"
+                                                  "at about twice the file size.");
+                }
+            }
+        }
+
 #ifdef _WIN32
         // Only show file-related options for non-procedural items
         if (item->getType() != MediaType::PROCEDURAL) {
@@ -517,6 +538,15 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
 
         ImGui::EndPopup();
     }
+}
+
+void MediaBinPanel::renderConversions() {
+    if (!hapConvert_) return;
+    hapConvert_->render(
+        [this](const std::filesystem::path& converted) {
+            if (mediaLibrary_) mediaLibrary_->addItem(converted);  // null if already there
+        },
+        replaceInShowCallback_);
 }
 
 void MediaBinPanel::handleImport() {

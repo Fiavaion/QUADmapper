@@ -5,7 +5,7 @@ Last Updated: 2026-09-26 (Session 23)
 ## Quick Status
 - In Progress: 0
 - Todo: Phase 0 S6 hygiene (move AI out of Application.cpp, dead stubs,
-  dev→master PR), Phase 1 ADR-047..051, QM-079 (needs ADR-049), QM-082, TD-08/11..17, 🚩 QM-061
+  dev→master PR), Phase 1 ADR-047..051, QM-079 (needs ADR-049), TD-08/11..17, 🚩 QM-061
 - Done: Session 22 added QM-083..QM-099 (see below); Session 23 added QM-100..QM-109 (PRD MVP
   gaps + post-MVP control)
 - Blocked: 0
@@ -119,7 +119,7 @@ Cross-pollinated from the MultiMon project (`D:\AIprojects\MultiMon`). Model-swi
   End-to-end verified: real `D:\testing Videos\Hap\5sec_hap.mov` (1920×1080 Hap Q) renders
   correct-colored through the real pipeline (capture: `c:\tmp\a5_hapq_shader.png` vs `_raw.png`).
   ADR: `docs/adr/0044-hap-codec-playback.md`. `SourceType` unchanged; `.qmap` unaffected.
-- **QM-082 TODO (follow-up)** — Convert-to-HAP via the linked FFmpeg (`-c:v hap -format hap_q`).
+- **QM-082 DONE** — Convert to HAP / HAP Q from the media bin: own encoder (linked FFmpeg has no libsnappy, so no HAP encoder) with vendored stb_dxt + Snappy, sound copied or re-encoded to AAC, progress/cancel window, undoable Replace in show.
 
 ## Session 20 (2026-06-19) — Mapping-editor UX overhaul (committed + pushed)
 All built + 633/633 ctest; committed + pushed to `origin/dev` (`721b61a` code + `83deff2` docs).

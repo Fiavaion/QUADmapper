@@ -52,7 +52,9 @@ Snappy algorithm reference are reproduced here for attribution.
 
 ## HAP Video Codec (format specification reference)
 
-**Location:** `src/source/hap/` (HapFrameParser, HapFormat)
+**Location:** `src/source/hap/` (HapFrameParser, HapFormat); the encoder in
+`src/video/HapFrameEncoder.{hpp,cpp}` (Convert to HAP, QM-082) writes the same format,
+with its own Snappy compressor written from the format description above.
 
 **Specification:** HAP Video Draft specification  
 https://github.com/Vidvox/hap/blob/master/documentation/HapVideoDRAFT.md
@@ -80,6 +82,29 @@ https://github.com/Vidvox/hap/blob/master/documentation/HapVideoDRAFT.md
 > CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 > ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 > POSSIBILITY OF SUCH DAMAGE.
+
+---
+
+## stb_dxt (vendored, unmodified)
+
+**Location:** `external/stb/stb_dxt.h` (v1.12), compiled by `external/stb/stb_dxt.cpp`
+
+**Description:** BC1/BC3 (DXT1/DXT5) block compressor by Fabian Giesen and Sean
+Barrett, used by Convert to HAP (QM-082) to compress frames. Same project and licence
+as the stb_image already in `external/stb/`.
+
+**Source:** https://github.com/nothings/stb/blob/master/stb_dxt.h
+
+**Licence:** public domain (Unlicense), or MIT at your option:
+
+> Copyright (c) 2017 Sean Barrett. Permission is hereby granted, free of charge, to
+> any person obtaining a copy of this software and associated documentation files (the
+> "Software"), to deal in the Software without restriction, including without
+> limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+> and/or sell copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions: The above copyright notice
+> and this permission notice shall be included in all copies or substantial portions of
+> the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
 ---
 
