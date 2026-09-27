@@ -165,5 +165,34 @@ TEST_F(MeshEditKeysTest, KeysAfterTheQuadIsGoneAreSafe) {
     EXPECT_FALSE(history_.undo());
 }
 
+// The corner-pin keyboard, the success-metric path (CLAUDE.md): Shift+Tab cycles the
+// corners backwards and Tab forwards, both wrapping; the arrows nudge 1x, Shift 10x,
+// Alt 0.1x, as one undo step per corner.
+TEST_F(MeshEditKeysTest, CornerKeysCycleBothWaysAndNudgeWithShiftAndAlt) {
+    int corner = -1;
+    auto pressCorner = [&](const CanvasKeys& keys) {
+        return applyCornerKeys(keys, ref(), geometry(), history_, corner);
+    };
+    EXPECT_FALSE(pressCorner(tab(/*shift=*/true)));
+    EXPECT_EQ(corner, 3);  // from none, backwards: BL
+    EXPECT_FALSE(pressCorner(tab(/*shift=*/true)));
+    EXPECT_EQ(corner, 2);
+    EXPECT_FALSE(pressCorner(tab()));
+    EXPECT_EQ(corner, 3);
+    EXPECT_FALSE(pressCorner(tab()));
+    EXPECT_EQ(corner, 0);  // wraps forwards
+    EXPECT_FALSE(pressCorner(tab(/*shift=*/true)));
+    EXPECT_EQ(corner, 3);  // wraps backwards
+
+    const Vec2 start = geometry().getCorners()[3];
+    EXPECT_TRUE(pressCorner(right()));
+    EXPECT_TRUE(pressCorner(right(/*shift=*/true)));
+    EXPECT_TRUE(pressCorner(right(false, /*alt=*/true)));
+    EXPECT_NEAR(geometry().getCorners()[3].x - start.x, 0.001f + 0.01f + 0.0001f, 1e-6f);
+    EXPECT_EQ(geometry().getCorners()[0], Vec2(0.1f, 0.1f)) << "only the selected corner moves";
+    ASSERT_TRUE(history_.undo());
+    EXPECT_EQ(geometry().getCorners()[3], start);
+}
+
 }  // namespace test
 }  // namespace quadmapper

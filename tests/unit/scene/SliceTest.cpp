@@ -204,6 +204,34 @@ TEST(AutoBlendTest, TwoByTwoGridBlendsEachSliceWithItsTwoNeighbours) {
     EXPECT_LT(widthOf(edges, 0, SLICE_EDGE_TOP), 0.0f);
 }
 
+// Offset both ways and overlapping only in a corner patch (a fifth of each side, not
+// a grid's aligned diagonal): neither side by side nor stacked, so nothing is set.
+TEST(AutoBlendTest, ACornerPatchOverlapSetsNothing) {
+    EXPECT_TRUE(autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1000.0f, 1000.0f}},
+                                {outputId(1), CanvasRect{800.0f, 800.0f, 1000.0f, 1000.0f}}})
+                    .empty());
+    EXPECT_TRUE(autoBlendEdges({{outputId(0), CanvasRect{800.0f, 0.0f, 1000.0f, 1000.0f}},
+                                {outputId(1), CanvasRect{0.0f, 700.0f, 1000.0f, 1000.0f}}})
+                    .empty());
+}
+
+// Offset both ways with at least half shared both ways: the direction whose overlap is
+// narrower relative to the slices wins, and only that pair of edges is set.
+TEST(AutoBlendTest, WhenBothDirectionsQualifyTheNarrowerOverlapWins) {
+    // 700 of 1000 shared horizontally, 900 vertically: a left/right pair, 700 wide.
+    const auto sideBySide = autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1000.0f, 1000.0f}},
+                                            {outputId(1), CanvasRect{300.0f, 100.0f, 1000.0f, 1000.0f}}});
+    ASSERT_EQ(sideBySide.size(), 2u);
+    EXPECT_FLOAT_EQ(widthOf(sideBySide, 0, SLICE_EDGE_RIGHT), 700.0f);
+    EXPECT_FLOAT_EQ(widthOf(sideBySide, 1, SLICE_EDGE_LEFT), 700.0f);
+    // The other way round: a top/bottom pair, 700 high.
+    const auto stacked = autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1000.0f, 1000.0f}},
+                                         {outputId(1), CanvasRect{100.0f, 300.0f, 1000.0f, 1000.0f}}});
+    ASSERT_EQ(stacked.size(), 2u);
+    EXPECT_FLOAT_EQ(widthOf(stacked, 0, SLICE_EDGE_BOTTOM), 700.0f);
+    EXPECT_FLOAT_EQ(widthOf(stacked, 1, SLICE_EDGE_TOP), 700.0f);
+}
+
 TEST(AutoBlendTest, NonOverlappingSlicesGetNoBlend) {
     EXPECT_TRUE(autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}},
                                 {outputId(1), CanvasRect{1920.0f, 0.0f, 1920.0f, 1080.0f}}})
