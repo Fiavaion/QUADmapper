@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace quadmapper {
@@ -52,12 +53,15 @@ private:
  *     pass, matrix and range as frames uploaded from memory, so both paths give the same
  *     pixels;
  *  3. the shared textures are unlocked.
- * The interop lock is held only inside finish(): the shared textures are never sampled
- * elsewhere, so the render passes are untouched.
+ * If the one lock fails, each source's planes are locked on their own, so only the
+ * sources whose own lock fails are reported. The interop lock is held only inside
+ * finish(): the shared textures are never sampled elsewhere, so the render passes are
+ * untouched.
  *
- * A source that cannot use this (extension missing, registration or format refused, a
- * run-time interop error) is reported to the caller, which carries on through the
- * readback path. One per GL context; main thread only.
+ * A source that cannot use this (extension missing, OpenGL on another GPU than the
+ * decoders, registration or format refused, a run-time interop error) is reported to
+ * the caller, which carries on through the readback path. One per GL context; main
+ * thread only.
  */
 class DxInterop {
 public:
@@ -66,13 +70,18 @@ public:
         bool extensionMissing = false;  // as if the driver lacked WGL_NV_DX_interop2
         bool failRegistration = false;  // wglDXRegisterObjectNV fails
         bool rejectFormat = false;      // the frame's pixel format cannot be shared
-        int failLockAfter = -1;         // wglDXLockObjectsNV fails after this many batches
+        int failLockAfter = -1;         // every wglDXLockObjectsNV fails after this many batches
+        const Texture* failLockDest = nullptr;  // any lock including the planes for this texture fails
+        bool adapterMismatch = false;   // as if OpenGL ran on another GPU than the decoders
     };
     static TestHooks& testHooks();
 
     // D3D11 objects and interop registrations held for sources (not the interop device
     // itself), for leak checks: 0 once every video source is gone.
     static long liveObjects();
+    // Interop devices open (at most one per DxInterop, i.e. per SourceManager; it
+    // lives until that is destroyed), for leak checks.
+    static long liveDevices();
 
     DxInterop();   // no GL or D3D work until the first frame
     ~DxInterop();  // closes the interop device once no target holds it: GL context current
@@ -119,6 +128,11 @@ private:
 
     std::shared_ptr<InteropDevice> device_;
     std::vector<Pending> pending_;
+    // finish()'s working lists, kept so a frame allocates nothing.
+    std::vector<Pending> delivering_;
+    std::vector<void*> handles_;  // HANDLEs of the shared planes to lock
+    std::vector<size_t> copied_;
+    std::vector<std::pair<size_t, std::string>> failed_;
     bool checked_ = false;
     bool available_ = false;
     std::string unavailableReason_;

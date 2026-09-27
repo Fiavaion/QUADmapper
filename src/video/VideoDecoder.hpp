@@ -58,6 +58,11 @@ struct DecodeOptions {
     // Test hook: treat the GPU as failed once it has produced this many frames
     // (0: already at open). Negative: never.
     int failHardwareAfterFrames = -1;
+    // Test hooks for zero-copy (ADR-056): the GPU frame pool cannot make more than this
+    // many textures (as if video memory ran out; negative: no limit), and the device
+    // cannot share NV12/P010 textures.
+    int failGpuTextureAfter = -1;
+    bool denySharedFormat = false;
 };
 
 // Memory the backward GOP decoder may hold for Ping-Pong's reverse leg (ADR-050 §4).
@@ -296,14 +301,19 @@ public:
 
     /**
      * @brief Whether hardware frames are being left on the GPU
+     *
+     * False once zero-copy stopped: the renderer refused a frame, the device cannot share
+     * the stream's texture format, or its GPU frames could not be allocated.
      */
     bool isZeroCopy() const;
 
     /**
      * @brief Copy frames to memory from now on (the renderer could not use them)
      *
-     * Thread-safe. Frames already decoded may still be on the GPU; downloadPicture()
-     * brings any of them to memory.
+     * Thread-safe. The background decode thread then releases the stream's GPU frame
+     * pool and copies the frames it had queued on the GPU to memory, off the caller's
+     * thread. A frame taken from the queue before that may still be on the GPU;
+     * downloadPicture() brings it to memory.
      */
     void stopZeroCopy(const std::string& reason);
 
@@ -326,6 +336,22 @@ public:
      * For leak checks: back to its earlier value once the frames and decoders are gone.
      */
     static long liveGpuFrames();
+
+    /**
+     * @brief Decoders' other D3D11 objects: readback staging textures and GPU copy
+     *        event queries, across every decoder
+     *
+     * For leak checks: back to its earlier value once the decoders are gone. The shared
+     * decode device (ADR-055) is not counted; it lives until the app exits.
+     */
+    static long liveD3dObjects();
+
+    /**
+     * @brief GPU-to-memory frame copies the calling thread has made (they wait on the GPU)
+     *
+     * For tests that the main thread never reads frames back (ADR-056 fallback).
+     */
+    static long gpuReadbacksOnThisThread();
 
 private:
     class Impl;

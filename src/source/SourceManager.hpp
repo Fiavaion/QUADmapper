@@ -17,7 +17,6 @@ class YuvConverter;
 class YuvUploadState;
 class DxInterop;
 class DxInteropTarget;
-struct YuvPicture;
 
 /**
  * @brief Central manager for all texture sources
@@ -228,7 +227,9 @@ public:
      * Video frames arrive as YUV planes and are converted into the source's RGBA
      * texture by a GPU pass (ADR-055), which restores the GL state it changes. Hardware
      * frames left on the GPU are converted there and shared with OpenGL (ADR-056); a
-     * source that cannot share them falls back to the planes, from the same frame.
+     * source that cannot share them falls back to the planes. It keeps its last frame
+     * until its decoder delivers frames in memory: nothing is read back from the GPU on
+     * this thread.
      */
     void updateAll(double deltaTime);
 
@@ -287,7 +288,8 @@ private:
         bool compressedUnsupportedLogged = false; // Rate-limit the BCn-unsupported skip log (ADR-044)
         std::unique_ptr<YuvUploadState> yuvUpload; // plane textures + PBOs of a YUV video (ADR-055)
         std::unique_ptr<DxInteropTarget> zeroCopy; // D3D11 texture shared with GL (ADR-056)
-        bool zeroCopyFailed = false;               // this source fell back to the planes
+        bool zeroCopyFailed = false;               // this source fell back; zeroCopy is unused
+                                                   // and released at most one a frame
     };
 
     std::unordered_map<UUID, SourceEntry> sources_;
@@ -303,7 +305,7 @@ private:
     void createGPUTexture(SourceEntry& entry);
     void uploadFrameToTexture(SourceEntry& entry);
     void uploadYuvFrame(SourceEntry& entry, const FrameData& frame);
-    void fallBackFromZeroCopy(SourceEntry& entry, const YuvPicture& picture, const std::string& why);
+    void fallBackFromZeroCopy(SourceEntry& entry, const std::string& why);
 };
 
 } // namespace quadmapper

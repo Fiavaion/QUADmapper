@@ -16,6 +16,7 @@
 #include "../scene/QuadManager.hpp"
 #include "../scene/Scene.hpp"
 #include "../source/SourceManager.hpp"
+#include "../source/VideoFileSource.hpp"
 #include "../source/procedural/ProceduralSource.hpp"
 #include "../video/VideoDecoder.hpp"
 
@@ -464,20 +465,30 @@ int Application::runStress(const StressConfig& cfg) {
     }
 
     // ADR-056: once the video source is gone, nothing D3D11 is held for it: no interop
-    // target (shared planes, opened frames, views, registrations) and no decoded
-    // frame left on the GPU.
+    // target (shared planes, opened frames, views, registrations), no decoded frame left
+    // on the GPU, no readback staging texture or copy event query. Not counted: the
+    // decoders' shared D3D11 device (ADR-055) and its surface pools, which FFmpeg frees
+    // with each decoder, and the renderer's interop device, one per SourceManager, alive
+    // until the app closes (at most one may remain).
     bool d3dLeak = false;
     if (needsMedia) {
+        const auto* video = m_sourceManager->getSourceAs<VideoFileSource>(sourceId);
+        const bool zeroCopy = video && video->isZeroCopy();
         m_sourceManager->removeSource(sourceId);
         quad->getTexture().mediaId = UUID();
         const long interopObjects = DxInterop::liveObjects();
+        const long interopDevices = DxInterop::liveDevices();
         const long gpuFrames = VideoDecoder::liveGpuFrames();
-        d3dLeak = interopObjects != 0 || gpuFrames != 0;
+        const long decoderObjects = VideoDecoder::liveD3dObjects();
+        d3dLeak = interopObjects != 0 || gpuFrames != 0 || decoderObjects != 0 || interopDevices > 1;
         if (d3dLeak) {
             Logger::error("[STRESS] STRESS FAIL (D3D11 leak) — with the video source removed, {} interop "
-                          "objects and {} GPU frames are still alive.", interopObjects, gpuFrames);
+                          "objects, {} interop devices, {} GPU frames and {} staging textures or queries "
+                          "are still alive.", interopObjects, interopDevices, gpuFrames, decoderObjects);
         } else {
-            Logger::info("[STRESS] D3D11: no interop objects or GPU frames left after the source was removed.");
+            Logger::info("[STRESS] D3D11 ({}): no interop objects, GPU frames, staging textures or queries "
+                         "left after the source was removed; {} interop device kept.",
+                         zeroCopy ? "zero-copy" : "not zero-copy", interopDevices);
         }
     }
 

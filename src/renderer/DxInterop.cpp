@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <iterator>
 
 namespace quadmapper {
@@ -29,6 +30,7 @@ namespace quadmapper {
 namespace {
 
 std::atomic<long> g_liveObjects{0};
+std::atomic<long> g_liveDevices{0};
 
 void onCreated() { g_liveObjects.fetch_add(1, std::memory_order_relaxed); }
 void onReleased() { g_liveObjects.fetch_sub(1, std::memory_order_relaxed); }
@@ -43,6 +45,30 @@ using PFNWGLDXUNREGISTEROBJECTNVPROC = BOOL(WINAPI*)(HANDLE device, HANDLE objec
 using PFNWGLDXLOCKOBJECTSNVPROC = BOOL(WINAPI*)(HANDLE device, GLint count, HANDLE* objects);
 using PFNWGLDXUNLOCKOBJECTSNVPROC = BOOL(WINAPI*)(HANDLE device, GLint count, HANDLE* objects);
 constexpr GLenum WGL_ACCESS_READ_ONLY_NV = 0x0000;
+
+// GL_EXT_memory_object / GL_EXT_semaphore (with their _win32 variants): the LUID of the
+// adapter the GL context renders on. GLAD loads GL only.
+using PFNGLGETUNSIGNEDBYTEVEXTPROC = void(APIENTRY*)(GLenum pname, GLubyte* data);
+constexpr GLenum GL_DEVICE_LUID_EXT = 0x9599;
+
+// System DLLs load from System32 only, never from the working or application directory.
+HMODULE loadSystemLibrary(const wchar_t* name) {
+    return LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+}
+
+// The adapter the current GL context renders on, when the driver says (see above).
+bool glAdapterLuid(LUID& luid) {
+    if (!glfwExtensionSupported("GL_EXT_memory_object_win32") && !glfwExtensionSupported("GL_EXT_semaphore_win32")) {
+        return false;
+    }
+    auto get = reinterpret_cast<PFNGLGETUNSIGNEDBYTEVEXTPROC>(glfwGetProcAddress("glGetUnsignedBytevEXT"));
+    if (!get) return false;
+    GLubyte bytes[sizeof(LUID)] = {};
+    get(GL_DEVICE_LUID_EXT, bytes);
+    if (glGetError() != GL_NO_ERROR) return false;
+    std::memcpy(&luid, bytes, sizeof(luid));
+    return true;
+}
 
 // Decoded frames opened per source: its GPU pool's textures, reused round-robin.
 constexpr size_t MAX_INPUTS = 16;
@@ -95,7 +121,7 @@ bool planeFormats(DXGI_FORMAT surface, DXGI_FORMAT (&planes)[2]) {
 
 // The plane-copy shader, compiled with the system's d3dcompiler_47.dll (Windows 10+).
 ID3D11ComputeShader* compilePlaneCopy(ID3D11Device* device, std::string& why) {
-    HMODULE library = LoadLibraryW(L"d3dcompiler_47.dll");
+    HMODULE library = loadSystemLibrary(L"d3dcompiler_47.dll");
     if (!library) {
         why = "d3dcompiler_47.dll is missing";
         return nullptr;
@@ -143,8 +169,10 @@ struct InteropDevice {
     ID3D11ComputeShader* planeCopy = nullptr;     // owned
     HANDLE handle = nullptr;                      // the interop device
 
-    // Not counted in DxInterop::liveObjects(): one per DxInterop, not per source.
+    // Counted in DxInterop::liveDevices(), not liveObjects(): one per DxInterop, not per source.
+    InteropDevice() { g_liveDevices.fetch_add(1, std::memory_order_relaxed); }
     ~InteropDevice() {
+        g_liveDevices.fetch_sub(1, std::memory_order_relaxed);
         if (handle) closeDevice(handle);
         if (planeCopy) planeCopy->Release();
         if (context) context->Release();
@@ -188,8 +216,15 @@ struct DxInteropTarget::Impl {
         }
     };
     std::vector<Input> inputs;  // least recently used first
+    uint64_t pool = 0;          // the decoder pool `inputs` come from
 
     Input* inputFor(const GpuSurface& surface) {
+        if (surface.pool != pool) {
+            // The decoder made a new pool: the old one's textures are never seen again,
+            // and holding them open would keep their video memory.
+            releaseInputs();
+            pool = surface.pool;
+        }
         for (size_t i = 0; i < inputs.size(); ++i) {
             if (inputs[i].serial == surface.serial) {
                 std::rotate(inputs.begin() + static_cast<std::ptrdiff_t>(i),
@@ -289,6 +324,13 @@ struct DxInteropTarget::Impl {
     }
 #endif
 
+#ifdef _WIN32
+    void releaseInputs() {
+        for (Input& input : inputs) input.release();
+        inputs.clear();
+    }
+#endif
+
     void releaseObjects() {
 #ifdef _WIN32
         for (Plane& plane : planes) {
@@ -305,8 +347,7 @@ struct DxInteropTarget::Impl {
             release(plane.output);
             release(plane.texture);
         }
-        for (Input& input : inputs) input.release();
-        inputs.clear();
+        releaseInputs();
         width = height = 0;
         inputFormat = DXGI_FORMAT_UNKNOWN;
 #endif
@@ -327,6 +368,10 @@ DxInterop::TestHooks& DxInterop::testHooks() {
 
 long DxInterop::liveObjects() {
     return g_liveObjects.load(std::memory_order_relaxed);
+}
+
+long DxInterop::liveDevices() {
+    return g_liveDevices.load(std::memory_order_relaxed);
 }
 
 DxInterop::DxInterop() = default;
@@ -381,9 +426,23 @@ bool DxInterop::openDevice(const GpuSurface& surface, std::string& why) {
             dxgi->Release();
         }
     }
+    // On a hybrid laptop GL may render on one GPU while the decoders use the other. The
+    // extension does not promise sharing between two GPUs (a driver may refuse it or copy
+    // through system memory), so compare the adapters where GL names its own.
+    bool otherAdapter = testHooks().adapterMismatch;
+    LUID glLuid{};
+    DXGI_ADAPTER_DESC adapterDesc{};
+    if (!otherAdapter && adapter) {
+        if (glAdapterLuid(glLuid) && SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+            otherAdapter = glLuid.LowPart != adapterDesc.AdapterLuid.LowPart ||
+                           glLuid.HighPart != adapterDesc.AdapterLuid.HighPart;
+        } else {
+            Logger::info("Zero-copy video: the OpenGL driver does not name its GPU; assuming the decoders'");
+        }
+    }
     using Create = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT,
                                     UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
-    device->library = LoadLibraryW(L"d3d11.dll");
+    device->library = loadSystemLibrary(L"d3d11.dll");
     auto create = device->library ? reinterpret_cast<Create>(GetProcAddress(device->library, "D3D11CreateDevice"))
                                   : nullptr;
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
@@ -393,6 +452,9 @@ bool DxInterop::openDevice(const GpuSurface& surface, std::string& why) {
         why = "the WGL_NV_DX_interop2 entry points are missing";
     } else if (!adapter || !surface.shared) {
         why = "the frame carries no shared D3D11 texture";
+    } else if (otherAdapter) {
+        why = std::string("OpenGL renders on another GPU than the video decoders") +
+              (testHooks().adapterMismatch ? " (test)" : "");
     } else if (!create || FAILED(create(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, levels,
                                         static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &device->device,
                                         nullptr, &device->context))) {
@@ -458,27 +520,29 @@ bool DxInterop::stage(const YuvPicture& picture, DxInteropTarget& target, Textur
 
 void DxInterop::finish(YuvConverter& converter, const Failure& onFailure) {
     if (pending_.empty()) return;
+    // The failure callback may destroy a failed source's target, and stage() must find
+    // pending_ empty afterwards: the batch is delivered from delivering_.
+    delivering_.swap(pending_);
 #ifdef _WIN32
     InteropDevice& device = *device_;
     ID3D11DeviceContext* context = device.context;
-    std::vector<HANDLE> handles;
-    std::vector<size_t> copied;
-    std::vector<std::pair<size_t, std::string>> failed;
-    handles.reserve(pending_.size() * 2);
+    handles_.clear();
+    copied_.clear();
+    failed_.clear();
 
     // 1. Copy every frame's planes into its shared planes, then lock them all for OpenGL.
     // The frame's keyed mutex orders the copy after the decoder's write of it on the GPU.
     context->CSSetShader(device.planeCopy, nullptr, 0);
-    for (size_t i = 0; i < pending_.size(); ++i) {
-        const Pending& p = pending_[i];
+    for (size_t i = 0; i < delivering_.size(); ++i) {
+        const Pending& p = delivering_[i];
         DxInteropTarget::Impl& t = *p.target->impl_;
         DxInteropTarget::Impl::Input* input = t.inputFor(p.picture.gpu);
         if (!input) {
-            failed.emplace_back(i, "the decoded frame could not be opened on the renderer's D3D11 device");
+            failed_.emplace_back(i, "the decoded frame could not be opened on the renderer's D3D11 device");
             continue;
         }
         if (input->mutex->AcquireSync(0, ACQUIRE_TIMEOUT_MS) != S_OK) {
-            failed.emplace_back(i, "the decoded frame stayed locked by its decoder");
+            failed_.emplace_back(i, "the decoded frame stayed locked by its decoder");
             continue;
         }
         ID3D11UnorderedAccessView* outputs[2] = {t.planes[0].output, t.planes[1].output};
@@ -490,46 +554,67 @@ void DxInterop::finish(YuvConverter& converter, const Failure& onFailure) {
         ID3D11ShaderResourceView* noInputs[2] = {nullptr, nullptr};
         context->CSSetShaderResources(0, 2, noInputs);
         input->mutex->ReleaseSync(0);
-        copied.push_back(i);
-        handles.push_back(t.planes[0].registration);
-        handles.push_back(t.planes[1].registration);
+        copied_.push_back(i);
+        handles_.push_back(t.planes[0].registration);
+        handles_.push_back(t.planes[1].registration);
     }
     // A bound shared texture could not be handed to OpenGL.
     ID3D11UnorderedAccessView* noOutputs[2] = {nullptr, nullptr};
     context->CSSetUnorderedAccessViews(0, 2, noOutputs, nullptr);
     context->CSSetShader(nullptr, nullptr, 0);
     context->Flush();
+
     const TestHooks& hooks = testHooks();
     const bool injected = hooks.failLockAfter >= 0 && batches_ >= hooks.failLockAfter;
-    const bool locked = !handles.empty() && !injected &&
-                        device.lockObjects(device.handle, static_cast<GLint>(handles.size()), handles.data());
-
-    // 2. Convert each source's shared planes into its texture.
-    if (locked) {
-        for (size_t i : copied) {
-            const Pending& p = pending_[i];
-            const DxInteropTarget::Impl& t = *p.target->impl_;
-            if (!converter.convertPlanes(p.picture, t.planes[0].glTexture, t.planes[1].glTexture, *p.dest)) {
-                failed.emplace_back(i, "the shared planes could not be converted in OpenGL");
+    // Lock `count` frames' planes (their handles from `first`), or fail as a test forces.
+    auto lock = [&](size_t first, size_t count) {
+        if (injected) return false;
+        if (hooks.failLockDest) {
+            for (size_t k = 0; k < count; ++k) {
+                if (delivering_[copied_[first + k]].dest == hooks.failLockDest) return false;
             }
         }
-        // 3. Hand the shared planes back to D3D11.
-        device.unlockObjects(device.handle, static_cast<GLint>(handles.size()), handles.data());
-        ++batches_;
-    } else if (!handles.empty()) {
+        return device.lockObjects(device.handle, static_cast<GLint>(count * 2), &handles_[first * 2]) != FALSE;
+    };
+    auto unlock = [&](size_t first, size_t count) {
+        device.unlockObjects(device.handle, static_cast<GLint>(count * 2), &handles_[first * 2]);
+    };
+    // 2. Convert each source's shared planes into its texture.
+    auto convert = [&](size_t k) {
+        const Pending& p = delivering_[copied_[k]];
+        const DxInteropTarget::Impl& t = *p.target->impl_;
+        if (!converter.convertPlanes(p.picture, t.planes[0].glTexture, t.planes[1].glTexture, *p.dest)) {
+            failed_.emplace_back(copied_[k], "the shared planes could not be converted in OpenGL");
+        }
+    };
+    bool anyLocked = false;
+    if (!copied_.empty() && lock(0, copied_.size())) {
+        for (size_t k = 0; k < copied_.size(); ++k) convert(k);
+        unlock(0, copied_.size());  // 3. Hand the shared planes back to D3D11.
+        anyLocked = true;
+    } else if (!copied_.empty()) {
+        // One lock covers every source, so one bad source fails it for all: lock each
+        // source alone, and only those whose own lock fails fall back.
         const std::string why = std::string("OpenGL could not lock the shared textures") + (injected ? " (test)" : "");
-        for (size_t i : copied) failed.emplace_back(i, why);
+        for (size_t k = 0; k < copied_.size(); ++k) {
+            if (lock(k, 1)) {
+                convert(k);
+                unlock(k, 1);
+                anyLocked = true;
+            } else {
+                failed_.emplace_back(copied_[k], why);
+            }
+        }
     }
+    if (anyLocked) ++batches_;
 
-    // The failure callback may destroy the failed source's target: pending_ is done with.
-    std::vector<Pending> done;
-    done.swap(pending_);
-    for (const auto& [index, why] : failed) onFailure(done[index].key, done[index].picture, why);
+    for (const auto& [index, why] : failed_) onFailure(delivering_[index].key, delivering_[index].picture, why);
+    failed_.clear();
 #else
     (void)converter;
-    for (const Pending& p : pending_) onFailure(p.key, p.picture, "zero-copy video needs Windows");
-    pending_.clear();
+    for (const Pending& p : delivering_) onFailure(p.key, p.picture, "zero-copy video needs Windows");
 #endif
+    delivering_.clear();
 }
 
 }  // namespace quadmapper

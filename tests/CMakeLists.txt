@@ -103,3 +103,22 @@ if(EXISTS "${QM_AUDIO_STRESS_MEDIA}")
     )
     set_tests_properties(stress_audio_smoke PROPERTIES TIMEOUT 120)
 endif()
+# stress_video_smoke — ADR-056: a 10-bit HEVC clip played in hardware (zero-copy where the
+# GL driver can share D3D11 textures) through perform cycles; after the source is
+# removed no interop object, GPU frame, staging texture or copy query may remain.
+# Registered only when the local test media exists (not in CI).
+set(QM_VIDEO_STRESS_MEDIA "D:/testing Videos/qa_video/hevc10_1080p.mp4")
+if(EXISTS "${QM_VIDEO_STRESS_MEDIA}")
+    add_test(
+        NAME stress_video_smoke
+        COMMAND $<TARGET_FILE:QUADmapper>
+            --stress
+            --cycles=5
+            --outputs=1
+            --frames-per-cycle=30
+            --hidden
+            --source=video
+            "--media=${QM_VIDEO_STRESS_MEDIA}"
+    )
+    set_tests_properties(stress_video_smoke PROPERTIES TIMEOUT 120)
+endif()

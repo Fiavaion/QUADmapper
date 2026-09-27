@@ -209,8 +209,13 @@ TEST_P(ColourBarsPlayback, TextureMatchesReferenceBars) {
 
     bool interop = false;
     if (c.zeroCopy) {
+        // Without interop the case would pass on the readback path and prove nothing.
         DxInterop probe;
         interop = probe.available();
+        if (!interop) {
+            std::filesystem::remove(clip);
+            GTEST_SKIP() << caseName(c) << ": " << probe.unavailableReason();
+        }
     }
     std::vector<uint8_t> rgba;
     bool hardware = false;
@@ -246,7 +251,8 @@ TEST_P(ColourBarsPlayback, TextureMatchesReferenceBars) {
     }
     std::filesystem::remove(clip);
     if (!c.hardware) EXPECT_FALSE(hardware);
-    if (hardware && interop) EXPECT_TRUE(zeroCopy) << "the frames were copied through memory";
+    if (c.zeroCopy && !hardware) GTEST_SKIP() << caseName(c) << ": no GPU decoding here, so no zero-copy";
+    if (c.zeroCopy) EXPECT_TRUE(zeroCopy) << "the frames were copied through memory";
 
     int worst = 0;
     for (size_t i = 0; i < BARS.size(); ++i) {

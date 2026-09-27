@@ -29,6 +29,7 @@ struct GpuSurface {
     void* texture = nullptr;         // ID3D11Texture2D* on `device`, alive while YuvPicture::owner is
     void* shared = nullptr;          // its shared HANDLE, for OpenSharedResource
     uint64_t serial = 0;             // names the texture for the life of the process
+    uint64_t pool = 0;               // names the decoder pool it belongs to, likewise
     void* device = nullptr;          // the decoders' ID3D11Device* (kept until the process exits)
 };
 

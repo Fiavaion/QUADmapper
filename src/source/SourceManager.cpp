@@ -353,11 +353,21 @@ void SourceManager::updateAll(double deltaTime) {
     }
     // The zero-copy frames staged above, all under one interop lock (ADR-056).
     const auto start = std::chrono::steady_clock::now();
-    dxInterop_->finish(*yuvConverter_, [this](void* key, const YuvPicture& picture, const std::string& why) {
-        fallBackFromZeroCopy(*static_cast<SourceEntry*>(key), picture, why);
+    dxInterop_->finish(*yuvConverter_, [this](void* key, const YuvPicture&, const std::string& why) {
+        fallBackFromZeroCopy(*static_cast<SourceEntry*>(key), why);
     });
     uploadStats_.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     yuvConverter_->end();
+
+    // The shared planes of one source that fell back: releasing a target unregisters it
+    // from GL and frees its D3D11 textures, a few milliseconds each, so when many sources
+    // fall back together they go one a frame instead of all in the frame they failed.
+    for (auto& [id, entry] : sources_) {
+        if (entry.zeroCopyFailed && entry.zeroCopy) {
+            entry.zeroCopy.reset();
+            break;
+        }
+    }
 }
 
 void SourceManager::seekAllToStart() {
@@ -504,15 +514,16 @@ void SourceManager::uploadYuvFrame(SourceEntry& entry, const FrameData& frame) {
     }
     if (frame.yuv.onGpu()) {
         // Left on the GPU (ADR-056): staged now, delivered by finish() at the end of updateAll().
-        std::string why;
         if (!entry.zeroCopyFailed) {
+            std::string why;
             if (!entry.zeroCopy) entry.zeroCopy = std::make_unique<DxInteropTarget>();
             if (dxInterop_->stage(frame.yuv, *entry.zeroCopy, texture, &entry, why)) {
                 entry.source->markFrameConsumed();
                 return;
             }
+            fallBackFromZeroCopy(entry, why);
         }
-        fallBackFromZeroCopy(entry, frame.yuv, why);
+        // Fallen back: the texture keeps the last frame shown (see fallBackFromZeroCopy).
         entry.source->markFrameConsumed();
         return;
     }
@@ -524,21 +535,14 @@ void SourceManager::uploadYuvFrame(SourceEntry& entry, const FrameData& frame) {
 }
 
 // This source cannot use zero-copy (ADR-056): its decoder copies frames through memory
-// from now on, and the frames already decoded on the GPU, this one included, are copied
-// to memory here, so playback carries on from the same frame.
-void SourceManager::fallBackFromZeroCopy(SourceEntry& entry, const YuvPicture& picture, const std::string& why) {
-    if (!entry.zeroCopyFailed) {
-        entry.zeroCopyFailed = true;
-        entry.zeroCopy.reset();  // unregistered from GL: never locked outside finish()
-        if (auto* video = dynamic_cast<VideoFileSource*>(entry.source.get())) video->stopZeroCopy(why);
-    }
-    const YuvPicture memory = VideoDecoder::downloadPicture(picture);
-    if (!memory.isValid()) {
-        Logger::warning("SourceManager: a video frame could not be copied from the GPU; it was skipped");
-        return;
-    }
-    if (!entry.yuvUpload) entry.yuvUpload = std::make_unique<YuvUploadState>();
-    yuvConverter_->convert(memory, *entry.texture, *entry.yuvUpload);
+// from now on, including the frames it had queued on the GPU, on its own thread. Frames
+// on the GPU that reach this thread meanwhile are skipped and the texture keeps the last
+// frame shown: reading them back here would wait on the GPU on the main thread (16
+// streams falling back at once stalled a frame for 700 ms).
+void SourceManager::fallBackFromZeroCopy(SourceEntry& entry, const std::string& why) {
+    if (entry.zeroCopyFailed) return;
+    entry.zeroCopyFailed = true;  // its target is never staged again; released by updateAll()
+    if (auto* video = dynamic_cast<VideoFileSource*>(entry.source.get())) video->stopZeroCopy(why);
 }
 
 } // namespace quadmapper

@@ -15,7 +15,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 // C++ headers: included here, outside extern "C", before hwcontext_d3d11va.h pulls them in.
-#include <d3d11.h>
+#include <d3d11_4.h>  // D3D11_FEATURE_DATA_D3D11_OPTIONS4
 #include <dxgi.h>
 #endif
 
@@ -56,8 +56,9 @@ constexpr int MAX_REVERSE_RETRIES = 20;
 constexpr int MAX_EMPTY_LEGS = 3;
 // Row alignment of frames copied from the GPU.
 constexpr int TRANSFER_ALIGN = 32;
-// Half-millisecond polls for a GPU copy before the readback gives up (~2 s).
-constexpr int MAX_READBACK_POLLS = 4000;
+// How long a wait for a GPU copy may take before the copy counts as failed. Polled
+// every half millisecond (in practice a Windows sleep lasts up to a timer tick).
+constexpr std::chrono::seconds GPU_COPY_TIMEOUT{2};
 
 size_t frameBytes(const AVFrame* frame) {
     size_t bytes = 0;
@@ -213,6 +214,31 @@ void releaseTexture(ID3D11Texture2D*& texture) {
     texture = nullptr;
 }
 
+// Decoders' D3D11 objects other than GPU frames: readback staging textures and copy
+// event queries (VideoDecoder::liveD3dObjects).
+std::atomic<long> g_liveD3dObjects{0};
+// GPU-to-memory readbacks made by each thread (VideoDecoder::gpuReadbacksOnThisThread).
+thread_local long t_gpuReadbacks = 0;
+
+void releaseStaging(ID3D11Texture2D*& staging) {
+    if (staging) g_liveD3dObjects.fetch_sub(1, std::memory_order_relaxed);
+    releaseTexture(staging);
+}
+
+// Wait for `done()` to report the GPU work finished. False on failure, after
+// GPU_COPY_TIMEOUT, or once `stop` is set (the decode thread is being joined, for a
+// seek or shutdown, so it never waits on a hung GPU).
+template <typename Done>
+bool waitForGpu(Done done, const std::atomic<bool>* stop) {
+    const auto deadline = std::chrono::steady_clock::now() + GPU_COPY_TIMEOUT;
+    for (;;) {
+        const int state = done();  // 1 done, 0 not yet, -1 failed
+        if (state != 0) return state > 0;
+        if ((stop && stop->load()) || std::chrono::steady_clock::now() > deadline) return false;
+        std::this_thread::sleep_for(std::chrono::microseconds(500));
+    }
+}
+
 // Copy `texture` (array slice `index`) into `copy`, whose format, size and buffers are
 // set, through `staging` (re-created when it does not fit). av_hwframe_transfer_data
 // for D3D11 holds the shared device's lock while it waits for the GPU copy and while it
@@ -223,12 +249,13 @@ void releaseTexture(ID3D11Texture2D*& texture) {
 // held around the copy; null for a decoder surface.
 int readBackTexture(AVD3D11VADeviceContext* d3d, ID3D11Texture2D* texture, UINT index,
                     ID3D11Texture2D*& staging, D3D11_TEXTURE2D_DESC& stagingDesc, AVFrame* copy,
-                    IDXGIKeyedMutex* mutex = nullptr) {
+                    IDXGIKeyedMutex* mutex, const std::atomic<bool>* stop) {
+    ++t_gpuReadbacks;
     D3D11_TEXTURE2D_DESC desc{};
     texture->GetDesc(&desc);
     if (!staging || stagingDesc.Width != desc.Width || stagingDesc.Height != desc.Height ||
         stagingDesc.Format != desc.Format) {
-        releaseTexture(staging);
+        releaseStaging(staging);
         D3D11_TEXTURE2D_DESC wanted{};
         wanted.Width = desc.Width;
         wanted.Height = desc.Height;
@@ -242,6 +269,7 @@ int readBackTexture(AVD3D11VADeviceContext* d3d, ID3D11Texture2D* texture, UINT 
             staging = nullptr;
             return AVERROR(ENOMEM);
         }
+        g_liveD3dObjects.fetch_add(1, std::memory_order_relaxed);
         stagingDesc = wanted;
     }
 
@@ -256,14 +284,13 @@ int readBackTexture(AVD3D11VADeviceContext* d3d, ID3D11Texture2D* texture, UINT 
     d3d->unlock(d3d->lock_ctx);
 
     D3D11_MAPPED_SUBRESOURCE map{};
-    for (int polls = 0;; ++polls) {
+    const bool mapped = waitForGpu([&] {
         d3d->lock(d3d->lock_ctx);
         const HRESULT hr = d3d->device_context->Map(staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &map);
         d3d->unlock(d3d->lock_ctx);
-        if (SUCCEEDED(hr)) break;
-        if (hr != DXGI_ERROR_WAS_STILL_DRAWING || polls > MAX_READBACK_POLLS) return AVERROR_EXTERNAL;
-        std::this_thread::sleep_for(std::chrono::microseconds(500));
-    }
+        return SUCCEEDED(hr) ? 1 : hr == DXGI_ERROR_WAS_STILL_DRAWING ? 0 : -1;
+    }, stop);
+    if (!mapped) return stop && stop->load() ? AVERROR_EXIT : AVERROR_EXTERNAL;
 
     // The staging texture holds the surface at its padded height; the planes follow
     // each other at the map's row pitch.
@@ -300,15 +327,35 @@ struct GpuFrameTexture {
     IDXGIKeyedMutex* mutex = nullptr;
     HANDLE shared = nullptr;  // for OpenSharedResource; owned by the texture
     uint64_t serial = 0;
+    uint64_t pool = 0;        // GpuPoolSpec::id
 };
+
+std::atomic<uint64_t> g_gpuPoolSerial{0};
 
 // What a stream's pool makes its textures from. av_buffer_pool_get() calls the
 // allocator under the pool's own lock, so `created` needs no other.
 struct GpuPoolSpec {
     ID3D11Device* device = nullptr;  // the shared device (kept until exit)
     D3D11_TEXTURE2D_DESC desc{};
+    uint64_t id = 0;                 // names the pool for the life of the process
     int created = 0;
+    int failAfter = -1;              // DecodeOptions::failGpuTextureAfter
+    bool failed = false;             // a texture could not be made (not the cap)
 };
+
+// Whether textures of `format` can be shared with a keyed mutex (ADR-056). NV12 needs
+// the extended NV12 sharing of D3D11.4 (OPTIONS4); every format must be shareable.
+bool canShareFormat(ID3D11Device* device, DXGI_FORMAT format) {
+    D3D11_FEATURE_DATA_FORMAT_SUPPORT2 support{format, 0};
+    if (FAILED(device->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &support, sizeof(support))) ||
+        !(support.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_SHAREABLE)) {
+        return false;
+    }
+    if (format != DXGI_FORMAT_NV12) return true;
+    D3D11_FEATURE_DATA_D3D11_OPTIONS4 options{};
+    return SUCCEEDED(device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS4, &options, sizeof(options))) &&
+           options.ExtendedNV12SharedTextureSupported;
+}
 
 void freeGpuFrameTexture(void*, uint8_t* data) {
     auto* entry = reinterpret_cast<GpuFrameTexture*>(data);
@@ -322,8 +369,10 @@ AVBufferRef* allocGpuFrameTexture(void* opaque, size_t size) {
     auto* spec = static_cast<GpuPoolSpec*>(opaque);
     if (spec->created >= GPU_POOL_TEXTURES) return nullptr;
     auto* entry = new GpuFrameTexture;
-    if (FAILED(spec->device->CreateTexture2D(&spec->desc, nullptr, &entry->texture))) {
+    const bool injected = spec->failAfter >= 0 && spec->created >= spec->failAfter;
+    if (injected || FAILED(spec->device->CreateTexture2D(&spec->desc, nullptr, &entry->texture))) {
         delete entry;
+        spec->failed = true;
         return nullptr;
     }
     g_liveGpuFrames.fetch_add(1, std::memory_order_relaxed);
@@ -335,9 +384,11 @@ AVBufferRef* allocGpuFrameTexture(void* opaque, size_t size) {
     if (resource) resource->Release();
     if (!shared) {
         freeGpuFrameTexture(nullptr, reinterpret_cast<uint8_t*>(entry));
+        spec->failed = true;
         return nullptr;
     }
     entry->serial = ++g_gpuFrameSerial;
+    entry->pool = spec->id;
     AVBufferRef* ref = av_buffer_create(reinterpret_cast<uint8_t*>(entry), size, freeGpuFrameTexture, nullptr, 0);
     if (!ref) {
         freeGpuFrameTexture(nullptr, reinterpret_cast<uint8_t*>(entry));
@@ -357,17 +408,20 @@ bool isGpuFrame(const AVFrame* frame) {
     return frame->format == AV_PIX_FMT_D3D11 && !frame->hw_frames_ctx && frame->buf[0];
 }
 
-// Copy a frame left on the GPU to memory, allocating the memory; false on failure.
+// Copy a frame left on the GPU to memory, allocating the memory unless `copy` has it;
+// false on failure.
 bool downloadGpuFrame(const AVFrame* frame, AVFrame* copy, ID3D11Texture2D*& staging,
-                      D3D11_TEXTURE2D_DESC& stagingDesc) {
+                      D3D11_TEXTURE2D_DESC& stagingDesc, const std::atomic<bool>* stop = nullptr) {
     AVD3D11VADeviceContext* d3d = sharedD3d();
     const auto* entry = reinterpret_cast<const GpuFrameTexture*>(frame->buf[0]->data);
     if (!d3d || !entry->texture) return false;
     copy->format = memoryFormatOf(entry->texture);
     copy->width = frame->width;
     copy->height = frame->height;
-    if (copy->format == AV_PIX_FMT_NONE || av_frame_get_buffer(copy, TRANSFER_ALIGN) < 0) return false;
-    if (readBackTexture(d3d, entry->texture, 0, staging, stagingDesc, copy, entry->mutex) < 0) return false;
+    if (copy->format == AV_PIX_FMT_NONE || (!copy->buf[0] && av_frame_get_buffer(copy, TRANSFER_ALIGN) < 0)) {
+        return false;
+    }
+    if (readBackTexture(d3d, entry->texture, 0, staging, stagingDesc, copy, entry->mutex, stop) < 0) return false;
     av_frame_copy_props(copy, frame);
     return true;
 }
@@ -651,9 +705,12 @@ public:
 
     void closeCodec() {
 #ifdef _WIN32
-        releaseTexture(staging_);
+        releaseStaging(staging_);
         stagingDesc_ = D3D11_TEXTURE2D_DESC{};
-        if (copyDone_) copyDone_->Release();
+        if (copyDone_) {
+            copyDone_->Release();
+            g_liveD3dObjects.fetch_sub(1, std::memory_order_relaxed);
+        }
         copyDone_ = nullptr;
 #endif
         if (codecCtx_) avcodec_free_context(&codecCtx_);  // drops its device and surface pool
@@ -710,6 +767,10 @@ public:
                 rc = transferToMemory(frame_, copy);
             }
         }
+        if (rc < 0 && stopDecoding_) {
+            av_frame_free(&copy);  // the thread is being joined: not a GPU failure
+            return false;
+        }
         if (rc < 0) {
             av_frame_free(&copy);
             resumeInSoftware(injected ? "simulated GPU failure (test)"
@@ -731,6 +792,21 @@ public:
         copy->format = frames->sw_format;
         copy->width = surface->width;
         copy->height = surface->height;
+        const int filled = transferBuffer(copy);
+        if (filled < 0) return filled;
+#ifdef _WIN32
+        const auto* device = reinterpret_cast<const AVHWDeviceContext*>(frames->device_ref->data);
+        return readBackTexture(static_cast<AVD3D11VADeviceContext*>(device->hwctx),
+                               reinterpret_cast<ID3D11Texture2D*>(surface->data[0]),
+                               static_cast<UINT>(reinterpret_cast<intptr_t>(surface->data[1])), staging_,
+                               stagingDesc_, copy, nullptr, &stopDecoding_);
+#else
+        return av_hwframe_transfer_data(copy, surface, 0);
+#endif
+    }
+
+    // Memory for `copy` (format and size set) from the stream's pool.
+    int transferBuffer(AVFrame* copy) {
         const auto format = static_cast<AVPixelFormat>(copy->format);
         const int bytes = av_image_get_buffer_size(format, copy->width, copy->height, TRANSFER_ALIGN);
         if (bytes <= 0) return AVERROR(EINVAL);
@@ -741,18 +817,8 @@ public:
         }
         copy->buf[0] = transferPool_ ? av_buffer_pool_get(transferPool_) : nullptr;
         if (!copy->buf[0]) return AVERROR(ENOMEM);
-        const int filled = av_image_fill_arrays(copy->data, copy->linesize, copy->buf[0]->data, format,
-                                                copy->width, copy->height, TRANSFER_ALIGN);
-        if (filled < 0) return filled;
-#ifdef _WIN32
-        const auto* device = reinterpret_cast<const AVHWDeviceContext*>(frames->device_ref->data);
-        return readBackTexture(static_cast<AVD3D11VADeviceContext*>(device->hwctx),
-                               reinterpret_cast<ID3D11Texture2D*>(surface->data[0]),
-                               static_cast<UINT>(reinterpret_cast<intptr_t>(surface->data[1])), staging_,
-                               stagingDesc_, copy);
-#else
-        return av_hwframe_transfer_data(copy, surface, 0);
-#endif
+        return av_image_fill_arrays(copy->data, copy->linesize, copy->buf[0]->data, format, copy->width,
+                                    copy->height, TRANSFER_ALIGN);
     }
 
     // Whether frames are left on the GPU for the zero-copy path (ADR-056).
@@ -767,7 +833,8 @@ public:
 #ifdef _WIN32
     // Copy a D3D11 decoder surface into a texture of this stream's own pool, so the
     // frame queue never holds the decoder's few surfaces. EAGAIN when the pool is at its
-    // cap: the caller copies the frame to memory instead.
+    // cap, or when zero-copy has just stopped because the device cannot share the format
+    // or make the texture: the caller copies the frame to memory instead.
     int copyToGpuPool(const AVFrame* surface, AVFrame* copy) {
         const auto* frames = reinterpret_cast<const AVHWFramesContext*>(surface->hw_frames_ctx->data);
         const auto* device = reinterpret_cast<const AVHWDeviceContext*>(frames->device_ref->data);
@@ -779,9 +846,19 @@ public:
         texture->GetDesc(&desc);
         if (!gpuPool_ || gpuPoolDesc_.Width != desc.Width || gpuPoolDesc_.Height != desc.Height ||
             gpuPoolDesc_.Format != desc.Format) {
-            av_buffer_pool_uninit(&gpuPool_);  // textures still in frames are freed on release
+            releaseGpuPool();
+            // Without shared NV12/P010 textures frames would silently go through memory
+            // while the stream claimed zero-copy.
+            if (options_.denySharedFormat || !canShareFormat(d3d->device, desc.Format)) {
+                stopZeroCopy(std::string("the GPU cannot share ") +
+                             (desc.Format == DXGI_FORMAT_P010 ? "P010" : "NV12") + " textures" +
+                             (options_.denySharedFormat ? " (test)" : ""));
+                return AVERROR(EAGAIN);
+            }
             auto* spec = new GpuPoolSpec;
             spec->device = d3d->device;
+            spec->id = ++g_gpuPoolSerial;
+            spec->failAfter = options_.failGpuTextureAfter;
             spec->desc.Width = desc.Width;
             spec->desc.Height = desc.Height;
             spec->desc.MipLevels = 1;
@@ -801,10 +878,16 @@ public:
                 delete spec;
                 return AVERROR(ENOMEM);
             }
+            gpuPoolSpec_ = spec;
             gpuPoolDesc_ = desc;
         }
         copy->buf[0] = av_buffer_pool_get(gpuPool_);
-        if (!copy->buf[0]) return AVERROR(EAGAIN);
+        if (!copy->buf[0]) {
+            // Below the cap a texture could not be made (video memory full): stop once,
+            // rather than try again every frame while claiming zero-copy.
+            if (gpuPoolSpec_->failed) stopZeroCopy("out of video memory for this stream's GPU frames");
+            return AVERROR(EAGAIN);
+        }
         auto* entry = reinterpret_cast<GpuFrameTexture*>(copy->buf[0]->data);
 
         // A pool texture is only handed out once no frame holds it, so the renderer never
@@ -815,6 +898,7 @@ public:
                 copyDone_ = nullptr;
                 return AVERROR(ENOMEM);
             }
+            g_liveD3dObjects.fetch_add(1, std::memory_order_relaxed);
         }
         d3d->lock(d3d->lock_ctx);
         if (entry->mutex->AcquireSync(0, INFINITE) != S_OK) {
@@ -831,16 +915,15 @@ public:
         // waits for its copy: the copy sits in the decoders' one queue behind every
         // stream's decoding, and a renderer that met it unfinished would wait on all of
         // that (after a loop, the app ran at ~24 fps for a second; ADR-056 amendment).
-        for (int polls = 0;; ++polls) {
+        const bool done = waitForGpu([&] {
             d3d->lock(d3d->lock_ctx);
             // Flushing allowed: with DONOTFLUSH the event never completed after the keyed
             // mutex release (measured: every poll ran out, 2 s a frame).
             const HRESULT hr = d3d->device_context->GetData(copyDone_, nullptr, 0, 0);
             d3d->unlock(d3d->lock_ctx);
-            if (hr == S_OK) break;
-            if (FAILED(hr) || polls > MAX_READBACK_POLLS) return AVERROR_EXTERNAL;
-            std::this_thread::sleep_for(std::chrono::microseconds(500));
-        }
+            return hr == S_OK ? 1 : FAILED(hr) ? -1 : 0;
+        }, &stopDecoding_);
+        if (!done) return stopDecoding_ ? AVERROR_EXIT : AVERROR_EXTERNAL;
 
         copy->format = AV_PIX_FMT_D3D11;
         copy->width = surface->width;
@@ -848,6 +931,71 @@ public:
         copy->data[0] = reinterpret_cast<uint8_t*>(entry->texture);
         copy->data[1] = nullptr;  // array slice 0
         return 0;
+    }
+
+    void releaseGpuPool() {
+        av_buffer_pool_uninit(&gpuPool_);  // textures still in frames are freed on release
+        gpuPoolSpec_ = nullptr;            // freed with the pool's last texture
+        gpuPoolDesc_ = D3D11_TEXTURE2D_DESC{};
+    }
+
+    // Zero-copy stopped (ADR-056), on the decode thread, once: the pool is released (its
+    // textures go as the frames holding them do), and the frames queued on the GPU are
+    // copied to memory here, not on the main thread, which keeps showing its last frame
+    // meanwhile. The queue is taken out while they are copied; only this thread adds to it.
+    void leaveGpu() {
+        if (!zeroCopyStopped_ || leftGpu_) return;
+        leftGpu_ = true;
+        releaseGpuPool();
+        std::queue<VideoFrame> queued;
+        {
+            std::lock_guard<std::mutex> lock(bufferMutex_);
+            std::swap(queued, frameBuffer_);
+        }
+        std::queue<VideoFrame> inMemory;
+        for (; !queued.empty() && !stopDecoding_; queued.pop()) {
+            VideoFrame& frame = queued.front();
+            if (!frame.yuv.onGpu()) {
+                inMemory.push(std::move(frame));
+                continue;
+            }
+            VideoFrame copied = frameInMemory(frame);
+            if (copied.isValid()) inMemory.push(std::move(copied));
+        }
+        {
+            std::lock_guard<std::mutex> lock(bufferMutex_);
+            for (; !frameBuffer_.empty(); frameBuffer_.pop()) inMemory.push(std::move(frameBuffer_.front()));
+            std::swap(frameBuffer_, inMemory);
+        }
+        bufferCondition_.notify_all();
+    }
+
+    // A queued frame left on the GPU, copied to memory from the stream's pool (freeing
+    // pooled memory costs the main thread nothing when the frames it drops are released);
+    // invalid on failure.
+    VideoFrame frameInMemory(const VideoFrame& gpuFrame) {
+        VideoFrame result;
+        result.width = gpuFrame.width;
+        result.height = gpuFrame.height;
+        result.pts = gpuFrame.pts;
+        result.due = gpuFrame.due;
+        result.frameNumber = gpuFrame.frameNumber;
+        const auto* frame = static_cast<const AVFrame*>(gpuFrame.yuv.owner.get());  // see shareGpuFrame()
+        AVFrame* downloaded = av_frame_alloc();
+        if (downloaded && frame && isGpuFrame(frame)) {
+            downloaded->format = memoryFormatOf(reinterpret_cast<const GpuFrameTexture*>(frame->buf[0]->data)->texture);
+            downloaded->width = frame->width;
+            downloaded->height = frame->height;
+        }
+        if (downloaded && frame && downloaded->format != AV_PIX_FMT_NONE && transferBuffer(downloaded) >= 0 &&
+            downloadGpuFrame(frame, downloaded, staging_, stagingDesc_, &stopDecoding_)) {
+            if (!shareYuv(downloaded, result)) convertToRgb(downloaded, result);
+        } else {
+            if (!stopDecoding_) LOG_WARNING("Copying a GPU frame to memory failed; frame {} is skipped", gpuFrame.frameNumber);
+            result = VideoFrame{};
+        }
+        av_frame_free(&downloaded);
+        return result;
     }
 #endif
 
@@ -881,8 +1029,8 @@ public:
         av_buffer_pool_uninit(&transferPool_);  // buffers still in frames are freed on release
         transferPoolBytes_ = 0;
 #ifdef _WIN32
-        av_buffer_pool_uninit(&gpuPool_);       // textures still in frames are freed on release
-        gpuPoolDesc_ = D3D11_TEXTURE2D_DESC{};
+        releaseGpuPool();
+        leftGpu_ = false;
 #endif
         zeroCopyStopped_ = false;
         if (formatCtx_) {
@@ -921,8 +1069,11 @@ public:
     void stopZeroCopy(const std::string& reason) {
         if (zeroCopyStopped_.exchange(true)) return;
         LOG_WARNING("Zero-copy video stopped ({}); this video's frames are copied through memory", reason);
-        std::lock_guard<std::mutex> lock(bufferMutex_);
-        zeroCopyNote_ = reason;
+        {
+            std::lock_guard<std::mutex> lock(bufferMutex_);
+            zeroCopyNote_ = reason;
+        }
+        bufferCondition_.notify_all();  // a decode thread waiting on a full queue: leaveGpu()
     }
     std::string getZeroCopyNote() const {
         std::lock_guard<std::mutex> lock(bufferMutex_);
@@ -1225,7 +1376,7 @@ private:
             // Zero-copy stopped (ADR-056): a frame cached on the GPU before that (Ping-Pong's
             // tail or reverse group) comes to memory now.
             AVFrame* downloaded = av_frame_alloc();
-            const bool ok = downloaded && downloadGpuFrame(frame, downloaded, staging_, stagingDesc_);
+            const bool ok = downloaded && downloadGpuFrame(frame, downloaded, staging_, stagingDesc_, &stopDecoding_);
             if (ok) {
                 if (!shareYuv(downloaded, result)) convertToRgb(downloaded, result);
             } else {
@@ -1304,6 +1455,7 @@ private:
         yuv.gpu.texture = texture;
         yuv.gpu.shared = entry->shared;
         yuv.gpu.serial = entry->serial;
+        yuv.gpu.pool = entry->pool;
         yuv.gpu.device = d3d->device;
         result.width = yuv.width;
         result.height = yuv.height;
@@ -1739,6 +1891,9 @@ private:
     void backgroundDecodingLoop() {
         DecodeBackoff backoff;
         while (!stopDecoding_) {
+#ifdef _WIN32
+            leaveGpu();
+#endif
             bool room = true;
             {
                 std::unique_lock<std::mutex> lock(bufferMutex_);
@@ -1746,12 +1901,13 @@ private:
                     room = frameBuffer_.size() < maxBufferSize_;
                 } else {
                     bufferCondition_.wait(lock, [this]() {
-                        return stopDecoding_ || frameBuffer_.size() < maxBufferSize_;
+                        return stopDecoding_ || frameBuffer_.size() < maxBufferSize_ || mustLeaveGpu();
                     });
                 }
             }
 
             if (stopDecoding_) break;
+            if (mustLeaveGpu()) continue;
             if (!room) {
                 stepBuild();  // the buffer is full: decode the next reverse group meanwhile
                 continue;
@@ -1777,6 +1933,15 @@ private:
                 frameBuffer_.push(std::move(frame));
             }
         }
+    }
+
+    // Zero-copy stopped and leaveGpu() has not run yet.
+    bool mustLeaveGpu() const {
+#ifdef _WIN32
+        return zeroCopyStopped_ && !leftGpu_;
+#else
+        return false;
+#endif
     }
 
     void recordFailure() {
@@ -1813,7 +1978,9 @@ private:
     D3D11_TEXTURE2D_DESC stagingDesc_{};
     ID3D11Query* copyDone_ = nullptr;         // signals a GPU pool copy done (ADR-056)
     AVBufferPool* gpuPool_ = nullptr;         // textures frames are left on the GPU in (ADR-056)
+    GpuPoolSpec* gpuPoolSpec_ = nullptr;      // gpuPool_'s, owned by it
     D3D11_TEXTURE2D_DESC gpuPoolDesc_{};      // the decoder surfaces the pool was made for
+    std::atomic<bool> leftGpu_{false};        // leaveGpu() ran (decode thread; read by the wait)
 #endif
     std::atomic<bool> zeroCopyStopped_{false};  // stopZeroCopy() was called (any thread)
     std::string zeroCopyNote_;                // why, guarded by bufferMutex_
@@ -1984,7 +2151,7 @@ YuvPicture VideoDecoder::downloadPicture(const YuvPicture& picture) {
     ID3D11Texture2D* staging = nullptr;
     D3D11_TEXTURE2D_DESC stagingDesc{};
     const bool ok = frame && copy && isGpuFrame(frame) && downloadGpuFrame(frame, copy, staging, stagingDesc);
-    releaseTexture(staging);
+    releaseStaging(staging);
     if (!ok) {
         av_frame_free(&copy);
         return {};
@@ -2009,6 +2176,22 @@ YuvPicture VideoDecoder::downloadPicture(const YuvPicture& picture) {
 long VideoDecoder::liveGpuFrames() {
 #if defined(QUADMAPPER_HAS_FFMPEG) && defined(_WIN32)
     return g_liveGpuFrames.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+}
+
+long VideoDecoder::liveD3dObjects() {
+#if defined(QUADMAPPER_HAS_FFMPEG) && defined(_WIN32)
+    return g_liveD3dObjects.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+}
+
+long VideoDecoder::gpuReadbacksOnThisThread() {
+#if defined(QUADMAPPER_HAS_FFMPEG) && defined(_WIN32)
+    return t_gpuReadbacks;
 #else
     return 0;
 #endif

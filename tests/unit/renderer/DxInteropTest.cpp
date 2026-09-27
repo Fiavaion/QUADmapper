@@ -121,11 +121,13 @@ struct GpuBars {
     }
 };
 
-std::unique_ptr<GpuBars> makeGpuBars(D3DDevice& d3d, bool tenBit, YuvMatrix matrix, bool fullRange) {
-    const int bits = tenBit ? 10 : 8;
+// NV12 or P010 samples: Y rows then interleaved CbCr rows at one pitch (the initial-data
+// layout of those formats). `colour(x, y)` gives each pixel's Y'CbCr; chroma is taken at
+// even pixels.
+template <typename Colour>
+std::vector<uint8_t> planeData(bool tenBit, Colour colour) {
     const int sample = tenBit ? 2 : 1;
     const int pitch = WIDTH * sample;
-    // Y rows then interleaved CbCr rows, at one pitch: the initial-data layout of NV12/P010.
     std::vector<uint8_t> data(static_cast<size_t>(pitch) * (HEIGHT + HEIGHT / 2));
     auto store = [&](size_t offset, int value) {
         if (tenBit) {
@@ -137,7 +139,7 @@ std::unique_ptr<GpuBars> makeGpuBars(D3DDevice& d3d, bool tenBit, YuvMatrix matr
     };
     for (int y = 0; y < HEIGHT; ++y) {
         for (int x = 0; x < WIDTH; ++x) {
-            const Yuv c = toYuv(BARS[static_cast<size_t>(x / BAR_WIDTH)], matrix, fullRange, bits);
+            const Yuv c = colour(x, y);
             store(static_cast<size_t>(y) * pitch + static_cast<size_t>(x) * sample, c.y);
             if (x % 2 || y % 2) continue;
             const size_t row = static_cast<size_t>(HEIGHT + y / 2) * pitch;
@@ -145,8 +147,53 @@ std::unique_ptr<GpuBars> makeGpuBars(D3DDevice& d3d, bool tenBit, YuvMatrix matr
             store(row + static_cast<size_t>(x + 1) * sample, c.cr);
         }
     }
+    return data;
+}
 
-    auto bars = std::make_unique<GpuBars>();
+// The same samples as a picture in memory, for the readback path's conversion.
+YuvPicture memoryPicture(const std::vector<uint8_t>& data, bool tenBit, YuvMatrix matrix, bool fullRange) {
+    const int pitch = WIDTH * (tenBit ? 2 : 1);
+    YuvPicture pic;
+    pic.layout = tenBit ? YuvLayout::P010 : YuvLayout::NV12;
+    pic.width = WIDTH;
+    pic.height = HEIGHT;
+    pic.planes[0] = data.data();
+    pic.planes[1] = data.data() + static_cast<size_t>(pitch) * HEIGHT;
+    pic.strides[0] = pic.strides[1] = pitch;
+    pic.matrix = matrix;
+    pic.fullRange = fullRange;
+    return pic;
+}
+
+// Fill a shared frame texture as a decoder fills its pool: the samples go into a plain
+// texture, then are copied into the shared one under its keyed mutex (initial data of a
+// keyed-mutex texture is not published to another device).
+bool fillGpuFrame(D3DDevice& d3d, GpuBars& frame, const std::vector<uint8_t>& data, bool tenBit) {
+    D3D11_TEXTURE2D_DESC desc{};
+    frame.texture->GetDesc(&desc);
+    desc.BindFlags = 0;
+    desc.MiscFlags = 0;
+    const D3D11_SUBRESOURCE_DATA init{data.data(), static_cast<UINT>(WIDTH * (tenBit ? 2 : 1)), 0};
+    ID3D11Texture2D* source = nullptr;
+    if (FAILED(d3d.device->CreateTexture2D(&desc, &init, &source))) return false;
+    IDXGIKeyedMutex* mutex = nullptr;
+    bool ok = SUCCEEDED(frame.texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(&mutex))) &&
+              mutex->AcquireSync(0, INFINITE) == S_OK;
+    if (ok) {
+        d3d.context->CopyResource(frame.texture, source);
+        mutex->ReleaseSync(0);
+        d3d.context->Flush();
+    }
+    if (mutex) mutex->Release();
+    source->Release();
+    return ok;
+}
+
+// An NV12 or P010 texture shared with a keyed mutex (the decoders' pool format), as a GPU
+// picture of `pool`.
+std::unique_ptr<GpuBars> makeGpuFrame(D3DDevice& d3d, bool tenBit, YuvMatrix matrix, bool fullRange,
+                                      uint64_t pool = 0) {
+    auto frame = std::make_unique<GpuBars>();
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = WIDTH;
     desc.Height = HEIGHT;
@@ -155,41 +202,41 @@ std::unique_ptr<GpuBars> makeGpuBars(D3DDevice& d3d, bool tenBit, YuvMatrix matr
     desc.Format = tenBit ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
-    // Filled as a decoder fills its pool: the bars go into a plain texture, then are copied
-    // into the shared one under its keyed mutex (initial data of a keyed-mutex texture is
-    // not published to another device).
-    const D3D11_SUBRESOURCE_DATA init{data.data(), static_cast<UINT>(pitch), 0};
-    ID3D11Texture2D* source = nullptr;
-    if (FAILED(d3d.device->CreateTexture2D(&desc, &init, &source))) return nullptr;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
     HANDLE shared = nullptr;
     IDXGIResource* resource = nullptr;
-    IDXGIKeyedMutex* mutex = nullptr;
-    bool ok = SUCCEEDED(d3d.device->CreateTexture2D(&desc, nullptr, &bars->texture)) &&
-              SUCCEEDED(bars->texture->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(&resource))) &&
-              SUCCEEDED(resource->GetSharedHandle(&shared)) &&
-              SUCCEEDED(bars->texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(&mutex))) &&
-              mutex->AcquireSync(0, INFINITE) == S_OK;
-    if (ok) {
-        d3d.context->CopyResource(bars->texture, source);
-        mutex->ReleaseSync(0);
-    }
-    if (mutex) mutex->Release();
+    const bool ok = SUCCEEDED(d3d.device->CreateTexture2D(&desc, nullptr, &frame->texture)) &&
+                    SUCCEEDED(frame->texture->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(&resource))) &&
+                    SUCCEEDED(resource->GetSharedHandle(&shared));
     if (resource) resource->Release();
-    source->Release();
     if (!ok) return nullptr;
 
-    YuvPicture& pic = bars->picture;
+    YuvPicture& pic = frame->picture;
     pic.layout = tenBit ? YuvLayout::P010 : YuvLayout::NV12;
     pic.width = WIDTH;
     pic.height = HEIGHT;
     pic.matrix = matrix;
     pic.fullRange = fullRange;
-    pic.gpu.texture = bars->texture;
+    pic.gpu.texture = frame->texture;
     pic.gpu.shared = shared;
     pic.gpu.serial = ++d3d.serial;
+    pic.gpu.pool = pool;
     pic.gpu.device = d3d.device;
+    return frame;
+}
+
+std::vector<uint8_t> barsData(bool tenBit, YuvMatrix matrix, bool fullRange) {
+    const int bits = tenBit ? 10 : 8;
+    return planeData(tenBit, [&](int x, int) {
+        return toYuv(BARS[static_cast<size_t>(x / BAR_WIDTH)], matrix, fullRange, bits);
+    });
+}
+
+// Colour bars in an NV12 or P010 texture (the decoders' pool format), as a GPU picture.
+std::unique_ptr<GpuBars> makeGpuBars(D3DDevice& d3d, bool tenBit, YuvMatrix matrix, bool fullRange) {
+    auto bars = makeGpuFrame(d3d, tenBit, matrix, fullRange);
+    if (!bars || !fillGpuFrame(d3d, *bars, barsData(tenBit, matrix, fullRange), tenBit)) return nullptr;
     return bars;
 }
 
@@ -204,6 +251,27 @@ std::vector<uint8_t> readBack(const Texture& texture) {
 
 const char* name(YuvMatrix matrix) {
     return matrix == YuvMatrix::BT601 ? "BT.601" : matrix == YuvMatrix::BT709 ? "BT.709" : "BT.2020";
+}
+
+// RGB channels only (alpha is 255 on every path): the largest difference.
+int worstDifference(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+    int worst = a.size() == b.size() ? 0 : 255;
+    for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
+        if (i % 4 != 3) worst = std::max(worst, std::abs(static_cast<int>(a[i]) - static_cast<int>(b[i])));
+    }
+    return worst;
+}
+
+// `picture` (in memory) through the readback path's conversion.
+std::vector<uint8_t> referenceRgba(const YuvPicture& picture) {
+    Texture reference;
+    if (!reference.createEmpty(WIDTH, HEIGHT, 4)) return {};
+    YuvConverter converter;
+    YuvUploadState state;
+    converter.begin();
+    const bool ok = converter.convert(picture, reference, state);
+    converter.end();
+    return ok ? readBack(reference) : std::vector<uint8_t>{};
 }
 
 // One frame through stage() and finish(); returns the failure reason, empty on success.
@@ -332,6 +400,132 @@ TEST(DxInterop, EachForcedFallbackIsReported) {
     hooks = {};
     hooks.failLockAfter = 0;
     EXPECT_NE(run(hooks).find("lock"), std::string::npos);
+    hooks = {};
+    hooks.failLockDest = &dest;
+    EXPECT_NE(run(hooks).find("lock"), std::string::npos);
+    hooks = {};
+    hooks.adapterMismatch = true;
+    EXPECT_NE(run(hooks).find("another GPU"), std::string::npos);
+}
+
+// Several sources share one interop lock per frame. When one source's planes cannot be
+// locked, only that source falls back: the others are locked on their own and still
+// get their own frame (the lock used to fail for all of them together).
+TEST(DxInterop, OneSourcesLockFailureDemotesOnlyThatSource) {
+    Rig rig;
+    if (!rig.skip.empty()) GTEST_SKIP() << rig.skip;
+    DxInterop interop;
+    if (!interop.available()) GTEST_SKIP() << interop.unavailableReason();
+
+    constexpr int SOURCES = 4;
+    constexpr int BAD = 2;
+    std::vector<std::unique_ptr<GpuBars>> frames;
+    std::vector<std::vector<uint8_t>> samples;
+    std::vector<std::unique_ptr<Texture>> dests;
+    std::vector<std::unique_ptr<DxInteropTarget>> targets;
+    for (int i = 0; i < SOURCES; ++i) {
+        // A different flat colour per source, so a frame delivered to the wrong texture shows.
+        samples.push_back(planeData(false, [i](int, int) { return Yuv{40 + 40 * i, 90 + 20 * i, 160 - 15 * i}; }));
+        frames.push_back(makeGpuFrame(rig.d3d, false, YuvMatrix::BT709, false));
+        ASSERT_NE(frames.back(), nullptr);
+        ASSERT_TRUE(fillGpuFrame(rig.d3d, *frames.back(), samples.back(), false));
+        dests.push_back(std::make_unique<Texture>());
+        ASSERT_TRUE(dests.back()->createEmpty(WIDTH, HEIGHT, 4));
+        targets.push_back(std::make_unique<DxInteropTarget>());
+    }
+    DxInterop::testHooks().failLockDest = dests[BAD].get();
+
+    YuvConverter converter;
+    std::vector<void*> failedKeys;
+    converter.begin();
+    for (int i = 0; i < SOURCES; ++i) {
+        std::string why;
+        ASSERT_TRUE(interop.stage(frames[i]->picture, *targets[i], *dests[i], dests[i].get(), why)) << why;
+    }
+    interop.finish(converter, [&](void* key, const YuvPicture&, const std::string& reason) {
+        EXPECT_NE(reason.find("lock"), std::string::npos) << reason;
+        failedKeys.push_back(key);
+    });
+    converter.end();
+
+    ASSERT_EQ(failedKeys.size(), 1u) << "only the source whose lock fails falls back";
+    EXPECT_EQ(failedKeys[0], dests[BAD].get());
+    for (int i = 0; i < SOURCES; ++i) {
+        if (i == BAD) continue;
+        const std::vector<uint8_t> want = referenceRgba(memoryPicture(samples[i], false, YuvMatrix::BT709, false));
+        EXPECT_LE(worstDifference(readBack(*dests[i]), want), 1) << "source " << i;
+    }
+}
+
+// Decoders reuse a pool of shared textures round-robin, and the renderer keeps each one
+// opened. Every frame must still reach the texture with its own content: distinct
+// frames go through one target across more than one wrap of a 12-texture pool, and each
+// result is compared with the same samples converted from memory. (Skipping the copy for
+// a texture already opened would freeze or loop the picture.)
+TEST(DxInterop, DistinctFramesThroughOneTargetAcrossPoolWraps) {
+    Rig rig;
+    if (!rig.skip.empty()) GTEST_SKIP() << rig.skip;
+    DxInterop interop;
+    if (!interop.available()) GTEST_SKIP() << interop.unavailableReason();
+
+    constexpr int POOL = 12;
+    constexpr int FRAMES = 30;
+    for (bool tenBit : {false, true}) {
+        const int scale = tenBit ? 4 : 1;
+        std::vector<std::unique_ptr<GpuBars>> pool;
+        for (int i = 0; i < POOL; ++i) {
+            pool.push_back(makeGpuFrame(rig.d3d, tenBit, YuvMatrix::BT709, false, 1));
+            ASSERT_NE(pool.back(), nullptr);
+        }
+        Texture dest;
+        ASSERT_TRUE(dest.createEmpty(WIDTH, HEIGHT, 4));
+        DxInteropTarget target;
+        for (int f = 0; f < FRAMES; ++f) {
+            // A gradient that moves with the frame number, so no two frames match.
+            const std::vector<uint8_t> samples = planeData(tenBit, [&](int x, int y) {
+                return Yuv{(20 + (x + 7 * f) % 200) * scale, (60 + (y * 3 + 5 * f) % 120) * scale,
+                           (200 - (x / 2 + 3 * f) % 120) * scale};
+            });
+            GpuBars& frame = *pool[static_cast<size_t>(f % POOL)];
+            ASSERT_TRUE(fillGpuFrame(rig.d3d, frame, samples, tenBit));
+            ASSERT_EQ(deliver(interop, target, dest, frame.picture), "") << "frame " << f;
+            const std::vector<uint8_t> want = referenceRgba(memoryPicture(samples, tenBit, YuvMatrix::BT709, false));
+            ASSERT_LE(worstDifference(readBack(dest), want), 1)
+                << (tenBit ? "P010" : "NV12") << " frame " << f << " (pool texture " << f % POOL
+                << ") is not the frame delivered";
+        }
+    }
+}
+
+// A decoder that makes a new pool (a new stream, a size change) never sends the old
+// pool's textures again: the target lets go of them at the first frame of the new pool
+// instead of keeping them, and their video memory, open.
+TEST(DxInterop, ANewDecoderPoolReleasesTheOldPoolsFrames) {
+    Rig rig;
+    if (!rig.skip.empty()) GTEST_SKIP() << rig.skip;
+    DxInterop interop;
+    if (!interop.available()) GTEST_SKIP() << interop.unavailableReason();
+
+    Texture dest;
+    ASSERT_TRUE(dest.createEmpty(WIDTH, HEIGHT, 4));
+    DxInteropTarget target;
+    const std::vector<uint8_t> samples = barsData(false, YuvMatrix::BT709, false);
+    std::vector<std::unique_ptr<GpuBars>> frames;
+    long oneFrameOpen = 0;
+    for (int i = 0; i < 4; ++i) {
+        frames.push_back(makeGpuFrame(rig.d3d, false, YuvMatrix::BT709, false, 1));
+        ASSERT_NE(frames.back(), nullptr);
+        ASSERT_TRUE(fillGpuFrame(rig.d3d, *frames.back(), samples, false));
+        ASSERT_EQ(deliver(interop, target, dest, frames.back()->picture), "");
+        if (i == 0) oneFrameOpen = DxInterop::liveObjects();
+    }
+    EXPECT_GT(DxInterop::liveObjects(), oneFrameOpen) << "the pool's frames stay opened while it is in use";
+
+    auto next = makeGpuFrame(rig.d3d, false, YuvMatrix::BT709, false, 2);
+    ASSERT_NE(next, nullptr);
+    ASSERT_TRUE(fillGpuFrame(rig.d3d, *next, samples, false));
+    ASSERT_EQ(deliver(interop, target, dest, next->picture), "");
+    EXPECT_EQ(DxInterop::liveObjects(), oneFrameOpen) << "only the new pool's one frame is open";
 }
 
 TEST(DxInterop, ReleasesEveryObjectItMade) {
