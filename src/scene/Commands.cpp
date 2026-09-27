@@ -717,4 +717,59 @@ void CalibrationEditCommand::mergeWith(const Command& other) {
     }
 }
 
+// ============================================================================
+// SliceEditCommand / SetSceneCanvasCommand
+// ============================================================================
+
+SliceEditCommand::SliceEditCommand(const OutputRef& target, std::string description,
+                                   std::string mergeKey, OutputSlices before, OutputSlices after)
+    : target_(target)
+    , description_(std::move(description))
+    , mergeKey_(std::move(mergeKey))
+    , before_(std::move(before))
+    , after_(std::move(after))
+{
+}
+
+bool SliceEditCommand::apply(const OutputSlices& slices) {
+    if (!target_.resolver || !target_.resolver->writeSlices(target_.outputId, slices)) {
+        LOG_WARNING("'{}': output {} no longer exists; skipped", description_,
+                    target_.outputId.toString());
+        return false;
+    }
+    return true;
+}
+
+bool SliceEditCommand::canMergeWith(const Command& other) const {
+    auto* next = dynamic_cast<const SliceEditCommand*>(&other);
+    return next && !mergeKey_.empty() && next->mergeKey_ == mergeKey_ &&
+           target_.sameTarget(next->target_);
+}
+
+void SliceEditCommand::mergeWith(const Command& other) {
+    if (auto* next = dynamic_cast<const SliceEditCommand*>(&other)) {
+        after_ = next->after_;
+    }
+}
+
+SetSceneCanvasCommand::SetSceneCanvasCommand(QuadResolver& resolver, const UUID& sceneId,
+                                             CanvasSetting before, CanvasSetting after)
+    : resolver_(resolver)
+    , sceneId_(sceneId)
+    , before_(before)
+    , after_(after)
+{
+}
+
+bool SetSceneCanvasCommand::apply(const CanvasSetting& setting) {
+    Scene* scene = resolver_.findScene(sceneId_);
+    if (!scene) {
+        LOG_WARNING("'{}': scene {} no longer exists; skipped", getDescription(), sceneId_.toString());
+        return false;
+    }
+    scene->setCanvasSize(setting.size);
+    scene->setCanvasLocked(setting.locked);
+    return true;
+}
+
 } // namespace quadmapper

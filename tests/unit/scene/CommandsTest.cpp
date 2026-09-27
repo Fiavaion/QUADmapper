@@ -7,6 +7,7 @@
 #include "app/GridUndo.hpp"
 #include "core/CommandHistory.hpp"
 #include <glm/gtc/matrix_transform.hpp>
+#include <map>
 
 namespace quadmapper {
 namespace test {
@@ -921,6 +922,135 @@ TEST(SceneObjectListTest, TakeAndInsertKeepOrderAndRefuseDuplicateIds) {
     EXPECT_EQ(scene.getObjects().back()->getId(), a);
     EXPECT_EQ(scene.insertObject(std::make_unique<MeshObject>(b), 0), nullptr);  // id taken
     EXPECT_EQ(scene.getObjects().size(), 2u);
+}
+
+// ---- Output slices and scene canvases (ADR-047 part B) ------------------------------
+
+namespace {
+
+// Outputs' slices by id, as EditorState's resolver reaches OutputManager.
+class FakeSliceOutputs : public OutputResolver {
+public:
+    std::map<UUID, OutputSlices> outputs;
+
+    CalibrationTarget findCalibration(const UUID&) override { return {}; }
+    bool readSlices(const UUID& id, OutputSlices& out) override {
+        auto it = outputs.find(id);
+        if (it == outputs.end()) return false;
+        out = it->second;
+        return true;
+    }
+    bool writeSlices(const UUID& id, const OutputSlices& slices) override {
+        auto it = outputs.find(id);
+        if (it == outputs.end()) return false;
+        it->second = slices;
+        return true;
+    }
+};
+
+OutputSlices withCorner(OutputSlices slices, int corner, Vec2 position) {
+    slices.slices[0].warp.setCorner(corner, position);
+    return slices;
+}
+
+}  // namespace
+
+class SliceCommandsTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        start_.slices.push_back(makeFullCanvasSlice(IVec2(1920, 1080)));
+        start_.canvas = IVec2(1920, 1080);
+        outputs_.outputs[id_] = start_;
+    }
+    OutputRef ref() { return OutputRef{&outputs_, id_}; }
+    const OutputSlices& now() { return outputs_.outputs[id_]; }
+
+    FakeSliceOutputs outputs_;
+    UUID id_ = UUID::generate();
+    OutputSlices start_;
+    CommandHistory history_;
+};
+
+TEST_F(SliceCommandsTest, SliceEditAppliesAndUndoes) {
+    OutputSlices after = start_;
+    after.slices[0].blend[SLICE_EDGE_RIGHT].width = 128.0f;
+    after.slices.push_back(makeFullCanvasSlice(IVec2(1920, 1080)));
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Add slice", "", start_, after));
+    ASSERT_EQ(now().slices.size(), 2u);
+    EXPECT_FLOAT_EQ(now().slices[0].blend[SLICE_EDGE_RIGHT].width, 128.0f);
+    EXPECT_EQ(history_.getUndoDescription(), "Add slice");
+
+    ASSERT_TRUE(history_.undo());
+    ASSERT_EQ(now().slices.size(), 1u);
+    EXPECT_FLOAT_EQ(now().slices[0].blend[SLICE_EDGE_RIGHT].width, 0.0f);
+    ASSERT_TRUE(history_.redo());
+    EXPECT_EQ(now().slices.size(), 2u);
+}
+
+// Nudges (or a drag) of one warp corner are one undo step; another corner is another.
+TEST_F(SliceCommandsTest, EditsOfOneTargetMergeIntoOneStep) {
+    OutputSlices a = withCorner(start_, 1, Vec2(0.99f, 0.0f));
+    OutputSlices b = withCorner(a, 1, Vec2(0.98f, 0.0f));
+    OutputSlices c = withCorner(b, 1, Vec2(0.97f, 0.01f));
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Move", "corner 1", start_, a));
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Move", "corner 1", a, b));
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Move", "corner 1", b, c));
+    EXPECT_EQ(history_.getUndoCount(), 1u);
+    EXPECT_EQ(now().slices[0].warp.getCorners()[1], Vec2(0.97f, 0.01f));
+
+    OutputSlices d = withCorner(c, 2, Vec2(0.9f, 0.9f));
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Move", "corner 2", c, d));
+    EXPECT_EQ(history_.getUndoCount(), 2u);
+    // An unkeyed edit never merges.
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Reset", "", d, start_));
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Reset", "", start_, start_));
+    EXPECT_EQ(history_.getUndoCount(), 4u);
+
+    history_.undo();
+    history_.undo();
+    history_.undo();  // corner 2
+    EXPECT_EQ(now().slices[0].warp.getCorners()[2], Vec2(1.0f, 1.0f));
+    EXPECT_EQ(now().slices[0].warp.getCorners()[1], Vec2(0.97f, 0.01f));
+    history_.undo();  // the whole corner-1 run
+    EXPECT_TRUE(isIdentityWarp(now().slices[0].warp));
+}
+
+TEST_F(SliceCommandsTest, EditsOfTwoOutputsDoNotMerge) {
+    const UUID other = UUID::generate();
+    outputs_.outputs[other] = start_;
+    OutputSlices a = withCorner(start_, 0, Vec2(0.01f, 0.0f));
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Move", "corner 0", start_, a));
+    history_.execute(std::make_unique<SliceEditCommand>(OutputRef{&outputs_, other}, "Move",
+                                                        "corner 0", start_, a));
+    EXPECT_EQ(history_.getUndoCount(), 2u);
+}
+
+TEST_F(SliceCommandsTest, EditOfARemovedOutputIsASafeNoOp) {
+    OutputSlices a = withCorner(start_, 0, Vec2(0.01f, 0.0f));
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Move", "", start_, a));
+    outputs_.outputs.clear();
+    EXPECT_FALSE(history_.undo());
+    // Never recorded when the output is already gone.
+    history_.execute(std::make_unique<SliceEditCommand>(ref(), "Move", "", start_, a));
+    EXPECT_FALSE(history_.canUndo());
+}
+
+TEST_F(SceneCommandsTest, SetSceneCanvasCommandSetsSizeAndLockAndUndoes) {
+    const Vec2 corner = manager().createQuad()->getGeometry().getCorners()[2];
+    history_->execute(std::make_unique<SetSceneCanvasCommand>(
+        resolver_, scene().getId(), CanvasSetting{IVec2(1920, 1080), false},
+        CanvasSetting{IVec2(3840, 1080), true}));
+    EXPECT_EQ(scene().getCanvasSize(), IVec2(3840, 1080));
+    EXPECT_TRUE(scene().isCanvasLocked());
+    // Quads are normalized: they keep their place on the resized canvas.
+    EXPECT_EQ(manager().getQuads().front()->getGeometry().getCorners()[2], corner);
+
+    ASSERT_TRUE(history_->undo());
+    EXPECT_EQ(scene().getCanvasSize(), IVec2(1920, 1080));
+    EXPECT_FALSE(scene().isCanvasLocked());
+
+    scenes_.clear();
+    EXPECT_FALSE(history_->redo()) << "the scene is gone: a logged no-op";
 }
 
 } // namespace test

@@ -248,6 +248,7 @@ std::unique_ptr<Scene> Scene::duplicate(std::unordered_map<UUID, UUID>* quadIdMa
     copy->name_ = name_;
     copy->viewState_ = viewState_;
     copy->canvasSize_ = canvasSize_;
+    copy->canvasLocked_ = canvasLocked_;
     copy->nextGroupNumber_ = nextGroupNumber_;
 
     std::unordered_map<UUID, UUID> quadIds;

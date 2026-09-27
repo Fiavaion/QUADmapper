@@ -75,6 +75,10 @@ struct MonitorResolution {
  * It handles window creation with shared OpenGL contexts, monitor enumeration,
  * and perform mode transitions.
  */
+// The blend test pattern's quads (ADR-047 §3), in normalized canvas space: white
+// grid lines and two solid white bands, drawn over opaque black.
+std::vector<Quad> makeBlendTestPattern();
+
 class OutputManager {
 public:
     OutputManager();
@@ -417,6 +421,7 @@ public:
      * default slicing (isDefaultSlicing), the canvas takes the output's effective
      * (rotated) resolution, so the picture is not resampled and the editor has the
      * projector's aspect. Quads are normalized, so the projector shows the same.
+     * A canvas the operator set (Scene::isCanvasLocked) is never adopted.
      * Returns true when the canvas size changed.
      */
     bool routeScene(OutputWindow& output, Scene* scene,
@@ -427,7 +432,8 @@ public:
      * (the whole canvas, no warp, no blend), whose canvas is that output's effective
      * resolution, keeps following that resolution when it changes (a resolution or
      * rotation edit), as the editor canvas did before canvases (ADR-047 part A).
-     * Every other scene keeps its canvas size. Returns true when a canvas changed in
+     * Every other scene, and every scene whose canvas the operator set
+     * (Scene::isCanvasLocked), keeps its canvas size. Returns true when a canvas changed in
      * a way the show should be saved with. A change that comes with an output going
      * fullscreen or back (F11 enter/exit sets the monitor's mode, then restores the
      * windowed size) is followed but not reported: it is undone on exit.
@@ -443,6 +449,18 @@ public:
      * rotation all outputs showing the scene share (unturned when they differ).
      */
     const Framebuffer* sceneCanvas(const UUID& sceneId) const;
+
+    /** The rotation sceneCanvas(sceneId) was drawn in (R0 when it has none). */
+    Rotation sceneCanvasRotation(const UUID& sceneId) const;
+
+    /**
+     * Blend test pattern (ADR-047 §3): while on, every canvas is drawn as a grid of
+     * white lines on black with solid white bands across the middle instead of its
+     * scene's quads, so the outputs show it through their slices and the overlaps can
+     * be judged by eye. Session state: never saved with the show.
+     */
+    void setBlendTestPattern(bool on) { blendTestPattern_ = on; }
+    bool isBlendTestPattern() const { return blendTestPattern_; }
 
     /**
      * Like renderOutputFrames, but every output's frame is one fullscreen calibration
@@ -547,6 +565,8 @@ private:
         IVec2 failedSize = IVec2(0, 0);  // texture size that could not be allocated
     };
     std::unordered_map<UUID, SceneCanvas> canvases_;
+    bool blendTestPattern_ = false;
+    std::vector<Quad> testPattern_;  // built on first use; stable ids for the renderer cache
     std::vector<UUID> canvasScenes_;
     GLint maxTextureSize_ = 0;  // GL_MAX_TEXTURE_SIZE, queried on the first canvas
 

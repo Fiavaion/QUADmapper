@@ -23,10 +23,17 @@ Last Updated: 2026-09-26 (Session 23)
   v3.4 fixture's left projector fades over the overlap on the second monitor; an old keystone
   show projects as in the editor. Bench still needs a quiet-machine rerun (see ADR-047
   Amendment 1).
-- **QM-121 TODO** — ADR-047 part B: Output-panel slice editor (Tab/arrows/Shift/Alt on the
-  warp corners), auto-blend of facing edges + blend test pattern, canvas size editing in the
-  Scenes panel, scene crossfades (§5 fade times, OSC `/qm/scene/take i n f`, audio
-  cross-gain), TD-12 per-output presentation (§6), calibration with non-identity slices.
+- **QM-121 B1 DONE** — ADR-047 part B1 (editor side, Amendment 3): slice editor in the
+  Properties panel for the selected output (list/add/remove/select, input rect, warp corners,
+  blend edges, black level; every edit an id-keyed undo step, same-target edits merge); warp
+  corners edited on the canvas with the quad keyboard model (Tab/Shift+Tab, arrows, Shift 10×,
+  Alt 0.1×) in an explicit slice-warp mode; Auto-blend of facing edges (one undo step); blend
+  test pattern (session only, orange banner while on); canvas size in the Scenes panel with
+  slice rescale and the canvas lock (`scenes[].canvasLocked`, routing never overwrites a set
+  size); calibration restricted to outputs with the default slicing (TD-29). GUI-checked on
+  the v3.4 fixture.
+- **QM-121 B2 TODO** — ADR-047 part B2: scene crossfades (§5 fade times, OSC
+  `/qm/scene/take i n f`, audio cross-gain), TD-12 per-output presentation (§6).
 
 ## Session 23 (2026-09-26) — PRD MVP gaps, audio, OSC/MIDI (committed on dev, not pushed)
 

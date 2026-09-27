@@ -6,6 +6,8 @@
 #include "Quad.hpp"
 #include "MeshObject.hpp"
 #include "CalibrationSession.hpp"
+#include "Scene.hpp"
+#include "Slice.hpp"
 #include <functional>
 #include <type_traits>
 #include <string>
@@ -466,10 +468,28 @@ struct CalibrationTarget {
     explicit operator bool() const { return points != nullptr && projector != nullptr; }
 };
 
+// An output's slices and the canvas size they were made for (ADR-047).
+struct OutputSlices {
+    std::vector<Slice> slices;
+    IVec2 canvas = IVec2(0, 0);
+};
+
 class OutputResolver {
 public:
     virtual ~OutputResolver() = default;
     virtual CalibrationTarget findCalibration(const UUID& outputId) = 0;
+    // The output's slices; false when there is no such output (or the resolver knows
+    // no slices, as a calibration-only resolver does).
+    virtual bool readSlices(const UUID& outputId, OutputSlices& out) {
+        (void)outputId;
+        (void)out;
+        return false;
+    }
+    virtual bool writeSlices(const UUID& outputId, const OutputSlices& slices) {
+        (void)outputId;
+        (void)slices;
+        return false;
+    }
 };
 
 // Stable handle to one output's calibration.
@@ -507,6 +527,62 @@ private:
     // The edit is already on the output when the command is recorded (or merged): the
     // first execute only checks the output exists, so a drag in progress is not reset.
     bool firstExecute_ = true;
+};
+
+// ---- Output slices and scene canvases (ADR-047 part B) ----------------------------
+
+// One slice edit on one output (add, remove, input rectangle, warp corner, blend
+// edge, black level, auto-blend) as the output's whole slice list before and after.
+// Consecutive edits with the same non-empty mergeKey on the same output merge into one
+// undo step (a drag, a run of arrow-key nudges on one warp corner). A removed or
+// re-created output resolves to nothing and the step is a logged no-op.
+class SliceEditCommand : public Command {
+public:
+    SliceEditCommand(const OutputRef& target, std::string description, std::string mergeKey,
+                     OutputSlices before, OutputSlices after);
+
+    bool execute() override { return apply(after_); }
+    bool undo() override { return apply(before_); }
+    std::string getDescription() const override { return description_; }
+
+    bool canMergeWith(const Command& other) const override;
+    void mergeWith(const Command& other) override;
+
+private:
+    bool apply(const OutputSlices& slices);
+
+    OutputRef target_;
+    std::string description_;
+    std::string mergeKey_;
+    OutputSlices before_;
+    OutputSlices after_;
+};
+
+// A scene's canvas size and whether the operator fixed it (Scene::isCanvasLocked).
+struct CanvasSetting {
+    IVec2 size = IVec2(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+    bool locked = false;
+};
+
+// Set a scene's canvas setting. Quads are normalized, so they keep their place; the
+// slices of the outputs showing the scene are rescaled by SliceEditCommands recorded
+// in the same compound step (EditorState::setSceneCanvas).
+class SetSceneCanvasCommand : public Command {
+public:
+    SetSceneCanvasCommand(QuadResolver& resolver, const UUID& sceneId, CanvasSetting before,
+                          CanvasSetting after);
+
+    bool execute() override { return apply(after_); }
+    bool undo() override { return apply(before_); }
+    std::string getDescription() const override { return "Canvas size"; }
+
+private:
+    bool apply(const CanvasSetting& setting);
+
+    QuadResolver& resolver_;
+    UUID sceneId_;
+    CanvasSetting before_;
+    CanvasSetting after_;
 };
 
 } // namespace quadmapper

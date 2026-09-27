@@ -1189,6 +1189,31 @@ TEST(ProjectFixtureTest, V34FixtureKeepsCanvasRoutingAndBlendedSlices) {
     EXPECT_EQ(right.id.toString(), "5a1b2c3d-0000-4000-8000-0000000000a2");
 }
 
+// scenes[].canvasLocked (ADR-047 Amendment 3): absent in files written before it, so
+// false on load (the v3.4 fixture); written only when set, and round-trips.
+TEST(ProjectFixtureTest, CanvasLockDefaultsOffAndRoundTrips) {
+    auto first = ProjectSerializer::load(fs::path(QM_PROJECT_FIXTURES_DIR) / "v3.4-canvas-slices.qmap");
+    ASSERT_TRUE(first.isSuccess());
+    Project p = first.value();
+    ASSERT_EQ(p.getScenes().size(), 1u);
+    EXPECT_FALSE(p.getScenes()[0].canvasLocked);
+
+    ProjectSerializer serializer;
+    std::string json = serializer.serialize(p);
+    EXPECT_EQ(json.find("canvasLocked"), std::string::npos) << "not written while off";
+
+    p.getScenes()[0].canvasLocked = true;
+    p.getScenes()[0].canvas = IVec2(3000, 1000);
+    json = serializer.serialize(p);
+    EXPECT_NE(json.find("\"canvasLocked\": true"), std::string::npos);
+    Project back;
+    ASSERT_TRUE(serializer.deserialize(json, back).isSuccess());
+    EXPECT_TRUE(back.getScenes()[0].canvasLocked);
+    EXPECT_EQ(back.getScenes()[0].canvas, IVec2(3000, 1000));
+    // Slices are saved as they are; the lock says nothing about them.
+    EXPECT_EQ(back.getOutputs()[1].slices[0].input, (CanvasRect{1280.0f, 0.0f, 1920.0f, 1080.0f}));
+}
+
 // Round trip of the canvas model: canvas, routing (two outputs on one scene) and every
 // slice field, including a grid warp, survive save -> load unchanged.
 TEST(ProjectFixtureTest, CanvasSlicesRoundTrip) {

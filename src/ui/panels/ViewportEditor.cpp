@@ -5,6 +5,7 @@
 #include "app/TextureResolve.hpp"
 #include "app/GridUndo.hpp"
 #include "app/MeshEditKeys.hpp"
+#include "app/SliceEditing.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGeometry.hpp"
@@ -120,6 +121,128 @@ void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mo
     }
 }
 
+// Slice warp editing on the canvas (ADR-047 part B): the canvas is the output's frame,
+// and the selected slice's warp corners are dragged and nudged with the same press
+// rule and keyboard model as a quad's corners. A drag is one undo step on release.
+void editSliceWarp(EditorState& es, OutputWindow& output, const Vec2& mouseNorm, bool mouseDown,
+                   bool canvasPress, Project* project) {
+    auto& slices = output.getSlices();
+    const int index = findSliceIndex(slices, es.selectedSliceId);
+    if (index < 0) return;
+    QuadGeometry& warp = slices[static_cast<size_t>(index)].warp;
+    const auto& corners = warp.getCorners();
+    constexpr float HIT_RADIUS = 0.015f;  // as for quad corners
+    int& dragged = es.sliceWarpDraggedCorner;
+    if (dragged >= 0) {
+        if (mouseDown) {
+            const Vec2 pos = es.sliceWarpDragStartPos + (mouseNorm - es.sliceWarpDragStartMouse);
+            if (pos != corners[static_cast<size_t>(dragged)]) {
+                warp.setCorner(dragged, pos);
+                if (project) project->setModified(true);
+            }
+        } else {
+            if (corners[static_cast<size_t>(dragged)] != es.sliceWarpDragStartPos) {
+                OutputSlices after{slices, output.getSlicesCanvas()};
+                es.commandHistory.execute(std::make_unique<SliceEditCommand>(
+                    es.outputRef(output.getId()), "Move slice warp corner",
+                    sliceWarpCornerKey(es.selectedSliceId, dragged), es.sliceWarpDragBefore,
+                    std::move(after)));
+            }
+            es.sliceWarpSelectedCorner = dragged;
+            dragged = -1;
+        }
+    } else {
+        es.sliceWarpHoveredCorner = -1;
+        float closest = HIT_RADIUS;
+        for (int i = 0; i < 4; ++i) {
+            const float d = glm::length(mouseNorm - corners[static_cast<size_t>(i)]);
+            if (d < closest) {
+                closest = d;
+                es.sliceWarpHoveredCorner = i;
+            }
+        }
+        if (canvasPress && es.sliceWarpHoveredCorner >= 0) {
+            dragged = es.sliceWarpSelectedCorner = es.sliceWarpHoveredCorner;
+            es.sliceWarpDragStartMouse = mouseNorm;
+            es.sliceWarpDragStartPos = corners[static_cast<size_t>(dragged)];
+            es.sliceWarpDragBefore = OutputSlices{slices, output.getSlicesCanvas()};
+        }
+    }
+    if (dragged < 0 && canvasOwnsEditingKeys(true) && applySliceWarpKeys(readCanvasKeys(), es, output)) {
+        if (project) project->setModified(true);
+    }
+}
+
+// A throwaway quad carrying `geometry`, for the Renderer's outline and handle drawing.
+Quad overlayQuad(const UUID& id, const QuadGeometry& geometry) {
+    Quad quad(id);
+    quad.getGeometry() = geometry;
+    return quad;
+}
+
+// The output's frame on the canvas while its slice warp is edited: its slices of the
+// scene's canvas as the projector gets them (from the canvas the output frames were
+// drawn from), every slice's warp outline, and the selected slice's corner handles.
+void drawSliceWarpCanvas(EditorState& es, Renderer& renderer, const OutputManager& outputs,
+                         const OutputWindow& output) {
+    const Scene* shown = OutputManager::sceneForOutput(es.scenes, output);
+    const Framebuffer* canvas = shown ? outputs.sceneCanvas(shown->getId()) : nullptr;
+    if (canvas) {
+        GLint prevBlend[4] = {GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA};
+        glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlend[0]);
+        glGetIntegerv(GL_BLEND_DST_RGB, &prevBlend[1]);
+        glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlend[2]);
+        glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlend[3]);
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+        for (const Slice& slice : output.getSlices()) {
+            renderer.renderSlice(slice, canvas->colorTexture(), shown->getCanvasSize(),
+                                 outputs.sceneCanvasRotation(shown->getId()),
+                                 output.getEffectiveResolution());
+        }
+        renderer.endFrame();
+        glBlendFuncSeparate(static_cast<GLenum>(prevBlend[0]), static_cast<GLenum>(prevBlend[1]),
+                            static_cast<GLenum>(prevBlend[2]), static_cast<GLenum>(prevBlend[3]));
+    }
+    for (const Slice& slice : output.getSlices()) {
+        const bool selected = slice.id == es.selectedSliceId;
+        const Quad outline = overlayQuad(slice.id, slice.warp);
+        renderer.renderQuadOutline(outline, selected ? glm::vec4(1.0f, 0.75f, 0.2f, 1.0f)
+                                                     : glm::vec4(0.6f, 0.6f, 0.65f, 0.8f),
+                                   selected ? 2.0f : 1.0f);
+        if (selected) {
+            renderer.renderCornerHandles(outline, es.sliceWarpHoveredCorner,
+                                         es.sliceWarpDraggedCorner, es.sliceWarpSelectedCorner);
+        }
+    }
+}
+
+// Outlines of the selected output's slice input rectangles on the scene canvas, while
+// the slice editor shows that output (an output selected in the Inspector) and it shows
+// the active scene. The selected slice is drawn brighter.
+void drawSliceInputOverlay(EditorState& es, Renderer& renderer, OutputManager* outputs) {
+    if (!outputs || es.currentSelectionType != EditorState::SelectionType::Output ||
+        !es.outputPanel.hasSelection()) {
+        return;
+    }
+    const OutputWindow* output = outputs->getOutput(es.outputPanel.getSelectedOutputId());
+    if (!output || output->getSceneId() != es.activeScene().getId()) return;
+    const IVec2 size = es.activeScene().getCanvasSize();
+    const float w = static_cast<float>(size.x);
+    const float h = static_cast<float>(size.y);
+    for (const Slice& slice : output->getSlices()) {
+        const CanvasRect& r = slice.input;
+        QuadGeometry rect;
+        rect.setCorners({Vec2(r.x / w, r.y / h), Vec2((r.x + r.width) / w, r.y / h),
+                         Vec2((r.x + r.width) / w, (r.y + r.height) / h),
+                         Vec2(r.x / w, (r.y + r.height) / h)});
+        const bool selected = slice.id == es.selectedSliceId;
+        renderer.renderQuadOutline(overlayQuad(slice.id, rect),
+                                   selected ? glm::vec4(1.0f, 0.75f, 0.2f, 1.0f)
+                                            : glm::vec4(1.0f, 0.75f, 0.2f, 0.45f),
+                                   selected ? 2.0f : 1.0f);
+    }
+}
+
 }  // namespace
 
 void ViewportEditor::render(EditorContext& ctx) {
@@ -171,6 +294,14 @@ void ViewportEditor::render(EditorContext& ctx) {
     OutputWindow* canvasOutput = nullptr;
     const IVec2 canvasSize = es.activeScene().getCanvasSize();
     canvasAspect = static_cast<float>(canvasSize.x) / static_cast<float>(canvasSize.y);
+    // Slice warp editing shows that output's frame instead (its effective size).
+    OutputWindow* warpOutput = sliceWarpOutput(es, m_outputManager);
+    if (warpOutput) {
+        const IVec2 frame = warpOutput->getEffectiveResolution();
+        if (frame.x > 0 && frame.y > 0) {
+            canvasAspect = static_cast<float>(frame.x) / static_cast<float>(frame.y);
+        }
+    }
     if (m_outputManager) {
         // The projector being calibrated when it shows this scene, else the first
         // output showing it.
@@ -259,6 +390,18 @@ void ViewportEditor::render(EditorContext& ctx) {
         // start only on such a press, so a slider or a bin clip dragged across a handle
         // never grabs it and clicks on overlays above the canvas never reselect quads.
         const bool canvasPress = mousePressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
+
+        // Slice warp editing: the canvas edits the selected slice's warp corners, and
+        // quad vertices stay untouched (as while calibrating).
+        if (warpOutput) {
+            editSliceWarp(es, *warpOutput, mouseNorm, mouseDown, canvasPress, m_project);
+            cornerHoveredVertex = cornerDraggedVertex = -1;
+            meshHoveredVertex = meshDraggedVertex = -1;
+            es.meshHoveredHandle = es.meshDraggedHandle = -1;
+            es.bezierHovered = es.bezierDragged = -1;
+            snapActive = false;
+            return;
+        }
 
         // Calibrating: the canvas edits the calibration points of the projector it shows
         // (when it shows the one being calibrated), and quad vertices stay untouched.
@@ -499,30 +642,11 @@ void ViewportEditor::render(EditorContext& ctx) {
                     es.bezierHovered = -1;
                 }
 
-                // Keyboard controls for corners (Tab cycles TL, TR, BR, BL; arrows nudge)
-                ImGuiIO& cornerIO = ImGui::GetIO();
-                if (canvasOwnsEditingKeys(true)) {
-                    if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
-                        cornerSelectedVertex = cycleVertex(cornerSelectedVertex, 4, cornerIO.KeyShift);
-                    }
-
-                    if (cornerSelectedVertex >= 0 && cornerSelectedVertex < 4) {
-                        const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
-                        const bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
-                        const bool left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true);
-                        const bool right = ImGui::IsKeyPressed(ImGuiKey_RightArrow, true);
-                        const Vec2 oldPos = corners[cornerSelectedVertex];
-                        const Vec2 pos = oldPos + nudgeDelta(up, down, left, right,
-                                             nudgeStep(cornerIO.KeyShift, cornerIO.KeyAlt));
-
-                        if (up || down || left || right) {
-                            // Command applies the move; consecutive nudges of the same
-                            // corner merge into one undo step (CommandHistory::execute).
-                            es.commandHistory.execute(std::make_unique<MoveCornerCommand>(
-                                es.quadRef(*selectedQuad), cornerSelectedVertex, oldPos, pos));
-                            m_project->setModified(true);
-                        }
-                    }
+                // Keyboard: Tab cycles TL, TR, BR, BL; arrows nudge (MeshEditKeys.hpp).
+                if (canvasOwnsEditingKeys(true) &&
+                    applyCornerKeys(readCanvasKeys(), es.quadRef(*selectedQuad), geometry,
+                                    es.commandHistory, cornerSelectedVertex)) {
+                    m_project->setModified(true);
                 }
 
                 // Reset mesh state when in corner mode
@@ -662,6 +786,14 @@ void ViewportEditor::render(EditorContext& ctx) {
     glEnable(GL_SCISSOR_TEST);
     glScissor(vpX, vpY, vpW, vpH);
 
+    // Restore full-framebuffer viewport + drop scissor so the output frames and
+    // ImGui render over the whole window unaffected; re-enable depth test.
+    const auto restoreViewport = [&]() {
+        glDisable(GL_SCISSOR_TEST);
+        glViewport(0, 0, fbWidth, fbHeight);
+        glEnable(GL_DEPTH_TEST);
+    };
+
     // Render all quads
     if (m_renderer) {
         m_renderer->setViewTransform(glm::vec2(viewScaleX, viewScaleY),
@@ -670,6 +802,15 @@ void ViewportEditor::render(EditorContext& ctx) {
 
         // Canvas frame border so the projector-frame bounds are visible.
         m_renderer->renderCanvasBorder(glm::vec4(0.45f, 0.45f, 0.5f, 0.9f), 1.0f);
+
+        // Slice warp editing: the output's frame and the warp handles, no quads.
+        if (warpOutput && m_outputManager) {
+            drawSliceWarpCanvas(es, *m_renderer, *m_outputManager, *warpOutput);
+            m_renderer->endFrame();
+            m_renderer->resetViewTransform();
+            restoreViewport();
+            return;
+        }
 
         // Resolve every quad's texture through the shared builder: image via
         // TextureBinding::mediaId -> SourceManager, video via the legacy wrapper
@@ -684,6 +825,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                                       texturePtrs);
 
         m_renderer->renderQuads(quadManager, texturePtrs);
+        drawSliceInputOverlay(es, *m_renderer, m_outputManager);
 
         // Render handles for selected quad based on mode (none while calibrating, when
         // the canvas edits calibration points instead).
@@ -717,14 +859,7 @@ void ViewportEditor::render(EditorContext& ctx) {
         m_renderer->endFrame();
         m_renderer->resetViewTransform();
     }
-
-    // Restore full-framebuffer viewport + drop scissor so the output frames and
-    // ImGui render over the whole window unaffected.
-    glDisable(GL_SCISSOR_TEST);
-    glViewport(0, 0, fbWidth, fbHeight);
-
-    // Re-enable depth test
-    glEnable(GL_DEPTH_TEST);
+    restoreViewport();
 }
 
 }  // namespace quadmapper

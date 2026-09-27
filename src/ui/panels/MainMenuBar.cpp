@@ -177,8 +177,9 @@ void MainMenuBar::render(EditorContext& ctx) {
             }
         }
         const bool calibrating = !es.calibratingOutputId.isNull();
+        // Not an output with edited slices (EditorState::canCalibrate, ADR-047).
         if (ImGui::MenuItem("Calibrate Projector...", nullptr, calibrating,
-                            calibrating || toCalibrate != nullptr)) {
+                            calibrating || (toCalibrate && es.canCalibrate(*toCalibrate)))) {
             if (calibrating) {
                 es.endCalibration();
             } else {

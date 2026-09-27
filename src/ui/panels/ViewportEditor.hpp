@@ -21,6 +21,9 @@ struct EditorContext;
 // While a projector is being calibrated (EditorState::calibratingOutputId, ADR-052)
 // quad editing is suspended and, when the canvas shows that projector, the same mouse
 // and keyboard model places, drags and nudges its calibration points instead.
+// While a slice warp is edited (EditorState::sliceWarpOutputId, ADR-047) the canvas
+// shows that output's frame and the same model moves the slice's warp corners; the
+// selected output's slice input rectangles are outlined on the scene canvas otherwise.
 //
 // Does NOT inherit from Panel — panels draw ImGui windows;
 // this draws via the Renderer and toggles GL depth state. It is stateless: all

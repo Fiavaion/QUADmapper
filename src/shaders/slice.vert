@@ -6,11 +6,16 @@ layout(location = 1) in vec3 a_TexCoord;  // (u*q, v*q, q): the slice's own [0,1
 
 out vec3 v_TexCoordQ;
 
+// Editor view transform (ADR-041), as in quad.vert: the slice editor draws an output's
+// slices on the editor canvas. Identity (1,1)/(0,0) for the output frames.
+uniform vec2 u_ViewScale;
+uniform vec2 u_ViewOffset;
+
 // Output rotation (QM-087): clockwise quarter turns (0-3), as in quad.vert.
 uniform int u_OutputRotation;
 
 void main() {
-    vec2 ndc = a_Position * 2.0 - 1.0;
+    vec2 ndc = (a_Position * u_ViewScale + u_ViewOffset) * 2.0 - 1.0;
     ndc.y = -ndc.y;
     if (u_OutputRotation == 1) {
         ndc = vec2(ndc.y, -ndc.x);

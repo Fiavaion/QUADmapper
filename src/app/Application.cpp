@@ -8,6 +8,7 @@
 #include "ReplaceMedia.hpp"
 #include "MeshLoads.hpp"
 #include "UndoRouting.hpp"
+#include "SliceEditing.hpp"
 #include "OutputPersistence.hpp"
 #include "ControlBindings.hpp"
 #include "../control/ExternalControl.hpp"
@@ -192,6 +193,7 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
         sd.id = sc.getId();
         sd.name = sc.getName();
         sd.canvas = sc.getCanvasSize();
+        sd.canvasLocked = sc.isCanvasLocked();
         const SceneViewState& vs = sc.getViewState();
         sd.view.pan = vs.panOffset;
         sd.view.zoom = vs.zoomLevel;
@@ -327,6 +329,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         auto scene = std::make_unique<Scene>(sd.id);
         scene->setName(sd.name);
         scene->setCanvasSize(sd.canvas);
+        scene->setCanvasLocked(sd.canvasLocked);
         SceneViewState& vs = scene->getViewState();
         vs.panOffset = sd.view.pan;
         vs.zoomLevel = sd.view.zoom;
@@ -1174,19 +1177,10 @@ void Application::render() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
-    {
-        // The canvas takes Tab/arrows for the selected quad's vertices or, while
-        // calibrating the projector it shows, for the calibration points (ADR-052).
-        bool canvasKeys = quadManager.getPrimarySelectedQuad() != nullptr;
-        if (!es.calibratingOutputId.isNull()) {
-            const OutputWindow* calibrated =
-                m_outputManager ? m_outputManager->getOutput(es.calibratingOutputId) : nullptr;
-            canvasKeys = calibrated &&
-                         calibrated->getSceneId() == es.activeScene().getId() &&
-                         !calibrated->getCalibrationPoints().empty();
-        }
-        claimCanvasEditingKeys(canvasKeys);
-    }
+    // The canvas takes Tab/arrows for the selected quad's vertices or, while
+    // calibrating the projector it shows, for the calibration points (ADR-052), or,
+    // while a slice warp is edited, for its corners (ADR-047).
+    claimCanvasEditingKeys(canvasKeyOwner(es, m_outputManager.get()) != CanvasKeyOwner::None);
 
     // On-canvas viewport: the corner-pin / mesh-edit warp interaction, then every
     // quad drawn to the main GL framebuffer. Runs right after NewFrame(), ahead of
@@ -1378,9 +1372,11 @@ void Application::render() {
     // quads behind it, Ctrl+S must not bypass it). F11/Esc are handled separately.
     const bool editingKeys = !io.WantTextInput &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-    // While calibrating a projector the quads are hidden and not being edited, so the
-    // quad shortcuts (undo, select all, z-order, mesh) must not reach them.
-    const bool quadKeys = editingKeys && es.calibratingOutputId.isNull();
+    // While calibrating a projector or editing a slice warp the quads are hidden and
+    // not being edited, so the quad shortcuts (select all, Delete, z-order, mesh) must
+    // not reach them.
+    const bool quadKeys = editingKeys && es.calibratingOutputId.isNull() &&
+                          es.sliceWarpOutputId.isNull();
     if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         saveProject();
     }
@@ -1421,6 +1417,8 @@ void Application::render() {
                                            es.calibration.selected);
                 m_project->setModified(true);
             }
+        } else if (!quadKeys) {
+            // Slice warp editing: the quads are hidden, Delete leaves them alone.
         } else if (quadManager.hasSelection()) {
             // Selecting an object deselects the quads, so a quad selection is newer.
             es.deleteSelectedQuads();
@@ -1465,10 +1463,13 @@ void Application::render() {
     // While calibrating, the editor's Esc belongs to calibration: it cancels a pick in
     // progress, else leaves calibration, and never also leaves perform mode (Esc on an
     // output window still does).
-    // Esc also cancels a pending MIDI learn, in the same press.
+    // Esc also cancels a pending MIDI learn, in the same press. Slice warp editing
+    // takes Esc the same way: it leaves warp editing.
     if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         if (m_externalControl) m_externalControl->dispatcher().cancelLearn();
-        if (es.calibratingOutputId.isNull()) {
+        if (!es.sliceWarpOutputId.isNull()) {
+            es.endSliceWarp();
+        } else if (es.calibratingOutputId.isNull()) {
             m_outputManager->handleEscapeKey();
         } else if (es.calibration.pick != CalibrationSession::Pick::None) {
             es.calibration.cancelPick();
@@ -1698,6 +1699,7 @@ void Application::render() {
     }
 
     if (m_outputManager && m_outputManager->isBlackout()) drawBlackoutBanner();
+    if (m_outputManager && m_outputManager->isBlendTestPattern()) drawBlendTestPatternBanner();
 
     // Demo window for testing ImGui (can be removed later)
     static bool showDemo = false;
@@ -2006,6 +2008,28 @@ void Application::drawBlackoutBanner() {
                   IM_COL32(255, 255, 255, 255), title);
     draw->AddText(ImVec2(origin.x + (width - detailSize.x) * 0.5f, origin.y + 8.0f + titleSize.y),
                   IM_COL32(255, 255, 255, 255), detail);
+}
+
+// While the blend test pattern is on (ADR-047 §3), a banner across the bottom of the
+// canvas says so: the projectors show the pattern, not the show.
+void Application::drawBlendTestPatternBanner() {
+    const EditorState& es = *m_editorState;
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const bool haveCanvas = es.canvasRegionSize.x > 1.0f && es.canvasRegionSize.y > 1.0f;
+    const char* text = "BLEND TEST PATTERN ON  -  the projectors show the test pattern, not the show";
+    const ImVec2 textSize = ImGui::CalcTextSize(text);
+    const float height = textSize.y + 12.0f;
+    const float width = haveCanvas ? es.canvasRegionSize.x : viewport->WorkSize.x;
+    const float bottom = haveCanvas ? es.canvasRegionPos.y + es.canvasRegionSize.y
+                                    : viewport->WorkPos.y - viewport->Pos.y + viewport->WorkSize.y;
+    const ImVec2 origin(viewport->Pos.x + (haveCanvas ? es.canvasRegionPos.x : 0.0f),
+                        viewport->Pos.y + bottom - height - 8.0f);
+
+    ImDrawList* draw = ImGui::GetForegroundDrawList(viewport);
+    draw->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + height), IM_COL32(230, 150, 0, 235));
+    draw->AddRect(origin, ImVec2(origin.x + width, origin.y + height), IM_COL32(0, 0, 0, 255), 0.0f, 0, 2.0f);
+    draw->AddText(ImVec2(origin.x + (width - textSize.x) * 0.5f, origin.y + 6.0f),
+                  IM_COL32(0, 0, 0, 255), text);
 }
 
 void Application::saveProject() {

@@ -1,8 +1,8 @@
 #pragma once
 
-// The mesh-edit keyboard, the success-metric vertex UX (CLAUDE.md) plus the grid-line
-// handles of ADR-049 §3. Kept apart from ViewportEditor so the whole key workflow,
-// including undo, runs in tests without a window.
+// The corner-pin and mesh-edit keyboard, the success-metric vertex UX (CLAUDE.md) plus
+// the grid-line handles of ADR-049 §3. Kept apart from ViewportEditor so the whole key
+// workflow, including undo, runs in tests without a window.
 
 #include "core/CommandHistory.hpp"
 #include "core/Types.hpp"
@@ -13,6 +13,24 @@
 #include <memory>
 
 namespace quadmapper {
+
+// One frame of canvas keys in corner pin (CORNERS_ONLY): Tab / Shift+Tab cycles the
+// four corners (TL, TR, BR, BL), the arrows nudge the selected corner by nudgeStep
+// (Shift 10x, Alt 0.1x). Each nudge is a MoveCornerCommand, which applies it;
+// consecutive nudges of one corner merge into one undo step. Returns true when the
+// geometry changed.
+inline bool applyCornerKeys(const CanvasKeys& keys, const QuadRef& target,
+                            const QuadGeometry& geometry, CommandHistory& history, int& corner) {
+    if (keys.tab) {
+        corner = cycleVertex(corner, 4, keys.shift);
+    }
+    if (corner < 0 || corner >= 4 || !keys.arrow()) {
+        return false;
+    }
+    const Vec2 oldPos = geometry.getCorners()[static_cast<size_t>(corner)];
+    history.execute(std::make_unique<MoveCornerCommand>(target, corner, oldPos, oldPos + keys.nudge()));
+    return true;
+}
 
 // One frame of canvas keys in mesh edit:
 // - Tab / Shift+Tab cycles the control vertices and drops the handle selection;

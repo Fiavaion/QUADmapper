@@ -46,6 +46,12 @@ public:
     IVec2 getCanvasSize() const { return canvasSize_; }
     void setCanvasSize(IVec2 size);
 
+    // True once the operator has set the canvas size (Scenes panel): routing and
+    // output size changes then keep it, instead of the canvas of a lone projector's
+    // default slice adopting that projector's resolution (ADR-047 Amendment 3).
+    bool isCanvasLocked() const { return canvasLocked_; }
+    void setCanvasLocked(bool locked) { canvasLocked_ = locked; }
+
     // View state access
     SceneViewState& getViewState() { return viewState_; }
     const SceneViewState& getViewState() const { return viewState_; }
@@ -110,7 +116,7 @@ public:
     // Deep copy under a fresh scene id (duplicate scene). Quads, groups and 3D objects
     // get fresh ids; group membership and parents follow the new ids; texture bindings
     // keep their media ids, so the copy shares its sources (ADR-040). The copy keeps the
-    // name, view and canvas size, is inactive and no output shows it. quadIdMap, when
+    // name, view and canvas size (and its lock), is inactive and no output shows it. quadIdMap, when
     // given, receives source quad id -> copy quad id.
     std::unique_ptr<Scene> duplicate(std::unordered_map<UUID, UUID>* quadIdMap = nullptr) const;
 
@@ -119,6 +125,7 @@ private:
     std::string name_;
     bool isActive_ = false;
     IVec2 canvasSize_ = IVec2(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+    bool canvasLocked_ = false;
     SceneViewState viewState_;
     QuadManager quadManager_;
     std::vector<std::unique_ptr<QuadGroup>> groups_;

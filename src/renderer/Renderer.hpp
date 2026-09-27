@@ -69,7 +69,8 @@ public:
     // so an output showing a whole canvas of its own size, drawn in its rotation, is
     // unchanged by the pass. The caller sets the blend function (the canvas is
     // composited with ONE, ONE_MINUS_SRC_ALPHA). The warp's mesh is cached by slice
-    // id, like a quad's.
+    // id, like a quad's. The view transform applies (the slice editor draws on the
+    // editor canvas); it is the identity for output frames.
     void renderSlice(const Slice& slice, uint32_t canvasTexture, IVec2 canvasSize,
                      Rotation canvasRotation, IVec2 outputSize);
 

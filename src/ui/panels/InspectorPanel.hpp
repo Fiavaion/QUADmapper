@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SliceEditor.hpp"
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
 
@@ -36,6 +37,8 @@ private:
     void renderOutputProperties(EditorContext& ctx);
     void renderMediaProperties(EditorContext& ctx);
     void renderObjectProperties(EditorContext& ctx);  // 3D objects (ADR-052)
+
+    SliceEditor sliceEditor_;  // the selected output's slices (ADR-047)
 
     char quadName_[128]   = "";
     char outputName_[128] = "";

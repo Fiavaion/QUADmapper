@@ -900,18 +900,31 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
             ImGui::EndCombo();
         }
 
-        // Projector calibration (ADR-052 §6)
+        // Slices of the scene's canvas (ADR-047 part B)
+        ImGui::Separator();
+        sliceEditor_.render(ctx, *selectedOutput);
+
+        // Projector calibration (ADR-052 §6). It needs the untouched default slice
+        // (EditorState::canCalibrate, ADR-047 Amendment 3).
         ImGui::Separator();
         const bool calibratingThis = es.calibratingOutputId == selectedOutput->getId();
-        ImGui::BeginDisabled(calibratingThis);
+        const bool canCalibrate = es.canCalibrate(*selectedOutput);
+        ImGui::BeginDisabled(calibratingThis || !canCalibrate);
         if (ImGui::Button("Calibrate Projector...")) {
             es.beginCalibration(*selectedOutput);
         }
         ImGui::EndDisabled();
-        ImGui::SetItemTooltip("Pair points on the 3D objects with projector pixels to solve "
-                              "this projector's lens and position");
+        ImGui::SetItemTooltip(canCalibrate
+                                  ? "Pair points on the 3D objects with projector pixels to solve "
+                                    "this projector's lens and position"
+                                  : "Calibration needs this output's default slice: one slice of the "
+                                    "whole canvas with no warp and no blend");
         ImGui::SameLine();
         ImGui::TextDisabled(selectedOutput->getProjector().calibrated ? "calibrated" : "not calibrated");
+        if (!canCalibrate && !calibratingThis) {
+            ImGui::TextWrapped("Calibration is off while this output's slices are edited (warp, "
+                               "blend or part of the canvas).");
+        }
 
         // Enabled checkbox
         ImGui::Separator();

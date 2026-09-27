@@ -51,6 +51,7 @@ public:
         UUID id;
         std::string name;
         IVec2 canvas = IVec2(1920, 1080);      // canvas size in pixels (.qmap v3.4, ADR-047)
+        bool canvasLocked = false;             // the operator set the size (.qmap v3.4, Scene::isCanvasLocked)
         SceneViewData view;
         std::vector<Quad> quads;
         std::vector<std::string> texturePaths;  // parallel to quads

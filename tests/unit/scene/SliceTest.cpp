@@ -138,3 +138,95 @@ TEST(SliceTest, BlackLevelAppliesOnlyOutsideTheBlendZones) {
     EXPECT_FALSE(outsideBlendZones(slice, Vec2(500.0f, 480.0f)));
     EXPECT_TRUE(outsideBlendZones(slice, Vec2(899.0f, 449.0f)));
 }
+
+// ---- Auto-blend pairing (ADR-047 §3) ------------------------------------------------
+
+namespace {
+
+// Four outputs' ids, made on first use (UUID::generate is not usable during static
+// initialization of this test file).
+const UUID& outputId(int i) {
+    static const UUID ids[4] = {UUID::generate(), UUID::generate(), UUID::generate(), UUID::generate()};
+    return ids[i];
+}
+
+// The width auto-blend gives edge `edge` of slice `slice`, or -1 when it sets none.
+float widthOf(const std::vector<AutoBlendEdge>& edges, size_t slice, SliceEdge edge) {
+    for (const AutoBlendEdge& e : edges) {
+        if (e.slice == slice && e.edge == edge) return e.width;
+    }
+    return -1.0f;
+}
+
+}  // namespace
+
+TEST(AutoBlendTest, HorizontalPairBlendsTheFacingLeftAndRightEdges) {
+    const std::vector<SlicePlacement> slices{{outputId(0), CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}},
+                                             {outputId(1), CanvasRect{1280.0f, 0.0f, 1920.0f, 1080.0f}}};
+    const auto edges = autoBlendEdges(slices);
+    ASSERT_EQ(edges.size(), 2u);
+    EXPECT_FLOAT_EQ(widthOf(edges, 0, SLICE_EDGE_RIGHT), 640.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 1, SLICE_EDGE_LEFT), 640.0f);
+    // The order of the slices does not matter.
+    const auto swapped = autoBlendEdges({slices[1], slices[0]});
+    EXPECT_FLOAT_EQ(widthOf(swapped, 1, SLICE_EDGE_RIGHT), 640.0f);
+    EXPECT_FLOAT_EQ(widthOf(swapped, 0, SLICE_EDGE_LEFT), 640.0f);
+}
+
+TEST(AutoBlendTest, VerticalPairBlendsTheFacingTopAndBottomEdges) {
+    const auto edges = autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}},
+                                       {outputId(1), CanvasRect{0.0f, 880.0f, 1920.0f, 1080.0f}}});
+    ASSERT_EQ(edges.size(), 2u);
+    EXPECT_FLOAT_EQ(widthOf(edges, 0, SLICE_EDGE_BOTTOM), 200.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 1, SLICE_EDGE_TOP), 200.0f);
+}
+
+// A 2x2 grid: each slice blends with its right/left and top/bottom neighbour; the
+// diagonal pairs, which share only a corner patch, add nothing.
+TEST(AutoBlendTest, TwoByTwoGridBlendsEachSliceWithItsTwoNeighbours) {
+    const std::vector<SlicePlacement> slices{
+        {outputId(0), CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}},      // top left
+        {outputId(1), CanvasRect{1600.0f, 0.0f, 1920.0f, 1080.0f}},   // top right
+        {outputId(2), CanvasRect{0.0f, 900.0f, 1920.0f, 1080.0f}},    // bottom left
+        {outputId(3), CanvasRect{1600.0f, 900.0f, 1920.0f, 1080.0f}}  // bottom right
+    };
+    const auto edges = autoBlendEdges(slices);
+    EXPECT_EQ(edges.size(), 8u);
+    EXPECT_FLOAT_EQ(widthOf(edges, 0, SLICE_EDGE_RIGHT), 320.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 0, SLICE_EDGE_BOTTOM), 180.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 1, SLICE_EDGE_LEFT), 320.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 1, SLICE_EDGE_BOTTOM), 180.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 2, SLICE_EDGE_RIGHT), 320.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 2, SLICE_EDGE_TOP), 180.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 3, SLICE_EDGE_LEFT), 320.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 3, SLICE_EDGE_TOP), 180.0f);
+    EXPECT_LT(widthOf(edges, 0, SLICE_EDGE_LEFT), 0.0f);
+    EXPECT_LT(widthOf(edges, 0, SLICE_EDGE_TOP), 0.0f);
+}
+
+TEST(AutoBlendTest, NonOverlappingSlicesGetNoBlend) {
+    EXPECT_TRUE(autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}},
+                                {outputId(1), CanvasRect{1920.0f, 0.0f, 1920.0f, 1080.0f}}})
+                    .empty())
+        << "touching edges do not overlap";
+    EXPECT_TRUE(autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1000.0f, 1000.0f}},
+                                {outputId(1), CanvasRect{2000.0f, 1500.0f, 1000.0f, 1000.0f}}})
+                    .empty());
+    EXPECT_TRUE(autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}}}).empty());
+}
+
+// Side by side, with the right projector's slice lower by 100 px: still a left/right
+// pair, blended over the overlap's width.
+TEST(AutoBlendTest, PartialVerticalOffsetIsStillALeftRightPair) {
+    const auto edges = autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}},
+                                       {outputId(1), CanvasRect{1600.0f, 100.0f, 1920.0f, 1080.0f}}});
+    ASSERT_EQ(edges.size(), 2u);
+    EXPECT_FLOAT_EQ(widthOf(edges, 0, SLICE_EDGE_RIGHT), 320.0f);
+    EXPECT_FLOAT_EQ(widthOf(edges, 1, SLICE_EDGE_LEFT), 320.0f);
+}
+
+TEST(AutoBlendTest, SlicesOfOneOutputDoNotBlendWithEachOther) {
+    EXPECT_TRUE(autoBlendEdges({{outputId(0), CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f}},
+                                {outputId(0), CanvasRect{1280.0f, 0.0f, 1920.0f, 1080.0f}}})
+                    .empty());
+}

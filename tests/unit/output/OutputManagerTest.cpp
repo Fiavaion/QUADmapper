@@ -370,6 +370,40 @@ TEST(OutputManagerTest, RoutingOntoALoneOutputAdoptsItsResolution) {
     EXPECT_EQ(scenes[2]->getCanvasSize(), IVec2(800, 1280));
 }
 
+// A canvas the operator set (Scenes panel, Scene::isCanvasLocked) is never replaced
+// by a projector's resolution: not by routing, not when the output's size changes
+// (ADR-047 Amendment 3). Unlocked, the same scene adopts as before.
+TEST(OutputManagerTest, ALockedCanvasIsNeverAdopted) {
+    OutputManager manager;
+    OutputWindow* lone = manager.createOutput("Lone");
+    lone->setResolution(IVec2(1280, 800));
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    scenes[0]->setCanvasSize(IVec2(2560, 1440));
+    scenes[0]->setCanvasLocked(true);
+
+    EXPECT_FALSE(manager.routeScene(*lone, scenes[0].get(), scenes));
+    EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(2560, 1440));
+    EXPECT_TRUE(isDefaultSlicing(lone->getSlices(), IVec2(2560, 1440)));
+
+    EXPECT_FALSE(manager.followOutputSizes(scenes));  // first sight
+    lone->setResolution(IVec2(1920, 1080));
+    EXPECT_FALSE(manager.followOutputSizes(scenes));
+    EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(2560, 1440));
+
+    // A locked canvas of the output's own size stays when the output changes.
+    scenes[0]->setCanvasSize(IVec2(1920, 1080));
+    OutputManager::showScene(*lone, scenes[0].get(), scenes);
+    lone->setResolution(IVec2(1280, 720));
+    EXPECT_FALSE(manager.followOutputSizes(scenes));
+    EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(1920, 1080));
+
+    // Unlocked, routing adopts again.
+    scenes[0]->setCanvasLocked(false);
+    EXPECT_TRUE(manager.routeScene(*lone, scenes[0].get(), scenes));
+    EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(1280, 720));
+}
+
 // F11 puts an output on its monitor's mode and exit restores the windowed size. A
 // lone default canvas follows both, but neither is a change to save: no "unsaved
 // changes" prompt for entering and leaving perform mode.
@@ -1645,6 +1679,65 @@ TEST(CanvasSliceRenderTest, CanvasLivesWhileAnOutputShowsItsScene) {
     renderer.shutdown();
     manager.shutdown();
     EXPECT_EQ(GlObjectStats::framebuffers(), before);
+}
+
+// The blend test pattern (ADR-047 §3) replaces the scene on the canvas while it is on,
+// and reaches every output through its slices: black grid cells with white bands
+// across the middle, whatever the scene holds; off, the scene is back.
+TEST(CanvasSliceRenderTest, BlendTestPatternReplacesTheSceneOnTheOutputs) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* output = manager.createOutput("Pattern");
+    ASSERT_NE(output, nullptr);
+    glfwSetWindowSize(output->getGLFWwindow(), 256, 144);
+    int w = 0, h = 0;
+    glfwGetFramebufferSize(output->getGLFWwindow(), &w, &h);
+    ASSERT_GE(w, 128);
+    ASSERT_GE(h, 72);
+    glfwMakeContextCurrent(gl.win);
+
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    Scene& scene = *scenes.front();
+    scene.setCanvasSize(IVec2(w, h));
+    fullCanvasQuad(scene);  // the show: all white
+    OutputManager::showScene(*output, &scene, scenes);
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+
+    auto red = [&](const std::vector<unsigned char>& px, int x, int y) {
+        return static_cast<int>(px[(static_cast<size_t>(y) * w + x) * 4]);
+    };
+    const int cellX = w / 32;  // the middle of the first grid cell (16 columns, 9 rows)
+    const int cellY = h / 18;
+
+    manager.renderOutputFrames(scenes, textures, renderer);
+    std::vector<unsigned char> px = readFrame(*manager.outputFrame(output->getId()));
+    ASSERT_EQ(px.size(), static_cast<size_t>(w) * h * 4);
+    EXPECT_EQ(red(px, cellX, cellY), 255) << "pattern off: the scene";
+
+    manager.setBlendTestPattern(true);
+    manager.renderOutputFrames(scenes, textures, renderer);
+    px = readFrame(*manager.outputFrame(output->getId()));
+    EXPECT_EQ(red(px, cellX, cellY), 0) << "a grid cell is black";
+    EXPECT_EQ(red(px, cellX, h / 2), 255) << "the horizontal band is white";
+    EXPECT_EQ(red(px, w / 2, cellY), 255) << "the vertical band is white";
+    for (size_t i = 3; i < px.size(); i += 4) ASSERT_EQ(px[i], 255) << "the frame stays opaque";
+    int whiteLines = 0;  // grid lines cross the first row of cells
+    for (int x = 0; x < w; ++x) whiteLines += red(px, x, cellY) > 128 ? 1 : 0;
+    EXPECT_GT(whiteLines, w / 16) << "grid lines and the band";
+
+    manager.setBlendTestPattern(false);
+    manager.renderOutputFrames(scenes, textures, renderer);
+    px = readFrame(*manager.outputFrame(output->getId()));
+    EXPECT_EQ(red(px, cellX, cellY), 255) << "off again: the scene is back";
+
+    renderer.shutdown();
+    manager.shutdown();
 }
 
 // A slice shows its input rectangle of the canvas, through its warp: a canvas whose

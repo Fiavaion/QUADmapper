@@ -46,6 +46,9 @@ namespace quadmapper {
 //           "path" only.
 //   3.4 = scene canvas -> output slices (ADR-047), additive:
 //         - scenes[].canvas: [width, height] in pixels.
+//         - scenes[].canvasLocked: true when the operator set the canvas size, so
+//           routing keeps it (ADR-047 Amendment 3); written only when true, absent
+//           (false) in files written before it.
 //         - outputs[].sceneId: the scene the output shows (several outputs may show
 //           one scene), and outputs[].slices: [{id, name, input: [x, y, w, h] canvas
 //           pixels, warp: quad geometry in output space, blend: {left, right, top,
@@ -583,6 +586,7 @@ static nlohmann::json serializeScene(const Project::SceneData& scene,
     j["id"] = scene.id.toString();
     j["name"] = scene.name;
     j["canvas"] = nlohmann::json::array({scene.canvas.x, scene.canvas.y});
+    if (scene.canvasLocked) j["canvasLocked"] = true;
     // For 3.0-3.3 readers, which route one output per scene (3.4 reads outputs[].sceneId).
     for (const auto& output : outputs) {
         if (output.sceneId == scene.id) {
@@ -636,6 +640,9 @@ static Project::SceneData deserializeScene(const nlohmann::json& j, UUID& assign
         const auto& c = checkedArray(j["canvas"], 2);
         scene.canvas = IVec2(std::clamp(c[0].get<int>(), 1, MAX_CANVAS_DIMENSION),
                              std::clamp(c[1].get<int>(), 1, MAX_CANVAS_DIMENSION));
+    }
+    if (j.contains("canvasLocked") && j["canvasLocked"].is_boolean()) {
+        scene.canvasLocked = j["canvasLocked"].get<bool>();
     }
     if (j.contains("view") && j["view"].is_object()) {
         const auto& v = j["view"];

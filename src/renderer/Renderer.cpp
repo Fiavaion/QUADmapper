@@ -377,6 +377,7 @@ void Renderer::renderSlice(const Slice& slice, uint32_t canvasTexture, IVec2 can
                        in.x == std::floor(in.x) && in.y == std::floor(in.y);
 
     useSurfaceProgram(sliceShader_);
+    applyViewUniforms(sliceShader_);
     sliceShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
     sliceShader_.setInt("u_Canvas", 0);
     sliceShader_.setVec2("u_CanvasSize", glm::vec2(canvasSize));

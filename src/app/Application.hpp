@@ -123,6 +123,7 @@ private:
     void saveControlPreferences();
     void saveUiModePreference();  // the mode last used is the next session's (ADR-042)
     void drawBlackoutBanner();  // inside the ImGui frame, over the canvas
+    void drawBlendTestPatternBanner();  // likewise, while the blend test pattern is on
 
     // ---- Show-safe session (ADR-046 §4) -----------------------------------------
     // Runs once per frame between glfwPollEvents() and render(): establishes the

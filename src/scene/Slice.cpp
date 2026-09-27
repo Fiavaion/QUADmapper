@@ -93,4 +93,50 @@ bool outsideBlendZones(const Slice& slice, Vec2 inSlice) {
     return true;
 }
 
+std::vector<AutoBlendEdge> autoBlendEdges(const std::vector<SlicePlacement>& slices) {
+    std::vector<AutoBlendEdge> edges;
+    auto widen = [&](size_t slice, SliceEdge edge, float width) {
+        for (AutoBlendEdge& e : edges) {
+            if (e.slice == slice && e.edge == edge) {
+                e.width = std::max(e.width, width);
+                return;
+            }
+        }
+        edges.push_back(AutoBlendEdge{slice, edge, width});
+    };
+    for (size_t i = 0; i < slices.size(); ++i) {
+        for (size_t j = i + 1; j < slices.size(); ++j) {
+            if (slices[i].output == slices[j].output) continue;
+            const CanvasRect& a = slices[i].input;
+            const CanvasRect& b = slices[j].input;
+            const float overlapW = std::min(a.x + a.width, b.x + b.width) - std::max(a.x, b.x);
+            const float overlapH = std::min(a.y + a.height, b.y + b.height) - std::max(a.y, b.y);
+            if (overlapW <= 0.0f || overlapH <= 0.0f) continue;
+            // One lies further along the axis than the other: neither spans the other.
+            const bool offsetX = (a.x < b.x && a.x + a.width < b.x + b.width) ||
+                                 (b.x < a.x && b.x + b.width < a.x + a.width);
+            const bool offsetY = (a.y < b.y && a.y + a.height < b.y + b.height) ||
+                                 (b.y < a.y && b.y + b.height < a.y + a.height);
+            const float shareX = overlapW / std::min(a.width, b.width);
+            const float shareY = overlapH / std::min(a.height, b.height);
+            bool sideBySide = offsetX && shareY >= 0.5f;
+            bool stacked = offsetY && shareX >= 0.5f;
+            if (sideBySide && stacked) {
+                sideBySide = shareX <= shareY;
+                stacked = !sideBySide;
+            }
+            if (sideBySide) {
+                const bool aLeft = a.x < b.x;
+                widen(aLeft ? i : j, SLICE_EDGE_RIGHT, overlapW);
+                widen(aLeft ? j : i, SLICE_EDGE_LEFT, overlapW);
+            } else if (stacked) {
+                const bool aTop = a.y < b.y;
+                widen(aTop ? i : j, SLICE_EDGE_BOTTOM, overlapH);
+                widen(aTop ? j : i, SLICE_EDGE_TOP, overlapH);
+            }
+        }
+    }
+    return edges;
+}
+
 } // namespace quadmapper

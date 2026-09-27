@@ -587,6 +587,35 @@ const Scene* OutputManager::sceneForOutput(
     return nullptr;
 }
 
+std::vector<Quad> makeBlendTestPattern() {
+    std::vector<Quad> quads;
+    auto rect = [&](float x0, float y0, float x1, float y1) {
+        Quad quad;
+        quad.setName("Blend test pattern");
+        quad.getGeometry().setCorners({Vec2(x0, y0), Vec2(x1, y0), Vec2(x1, y1), Vec2(x0, y1)});
+        quads.push_back(std::move(quad));
+    };
+    // A 16 x 9 grid of lines about 4 px thick on a 1920 x 1080 canvas: alignment.
+    constexpr int COLUMNS = 16;
+    constexpr int ROWS = 9;
+    constexpr float HALF_X = 0.001f;
+    constexpr float HALF_Y = 0.0018f;
+    for (int i = 0; i <= COLUMNS; ++i) {
+        const float x = static_cast<float>(i) / COLUMNS;
+        rect(x - HALF_X, 0.0f, x + HALF_X, 1.0f);
+    }
+    for (int j = 0; j <= ROWS; ++j) {
+        const float y = static_cast<float>(j) / ROWS;
+        rect(0.0f, y - HALF_Y, 1.0f, y + HALF_Y);
+    }
+    // Solid white bands across the whole width and height: every left/right overlap
+    // crosses the first, every top/bottom overlap the second, so a seam shows as a
+    // brighter or darker stripe in flat white.
+    rect(0.0f, 4.0f / ROWS, 1.0f, 5.0f / ROWS);
+    rect(7.0f / COLUMNS, 0.0f, 9.0f / COLUMNS, 1.0f);
+    return quads;
+}
+
 void OutputManager::showScene(OutputWindow& output, const Scene* scene,
                               const std::vector<std::unique_ptr<Scene>>& scenes) {
     if (!scene) {
@@ -613,7 +642,10 @@ void OutputManager::showScene(OutputWindow& output, const Scene* scene,
 bool OutputManager::routeScene(OutputWindow& output, Scene* scene,
                                const std::vector<std::unique_ptr<Scene>>& scenes) {
     showScene(output, scene, scenes);
-    if (!scene || !isDefaultSlicing(output.getSlices(), scene->getCanvasSize())) return false;
+    if (!scene || scene->isCanvasLocked() ||
+        !isDefaultSlicing(output.getSlices(), scene->getCanvasSize())) {
+        return false;
+    }
     const bool alone = std::none_of(outputs_.begin(), outputs_.end(), [&](const auto& o) {
         return o.get() != &output && o->getSceneId() == scene->getId();
     });
@@ -645,7 +677,7 @@ bool OutputManager::followOutputSizes(std::vector<std::unique_ptr<Scene>>& scene
         for (auto& s : scenes) {
             if (s && s->getId() == output->getSceneId()) { scene = s.get(); break; }
         }
-        if (!scene || scene->getCanvasSize() != before.size ||
+        if (!scene || scene->isCanvasLocked() || scene->getCanvasSize() != before.size ||
             !isDefaultSlicing(output->getSlices(), before.size)) {
             continue;
         }
@@ -684,6 +716,11 @@ const Framebuffer* OutputManager::sceneCanvas(const UUID& sceneId) const {
         return nullptr;
     }
     return it->second.target.get();
+}
+
+Rotation OutputManager::sceneCanvasRotation(const UUID& sceneId) const {
+    auto it = canvases_.find(sceneId);
+    return it != canvases_.end() ? it->second.rotation : Rotation::R0;
 }
 
 void OutputManager::releaseUnshownCanvases() {
@@ -773,6 +810,16 @@ void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& sc
         renderer.setOutputRotation(canvas.rotation);
         canvas.target->bind();  // also sets the viewport to the canvas size
         glDisable(GL_DEPTH_TEST);
+        if (blendTestPattern_) {
+            // Opaque: the pattern covers the 3D objects too.
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            if (testPattern_.empty()) testPattern_ = makeBlendTestPattern();
+            for (const Quad& quad : testPattern_) {
+                renderer.renderQuad(quad, nullptr, /*selected=*/false);  // white
+            }
+            continue;
+        }
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         // Clean: no selection outlines or editor handles.

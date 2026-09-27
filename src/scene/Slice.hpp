@@ -104,4 +104,29 @@ float sliceBlendGain(const Slice& slice, Vec2 inSlice);
 // black level applies.
 bool outsideBlendZones(const Slice& slice, Vec2 inSlice);
 
+// ---- Auto-blend (ADR-047 §3) ------------------------------------------------------
+
+// Where one slice sits on the canvas, and which output shows it.
+struct SlicePlacement {
+    UUID output;
+    CanvasRect input;
+};
+
+// A blend width auto-blend gives one edge of one slice (an index into its input).
+struct AutoBlendEdge {
+    size_t slice = 0;
+    SliceEdge edge = SLICE_EDGE_LEFT;
+    float width = 0.0f;
+};
+
+// The facing edges of slices of different outputs whose input rectangles overlap on
+// the canvas, each with the overlap's width. Two slices face left/right when one lies
+// further left than the other (neither spans the other horizontally) and they share
+// at least half of the shorter one's height; top/bottom likewise. Slices that only
+// touch at a corner (a 2x2 grid's diagonal) face neither way; when both hold, the
+// direction with the narrower overlap (relative to the slices) wins. An edge facing
+// several slices takes the widest overlap. Slices of one output never blend with
+// each other, and non-overlapping slices give nothing.
+std::vector<AutoBlendEdge> autoBlendEdges(const std::vector<SlicePlacement>& slices);
+
 } // namespace quadmapper

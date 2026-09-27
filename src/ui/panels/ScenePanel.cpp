@@ -2,6 +2,7 @@
 
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
+#include "app/SliceEditing.hpp"
 #include "scene/Scene.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
@@ -17,6 +18,7 @@ namespace quadmapper {
 
 void ScenePanel::renderContent(EditorContext& ctx) {
     renderActionButtons(ctx);
+    renderCanvasControls(ctx);
     ImGui::Separator();
     renderSceneList(ctx);
 }
@@ -64,6 +66,57 @@ void ScenePanel::renderActionButtons(EditorContext& ctx) {
 
     ImGui::SameLine();
     ImGui::TextDisabled("(%zu scene%s)", es.scenes.size(), es.scenes.size() == 1 ? "" : "s");
+}
+
+// The active scene's canvas size (ADR-047 §1): width and height in pixels, clamped to
+// 1..MAX_CANVAS_DIMENSION like the loader, applied as one undo step when a field is
+// left. Quads keep their normalized positions and the slices of the outputs showing
+// the scene are rescaled (setSceneCanvas). Setting a size fixes it (Scene::isCanvasLocked):
+// routing then never replaces it with a projector's resolution.
+void ScenePanel::renderCanvasControls(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    Scene& scene = es.activeScene();
+    const IVec2 size = scene.getCanvasSize();
+    if (canvasSceneId_ != scene.getId() || !canvasEditing_) {
+        canvasEdit_[0] = size.x;
+        canvasEdit_[1] = size.y;
+        canvasSceneId_ = scene.getId();
+    }
+    auto apply = [&](IVec2 newSize, bool locked) {
+        if (setSceneCanvas(es, ctx.outputManager, scene.getId(), newSize, locked) && ctx.project) {
+            ctx.project->setModified(true);
+        }
+    };
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Canvas");
+    ImGui::SameLine();
+    bool editing = false;
+    bool applyNow = false;
+    ImGui::SetNextItemWidth(64.0f);
+    ImGui::InputInt("##canvasWidth", &canvasEdit_[0], 0, 0);
+    editing |= ImGui::IsItemActive();
+    applyNow |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SetItemTooltip("Canvas width in pixels (1-%d)", MAX_CANVAS_DIMENSION);
+    ImGui::SameLine();
+    ImGui::TextUnformatted("x");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(64.0f);
+    ImGui::InputInt("##canvasHeight", &canvasEdit_[1], 0, 0);
+    editing |= ImGui::IsItemActive();
+    applyNow |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SetItemTooltip("Canvas height in pixels (1-%d)", MAX_CANVAS_DIMENSION);
+    canvasEditing_ = editing;
+    if (applyNow) {
+        apply(IVec2(canvasEdit_[0], canvasEdit_[1]), true);
+        canvasEditing_ = false;  // show the clamped size next frame
+    }
+    ImGui::SameLine();
+    bool locked = scene.isCanvasLocked();
+    if (ImGui::Checkbox("Fixed##canvasLocked", &locked)) apply(size, locked);
+    ImGui::SetItemTooltip("On: the canvas keeps this size (set when you edit it).\n"
+                          "Off: a scene one projector shows through its default slice takes\n"
+                          "that projector's resolution when it is routed or resized.");
 }
 
 void ScenePanel::renderSceneList(EditorContext& ctx) {

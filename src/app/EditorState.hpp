@@ -47,10 +47,11 @@
 
 namespace quadmapper {
 
-// Resolves calibration undo steps (CalibrationEditCommand) by output id against the
-// live outputs (TD-17): the output's points and projector, plus the editor's session
-// while that output is the one being calibrated. A removed or re-created output (new
-// id) resolves to nothing.
+// Resolves output undo steps by output id against the live outputs: calibration steps
+// (CalibrationEditCommand, TD-17) get the output's points and projector, plus the
+// editor's session while that output is the one being calibrated; slice steps
+// (SliceEditCommand, ADR-047) get its slices. A removed or re-created output (new id)
+// resolves to nothing.
 class OutputCalibrationResolver : public OutputResolver {
 public:
     OutputCalibrationResolver(const UUID& calibratingOutputId, CalibrationSession& session)
@@ -63,6 +64,22 @@ public:
         if (!output) return {};
         return {&output->getCalibrationPoints(), &output->getProjector(),
                 calibratingOutputId_ == outputId ? &session_ : nullptr};
+    }
+
+    bool readSlices(const UUID& outputId, OutputSlices& out) override {
+        const OutputWindow* output = outputs_ && !outputId.isNull() ? outputs_->getOutput(outputId) : nullptr;
+        if (!output) return false;
+        out.slices = output->getSlices();
+        out.canvas = output->getSlicesCanvas();
+        return true;
+    }
+
+    bool writeSlices(const UUID& outputId, const OutputSlices& slices) override {
+        OutputWindow* output = outputs_ && !outputId.isNull() ? outputs_->getOutput(outputId) : nullptr;
+        if (!output) return false;
+        output->getSlices() = slices.slices;
+        output->setSlicesCanvas(slices.canvas);
+        return true;
     }
 
 private:
@@ -388,9 +405,22 @@ struct EditorState {
     OutputCalibrationResolver outputResolver{calibratingOutputId, calibration};
     OutputRef outputRef(const UUID& outputId) { return OutputRef{&outputResolver, outputId}; }
 
-    // Enter calibration on an output. The scene it shows becomes the active one, so
-    // the canvas shows that projector.
+    // Calibration picks projector pixels on the editor canvas, so it needs the canvas
+    // to be the projector frame: an output that shows a scene through anything but its
+    // default slicing (the whole canvas, no warp, no blend) cannot be calibrated
+    // (ADR-047 Amendment 3, TECHNICAL_DEBT TD-29). An output that shows no scene can.
+    bool canCalibrate(const OutputWindow& output) const {
+        const int index = findSceneIndex(scenes, output.getSceneId());
+        return index < 0 ||
+               isDefaultSlicing(output.getSlices(), scenes[static_cast<size_t>(index)]->getCanvasSize());
+    }
+
+    // Enter calibration on an output (refused when canCalibrate is false). The scene it
+    // shows becomes the active one, so the canvas shows that projector. Leaves slice
+    // warp editing.
     void beginCalibration(const OutputWindow& output) {
+        if (!canCalibrate(output)) return;
+        endSliceWarp();
         if (findSceneIndex(scenes, output.getSceneId()) >= 0) setActiveScene(output.getSceneId());
         calibratingOutputId = output.getId();
         calibration.begin(output.getCalibrationPoints(), output.getProjector());
@@ -398,6 +428,34 @@ struct EditorState {
     void endCalibration() {
         calibratingOutputId = UUID::null();
         calibration.cancelPick();
+    }
+
+    // ---- Slice editing (ADR-047 part B, SliceEditing.hpp) ------------------------
+    // The slice the Inspector's slice editor shows for the selected output.
+    UUID selectedSliceId;
+    // Slice warp editing: while sliceWarpOutputId is set, the canvas shows that output's
+    // frame and the mouse and the canvas keys (Tab / arrows / Shift / Alt) move the
+    // corners of its selected slice's warp; quad editing is suspended, as it is while
+    // calibrating. Esc or the slice editor's toggle leaves it.
+    UUID sliceWarpOutputId;
+    int sliceWarpSelectedCorner = -1;
+    int sliceWarpHoveredCorner = -1;
+    int sliceWarpDraggedCorner = -1;
+    Vec2 sliceWarpDragStartMouse{0.0f};
+    Vec2 sliceWarpDragStartPos{0.0f};
+    OutputSlices sliceWarpDragBefore;  // for one undo step when the drag ends
+
+    // Start editing the warp of `sliceId` on `output` on the canvas. Not while
+    // calibrating (calibration owns the canvas then).
+    void beginSliceWarp(const OutputWindow& output, const UUID& sliceId) {
+        if (!calibratingOutputId.isNull()) return;
+        sliceWarpOutputId = output.getId();
+        selectedSliceId = sliceId;
+        sliceWarpSelectedCorner = sliceWarpHoveredCorner = sliceWarpDraggedCorner = -1;
+    }
+    void endSliceWarp() {
+        sliceWarpOutputId = UUID::null();
+        sliceWarpSelectedCorner = sliceWarpHoveredCorner = sliceWarpDraggedCorner = -1;
     }
 
     // Grid-division insert tool (ADR-038 Tier 1 batch 3b). When armed, a click in
