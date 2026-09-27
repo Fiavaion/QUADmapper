@@ -499,3 +499,83 @@ TEST(VideoDecoderReverse, GroupTooLargeForTheCacheIsReportedWhilePlaying) {
     std::error_code ec;
     fs::remove(path, ec);
 }
+
+// --- The loop seam (TD-30) ---
+
+// Loop feeds the start of the clip to the decoder straight after its end, so the next
+// pass's first frames are queued before the seam and the codec is never restarted
+// there (a restart set up a new GPU decoder per stream and delayed every clip that
+// wrapped at once). Nothing is consumed while the queue fills, so what is queued does
+// not depend on timing: the frames due just before and after the seam, in order.
+class VideoDecoderLoopSeam : public testing::TestWithParam<ClipSpec> {
+protected:
+    void SetUp() override {
+        path_ = clipPath("clip", GetParam().extension);
+        if (!testclips::writeMpeg2Clip(path_, GetParam().gopSize, FRAMES, FPS, START_OFFSET_FRAMES)) {
+            GTEST_SKIP() << "FFmpeg cannot write " << path_;
+        }
+        ASSERT_TRUE(decoder_.open(path_));
+    }
+
+    void TearDown() override {
+        decoder_.close();
+        std::error_code ec;
+        fs::remove(path_, ec);
+    }
+
+    // Wait (real time, bounded) until `count` frames are queued.
+    bool waitQueued(size_t count) {
+        const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+        while (decoder_.getBufferedFrameCount() < count) {
+            if (std::chrono::steady_clock::now() > deadline) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return true;
+    }
+
+    fs::path path_;
+    VideoDecoder decoder_;
+};
+
+TEST_P(VideoDecoderLoopSeam, NextPassIsQueuedBeforeTheSeamWithoutARestart) {
+    constexpr int BEFORE = 3;  // start three frames before the seam
+    constexpr size_t QUEUE = 8;
+    DecodePlan plan;
+    plan.duration = DURATION;
+    plan.loopMode = LoopMode::LOOP;
+    plan.timeline = DURATION - double(BEFORE) / FPS;
+    decoder_.startPlayback(plan, QUEUE);
+    // The positioning seek (and any seek back it needed) is done once a frame is out.
+    ASSERT_TRUE(waitQueued(1));
+    const uint64_t restarts = decoder_.decoderRestarts();
+
+    ASSERT_TRUE(waitQueued(QUEUE));
+    EXPECT_EQ(decoder_.decoderRestarts(), restarts) << "the codec restarted at the seam";
+    for (size_t i = 0; i < QUEUE; ++i) {
+        const VideoFrame frame = decoder_.getBufferedFrame();
+        const int expected = (FRAMES - BEFORE + static_cast<int>(i)) % FRAMES;
+        ASSERT_EQ(frameIndex(frame), expected) << "queued frame " << i;
+        EXPECT_NEAR(frame.due, plan.timeline + double(i) / FPS, DUE_TOLERANCE) << "queued frame " << i;
+    }
+
+    // Two more seams: every frame once, each due one frame after the last, no restart.
+    double lastDue = plan.timeline + double(QUEUE - 1) / FPS;
+    int lastIndex = (FRAMES - BEFORE + static_cast<int>(QUEUE) - 1) % FRAMES;
+    for (int n = 0; n < 2 * FRAMES; ++n) {
+        ASSERT_TRUE(waitQueued(1)) << "after frame " << lastIndex;
+        const VideoFrame frame = decoder_.getBufferedFrame();
+        ASSERT_EQ(frameIndex(frame), (lastIndex + 1) % FRAMES) << "step " << n;
+        ASSERT_NEAR(frame.due, lastDue + 1.0 / FPS, DUE_TOLERANCE) << "step " << n;
+        lastIndex = frameIndex(frame);
+        lastDue = frame.due;
+    }
+    EXPECT_EQ(decoder_.decoderRestarts(), restarts);
+    EXPECT_NEAR(decoder_.getObservedEnd(), DURATION, DUE_TOLERANCE);
+}
+
+INSTANTIATE_TEST_SUITE_P(Containers, VideoDecoderLoopSeam,
+                         testing::Values(ClipSpec{".mp4", 12},
+                                         ClipSpec{".mkv", 12},
+                                         ClipSpec{".ts", 12},
+                                         ClipSpec{".mp4", 300}),
+                         clipName);

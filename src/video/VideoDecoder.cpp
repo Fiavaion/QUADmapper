@@ -1086,6 +1086,7 @@ public:
     bool isAtEnd() const { return atEnd_; }
     double getObservedEnd() const { return endSeen_ ? observedEnd_.load() : 0.0; }
     size_t getReverseCachePeakBytes() const { return reversePeakBytes_; }
+    uint64_t decoderRestarts() const { return restarts_; }
 
     bool seek(double timeSeconds) {
         if (!isOpen_) return false;
@@ -1315,6 +1316,7 @@ private:
             // The decoder wants more input (EAGAIN; a decode error also moves on).
             int readResult = av_read_frame(formatCtx_, packet);
             if (readResult == AVERROR_EOF) {
+                if (spliceNextPass(packet)) continue;
                 // Enter draining mode so the frames still held for B-frame reordering
                 // come out. Already draining (only after a decode error) means done.
                 if (avcodec_send_packet(codecCtx_, nullptr) < 0) {
@@ -1585,6 +1587,7 @@ private:
             return false;
         }
         avcodec_flush_buffers(codecCtx_);
+        ++restarts_;
         av_frame_unref(skippedFrame_);
         seekFromPts_ = pts;
         checkFirstPacket_ = true;
@@ -1640,11 +1643,103 @@ private:
 
     void beginForward(double position) {
         phase_ = Phase::Forward;
+        splicePending_ = false;
+        lastForwardPts_.reset();
         seekExact(position);
+    }
+
+    // Loop, at the end of the file: feed the decoder the start of the clip straight
+    // after its end, as one stream with a keyframe there, instead of draining it and
+    // restarting it at the start. A restart (avcodec_flush_buffers) makes FFmpeg's H.264
+    // and HEVC decoders set up again from the next keyframe; with D3D11VA that is a new
+    // GPU decoder and surface pool, created one stream at a time on the shared device,
+    // so 16 clips wrapping together waited ~0.5-0.8 s for their first frame (TD-30).
+    // The frames still held for reordering come out first, then the new pass's; the
+    // first frame whose time goes back is the new pass (see producePlanned). False when
+    // this is not a Loop pass or the start is not a clean entry point: the caller drains
+    // and the next pass restarts the decoder as before.
+    bool spliceNextPass(AVPacket* packet) {
+        if (!planned_ || phase_ != Phase::Forward || plan_.loopMode != LoopMode::LOOP || !planLoops() ||
+            splicePending_ || !lastForwardPts_ || seekTargetPts_ != AV_NOPTS_VALUE) {
+            return false;
+        }
+        // By time; MPEG-TS seeks by bisecting timestamps and can land past the first
+        // frame, so there the start of the file, by byte.
+        bool clean = av_seek_frame(formatCtx_, videoStreamIndex_, startPts_, AVSEEK_FLAG_BACKWARD) >= 0 &&
+                     readFirstFrame(packet);
+        if (!clean && !(formatCtx_->iformat->flags & AVFMT_NO_BYTE_SEEK)) {
+            clean = av_seek_frame(formatCtx_, -1, 0, AVSEEK_FLAG_BYTE) >= 0 && readFirstFrame(packet);
+        }
+        if (!clean) return false;
+        avcodec_send_packet(codecCtx_, packet);  // room: the decoder just asked for input
+        av_packet_unref(packet);
+        splicePending_ = true;
+        return true;
+    }
+
+    // Read the next video packet into `packet` and keep it if it is the clip's first
+    // frame and a clean entry point; false (nothing kept) otherwise.
+    bool readFirstFrame(AVPacket* packet) {
+        int rc = 0;
+        while ((rc = av_read_frame(formatCtx_, packet)) >= 0 && packet->stream_index != videoStreamIndex_) {
+            av_packet_unref(packet);
+        }
+        if (rc < 0) return false;
+        const bool first = packet->pts == AV_NOPTS_VALUE || packet->pts < startPts_ + (frameTicks_ + 1) / 2;
+        if (first && startsCleanly(packet)) return true;
+        av_packet_unref(packet);
+        return false;
+    }
+
+    // Whether decoding can start at `packet` with nothing before it: a keyframe that,
+    // for H.264 and HEVC, is an IDR (or BLA) picture. Their other keyframes may be
+    // followed by pictures that refer back across it (open GOP), which the end of the
+    // clip cannot supply.
+    bool startsCleanly(const AVPacket* packet) const {
+        if (!(packet->flags & AV_PKT_FLAG_KEY)) return false;
+        const AVCodecParameters* par = formatCtx_->streams[videoStreamIndex_]->codecpar;
+        if (par->codec_id != AV_CODEC_ID_H264 && par->codec_id != AV_CODEC_ID_HEVC) return true;
+        const bool hevc = par->codec_id == AV_CODEC_ID_HEVC;
+        auto isEntry = [hevc](uint8_t header) {
+            if (!hevc) return (header & 0x1f) == 5;  // IDR slice
+            const int type = (header >> 1) & 0x3f;
+            return type >= 16 && type <= 20;         // BLA or IDR
+        };
+        auto isSlice = [hevc](uint8_t header) {
+            if (!hevc) return (header & 0x1f) >= 1 && (header & 0x1f) <= 5;
+            return ((header >> 1) & 0x3f) < 32;      // VCL
+        };
+        const uint8_t* data = packet->data;
+        const size_t size = static_cast<size_t>(packet->size);
+        const bool annexB = size >= 4 && data[0] == 0 && data[1] == 0 &&
+                            (data[2] == 1 || (data[2] == 0 && data[3] == 1));
+        if (annexB) {
+            for (size_t i = 0; i + 3 < size; ++i) {
+                if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && isSlice(data[i + 3])) {
+                    return isEntry(data[i + 3]);
+                }
+            }
+            return false;
+        }
+        // Length-prefixed NAL units (MP4, Matroska): the length size is in the extradata.
+        size_t lengthSize = 4;
+        if (par->extradata && par->extradata_size > (hevc ? 22 : 4) && par->extradata[0] == 1) {
+            lengthSize = (par->extradata[hevc ? 21 : 4] & 3) + 1;
+        }
+        for (size_t pos = 0; pos + lengthSize < size;) {
+            size_t length = 0;
+            for (size_t b = 0; b < lengthSize; ++b) length = (length << 8) | data[pos + b];
+            pos += lengthSize;
+            if (length == 0 || length > size - pos) return false;
+            if (isSlice(data[pos])) return isEntry(data[pos]);
+            pos += length;
+        }
+        return false;
     }
 
     void beginReverse(double bound) {
         phase_ = Phase::Reverse;
+        splicePending_ = false;
         releaseReverse();
         building_.bound = std::min(bound, plan_.duration);
     }
@@ -1706,6 +1801,14 @@ private:
             if (phase_ == Phase::Forward) {
                 if (decodeNextRaw()) {
                     const double pts = framePts(frame_);
+                    if (splicePending_ && lastForwardPts_ && frame_->pts != AV_NOPTS_VALUE &&
+                        pts <= *lastForwardPts_ + FRAME_DUE_EPSILON) {
+                        // The first frame of the pass spliced on: the last one came out whole.
+                        splicePending_ = false;
+                        endSeen_ = true;
+                        leg_ = nextLeg(leg_, plan_.duration, plan_.loopMode);
+                    }
+                    if (frame_->pts != AV_NOPTS_VALUE) lastForwardPts_ = pts; else lastForwardPts_.reset();
                     observedEnd_ = std::max(observedEnd_.load(), pts + frameSeconds_);
                     // A frame stamped past the clip's end would show after the next pass began.
                     if (planLoops() && pts >= plan_.duration - FRAME_DUE_EPSILON) continue;
@@ -1716,6 +1819,7 @@ private:
                     return frame;
                 }
                 if (!atEnd_) return VideoFrame{};  // read error or stop
+                splicePending_ = false;  // a splice that never showed a new pass: restart as usual
                 endSeen_ = true;  // observedEnd_ now includes the last frame
                 if (leg_.final) {
                     phase_ = Phase::Done;          // atEnd_ stays set: the clip is over
@@ -2018,6 +2122,7 @@ private:
     std::atomic<double> observedEnd_{0.0};  // latest frame end decoded going forward
     std::atomic<bool> endSeen_{false};      // a forward pass reached the end of the stream
     std::atomic<size_t> reversePeakBytes_{0};
+    std::atomic<uint64_t> restarts_{0};     // avcodec_flush_buffers calls (decoderRestarts)
 
     // Planned playback (decode thread; startPlayback sets it up with the thread stopped)
     bool planned_ = false;
@@ -2035,6 +2140,8 @@ private:
     size_t tailBytes_ = 0;
     bool tailOverflow_ = false;      // this group did not fit; kept again from the next keyframe
     std::string reverseError_;       // guarded by bufferMutex_
+    bool splicePending_ = false;     // Loop: the start was fed after the end (spliceNextPass)
+    std::optional<double> lastForwardPts_;  // the last frame decoded going forward, if timed
 
     // Background decoding
     std::thread backgroundThread_;
@@ -2070,6 +2177,7 @@ public:
     std::string checkReverse(size_t) const { return {}; }
     std::string getReverseError() const { return {}; }
     size_t getReverseCachePeakBytes() const { return 0; }
+    uint64_t decoderRestarts() const { return 0; }
     double getObservedEnd() const { return 0.0; }
     void stopBackgroundDecoding() {}
     VideoFrame getBufferedFrame() { return VideoFrame{}; }
@@ -2118,6 +2226,7 @@ void VideoDecoder::startPlayback(const DecodePlan& plan, size_t bufferSize) {
 std::string VideoDecoder::checkReverse(size_t cacheBytes) const { return impl_->checkReverse(cacheBytes); }
 std::string VideoDecoder::getReverseError() const { return impl_->getReverseError(); }
 size_t VideoDecoder::getReverseCachePeakBytes() const { return impl_->getReverseCachePeakBytes(); }
+uint64_t VideoDecoder::decoderRestarts() const { return impl_->decoderRestarts(); }
 double VideoDecoder::getObservedEnd() const { return impl_->getObservedEnd(); }
 void VideoDecoder::stopBackgroundDecoding() { impl_->stopBackgroundDecoding(); }
 VideoFrame VideoDecoder::getBufferedFrame() { return impl_->getBufferedFrame(); }

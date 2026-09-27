@@ -225,6 +225,14 @@ public:
     size_t getReverseCachePeakBytes() const;
 
     /**
+     * @brief How many times the codec has been restarted (flushed) since open
+     *
+     * A seek restarts it; a Loop pass does not, since the start of the clip is fed
+     * straight after its end (TD-30). For tests.
+     */
+    uint64_t decoderRestarts() const;
+
+    /**
      * @brief Where the video really ends (last frame's pts + one frame), 0 until known
      *
      * Known once a startPlayback() forward pass reaches the end of the stream. Players

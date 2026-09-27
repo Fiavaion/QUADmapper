@@ -205,6 +205,54 @@ TEST(HardwareDecode, PlannedPlaybackFallsBackWithoutAGap) {
     EXPECT_FALSE(decoder.isHardwareDecoding());
 }
 
+// TD-30: a Loop pass on the GPU carries on into the next without restarting the codec,
+// which on D3D11VA would set up a new GPU decoder (~50 ms, one stream at a time on the
+// shared device). Both the readback and the zero-copy frame paths.
+class HardwareLoopSeam : public testing::TestWithParam<bool> {};
+
+TEST_P(HardwareLoopSeam, NextPassIsQueuedBeforeTheSeamWithoutARestart) {
+    const std::filesystem::path clip = "D:/testing Videos/5sec.mp4";  // 1080p30 H.264, 5 s
+    VideoDecoder decoder;
+    DecodeOptions options = hardwareOptions();
+    options.zeroCopy = GetParam();
+    if (!std::filesystem::exists(clip) || !decoder.open(clip, options)) GTEST_SKIP() << "test clip not present";
+    if (!decoder.isHardwareDecoding()) GTEST_SKIP() << "no GPU decoding here: " << decoder.getDecodeNote();
+    const double fps = decoder.getInfo().frameRate;
+    const int frames = static_cast<int>(std::lround(decoder.getInfo().duration * fps));
+
+    constexpr int BEFORE = 3;
+    constexpr size_t QUEUE = 8;
+    DecodePlan plan;
+    plan.duration = decoder.getInfo().duration;
+    plan.loopMode = LoopMode::LOOP;
+    plan.timeline = plan.duration - (BEFORE - 0.5) / fps;  // inside frame frames - BEFORE
+    decoder.startPlayback(plan, QUEUE);
+    for (int spins = 0; decoder.getBufferedFrameCount() == 0 && spins < 5000; ++spins) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const uint64_t restarts = decoder.decoderRestarts();  // after the positioning seek
+
+    for (int spins = 0; decoder.getBufferedFrameCount() < QUEUE && spins < 5000; ++spins) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_EQ(decoder.getBufferedFrameCount(), QUEUE);
+    EXPECT_EQ(decoder.decoderRestarts(), restarts) << "the codec restarted at the seam";
+    for (size_t i = 0; i < QUEUE; ++i) {
+        const VideoFrame frame = decoder.getBufferedFrame();
+        ASSERT_TRUE(frame.isValid());
+        EXPECT_EQ(frameIndex(frame, fps), (frames - BEFORE + static_cast<int>(i)) % frames) << "queued frame " << i;
+        EXPECT_NEAR(frame.due, plan.duration + (static_cast<double>(i) - BEFORE) / fps, 1e-4) << "queued frame " << i;
+        EXPECT_EQ(frame.yuv.onGpu(), GetParam()) << "queued frame " << i;
+    }
+    EXPECT_TRUE(decoder.isHardwareDecoding());
+    decoder.stopBackgroundDecoding();
+}
+
+INSTANTIATE_TEST_SUITE_P(FramePaths, HardwareLoopSeam, testing::Values(false, true),
+                         [](const testing::TestParamInfo<bool>& info) {
+                             return info.param ? std::string("ZeroCopy") : std::string("Readback");
+                         });
+
 TEST(HardwareDecode, PingPongReverseLegRunsOnTheGpu) {
     VideoDecoder decoder;
     if (!openHardware(decoder, H264_SHORT_GOP)) GTEST_SKIP() << "test clip not present";
