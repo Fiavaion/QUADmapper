@@ -4,6 +4,8 @@
 #include "scene/MediaReferences.hpp"
 #include "core/CommandHistory.hpp"
 
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <unordered_map>
 
 namespace quadmapper {
@@ -52,6 +54,43 @@ TEST(MeshObjectTest, MeshRevisionChangesOnEveryMeshMutationOnly) {
     copy.setMesh(data);
     EXPECT_NE(copy.getMeshRevision(), last);
     EXPECT_NE(copy.getMeshRevision(), a.getMeshRevision());
+}
+
+// The world bounds are cached; every mesh change (in place too) and every transform
+// change is seen, and a copy starts from correct bounds.
+TEST(MeshObjectTest, WorldBoundsFollowMeshRevisionAndTransform) {
+    MeshObject object;
+    Vec3 lo, hi;
+    object.worldBounds(lo, hi);
+    EXPECT_GT(lo.x, hi.x);  // empty
+
+    MeshData data;
+    data.positions = {Vec3(0.0f), Vec3(1.0f, 2.0f, 3.0f)};
+    object.setMesh(data);
+    object.worldBounds(lo, hi);
+    EXPECT_EQ(lo, Vec3(0.0f));
+    EXPECT_EQ(hi, Vec3(1.0f, 2.0f, 3.0f));
+
+    object.editMesh().positions[1] = Vec3(-4.0f, 2.0f, 3.0f);  // in place
+    object.worldBounds(lo, hi);
+    EXPECT_EQ(lo, Vec3(-4.0f, 0.0f, 0.0f));
+    EXPECT_EQ(hi, Vec3(0.0f, 2.0f, 3.0f));
+
+    object.setTransform(glm::translate(glm::mat4(1.0f), Vec3(10.0f, 0.0f, 0.0f)));
+    object.worldBounds(lo, hi);
+    EXPECT_EQ(lo, Vec3(6.0f, 0.0f, 0.0f));
+    EXPECT_EQ(hi, Vec3(10.0f, 2.0f, 3.0f));
+
+    MeshObject copy = object.cloneWithId(UUID::generate());
+    copy.setTransform(glm::mat4(1.0f));
+    copy.worldBounds(lo, hi);
+    EXPECT_EQ(lo, Vec3(-4.0f, 0.0f, 0.0f));
+    object.worldBounds(lo, hi);  // the original's cache is its own
+    EXPECT_EQ(lo, Vec3(6.0f, 0.0f, 0.0f));
+
+    object.setMesh(MeshData{});
+    object.worldBounds(lo, hi);
+    EXPECT_GT(lo.x, hi.x);
 }
 
 TEST(SceneTest, CreateQuadAddsToScene) {
