@@ -3,6 +3,7 @@
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
 #include "app/MediaAssign.hpp"
+#include "app/MeshLoads.hpp"
 #include "app/GridUndo.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
@@ -1118,7 +1119,9 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
         ctx.project->setModified(true);
     }
 
-    if (object->getMesh().empty()) {
+    if (isMeshLoading(es, *object)) {
+        ImGui::TextDisabled("Loading mesh...");
+    } else if (object->getMesh().empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Mesh not loaded");
     } else {
         ImGui::Text("Mesh: %zu triangles", object->getMesh().triangleCount());

@@ -3,6 +3,7 @@
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
 #include "app/MediaAssign.hpp"
+#include "app/MeshLoads.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGroup.hpp"
@@ -511,8 +512,10 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
         } else {
             const bool selected = es.currentSelectionType == EditorState::SelectionType::Object &&
                                   es.selectedObjectId == object.getId();
-            const std::string label =
-                object.getName() + (object.getMesh().empty() ? " (mesh missing)" : "");
+            const char* state = isMeshLoading(es, object)          ? " (loading...)"
+                                : object.getMesh().empty()           ? " (mesh missing)"
+                                                                     : "";
+            const std::string label = object.getName() + state;
             if (ImGui::Selectable(label.c_str(), selected)) {
                 es.selectedObjectId = object.getId();
                 es.currentSelectionType = EditorState::SelectionType::Object;

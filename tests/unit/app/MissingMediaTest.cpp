@@ -2,7 +2,8 @@
 // shares with load and source release (app/MediaAssign.hpp), plus the project-replace
 // order (app/ProjectReplace.hpp) and pause-while-unseen, on a real EditorState.
 // Opening a real file needs GL (its texture), so relocation is tested from the point
-// the new source exists: the rebind and the transport it is given.
+// the new source exists: the rebind and the transport it is given. Also the app's
+// off-thread mesh loading (app/MeshLoads.hpp).
 
 #include "app/MissingMedia.hpp"
 #include "app/ProjectReplace.hpp"
@@ -10,8 +11,12 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 
 using namespace quadmapper;
 
@@ -352,4 +357,239 @@ TEST(ClearProjectContentTest, ReleasesTheOldProjectsMediaAndRecordsButKeepsTheBi
     EXPECT_FALSE(fx.es.showMissingMedia);
 
     fx.es.mediaBinPanel.setMediaLibrary(nullptr);  // `library` dies before `fx`
+}
+
+// ---- Meshes parsed off the render thread (TD-16a, app/MeshLoads.hpp) -----------------
+
+namespace {
+
+namespace fs = std::filesystem;
+
+struct MeshLoadFixture {
+    EditorState es;
+    fs::path dir = fs::temp_directory_path() / ("qm_meshloads_" + UUID::generate().toString());
+
+    MeshLoadFixture() { fs::create_directories(dir); }
+    ~MeshLoadFixture() {
+        es.objLoads.cancelAll();
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+    }
+
+    std::string writeObj(const std::string& name, int triangles = 1) {
+        const fs::path file = dir / name;
+        std::ofstream out(file, std::ios::binary);
+        for (int i = 0; i < triangles; ++i) {
+            out << "v " << i << " 0 0\nv " << i + 1 << " 0 0\nv " << i << " 1 0\n";
+        }
+        for (int i = 0; i < triangles; ++i) {
+            out << "f " << 3 * i + 1 << ' ' << 3 * i + 2 << ' ' << 3 * i + 3 << '\n';
+        }
+        return utf8FromPath(file);
+    }
+
+    // Run the frame-boundary step until nothing is being parsed (30 s at most).
+    std::vector<MeshImportOutcome> adoptAll() {
+        std::vector<MeshImportOutcome> outcomes;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (std::chrono::steady_clock::now() < deadline) {
+            for (auto& o : adoptLoadedMeshes(es)) outcomes.push_back(std::move(o));
+            if (es.meshLoads.tickets.empty()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return outcomes;
+    }
+
+    void waitIdle() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (es.objLoads.pendingCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+    // An object as a project load makes it: its file named, its mesh not loaded yet.
+    MeshObject* savedObject(Scene& scene, const std::string& path) {
+        MeshObject* object = scene.createObject("Saved");
+        object->setSourcePath(path);
+        return object;
+    }
+};
+
+}  // namespace
+
+TEST(MeshLoadsTest, ImportShowsLoadingThenBecomesOneUndoStep) {
+    MeshLoadFixture fx;
+    const std::string path = fx.writeObj("prop.obj", 3);
+    MeshObject* placeholder = beginObjectImport(fx.es, "prop", path);
+    const UUID id = placeholder->getId();
+    Scene& scene = fx.es.activeScene();
+
+    EXPECT_TRUE(isMeshLoading(fx.es, *placeholder));
+    EXPECT_FALSE(isMeshMissing(fx.es, *placeholder));  // not offered for relocation
+    EXPECT_TRUE(collectMissingMedia(fx.es).empty());
+    EXPECT_FALSE(fx.es.commandHistory.canUndo());  // not an undo step yet
+
+    const auto outcomes = fx.adoptAll();
+    ASSERT_EQ(outcomes.size(), 1u);
+    EXPECT_TRUE(outcomes[0].import);
+    EXPECT_TRUE(outcomes[0].ok);
+    EXPECT_EQ(outcomes[0].objectId, id);
+    MeshObject* object = scene.getObject(id);  // same id: selection and edits carry over
+    ASSERT_NE(object, nullptr);
+    EXPECT_EQ(object->getMesh().triangleCount(), 3u);
+    EXPECT_FALSE(isMeshLoading(fx.es, *object));
+    EXPECT_EQ(fx.es.commandHistory.getUndoDescription(), "Import 3D object");
+
+    ASSERT_TRUE(fx.es.commandHistory.undo());
+    EXPECT_EQ(scene.getObject(id), nullptr);
+    ASSERT_TRUE(fx.es.commandHistory.redo());
+    ASSERT_NE(scene.getObject(id), nullptr);
+    EXPECT_EQ(scene.getObject(id)->getMesh().triangleCount(), 3u);
+}
+
+TEST(MeshLoadsTest, ImportKeepsItsPlaceAndEditsMadeWhileLoading) {
+    MeshLoadFixture fx;
+    Scene& scene = fx.es.activeScene();
+    scene.createObject("Before");
+    MeshObject* placeholder = beginObjectImport(fx.es, "prop", fx.writeObj("prop.obj"));
+    scene.createObject("After");
+    const UUID id = placeholder->getId();
+    placeholder->setOpacity(0.3f);  // an edit while it loads
+
+    fx.adoptAll();
+    ASSERT_EQ(scene.getObjects().size(), 3u);
+    EXPECT_EQ(scene.getObjects()[1]->getId(), id);
+    EXPECT_FLOAT_EQ(scene.getObjects()[1]->getOpacity(), 0.3f);
+}
+
+TEST(MeshLoadsTest, FailedImportRemovesThePlaceholderAndReportsWhy) {
+    MeshLoadFixture fx;
+    const std::string path = utf8FromPath(fx.dir / "absent.obj");
+    MeshObject* placeholder = beginObjectImport(fx.es, "absent", path);
+    const UUID id = placeholder->getId();
+
+    const auto outcomes = fx.adoptAll();
+    ASSERT_EQ(outcomes.size(), 1u);
+    EXPECT_FALSE(outcomes[0].ok);
+    EXPECT_FALSE(outcomes[0].error.empty());
+    EXPECT_EQ(fx.es.activeScene().getObject(id), nullptr);
+    EXPECT_FALSE(fx.es.commandHistory.canUndo());
+    EXPECT_TRUE(collectMissingMedia(fx.es).empty());
+
+    // Importing it again tries again (the earlier failure is not remembered for it).
+    fx.writeObj("absent.obj");
+    MeshObject* again = beginObjectImport(fx.es, "absent", path);
+    const UUID againId = again->getId();
+    const auto retry = fx.adoptAll();
+    ASSERT_EQ(retry.size(), 1u);
+    EXPECT_TRUE(retry[0].ok);
+    EXPECT_NE(fx.es.activeScene().getObject(againId), nullptr);
+}
+
+TEST(MeshLoadsTest, SavedObjectsLoadInPlaceAndShareOneParsePerFile) {
+    MeshLoadFixture fx;
+    const std::string shared = fx.writeObj("column.obj", 2);
+    Scene& scene = fx.es.activeScene();
+    MeshObject* a = fx.savedObject(scene, shared);
+    MeshObject* b = fx.savedObject(scene, shared);
+    auto other = std::make_unique<Scene>();
+    MeshObject* c = fx.savedObject(*other, shared);
+    fx.es.scenes.push_back(std::move(other));
+
+    requestMeshLoads(fx.es);
+    EXPECT_EQ(fx.es.meshLoads.tickets.size(), 1u);
+    EXPECT_TRUE(isMeshLoading(fx.es, *a));
+    EXPECT_TRUE(isMeshLoading(fx.es, *c));
+
+    const auto outcomes = fx.adoptAll();
+    EXPECT_TRUE(outcomes.empty());  // not imports
+    for (MeshObject* o : {a, b, c}) EXPECT_EQ(o->getMesh().triangleCount(), 2u);
+    EXPECT_FALSE(fx.es.commandHistory.canUndo());  // loading is not an edit
+}
+
+TEST(MeshLoadsTest, ABadSavedMeshIsMissingAndNotRetriedEveryFrame) {
+    MeshLoadFixture fx;
+    const fs::path bad = fx.dir / "bad.obj";
+    std::ofstream(bad, std::ios::binary) << "v 0 0\n";
+    MeshObject* object = fx.savedObject(fx.es.activeScene(), utf8FromPath(bad));
+
+    requestMeshLoads(fx.es);
+    const auto outcomes = fx.adoptAll();
+    ASSERT_EQ(outcomes.size(), 1u);  // reported, as a show's object, not an import
+    EXPECT_FALSE(outcomes[0].import);
+    EXPECT_FALSE(outcomes[0].ok);
+    EXPECT_EQ(outcomes[0].objectId, object->getId());
+    EXPECT_FALSE(outcomes[0].error.empty());
+    EXPECT_TRUE(object->getMesh().empty());
+    EXPECT_TRUE(isMeshMissing(fx.es, *object));
+    ASSERT_EQ(collectMissingMedia(fx.es).size(), 1u);
+    EXPECT_EQ(fx.es.meshLoads.errors.count(utf8FromPath(bad)), 1u);
+
+    requestMeshLoads(fx.es);  // the next frame
+    EXPECT_TRUE(fx.es.meshLoads.tickets.empty());
+}
+
+TEST(MeshLoadsTest, AnObjectRestoredAfterItsLoadFinishedLoadsAgain) {
+    MeshLoadFixture fx;
+    const std::string path = fx.writeObj("prop.obj");
+    Scene& scene = fx.es.activeScene();
+    MeshObject* object = fx.savedObject(scene, path);
+    const UUID id = object->getId();
+    requestMeshLoads(fx.es);
+
+    // Deleted while loading; the parse finishes with nobody waiting for it.
+    fx.es.commandHistory.execute(
+        std::make_unique<DeleteObjectCommand>(ObjectRef{&fx.es.quadResolver, scene.getId(), id}));
+    fx.adoptAll();
+    // Undo brings back the meshless object; the next frame boundary loads it.
+    ASSERT_TRUE(fx.es.commandHistory.undo());
+    ASSERT_NE(scene.getObject(id), nullptr);
+    EXPECT_FALSE(isMeshLoading(fx.es, *scene.getObject(id)));
+    requestMeshLoads(fx.es);
+    EXPECT_TRUE(isMeshLoading(fx.es, *scene.getObject(id)));
+    fx.adoptAll();
+    EXPECT_EQ(scene.getObject(id)->getMesh().triangleCount(), 1u);
+}
+
+TEST(MeshLoadsTest, APlaceholderDeletedAndRestoredWhileLoadingStillImports) {
+    MeshLoadFixture fx;
+    Scene& scene = fx.es.activeScene();
+    MeshObject* placeholder = beginObjectImport(fx.es, "prop", fx.writeObj("prop.obj"));
+    const UUID id = placeholder->getId();
+    fx.es.commandHistory.execute(
+        std::make_unique<DeleteObjectCommand>(ObjectRef{&fx.es.quadResolver, scene.getId(), id}));
+    fx.es.commandHistory.undo();
+
+    const auto outcomes = fx.adoptAll();
+    ASSERT_EQ(outcomes.size(), 1u);
+    EXPECT_TRUE(outcomes[0].ok);
+    ASSERT_NE(scene.getObject(id), nullptr);
+    EXPECT_EQ(fx.es.commandHistory.getUndoDescription(), "Import 3D object");
+}
+
+TEST(MeshLoadsTest, NewOrLoadCancelsEveryParse) {
+    MeshLoadFixture fx;
+    beginObjectImport(fx.es, "prop", fx.writeObj("prop.obj", 50));
+    clearProjectContent(fx.es, nullptr);  // what New, Load and recovery run
+
+    EXPECT_TRUE(fx.es.meshLoads.tickets.empty());
+    EXPECT_TRUE(fx.es.meshLoads.imports.empty());
+    fx.waitIdle();
+    EXPECT_TRUE(adoptLoadedMeshes(fx.es).empty());
+    EXPECT_TRUE(fx.es.objLoads.takeCompleted().empty());
+}
+
+TEST(MeshLoadsTest, AStaleResultForAPathLoadedAgainIsIgnored) {
+    MeshLoadFixture fx;
+    const std::string path = fx.writeObj("prop.obj");
+    MeshObject* object = fx.savedObject(fx.es.activeScene(), path);
+    requestMeshLoads(fx.es);
+    const uint64_t first = fx.es.meshLoads.tickets.at(path);
+    // As if the path had been requested again since: the first ticket's result must
+    // not be adopted as the second's.
+    fx.es.meshLoads.tickets[path] = first + 1000;
+    fx.waitIdle();
+    adoptLoadedMeshes(fx.es);
+    EXPECT_TRUE(object->getMesh().empty());
+    EXPECT_EQ(fx.es.meshLoads.tickets.count(path), 1u);
 }

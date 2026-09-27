@@ -25,6 +25,7 @@
 #include "../project/Project.hpp"
 #include "../scene/CalibrationSession.hpp"
 #include "../scene/Commands.hpp"
+#include "../scene/ObjLoader.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../renderer/Texture.hpp"
@@ -43,6 +44,19 @@
 #include "../ui/panels/ViewportEditor.hpp"
 
 namespace quadmapper {
+
+// Bookkeeping for the meshes EditorState::objLoads is parsing (TD-16a, MeshLoads.hpp).
+struct MeshLoadState {
+    std::unordered_map<std::string, uint64_t> tickets;    // mesh path -> its parse
+    std::unordered_map<std::string, std::string> errors;  // mesh path -> why it did not load
+    // Imported objects whose import completes (becomes an undo step) once their mesh
+    // has loaded.
+    struct Import {
+        UUID sceneId;
+        UUID objectId;
+    };
+    std::vector<Import> imports;
+};
 
 struct EditorState {
     // quadResolver refers to this object's own `scenes`, so a copy or move would
@@ -229,6 +243,10 @@ struct EditorState {
     // use: the checker in the editor and previews, black on projector outputs.
     std::unique_ptr<Texture> missingPatternTexture;
     std::unique_ptr<Texture> missingBlackTexture;
+
+    // ---- 3D object meshes parsed off the render thread (TD-16a, MeshLoads.hpp) --
+    ObjLoadQueue objLoads;
+    MeshLoadState meshLoads;
 
     // UV test-grid toggle (#2): when on, newly-created quads get a colored UV
     // reference grid texture. seenQuadIds tracks which quads have already been

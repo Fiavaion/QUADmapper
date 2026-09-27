@@ -10,6 +10,7 @@
 #include "ControlBindings.hpp"
 #include "EditorState.hpp"
 #include "MediaAssign.hpp"
+#include "MeshLoads.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
@@ -40,10 +41,6 @@ struct MissingMediaItem {
     int objectUses = 0;
 };
 
-inline bool isMeshMissing(const MeshObject& object) {
-    return !object.getSourcePath().empty() && object.getMesh().empty();
-}
-
 // Missing files the scenes use, sorted by path. A source only an undo step still
 // holds is left out: nothing on screen needs it.
 inline std::vector<MissingMediaItem> collectMissingMedia(const EditorState& es) {
@@ -70,7 +67,7 @@ inline std::vector<MissingMediaItem> collectMissingMedia(const EditorState& es) 
         for (const auto& object : scene->getObjects()) {
             if (!object) continue;
             if (MissingMediaItem* item = sourceItem(object->getTexture().mediaId)) ++item->objectUses;
-            if (!isMeshMissing(*object)) continue;
+            if (!isMeshMissing(es, *object)) continue;
             auto [it, added] = meshItems.emplace(object->getSourcePath(), items.size());
             if (added) {
                 MissingMediaItem item;
@@ -162,7 +159,7 @@ inline std::string relocateMissingMesh(EditorState& es, const std::string& oldPa
     for (const auto& scene : es.scenes) {
         if (!scene) continue;
         for (const auto& object : scene->getObjects()) {
-            if (!object || object->getSourcePath() != oldPath || !isMeshMissing(*object)) continue;
+            if (!object || object->getSourcePath() != oldPath || !isMeshMissing(es, *object)) continue;
             object->setMesh(mesh.value());
             object->setSourcePath(path);
             ++relocated;

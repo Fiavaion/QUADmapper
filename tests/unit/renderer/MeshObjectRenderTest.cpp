@@ -25,9 +25,12 @@
 #include "source/StaticImageSource.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -596,4 +599,112 @@ TEST(MeshObjectRenderTest, StillImagesShowUprightOnQuadsAndObjects) {
 
     Framebuffer::unbind();
     renderer.shutdown();
+}
+
+// TD-16a measurement, not run by ctest (--gtest_also_run_disabled_tests): frame times
+// while a 2M-triangle OBJ loads. "Synchronous" is what import and project load did
+// before, one loadObj on the render thread; the frame loop is what they do now, the
+// parse on ObjLoadQueue's worker and the finished mesh adopted at a frame boundary,
+// then drawn (its upload lands in that frame).
+TEST(MeshObjectRenderTest, DISABLED_LargeMeshLoadFrameTimes) {
+    namespace fs = std::filesystem;
+    using Clock = std::chrono::steady_clock;
+    auto ms = [](Clock::duration d) {
+        return std::chrono::duration<double, std::milli>(d).count();
+    };
+    const fs::path file = fs::temp_directory_path() / "qm_td16_2m.obj";
+    constexpr int N = 1000;  // N x N quads = 2,000,000 triangles
+    {
+        std::ofstream out(file, std::ios::binary);
+        std::string line;
+        for (int y = 0; y <= N; ++y) {
+            for (int x = 0; x <= N; ++x) {
+                line = "v " + std::to_string(x * 0.001f) + ' ' + std::to_string(y * 0.001f) + " 0\n";
+                out << line;
+            }
+        }
+        for (int y = 0; y < N; ++y) {
+            for (int x = 0; x < N; ++x) {
+                const int a = y * (N + 1) + x + 1;
+                out << "f " << a << ' ' << a + 1 << ' ' << a + N + 2 << ' ' << a + N + 1 << '\n';
+            }
+        }
+    }
+
+    const auto s0 = Clock::now();
+    auto sync = loadObj(file);
+    const double syncMs = ms(Clock::now() - s0);
+    ASSERT_TRUE(sync.isSuccess()) << sync.error().message;
+    ASSERT_EQ(sync.value().triangleCount(), 2u * N * N);
+    sync = Err<MeshData>("released");
+
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    constexpr int W = 256, H = 256;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    Framebuffer fbo;
+    ASSERT_TRUE(fbo.resize(W, H));
+    fbo.bind();
+    const ProjectorCamera cam = ProjectorCamera::framing(
+        Vec3(0.0f), Vec3(1.0f, 1.0f, 0.0f), ProjectorIntrinsics::fromThrowRatio(1.5f, W, H));
+    std::vector<std::unique_ptr<MeshObject>> objects;
+    objects.push_back(makeSquare(0.2f));  // something on screen meanwhile
+    objects.push_back(std::make_unique<MeshObject>());
+
+    ObjLoadQueue queue;
+    auto frame = [&] {
+        for (auto& done : queue.takeCompleted()) {
+            if (done.mesh) objects[1]->setMesh(std::move(done.mesh.value()));
+        }
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        renderer.renderMeshObjects(objects, cam, {});
+        renderer.endFrame();
+        glFinish();
+    };
+    double idleMax = 0.0;
+    for (int i = 0; i < 30; ++i) {
+        const auto t = Clock::now();
+        frame();
+        idleMax = std::max(idleMax, ms(Clock::now() - t));
+    }
+
+    queue.request(file);
+    double loadingMax = 0.0, adoptFrameMs = 0.0;
+    std::vector<double> loading;
+    int frames = 0;
+    const auto l0 = Clock::now();
+    while (objects[1]->getMesh().empty() && ms(Clock::now() - l0) < 600000.0) {
+        const auto t = Clock::now();
+        frame();
+        const double f = ms(Clock::now() - t);
+        ++frames;
+        if (objects[1]->getMesh().empty()) {
+            loadingMax = std::max(loadingMax, f);
+            loading.push_back(f);
+        } else {
+            adoptFrameMs = f;
+        }
+    }
+    const double loadMs = ms(Clock::now() - l0);
+    double afterMax = 0.0;
+    for (int i = 0; i < 30; ++i) {
+        const auto t = Clock::now();
+        frame();
+        afterMax = std::max(afterMax, ms(Clock::now() - t));
+    }
+    std::sort(loading.begin(), loading.end());
+    const double p99 = loading.empty() ? 0.0 : loading[loading.size() * 99 / 100];
+    std::printf("[TD-16a] 2M-triangle OBJ, Debug:\n"
+                "  synchronous loadObj on the render thread: %.0f ms (one frame)\n"
+                "  worker: %d frames over %.0f ms; while parsing max %.1f ms, p99 %.2f ms "
+                "(idle max %.1f ms); adopt+upload frame %.1f ms; max after %.1f ms\n",
+                syncMs, frames, loadMs, loadingMax, p99, idleMax, adoptFrameMs, afterMax);
+    EXPECT_FALSE(objects[1]->getMesh().empty());
+    EXPECT_LT(loadingMax, syncMs);
+
+    Framebuffer::unbind();
+    renderer.shutdown();
+    std::error_code ec;
+    fs::remove(file, ec);
 }

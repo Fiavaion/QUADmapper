@@ -5,6 +5,7 @@
 
 #include "EditorState.hpp"
 #include "MediaAssign.hpp"
+#include "MeshLoads.hpp"
 #include "MissingMedia.hpp"
 #include "core/UUID.hpp"
 #include "source/SourceManager.hpp"
@@ -13,6 +14,7 @@ namespace quadmapper {
 
 // Forget the open project's content, in this order:
 //  1. the undo history, before the scenes its commands point into;
+//     then every OBJ parse in progress (MeshLoads.hpp);
 //  2. the scenes, their per-quad bindings, the object selection and any calibration;
 //  3. the project's sources, released now (the media bin's own sources stay, so its
 //     items remain assignable), so the next project's media opens fresh instead of
@@ -23,6 +25,7 @@ namespace quadmapper {
 // Application's own queues (scene takes, the missing-media search) are the caller's.
 inline void clearProjectContent(EditorState& es, SourceManager* sm) {
     es.commandHistory.clear();
+    cancelMeshLoads(es);  // before the scenes the parses would fill (TD-16a)
     es.selectedObjectId = UUID();
     es.endCalibration();
     es.scenes.clear();

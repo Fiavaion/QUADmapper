@@ -71,7 +71,7 @@ bool resolveIndex(std::string_view s, size_t count, int& out) {
 
 }  // namespace
 
-Result<MeshData, Error> loadObj(const fs::path& path) {
+Result<MeshData, Error> loadObj(const fs::path& path, const std::atomic<bool>* cancel) {
     const std::string name = utf8FromPath(path.filename());
     std::error_code sizeError;
     const std::uintmax_t bytes = fs::file_size(path, sizeError);
@@ -102,6 +102,9 @@ Result<MeshData, Error> loadObj(const fs::path& path) {
 
     while (std::getline(in, line)) {
         ++lineNo;
+        if (cancel && (lineNo & 0xFFF) == 0 && cancel->load(std::memory_order_relaxed)) {
+            return Err<MeshData>(name + ": loading cancelled");
+        }
         std::string_view view(line);
         if (const size_t hash = view.find('#'); hash != std::string_view::npos) {
             view = view.substr(0, hash);
@@ -201,6 +204,89 @@ Result<MeshData, Error> loadObj(const fs::path& path) {
         }
     }
     return Ok(std::move(mesh));
+}
+
+// ---- ObjLoadQueue ----------------------------------------------------------------
+
+ObjLoadQueue::~ObjLoadQueue() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stop_ = true;
+        queue_.clear();
+        cancelRunning_ = true;
+    }
+    wake_.notify_all();
+    if (worker_.joinable()) worker_.join();
+}
+
+uint64_t ObjLoadQueue::request(const fs::path& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const uint64_t ticket = nextTicket_++;
+    queue_.emplace_back(ticket, path);
+    if (!worker_.joinable()) worker_ = std::thread([this] { run(); });
+    wake_.notify_one();
+    return ticket;
+}
+
+void ObjLoadQueue::cancel(uint64_t ticket) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+        if (it->first == ticket) {
+            queue_.erase(it);
+            return;
+        }
+    }
+    if (running_ == ticket) {
+        cancelRunning_ = true;
+        return;
+    }
+    for (auto it = done_.begin(); it != done_.end(); ++it) {
+        if (it->ticket == ticket) {
+            done_.erase(it);
+            return;
+        }
+    }
+}
+
+void ObjLoadQueue::cancelAll() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    queue_.clear();
+    done_.clear();
+    if (running_ != 0) cancelRunning_ = true;
+}
+
+std::vector<ObjLoadQueue::Completed> ObjLoadQueue::takeCompleted() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<Completed> out;
+    out.swap(done_);
+    return out;
+}
+
+size_t ObjLoadQueue::pendingCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return queue_.size() + (running_ != 0 ? 1 : 0);
+}
+
+void ObjLoadQueue::run() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (true) {
+        wake_.wait(lock, [this] { return stop_ || !queue_.empty(); });
+        if (stop_) return;
+        auto [ticket, path] = std::move(queue_.front());
+        queue_.pop_front();
+        running_ = ticket;
+        cancelRunning_ = false;
+        lock.unlock();
+
+        Result<MeshData, Error> mesh = loadObj(path, &cancelRunning_);
+
+        lock.lock();
+        running_ = 0;
+        // A request cancelled while it was parsed leaves no result.
+        if (!cancelRunning_ && !stop_) {
+            done_.push_back(Completed{ticket, std::move(path), std::move(mesh)});
+        }
+    }
 }
 
 }  // namespace quadmapper
