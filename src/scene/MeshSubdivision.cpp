@@ -3,41 +3,46 @@
 
 namespace quadmapper {
 
-void MeshSubdivision::generateMesh(const QuadGeometry& geometry,
-                                   std::vector<MeshVertex>& vertices,
-                                   std::vector<uint32_t>& indices) {
-    // Control grid may be non-uniform (ADR-038): iterate per-axis and take tex
-    // coords from the actual division positions, not col/res.
-    const int vpr = geometry.vertsPerRow();   // grid lines along U
-    const int vpc = geometry.vertsPerCol();   // grid lines along V
-    const auto& uCoords = geometry.getUCoords();
-    const auto& vCoords = geometry.getVCoords();
-    auto positions = geometry.generateMeshPositions();
+namespace {
 
-    vertices.clear();
-    vertices.reserve(static_cast<size_t>(vpr) * vpc);
-    for (int row = 0; row < vpc; ++row) {
-        for (int col = 0; col < vpr; ++col) {
-            MeshVertex v;
-            v.position = positions[static_cast<size_t>(row) * vpr + col];
-            v.texCoord = Vec2(uCoords[col], vCoords[row]);
-            vertices.push_back(v);
-        }
-    }
-
-    // Two triangles per cell, indexing the vpr-wide vertex grid.
+// Two triangles per cell of a columns x rows grid of (columns + 1)-wide vertex rows.
+void gridIndices(int columns, int rows, std::vector<uint32_t>& indices) {
     indices.clear();
-    indices.reserve(static_cast<size_t>(geometry.getColumns()) * geometry.getRows() * 6);
-    for (int row = 0; row < vpc - 1; ++row) {
-        for (int col = 0; col < vpr - 1; ++col) {
-            const uint32_t tl = static_cast<uint32_t>(row * vpr + col);
+    indices.reserve(static_cast<size_t>(columns) * rows * 6);
+    const int line = columns + 1;
+    for (int row = 0; row < rows; ++row) {
+        for (int col = 0; col < columns; ++col) {
+            const uint32_t tl = static_cast<uint32_t>(row * line + col);
             const uint32_t tr = tl + 1;
-            const uint32_t bl = static_cast<uint32_t>((row + 1) * vpr + col);
+            const uint32_t bl = static_cast<uint32_t>((row + 1) * line + col);
             const uint32_t br = bl + 1;
             indices.push_back(tl); indices.push_back(bl); indices.push_back(tr);
             indices.push_back(tr); indices.push_back(bl); indices.push_back(br);
         }
     }
+}
+
+}  // namespace
+
+IVec2 MeshSubdivision::generateMesh(const QuadGeometry& geometry,
+                                    std::vector<MeshVertex>& vertices,
+                                    std::vector<uint32_t>& indices) {
+    const std::vector<float> us = geometry.tessellationU();
+    const std::vector<float> vs = geometry.tessellationV();
+    const std::vector<QuadGeometry::SurfaceSample> samples = geometry.sampleSurface(us, vs);
+
+    vertices.resize(samples.size());
+    for (size_t r = 0; r < vs.size(); ++r) {
+        for (size_t c = 0; c < us.size(); ++c) {
+            const size_t index = r * us.size() + c;
+            const QuadGeometry::SurfaceSample& s = samples[index];
+            vertices[index].position = s.position;
+            vertices[index].texCoord = Vec3(us[c] * s.q, vs[r] * s.q, s.q);
+        }
+    }
+    const IVec2 cells(static_cast<int>(us.size()) - 1, static_cast<int>(vs.size()) - 1);
+    gridIndices(cells.x, cells.y, indices);
+    return cells;
 }
 
 std::vector<Vec2> MeshSubdivision::generatePositions(const QuadGeometry& geometry) {
@@ -69,32 +74,7 @@ bool MeshSubdivision::isValidResolution(int resolution) {
 }
 
 void MeshSubdivision::generateIndices(int resolution, std::vector<uint32_t>& indices) {
-    indices.clear();
-    indices.reserve(getIndexCount(resolution));
-
-    for (int row = 0; row < resolution; ++row) {
-        for (int col = 0; col < resolution; ++col) {
-            uint32_t tl = getVertexIndex(row, col, resolution);
-            uint32_t tr = getVertexIndex(row, col + 1, resolution);
-            uint32_t bl = getVertexIndex(row + 1, col, resolution);
-            uint32_t br = getVertexIndex(row + 1, col + 1, resolution);
-
-            // First triangle (TL, BL, TR)
-            indices.push_back(tl);
-            indices.push_back(bl);
-            indices.push_back(tr);
-
-            // Second triangle (TR, BL, BR)
-            indices.push_back(tr);
-            indices.push_back(bl);
-            indices.push_back(br);
-        }
-    }
-}
-
-std::vector<Vec2> MeshSubdivision::generateBilinearPositions(const QuadGeometry& geometry) {
-    // Delegates to the geometry, which honours a non-uniform control grid (ADR-038).
-    return geometry.generateBilinearPositions();
+    gridIndices(resolution, resolution, indices);
 }
 
 } // namespace quadmapper

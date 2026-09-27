@@ -4,6 +4,7 @@
 #include "app/EditorState.hpp"
 #include "app/TextureResolve.hpp"
 #include "app/GridUndo.hpp"
+#include "app/MeshEditKeys.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGeometry.hpp"
@@ -265,6 +266,7 @@ void ViewportEditor::render(EditorContext& ctx) {
             }
             cornerHoveredVertex = cornerDraggedVertex = -1;
             meshHoveredVertex = meshDraggedVertex = -1;
+            es.meshHoveredHandle = es.meshDraggedHandle = -1;
             es.bezierHovered = es.bezierDragged = -1;
             snapActive = false;
             return;
@@ -291,6 +293,13 @@ void ViewportEditor::render(EditorContext& ctx) {
                     auto pos = g.generateMeshPositions();
                     for (const auto& p : pos)
                         if (glm::length(mouseNorm - p) < 0.012f) { onSelectedHandle = true; break; }
+                    const unsigned handles = g.availableHandles(meshSelectedVertex);
+                    for (int h = 0; h < GRID_HANDLE_COUNT; ++h)
+                        if (((handles >> h) & 1u) &&
+                            glm::length(mouseNorm - g.gridHandlePosition(meshSelectedVertex, h)) < 0.012f) {
+                            onSelectedHandle = true;
+                            break;
+                        }
                 }
             }
             if (!onSelectedHandle) {
@@ -301,6 +310,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                         // Drop stale vertex selection carried from the previous quad.
                         cornerHoveredVertex = cornerDraggedVertex = cornerSelectedVertex = -1;
                         meshHoveredVertex = meshDraggedVertex = meshSelectedVertex = -1;
+                        es.meshSelectedHandle = es.meshHoveredHandle = es.meshDraggedHandle = -1;
                     }
                 }
             }
@@ -366,14 +376,13 @@ void ViewportEditor::render(EditorContext& ctx) {
                     es.gridInsertMouseLatch = false;
                     es.gridInsertDragIndex = -1;
                 } else if (mouseDown && (es.gridInsertMouseLatch || canvasPress)) {
-                    Vec2 uv = QuadGeometry::inverseBilinear(geometry.getCorners(), mouseNorm);
+                    // The surface parameters under the cursor, as drawn (ADR-049).
+                    Vec2 uv = geometry.surfaceParamsAt(mouseNorm);
                     if (!es.gridInsertMouseLatch) {
                         // Press edge: snapshot the grid (for one-step undo), then
                         // insert the new line where the user clicked.
                         es.gridInsertMouseLatch = true;
-                        es.gridInsertBeforeU = geometry.getUCoords();
-                        es.gridInsertBeforeV = geometry.getVCoords();
-                        es.gridInsertBeforeOffsets = geometry.getMeshVertices();
+                        es.gridInsertBefore = captureGrid(geometry);
                         if (uv.x > 0.001f && uv.x < 0.999f &&
                             uv.y > 0.001f && uv.y < 0.999f) {
                             es.gridInsertDragIndex = isColumn
@@ -381,8 +390,9 @@ void ViewportEditor::render(EditorContext& ctx) {
                                 : geometry.insertVDivision(uv.y);
                             m_project->setModified(true);
                         }
-                    } else if (es.gridInsertDragIndex >= 0) {
-                        // Held: drag the just-inserted line to fine-position it.
+                    } else if (es.gridInsertDragIndex >= 0 && uv.x >= 0.0f) {
+                        // Held over the surface: drag the just-inserted line to
+                        // fine-position it (off the surface it stays put).
                         if (isColumn) geometry.moveUDivision(es.gridInsertDragIndex, uv.x);
                         else          geometry.moveVDivision(es.gridInsertDragIndex, uv.y);
                         m_project->setModified(true);
@@ -392,10 +402,8 @@ void ViewportEditor::render(EditorContext& ctx) {
                     // recording the whole insert+drag as ONE undo step.
                     es.gridInsertMouseLatch = false;
                     if (es.gridInsertDragIndex >= 0) {
-                        GridSnapshot before{es.gridInsertBeforeU, es.gridInsertBeforeV,
-                                            es.gridInsertBeforeOffsets};
                         pushGridChange(es.commandHistory, es.quadRef(*selectedQuad), "Insert Division",
-                                       before, captureGrid(geometry));
+                                       es.gridInsertBefore, captureGrid(geometry));
                         es.gridInsert = EditorState::GridInsert::None;
                         es.gridInsertDragIndex = -1;
                     }
@@ -518,23 +526,47 @@ void ViewportEditor::render(EditorContext& ctx) {
                 meshHoveredVertex = -1;
                 meshDraggedVertex = -1;
                 meshSelectedVertex = -1;
+                es.meshSelectedHandle = es.meshHoveredHandle = es.meshDraggedHandle = -1;
 
             } else {
                 // ===== MESH EDIT MODE =====
                 auto positions = geometry.generateMeshPositions();
-                auto bilinearPositions = geometry.generateBilinearPositions();
-                int vertexCount = geometry.getVertexCount();
+                auto basePositions = geometry.generateBasePositions();
+                constexpr float MESH_HIT_RADIUS = 0.012f;  // mesh handles are smaller
 
-                if (meshDraggedVertex >= 0) {
+                // Grid-line handles of the selected vertex (ADR-049 §3). A handle drag
+                // records one undo step on release, as a vertex drag does.
+                if (es.meshDraggedHandle >= 0) {
+                    if (mouseDown) {
+                        geometry.setGridHandlePosition(
+                            meshSelectedVertex, es.meshDraggedHandle,
+                            es.meshHandleDragStartPos + (mouseNorm - es.meshHandleDragStartMousePos));
+                        m_project->setModified(true);
+                    } else {
+                        const VertexTangents after = geometry.getVertexTangent(meshSelectedVertex);
+                        if (after != es.meshHandleDragBefore) {
+                            es.commandHistory.execute(std::make_unique<MoveGridHandleCommand>(
+                                es.quadRef(*selectedQuad), meshSelectedVertex,
+                                es.meshDraggedHandle, es.meshHandleDragBefore, after));
+                        }
+                        es.meshSelectedHandle = es.meshDraggedHandle;
+                        es.meshDraggedHandle = -1;
+                    }
+                }
+
+                if (es.meshDraggedHandle >= 0) {
+                    meshHoveredVertex = -1;  // a handle drag owns the mouse
+                } else if (meshDraggedVertex >= 0) {
                     if (mouseDown) {
                         Vec2 mouseDelta = mouseNorm - meshDragStartMousePos;
                         Vec2 newOffset = meshDragStartOffset + mouseDelta;
 
-                        // Calculate actual position, apply snapping, then compute offset
-                        Vec2 bilinearPos = bilinearPositions[meshDraggedVertex];
-                        Vec2 actualPos = bilinearPos + newOffset;
+                        // Calculate actual position, apply snapping, then compute the
+                        // residual from the base
+                        Vec2 basePos = basePositions[meshDraggedVertex];
+                        Vec2 actualPos = basePos + newOffset;
                         Vec2 snappedPos = findSnapTarget(actualPos, selectedQuad->getId());
-                        newOffset = snappedPos - bilinearPos;
+                        newOffset = snappedPos - basePos;
 
                         geometry.setMeshVertexByIndex(meshDraggedVertex, newOffset);
                         m_project->setModified(true);
@@ -552,9 +584,12 @@ void ViewportEditor::render(EditorContext& ctx) {
                         meshDraggedVertex = -1;
                     }
                 } else {
+                    // Hover the nearest vertex or handle of the selected vertex; a
+                    // handle wins only when it is the closer one, so a short handle
+                    // never hides its own vertex.
                     meshHoveredVertex = -1;
-                    float closestDist = 0.012f;  // Mesh handles are smaller
-
+                    es.meshHoveredHandle = -1;
+                    float closestDist = MESH_HIT_RADIUS;
                     for (size_t i = 0; i < positions.size(); ++i) {
                         float dist = glm::length(mouseNorm - positions[i]);
                         if (dist < closestDist) {
@@ -562,8 +597,26 @@ void ViewportEditor::render(EditorContext& ctx) {
                             meshHoveredVertex = static_cast<int>(i);
                         }
                     }
+                    const unsigned handles = geometry.availableHandles(meshSelectedVertex);
+                    for (int h = 0; h < GRID_HANDLE_COUNT; ++h) {
+                        if (!((handles >> h) & 1u)) continue;
+                        const float dist = glm::length(
+                            mouseNorm - geometry.gridHandlePosition(meshSelectedVertex, h));
+                        if (dist < closestDist) {
+                            closestDist = dist;
+                            es.meshHoveredHandle = h;
+                            meshHoveredVertex = -1;
+                        }
+                    }
 
-                    if (canvasPress && meshHoveredVertex >= 0 && !insertArmed) {
+                    if (canvasPress && es.meshHoveredHandle >= 0 && !insertArmed) {
+                        es.meshDraggedHandle = es.meshSelectedHandle = es.meshHoveredHandle;
+                        es.meshHandleDragStartMousePos = mouseNorm;
+                        es.meshHandleDragStartPos =
+                            geometry.gridHandlePosition(meshSelectedVertex, es.meshHoveredHandle);
+                        es.meshHandleDragBefore = geometry.getVertexTangent(meshSelectedVertex);
+                    } else if (canvasPress && meshHoveredVertex >= 0 && !insertArmed) {
+                        if (meshHoveredVertex != meshSelectedVertex) es.meshSelectedHandle = -1;
                         meshDraggedVertex = meshHoveredVertex;
                         meshSelectedVertex = meshHoveredVertex;
                         meshDragStartMousePos = mouseNorm;
@@ -571,28 +624,13 @@ void ViewportEditor::render(EditorContext& ctx) {
                     }
                 }
 
-                // Keyboard controls for mesh editing
-                ImGuiIO& meshIO = ImGui::GetIO();
-                if (canvasOwnsEditingKeys(true)) {
-                    if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
-                        meshSelectedVertex = cycleVertex(meshSelectedVertex, vertexCount, meshIO.KeyShift);
-                    }
-
-                    if (meshSelectedVertex >= 0 && meshSelectedVertex < vertexCount) {
-                        const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
-                        const bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
-                        const bool left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true);
-                        const bool right = ImGui::IsKeyPressed(ImGuiKey_RightArrow, true);
-                        const Vec2 oldOffset = geometry.getMeshVertexByIndex(meshSelectedVertex);
-                        const Vec2 offset = oldOffset + nudgeDelta(up, down, left, right,
-                                                nudgeStep(meshIO.KeyShift, meshIO.KeyAlt));
-
-                        if (up || down || left || right) {
-                            es.commandHistory.execute(std::make_unique<MoveMeshVertexCommand>(
-                                es.quadRef(*selectedQuad), meshSelectedVertex, oldOffset, offset));
-                            m_project->setModified(true);
-                        }
-                    }
+                // Keyboard: Tab cycles vertices, H their grid-line handles, arrows nudge.
+                // Not mid handle-drag, which edits the selected vertex's handle.
+                if (es.meshDraggedHandle < 0 && canvasOwnsEditingKeys(true) &&
+                    applyMeshEditKeys(readCanvasKeys(), es.quadRef(*selectedQuad), geometry,
+                                      es.commandHistory, meshSelectedVertex,
+                                      es.meshSelectedHandle)) {
+                    m_project->setModified(true);
                 }
 
                 // Reset corner state when in mesh mode
@@ -608,6 +646,7 @@ void ViewportEditor::render(EditorContext& ctx) {
             meshHoveredVertex = -1;
             meshDraggedVertex = -1;
             meshSelectedVertex = -1;
+            es.meshSelectedHandle = es.meshHoveredHandle = es.meshDraggedHandle = -1;
         }
     };
     handleInput();
@@ -655,6 +694,9 @@ void ViewportEditor::render(EditorContext& ctx) {
                 m_renderer->renderMeshGrid(*selectedQuadForHandles,
                                            glm::vec4(0.0f, 0.8f, 1.0f, 0.6f), 1.0f);
                 m_renderer->renderMeshHandles(*selectedQuadForHandles, meshHoveredVertex, meshDraggedVertex, meshSelectedVertex);
+                m_renderer->renderGridHandles(*selectedQuadForHandles, meshSelectedVertex,
+                                              es.meshSelectedHandle, es.meshHoveredHandle,
+                                              es.meshDraggedHandle);
             } else {
                 // CORNERS_ONLY mode (default) - show just the 4 corner handles
                 m_renderer->renderCornerHandles(*selectedQuadForHandles, cornerHoveredVertex, cornerDraggedVertex, cornerSelectedVertex);

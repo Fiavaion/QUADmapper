@@ -1,0 +1,72 @@
+{
+  "$schema": "quadmapper/project/1.0",
+  "version": "3.3.0",
+  "name": "Show v3.3 mesh",
+  "scenes": [
+    {
+      "id": "5a1b2c3d-0000-4000-8000-0000000000c1",
+      "name": "Scene 1",
+      "view": {
+        "pan": [0.0, 0.0],
+        "zoom": 1.0,
+        "gridVisible": true,
+        "snapToGrid": false
+      },
+      "quads": [
+        {
+          "id": "5a1b2c3d-0000-4000-8000-000000000001",
+          "name": "Keystone warp",
+          "zOrder": 0,
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "geometry": {
+            "corners": [[0.1, 0.1], [0.9, 0.3], [0.9, 0.7], [0.1, 0.9]],
+            "meshResolution": 2,
+            "meshMode": 1,
+            "uCoords": [0.0, 0.4, 1.0],
+            "vCoords": [0.0, 0.5, 1.0],
+            "meshOffsets": [
+              [0.0, 0.0], [0.01, -0.02], [0.0, 0.0],
+              [-0.015, 0.0], [0.03, 0.025], [0.02, 0.0],
+              [0.0, 0.0], [0.0, 0.015], [0.0, 0.0]
+            ],
+            "bezierEnabled": true,
+            "bezierOffsets": [
+              [0.0, -0.04], [0.0, -0.02], [0.03, 0.0], [0.03, 0.0],
+              [0.0, 0.05], [0.0, 0.02], [-0.02, 0.0], [-0.01, 0.0]
+            ]
+          },
+          "textureBinding": {
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": false,
+            "flipV": false
+          }
+        },
+        {
+          "id": "5a1b2c3d-0000-4000-8000-000000000002",
+          "name": "Keystone, no warp",
+          "zOrder": 1,
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "geometry": {
+            "corners": [[0.2, 0.2], [0.6, 0.25], [0.6, 0.55], [0.2, 0.6]],
+            "meshResolution": 3,
+            "meshMode": 1
+          },
+          "textureBinding": {
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": false,
+            "flipV": false
+          }
+        }
+      ]
+    }
+  ],
+  "outputs": []
+}

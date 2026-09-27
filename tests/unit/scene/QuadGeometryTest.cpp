@@ -306,10 +306,10 @@ TEST(QuadGeometryTest, HasMeshModificationsReturnsFalseAfterReset) {
 }
 
 // =============================================================================
-// Bilinear Position Generation Tests
+// Base Position Generation Tests
 // =============================================================================
 
-TEST(QuadGeometryTest, GenerateBilinearPositionsIgnoresMeshOffsets) {
+TEST(QuadGeometryTest, GenerateBasePositionsIgnoresMeshOffsets) {
     QuadGeometry geometry;
     geometry.setMeshResolution(2);
     geometry.setMeshMode(MeshMode::MESH_EDIT);
@@ -325,10 +325,10 @@ TEST(QuadGeometryTest, GenerateBilinearPositionsIgnoresMeshOffsets) {
     // Add an offset to the center vertex
     geometry.setMeshVertex(1, 1, Vec2(0.5f, 0.5f));
 
-    // generateBilinearPositions should ignore offsets
-    auto bilinear = geometry.generateBilinearPositions();
-    EXPECT_NEAR(bilinear[4].x, 0.5f, 0.001f);
-    EXPECT_NEAR(bilinear[4].y, 0.5f, 0.001f);
+    // generateBasePositions should ignore offsets
+    auto base = geometry.generateBasePositions();
+    EXPECT_NEAR(base[4].x, 0.5f, 0.001f);
+    EXPECT_NEAR(base[4].y, 0.5f, 0.001f);
 
     // generateMeshPositions should apply offsets in MESH_EDIT mode
     auto mesh = geometry.generateMeshPositions();
@@ -395,17 +395,36 @@ TEST(QuadGeometryControlGridTest, InsertUDivisionAddsLineAndGrowsGrid) {
     EXPECT_FLOAT_EQ(g.getUCoords().back(), 1.0f);
 }
 
-TEST(QuadGeometryControlGridTest, InsertDivisionInterpolatesNeighbourOffsets) {
+TEST(QuadGeometryControlGridTest, InsertedVerticesLandOnTheCurrentSurface) {
     QuadGeometry g;
     g.setUniformGrid(2);
     g.setMeshMode(MeshMode::MESH_EDIT);
-    // Row 0: col0 offset (0,0), col1 (at u=0.5) offset (0.2, 0). Insert at u=0.25
-    // -> new col between them, offset interpolated at t=0.5 -> (0.1, 0).
-    g.setMeshVertex(0, 0, Vec2(0.0f, 0.0f));
+    g.setCorners({Vec2(0.10f, 0.10f), Vec2(0.90f, 0.30f),
+                  Vec2(0.90f, 0.70f), Vec2(0.10f, 0.90f)});
     g.setMeshVertex(0, 1, Vec2(0.2f, 0.0f));
-    g.insertUDivision(0.25f);
-    EXPECT_NEAR(g.getMeshVertex(0, 1).x, 0.1f, 1e-4f);  // new column
-    EXPECT_NEAR(g.getMeshVertex(0, 2).x, 0.2f, 1e-4f);  // old col1 shifted right
+    g.setMeshVertex(1, 1, Vec2(0.0f, 0.05f));
+    // A new column: each of its vertices is where the surface already was.
+    std::vector<Vec2> column;
+    for (float v : g.getVCoords()) column.push_back(g.surfacePoint(0.25f, v));
+    ASSERT_EQ(g.insertUDivision(0.25f), 1);
+    EXPECT_NEAR(g.getMeshVertex(0, 2).x, 0.2f, 1e-6f);  // old col1 shifted right
+    std::vector<Vec2> positions = g.generateMeshPositions();
+    for (size_t r = 0; r < column.size(); ++r) {
+        const Vec2 p = positions[r * 4 + 1];
+        EXPECT_NEAR(p.x, column[r].x, 1e-5f) << "row " << r;
+        EXPECT_NEAR(p.y, column[r].y, 1e-5f) << "row " << r;
+    }
+
+    // A new row, likewise.
+    std::vector<Vec2> row;
+    for (float u : g.getUCoords()) row.push_back(g.surfacePoint(u, 0.3f));
+    ASSERT_EQ(g.insertVDivision(0.3f), 1);
+    positions = g.generateMeshPositions();
+    for (size_t c = 0; c < row.size(); ++c) {
+        const Vec2 p = positions[4 + c];
+        EXPECT_NEAR(p.x, row[c].x, 1e-5f) << "column " << c;
+        EXPECT_NEAR(p.y, row[c].y, 1e-5f) << "column " << c;
+    }
 }
 
 TEST(QuadGeometryControlGridTest, RemoveUDivisionDropsInteriorLinePreservingOthers) {
@@ -468,37 +487,40 @@ TEST(QuadGeometryControlGridTest, MoveDivisionRepositionsLineClampedBetweenNeigh
     EXPECT_FLOAT_EQ(g.getUCoord(0), 0.0f);
 }
 
-// --- Inverse bilinear (ADR-038 batch 3b: click-on-edge insert) --------------
+// --- Surface hit-test (ADR-049: click-to-select and click-on-edge insert) ------
 
-TEST(QuadGeometryControlGridTest, InverseBilinearRoundTripsOnWarpedQuad) {
-    // A deliberately non-rectangular (keystoned) quad: TL,TR,BR,BL.
-    std::array<Vec2, 4> corners = {
-        Vec2(0.20f, 0.25f),  // TL
-        Vec2(0.80f, 0.15f),  // TR
-        Vec2(0.90f, 0.85f),  // BR
-        Vec2(0.10f, 0.75f),  // BL
-    };
+TEST(QuadGeometryControlGridTest, SurfaceParamsAtRoundTripsOnKeystonedQuad) {
     QuadGeometry g;
-    g.setCorners(corners);
-
-    // For several (u,v), forward-map to a point then invert; expect (u,v) back.
+    g.setCorners({Vec2(0.20f, 0.25f), Vec2(0.80f, 0.15f),
+                  Vec2(0.90f, 0.85f), Vec2(0.10f, 0.75f)});
+    // The projective base is drawn exactly by the tessellation, so (u,v) comes back.
     const float samples[] = {0.1f, 0.25f, 0.5f, 0.7f, 0.9f};
     for (float u : samples) {
         for (float v : samples) {
-            Vec2 p = g.transformUVToPosition(Vec2(u, v));
-            Vec2 uv = QuadGeometry::inverseBilinear(corners, p);
-            EXPECT_NEAR(uv.x, u, 1e-3f) << "u=" << u << " v=" << v;
-            EXPECT_NEAR(uv.y, v, 1e-3f) << "u=" << u << " v=" << v;
+            const Vec2 uv = g.surfaceParamsAt(g.surfacePoint(u, v));
+            EXPECT_NEAR(uv.x, u, 1e-4f) << "u=" << u << " v=" << v;
+            EXPECT_NEAR(uv.y, v, 1e-4f) << "u=" << u << " v=" << v;
         }
     }
+    EXPECT_LT(g.surfaceParamsAt(Vec2(0.05f, 0.5f)).x, 0.0f);  // left of the quad
 }
 
-TEST(QuadGeometryControlGridTest, InverseBilinearWorksForUnitSquare) {
-    std::array<Vec2, 4> unit = {
-        Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)};
-    Vec2 uv = QuadGeometry::inverseBilinear(unit, Vec2(0.3f, 0.8f));
-    EXPECT_NEAR(uv.x, 0.3f, 1e-4f);
-    EXPECT_NEAR(uv.y, 0.8f, 1e-4f);
+TEST(QuadGeometryControlGridTest, SurfaceParamsAtFollowsTheMeshWarp) {
+    QuadGeometry g;
+    g.setCorners({Vec2(0.2f, 0.2f), Vec2(0.8f, 0.2f), Vec2(0.8f, 0.8f), Vec2(0.2f, 0.8f)});
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    g.setMeshVertex(1, 2, Vec2(0.15f, 0.0f));  // pull the right edge's middle outwards
+    const Vec2 bulge(0.9f, 0.5f);               // outside the corners, inside the warp
+    const Vec2 uv = g.surfaceParamsAt(bulge);
+    ASSERT_GE(uv.x, 0.0f);
+    EXPECT_GT(uv.x, 0.9f);  // near the pulled edge, where the base is at x < 0.8
+    const Vec2 p = g.surfacePoint(uv.x, uv.y);  // within the tessellation's chord error
+    EXPECT_NEAR(p.x, bulge.x, 2e-3f);
+    EXPECT_NEAR(p.y, bulge.y, 2e-3f);
+
+    g.setMeshMode(MeshMode::CORNERS_ONLY);  // the warp is not drawn in corner mode
+    EXPECT_LT(g.surfaceParamsAt(bulge).x, 0.0f);
 }
 
 // --- Perspective-correct surface (foundation audit 0.1) ------------------------
@@ -511,6 +533,13 @@ QuadGeometry keystonedQuad() {
     g.setCorners({Vec2(0.10f, 0.10f), Vec2(0.90f, 0.30f),
                   Vec2(0.90f, 0.70f), Vec2(0.10f, 0.90f)});
     return g;
+}
+
+// n + 1 even parameters 0, 1/n, ..., 1.
+std::vector<float> evenParams(int n) {
+    std::vector<float> params;
+    for (int i = 0; i <= n; ++i) params.push_back(static_cast<float>(i) / n);
+    return params;
 }
 
 float cross2(const Vec2& a, const Vec2& b) { return a.x * b.y - a.y * b.x; }
@@ -699,7 +728,7 @@ TEST(QuadGeometrySurfaceTest, SampledTexCoordInterpolationIsExactlyProjective) {
     g.setCorners({Vec2(0.10f, 0.10f), Vec2(0.90f, 0.40f),
                   Vec2(0.90f, 0.60f), Vec2(0.10f, 0.90f)});  // 4:1 keystone
     const int n = 2;
-    const auto samples = g.sampleSurface(n);
+    const auto samples = g.sampleSurface(evenParams(n), evenParams(n));
     ASSERT_EQ(samples.size(), 9u);
 
     // Midpoint of the edge between sample (0,0) and sample (1,1) of the coarse grid.
@@ -718,7 +747,7 @@ TEST(QuadGeometrySurfaceTest, SampleSurfaceMatchesSurfacePoint) {
     QuadGeometry g = keystonedQuad();
     curveAllEdges(g);
     const int n = 8;
-    const auto samples = g.sampleSurface(n);
+    const auto samples = g.sampleSurface(evenParams(n), evenParams(n));
     ASSERT_EQ(samples.size(), static_cast<size_t>((n + 1) * (n + 1)));
     for (int r = 0; r <= n; ++r) {
         for (int c = 0; c <= n; ++c) {
@@ -728,6 +757,185 @@ TEST(QuadGeometrySurfaceTest, SampleSurfaceMatchesSurfacePoint) {
             EXPECT_NEAR(s.y, p.y, 1e-6f);
         }
     }
+}
+
+// --- Unified surface evaluator S = B + R (ADR-049) ------------------------------
+
+namespace {
+
+// A keystoned, bezier-edged quad in mesh edit on a non-uniform 3x2 grid, with every
+// control vertex moved by a different residual.
+QuadGeometry warpedMesh() {
+    QuadGeometry g = keystonedQuad();
+    curveAllEdges(g);
+    g.setGridCoords({0.0f, 0.3f, 0.55f, 1.0f}, {0.0f, 0.4f, 1.0f});
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    for (int i = 0; i < g.getVertexCount(); ++i) {
+        g.setMeshVertexByIndex(i, Vec2(0.02f * std::sin(1.7f * i + 0.3f),
+                                       0.03f * std::cos(2.3f * i + 0.1f)));
+    }
+    return g;
+}
+
+// One-sided dS/du (dS/dv when !alongU) at (u,v), second-order accurate.
+Vec2 sideDerivative(const QuadGeometry& g, float u, float v, bool alongU, bool after) {
+    constexpr float H = 2e-3f;
+    const float s = after ? H : -H;
+    auto at = [&](float k) {
+        return alongU ? g.surfacePoint(u + k * s, v) : g.surfacePoint(u, v + k * s);
+    };
+    return (-3.0f * at(0.0f) + 4.0f * at(1.0f) - at(2.0f)) / (2.0f * s);
+}
+
+}  // namespace
+
+TEST(QuadGeometryEvaluatorTest, ZeroResidualsAreTheCornerSurfaceExactly) {
+    // Corner-only equivalence: entering mesh edit with nothing moved changes nothing.
+    QuadGeometry corner = keystonedQuad();
+    curveAllEdges(corner);
+    corner.setGridCoords({0.0f, 0.3f, 0.55f, 1.0f}, {0.0f, 0.4f, 1.0f});
+    QuadGeometry mesh = corner;
+    mesh.setMeshMode(MeshMode::MESH_EDIT);
+    EXPECT_FALSE(mesh.hasResidualSurface());
+    EXPECT_EQ(mesh.tessellationU(), corner.tessellationU());
+    const auto a = corner.sampleSurface(corner.tessellationU(), corner.tessellationV());
+    const auto b = mesh.sampleSurface(mesh.tessellationU(), mesh.tessellationV());
+    ASSERT_EQ(a.size(), b.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+        EXPECT_EQ(a[i].position, b[i].position) << i;
+        EXPECT_EQ(a[i].q, b[i].q) << i;
+    }
+    // And in corner mode a warp is not drawn at all.
+    QuadGeometry hidden = warpedMesh();
+    hidden.setMeshMode(MeshMode::CORNERS_ONLY);
+    EXPECT_EQ(hidden.surfacePoint(0.4f, 0.7f), hidden.basePoint(0.4f, 0.7f));
+}
+
+TEST(QuadGeometryEvaluatorTest, ExactAtControlVertices) {
+    const QuadGeometry g = warpedMesh();
+    const auto positions = g.generateMeshPositions();
+    const auto samples = g.sampleSurface(g.getUCoords(), g.getVCoords());
+    for (int r = 0; r < g.vertsPerCol(); ++r) {
+        for (int c = 0; c < g.vertsPerRow(); ++c) {
+            const size_t i = static_cast<size_t>(r * g.vertsPerRow() + c);
+            const Vec2 expected = g.basePoint(g.getUCoord(c), g.getVCoord(r)) + g.getMeshVertices()[i];
+            EXPECT_NEAR(positions[i].x, expected.x, 1e-6f);
+            EXPECT_NEAR(positions[i].y, expected.y, 1e-6f);
+            EXPECT_NEAR(samples[i].position.x, expected.x, 1e-6f);
+            EXPECT_NEAR(samples[i].position.y, expected.y, 1e-6f);
+        }
+    }
+}
+
+TEST(QuadGeometryEvaluatorTest, C1AcrossCellBoundariesWithAutoTangents) {
+    const QuadGeometry g = warpedMesh();
+    // Across each interior U line and V line, at vertices and mid-edge.
+    for (int c = 1; c + 1 < g.vertsPerRow(); ++c) {
+        for (float v : {0.2f, 0.4f, 0.75f}) {
+            const Vec2 l = sideDerivative(g, g.getUCoord(c), v, true, false);
+            const Vec2 r = sideDerivative(g, g.getUCoord(c), v, true, true);
+            EXPECT_LT(glm::length(l - r), 2e-3f) << "u line " << c << " v " << v;
+        }
+    }
+    for (float u : {0.1f, 0.3f, 0.42f, 0.8f}) {
+        const Vec2 above = sideDerivative(g, u, g.getVCoord(1), false, false);
+        const Vec2 below = sideDerivative(g, u, g.getVCoord(1), false, true);
+        EXPECT_LT(glm::length(above - below), 2e-3f) << "v line at u " << u;
+    }
+}
+
+TEST(QuadGeometryEvaluatorTest, ExplicitTangentsAreHonoured) {
+    QuadGeometry g = warpedMesh();
+    const int vertex = 1 * g.vertsPerRow() + 1;  // interior: u = 0.3, v = 0.4
+    const float u = g.getUCoord(1), v = g.getVCoord(1);
+    const Vec2 leftBefore = sideDerivative(g, u, v, true, false);
+    EXPECT_EQ(g.availableHandles(vertex), 0xFu);
+
+    const Vec2 target = g.gridHandlePosition(vertex, GRID_HANDLE_U_AFTER) + Vec2(0.02f, -0.03f);
+    g.setGridHandlePosition(vertex, GRID_HANDLE_U_AFTER, target);
+    EXPECT_TRUE(g.getVertexTangent(vertex).isExplicit(GRID_HANDLE_U_AFTER));
+    const Vec2 back = g.gridHandlePosition(vertex, GRID_HANDLE_U_AFTER);
+    EXPECT_NEAR(back.x, target.x, 1e-5f);
+    EXPECT_NEAR(back.y, target.y, 1e-5f);
+
+    // The curve leaves the vertex towards the handle (bezier convention: the handle
+    // sits a third of the cell along the tangent) ...
+    const Vec2 vertexPos = g.generateMeshPositions()[static_cast<size_t>(vertex)];
+    const float span = g.getUCoord(2) - u;
+    const Vec2 expected = 3.0f * (target - vertexPos) / span;
+    const Vec2 right = sideDerivative(g, u, v, true, true);
+    EXPECT_LT(glm::length(right - expected), 3e-3f * glm::length(expected));
+    // ... and the other side keeps its automatic tangent, so the line now kinks.
+    EXPECT_LT(glm::length(sideDerivative(g, u, v, true, false) - leftBefore), 2e-3f);
+    EXPECT_GT(glm::length(right - leftBefore), 0.05f);
+
+    // A V handle moves the column line the same way.
+    const Vec2 vTarget = g.gridHandlePosition(vertex, GRID_HANDLE_V_BEFORE) + Vec2(-0.01f, 0.0f);
+    g.setGridHandlePosition(vertex, GRID_HANDLE_V_BEFORE, vTarget);
+    const Vec2 up = sideDerivative(g, u, v, false, false);
+    const Vec2 vExpected = -3.0f * (vTarget - vertexPos) / (v - g.getVCoord(0));
+    EXPECT_LT(glm::length(up - vExpected), 3e-3f * glm::length(vExpected));
+}
+
+TEST(QuadGeometryEvaluatorTest, BoundaryVerticesHaveNoOutwardHandles) {
+    QuadGeometry g = warpedMesh();
+    EXPECT_EQ(g.availableHandles(0),  // top-left corner
+              (1u << GRID_HANDLE_U_AFTER) | (1u << GRID_HANDLE_V_AFTER));
+    const int last = g.getVertexCount() - 1;  // bottom-right corner
+    EXPECT_EQ(g.availableHandles(last),
+              (1u << GRID_HANDLE_U_BEFORE) | (1u << GRID_HANDLE_V_BEFORE));
+    const VertexTangents before = g.getVertexTangent(0);
+    g.setGridHandlePosition(0, GRID_HANDLE_U_BEFORE, Vec2(0.0f));  // does not exist
+    EXPECT_EQ(g.getVertexTangent(0), before);
+}
+
+TEST(QuadGeometryEvaluatorTest, HandlesAndVerticesFollowTheCorners) {
+    // Residuals and tangents are relative to B, so moving the corners carries the
+    // mesh with them: a translation moves every vertex and handle by the same amount.
+    QuadGeometry g = warpedMesh();
+    const int vertex = 1 * g.vertsPerRow() + 2;
+    g.setGridHandlePosition(vertex, GRID_HANDLE_V_AFTER,
+                            g.gridHandlePosition(vertex, GRID_HANDLE_V_AFTER) + Vec2(0.03f, 0.0f));
+    const Vec2 handle = g.gridHandlePosition(vertex, GRID_HANDLE_V_AFTER);
+    const Vec2 position = g.generateMeshPositions()[static_cast<size_t>(vertex)];
+    const Vec2 d(0.05f, -0.02f);
+    std::array<Vec2, 4> corners = g.getCorners();
+    for (Vec2& c : corners) c += d;
+    g.setCorners(corners);
+    const Vec2 movedHandle = g.gridHandlePosition(vertex, GRID_HANDLE_V_AFTER);
+    const Vec2 movedPosition = g.generateMeshPositions()[static_cast<size_t>(vertex)];
+    EXPECT_NEAR(movedHandle.x, handle.x + d.x, 1e-5f);
+    EXPECT_NEAR(movedHandle.y, handle.y + d.y, 1e-5f);
+    EXPECT_NEAR(movedPosition.x, position.x + d.x, 1e-5f);
+    EXPECT_NEAR(movedPosition.y, position.y + d.y, 1e-5f);
+}
+
+TEST(QuadGeometryEvaluatorTest, BilinearOffsetsConvertToTheSameAbsolutePositions) {
+    // A pre-ADR-049 file: offsets from the bilinear patch on a keystoned, curved quad.
+    QuadGeometry g = warpedMesh();
+    std::vector<Vec2> expected;
+    for (int r = 0; r < g.vertsPerCol(); ++r) {
+        for (int c = 0; c < g.vertsPerRow(); ++c) {
+            expected.push_back(g.transformUVToPosition(Vec2(g.getUCoord(c), g.getVCoord(r))) +
+                               g.getMeshVertex(r, c));
+        }
+    }
+    g.convertBilinearOffsetsToResiduals();
+    const auto positions = g.generateMeshPositions();
+    for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_NEAR(positions[i].x, expected[i].x, 1e-5f) << i;
+        EXPECT_NEAR(positions[i].y, expected[i].y, 1e-5f) << i;
+    }
+}
+
+TEST(QuadGeometryEvaluatorTest, ResetMeshClearsResidualsAndHandles) {
+    QuadGeometry g = warpedMesh();
+    g.setGridHandlePosition(5, GRID_HANDLE_U_BEFORE, Vec2(0.5f, 0.5f));  // row 1, column 1
+    ASSERT_TRUE(g.hasExplicitTangents());
+    g.resetMesh();
+    EXPECT_FALSE(g.hasMeshModifications());
+    EXPECT_FALSE(g.hasResidualSurface());
+    EXPECT_EQ(g.surfacePoint(0.3f, 0.6f), g.basePoint(0.3f, 0.6f));
 }
 
 } // namespace test

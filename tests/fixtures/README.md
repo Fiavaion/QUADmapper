@@ -32,3 +32,4 @@ and fails if a `.qmap` is added here without a load check.
 - `projects/v3.1-sources.qmap` - `sources` table + `mediaId` (procedural, missing video)
 - `projects/v3.2-objects-projector.qmap` - scene `objects` (missing mesh file) + output `projector` with calibration points
 - `projects/v3.3-control-audio-lock.qmap` - MIDI mappings (`control`), master `audio`, a missing clip whose transport is timeline-locked Ping-Pong with volume/mute
+- `projects/v3.3-mesh-keystone.qmap` - a keystoned, bezier-edged mesh warp saved before ADR-049 (offsets from the bilinear patch, no `meshBase`), plus a keystoned mesh-edit quad with no offsets

@@ -121,6 +121,50 @@ void MoveMeshVertexCommand::mergeWith(const Command& other) {
     }
 }
 
+// MoveGridHandleCommand implementation
+MoveGridHandleCommand::MoveGridHandleCommand(const QuadRef& target, int vertexIndex, int handle,
+                                             const VertexTangents& oldTangents,
+                                             const VertexTangents& newTangents)
+    : target_(target)
+    , vertexIndex_(vertexIndex)
+    , handle_(handle)
+    , oldTangents_(oldTangents)
+    , newTangents_(newTangents)
+{
+}
+
+bool MoveGridHandleCommand::execute() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->getGeometry().setVertexTangent(vertexIndex_, newTangents_);
+    return true;
+}
+
+bool MoveGridHandleCommand::undo() {
+    Quad* quad = resolveForCommand(target_, getDescription());
+    if (!quad) return false;
+    quad->getGeometry().setVertexTangent(vertexIndex_, oldTangents_);
+    return true;
+}
+
+std::string MoveGridHandleCommand::getDescription() const {
+    return "Move grid handle";
+}
+
+bool MoveGridHandleCommand::canMergeWith(const Command& other) const {
+    auto* otherMove = dynamic_cast<const MoveGridHandleCommand*>(&other);
+    if (!otherMove) return false;
+    return target_.sameTarget(otherMove->target_) && vertexIndex_ == otherMove->vertexIndex_ &&
+           handle_ == otherMove->handle_;
+}
+
+void MoveGridHandleCommand::mergeWith(const Command& other) {
+    auto* otherMove = dynamic_cast<const MoveGridHandleCommand*>(&other);
+    if (otherMove) {
+        newTangents_ = otherMove->newTangents_;
+    }
+}
+
 // CreateQuadCommand implementation
 CreateQuadCommand::CreateQuadCommand(QuadResolver& resolver, const UUID& sceneId, const std::string& name)
     : created_{&resolver, sceneId, UUID()}

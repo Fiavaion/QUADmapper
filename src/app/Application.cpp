@@ -1520,7 +1520,7 @@ void Application::render() {
                 }
             }
 
-            // Alt+R : Reset mesh to bilinear
+            // Alt+R : Reset mesh (residuals and grid handles) to the corner-pin surface
             if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
                 if (geo.getMeshMode() == MeshMode::MESH_EDIT && geo.hasMeshModifications()) {
                     geo.resetMesh();

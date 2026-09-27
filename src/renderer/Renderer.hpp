@@ -5,6 +5,7 @@
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/MeshObject.hpp"
+#include "scene/MeshSubdivision.hpp"
 #include "scene/ProjectorCamera.hpp"
 #include <glm/glm.hpp>
 #include <memory>
@@ -13,12 +14,6 @@
 #include <vector>
 
 namespace quadmapper {
-
-// Vertex structure for quad mesh
-struct QuadVertex {
-    float position[2];
-    float texCoord[3];  // (u*q, v*q, q); quad.frag divides by q for projective mapping
-};
 
 struct GpuMesh;  // a MeshObject's cached VAO/VBO/EBO (Renderer.cpp)
 struct GpuQuad;  // a quad's cached tessellation VAO/VBO/EBO (Renderer.cpp)
@@ -67,8 +62,14 @@ public:
     // Render selection outline for a quad
     void renderQuadOutline(const Quad& quad, const glm::vec4& color, float lineWidth = 2.0f);
 
-    // Render the control-grid wireframe (division lines) for mesh-edit feedback.
+    // Render the control-grid wireframe for mesh-edit feedback: each division line
+    // drawn along the surface (ADR-049), so it bends as the warp does.
     void renderMeshGrid(const Quad& quad, const glm::vec4& color, float lineWidth = 1.0f);
+
+    // Render the grid tangent handles of control vertex `vertex` (ADR-049 §3) with
+    // lines from the vertex. Handle indices are GridHandle values, -1 for none.
+    void renderGridHandles(const Quad& quad, int vertex, int selectedHandle = -1,
+                           int hoveredHandle = -1, int draggedHandle = -1);
 
     // Render corner handles for corner-pin warping (CORNERS_ONLY mode)
     // hoveredIndex: index of handle under mouse (-1 if none, 0-3 for corners)
@@ -115,10 +116,12 @@ private:
     void createOutlineBuffers();
     void createHandleBuffers();
     void createCornerIndexBuffer();
-    // Fill vertices_ with the geometry's render mesh, and indices_ with its triangles
-    // unless it is a corner-pin patch, whose triangles are always those in
-    // cornerIndexBuffer_. Returns true for such a patch.
+    // Fill vertices_ and indices_ with the geometry's render mesh (MeshSubdivision).
+    // Returns true when it is a kCornerPatchDivisions-square grid, whose triangles are
+    // the ones in cornerIndexBuffer_.
     bool tessellate(const QuadGeometry& geometry);
+    // Upload gridVertices_ as GL_LINES and draw them with the outline shader.
+    void drawGridLines(const glm::vec4& color, float lineWidth);
     // The quad's GPU mesh, tessellated and uploaded on first draw or when its
     // geometry changed since the last upload.
     const GpuQuad& quadBuffersFor(const Quad& quad);
@@ -166,11 +169,12 @@ private:
     uint32_t handleVBO_ = 0;
 
     // Tessellation scratch (reused, so re-tessellating allocates nothing)
-    std::vector<QuadVertex> vertices_;
+    std::vector<MeshVertex> vertices_;
     std::vector<uint32_t> indices_;
 
-    // A corner-pin patch is an N×N grid; every one shares these indices (TD-22).
-    static constexpr int kCornerPatchDivisions = 32;
+    // A quad whose surface is its corner pin tessellates to an N×N grid; every such
+    // grid shares these indices (TD-22), and so does any mesh-edit one of that size.
+    static constexpr int kCornerPatchDivisions = RENDER_MIN_SEGMENTS;
     uint32_t cornerIndexBuffer_ = 0;
     int cornerIndexCount_ = 0;
 

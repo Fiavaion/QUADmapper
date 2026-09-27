@@ -594,10 +594,39 @@ TEST_F(SceneCommandsTest, QuadPropertyCommandWorks) {
     EXPECT_FALSE(cmd->execute());
 }
 
+// Grid-line handle moves (ADR-049 §3): consecutive moves of one handle merge into one
+// step, another handle is its own step, and a deleted quad makes them no-ops.
+TEST_F(SceneCommandsTest, MoveGridHandleMergesPerHandleAndIsSafeAfterDelete) {
+    Quad* quad = manager().createQuad();
+    QuadGeometry& geo = quad->getGeometry();
+    geo.setUniformGrid(2);
+    auto move = [&](int handle, const Vec2& by) {
+        const VertexTangents before = geo.getVertexTangent(4);
+        geo.setGridHandlePosition(4, handle, geo.gridHandlePosition(4, handle) + by);
+        history_->execute(std::make_unique<MoveGridHandleCommand>(ref(quad), 4, handle, before,
+                                                                  geo.getVertexTangent(4)));
+    };
+    move(GRID_HANDLE_U_AFTER, Vec2(0.01f, 0.0f));
+    move(GRID_HANDLE_U_AFTER, Vec2(0.01f, 0.0f));
+    move(GRID_HANDLE_V_BEFORE, Vec2(0.0f, 0.01f));
+
+    ASSERT_TRUE(history_->undo());  // the V handle
+    EXPECT_FALSE(geo.getVertexTangent(4).isExplicit(GRID_HANDLE_V_BEFORE));
+    EXPECT_TRUE(geo.getVertexTangent(4).isExplicit(GRID_HANDLE_U_AFTER));
+    ASSERT_TRUE(history_->undo());  // both U moves at once
+    EXPECT_EQ(geo.getVertexTangent(4), VertexTangents{});
+
+    ASSERT_TRUE(history_->redo());
+    manager().deleteQuad(quad->getId());
+    EXPECT_FALSE(history_->redo());
+    EXPECT_FALSE(history_->undo());
+}
+
 // Grid undo (app/GridUndo.hpp) through the id-based command
 TEST_F(SceneCommandsTest, GridChangeUndoRestoresGridAndIsSafeAfterDelete) {
     Quad* quad = manager().createQuad();
     QuadGeometry& geo = quad->getGeometry();
+    geo.setGridHandlePosition(1, GRID_HANDLE_V_AFTER, Vec2(0.75f, 0.4f));  // a grid-line handle
     GridSnapshot before = captureGrid(geo);
     geo.insertUDivision(0.3f);
     pushGridChange(*history_, ref(quad), "Add Column", before, captureGrid(geo));
@@ -606,6 +635,8 @@ TEST_F(SceneCommandsTest, GridChangeUndoRestoresGridAndIsSafeAfterDelete) {
     history_->undo();
     EXPECT_EQ(geo.getUCoords(), before.u);
     EXPECT_EQ(geo.getMeshVertices(), before.offsets);
+    EXPECT_EQ(geo.getVertexTangents(), before.tangents);
+    EXPECT_TRUE(geo.getVertexTangent(1).isExplicit(GRID_HANDLE_V_AFTER));
 
     history_->redo();
     EXPECT_EQ(geo.getColumns(), columnsAfter);

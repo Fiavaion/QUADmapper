@@ -31,6 +31,14 @@ namespace quadmapper {
 //           older readers dropped it.
 //         - "audio": {masterVolume, masterMuted} and sources[].transport.volume /
 //           muted (ADR-050 §5); missing = full volume, not muted.
+//         - quad geometry "meshBase": "surface" (ADR-049), written with meshOffsets:
+//           the offsets are residuals from the corner-pin surface. Without it they are
+//           offsets from the bilinear corner patch (every earlier file), converted on
+//           load so each control vertex keeps its absolute position. Older readers
+//           take new residuals as bilinear offsets (vertices shift on keystones).
+//         - quad geometry "meshTangents" (ADR-049 §3): grid-line handles, per vertex
+//           [{"vertex": i, "handles": [u-, u+, v-, v+]}], each [x, y] or null (auto);
+//           written only for vertices with a handle set. Missing = all automatic.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
@@ -159,7 +167,7 @@ static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
         j["vCoords"] = geometry.getVCoords();
     }
 
-    // Serialize mesh vertex offsets if any exist
+    // Mesh residuals (ADR-049) if the mesh is warped, marked as surface-relative.
     if (geometry.hasMeshModifications()) {
         const auto& meshVertices = geometry.getMeshVertices();
         nlohmann::json meshOffsetsJson = nlohmann::json::array();
@@ -167,6 +175,24 @@ static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
             meshOffsetsJson.push_back(serializeVec2(offset));
         }
         j["meshOffsets"] = meshOffsetsJson;
+        j["meshBase"] = "surface";
+    }
+
+    // Grid-line handles (ADR-049 §3): only the vertices that have one set.
+    if (geometry.hasExplicitTangents()) {
+        nlohmann::json tangentsJson = nlohmann::json::array();
+        const auto& tangents = geometry.getVertexTangents();
+        for (size_t i = 0; i < tangents.size(); ++i) {
+            if (tangents[i].explicitMask == 0) continue;
+            nlohmann::json handles = nlohmann::json::array();
+            for (int h = 0; h < GRID_HANDLE_COUNT; ++h) {
+                handles.push_back(tangents[i].isExplicit(h)
+                                      ? serializeVec2(tangents[i].derivative[static_cast<size_t>(h)])
+                                      : nlohmann::json(nullptr));
+            }
+            tangentsJson.push_back({{"vertex", i}, {"handles", handles}});
+        }
+        j["meshTangents"] = tangentsJson;
     }
 
     // Bezier edges (ADR-043): persist only when enabled, so pre-bezier files and
@@ -210,7 +236,8 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
                                  ? MeshMode::MESH_EDIT : MeshMode::CORNERS_ONLY);
     }
 
-    // Deserialize mesh vertex offsets if present
+    // Mesh vertex offsets, if present; converted below once the bezier edges are in.
+    bool bilinearOffsets = false;
     if (j.contains("meshOffsets") && j["meshOffsets"].is_array()) {
         const auto& offsetsJson = j["meshOffsets"];
         int expectedCount = geometry.getVertexCount();
@@ -221,6 +248,37 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
                 offsets.push_back(deserializeVec2(offsetJson));
             }
             geometry.setMeshVertices(offsets);
+            const auto base = j.find("meshBase");
+            bilinearOffsets = base == j.end() || *base != "surface";
+        }
+    }
+
+    // Grid-line handles (ADR-049 §3). An entry for a vertex the grid does not have
+    // is dropped, as offsets of the wrong count are; a malformed one is an error.
+    if (j.contains("meshTangents")) {
+        const auto& tangentsJson = j["meshTangents"];
+        if (!tangentsJson.is_array()) {
+            throw std::runtime_error("Malformed project file: meshTangents must be an array");
+        }
+        for (const auto& entry : tangentsJson) {
+            if (!entry.is_object() || !entry.contains("vertex") ||
+                !entry["vertex"].is_number_integer() || !entry.contains("handles")) {
+                throw std::runtime_error("Malformed project file: bad meshTangents entry");
+            }
+            const auto& handles = checkedArray(entry["handles"], GRID_HANDLE_COUNT);
+            const long long vertex = entry["vertex"].get<long long>();
+            if (vertex < 0 || vertex >= geometry.getVertexCount()) continue;
+            // A handle pointing out of the grid is dropped too.
+            const unsigned available = geometry.availableHandles(static_cast<int>(vertex));
+            VertexTangents tangents;
+            for (int h = 0; h < GRID_HANDLE_COUNT; ++h) {
+                if (handles[static_cast<size_t>(h)].is_null()) continue;
+                const Vec2 derivative = deserializeVec2(handles[static_cast<size_t>(h)]);
+                if (!((available >> h) & 1u)) continue;
+                tangents.derivative[static_cast<size_t>(h)] = derivative;
+                tangents.explicitMask |= 1u << h;
+            }
+            geometry.setVertexTangent(static_cast<int>(vertex), tangents);
         }
     }
 
@@ -235,6 +293,13 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
             }
             geometry.setBezierOffsets(offs);
         }
+    }
+
+    // Offsets from a file without "meshBase" are relative to the bilinear corner
+    // patch; keep each control vertex where the file put it (ADR-049 §2). All-zero
+    // offsets are no warp, and stay on the corner-pin surface.
+    if (bilinearOffsets && geometry.hasMeshModifications()) {
+        geometry.convertBilinearOffsetsToResiduals();
     }
 }
 

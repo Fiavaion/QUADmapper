@@ -169,7 +169,8 @@ void Renderer::applyViewUniforms(ShaderProgram& shader) {
 // that owns it. Rebuilt only when the quad's geometry changes, so drawing an
 // unchanged quad costs no tessellation and no buffer upload. A corner-pin patch
 // draws with the Renderer's shared index buffer (every patch has the same
-// triangles, TD-22); only a mesh-edit grid owns its indices.
+// triangles, TD-22); only a mesh warp of another tessellation size owns its indices.
+static_assert(sizeof(MeshVertex) == 5 * sizeof(float), "MeshVertex is uploaded as 5 packed floats");
 struct GpuQuad {
     GLuint vao = 0;
     GLuint vbo = 0;
@@ -187,9 +188,9 @@ struct GpuQuad {
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, position));
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)offsetof(MeshVertex, position));
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, texCoord));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)offsetof(MeshVertex, texCoord));
         glBindVertexArray(0);
     }
     ~GpuQuad() {
@@ -204,11 +205,11 @@ struct GpuQuad {
 
     // Upload the vertices and draw them with `indices`, or, when that is null, with
     // the shared buffer `sharedIndices` holding `sharedCount` indices.
-    void upload(const std::vector<QuadVertex>& vertices, const std::vector<uint32_t>* indices,
+    void upload(const std::vector<MeshVertex>& vertices, const std::vector<uint32_t>* indices,
                 GLuint sharedIndices, GLsizei sharedCount) {
         glBindVertexArray(vao);  // the element-array binding is VAO state
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(QuadVertex)),
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(MeshVertex)),
                      vertices.data(), GL_DYNAMIC_DRAW);
         if (indices) {
             if (ownIndices == 0) {
@@ -247,7 +248,8 @@ bool sameSurface(const QuadGeometry& a, const QuadGeometry& b) {
     return a.getMeshMode() == b.getMeshMode() && a.getCorners() == b.getCorners() &&
            a.isBezierEnabled() == b.isBezierEnabled() &&
            a.getBezierOffsets() == b.getBezierOffsets() && a.getUCoords() == b.getUCoords() &&
-           a.getVCoords() == b.getVCoords() && a.getMeshVertices() == b.getMeshVertices();
+           a.getVCoords() == b.getVCoords() && a.getMeshVertices() == b.getMeshVertices() &&
+           a.getVertexTangents() == b.getVertexTangents();
 }
 
 }  // namespace
@@ -260,7 +262,7 @@ const GpuQuad& Renderer::quadBuffersFor(const Quad& quad) {
         slot = std::make_unique<GpuQuad>();
     }
     if (fresh || !sameSurface(slot->builtFrom, geometry)) {
-        // A corner-pin patch leaves indices_ alone: it uses the shared set.
+        // An N×N tessellation draws with the shared index set.
         const bool ownIndices = !tessellate(geometry);
         slot->upload(vertices_, ownIndices ? &indices_ : nullptr, cornerIndexBuffer_,
                      cornerIndexCount_);
@@ -288,109 +290,30 @@ void Renderer::createOutlineBuffers() {
 
     glBindVertexArray(0);
 
-    // Mesh-grid wireframe buffer (dynamic; reuses the outline shader). Sized for the
-    // worst-case 64x64 control grid: 2 axes * 65 lines * 64 segments * 2 endpoints.
+    // Line-list buffer for the mesh-grid wireframe and handle lines (reuses the
+    // outline shader); drawGridLines sizes it for each draw.
     glGenVertexArrays(1, &gridVAO_);
     GlObjectStats::onVertexArrayCreated();
     glGenBuffers(1, &gridVBO_);
     GlObjectStats::onVertexBufferCreated();
     glBindVertexArray(gridVAO_);
     glBindBuffer(GL_ARRAY_BUFFER, gridVBO_);
-    glBufferData(GL_ARRAY_BUFFER, 2 * 65 * 64 * 2 * 2 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
     glBindVertexArray(0);
 }
 
 bool Renderer::tessellate(const QuadGeometry& geometry) {
-    // Smooth path (ADR-043): a CORNERS_ONLY quad is a projective (or bezier) corner
-    // patch — its surface is fully defined by the corners, so render it as a fine
-    // N×N tessellation sampled from surfacePoint(). This decouples render density
-    // from the 1×1 control grid and removes the diagonal "fold" on extreme warps.
-    // Its triangles are always the same, so it draws with cornerIndexBuffer_.
-    if (geometry.getMeshMode() == MeshMode::CORNERS_ONLY) {
-        constexpr int N = kCornerPatchDivisions;
-        const int line = N + 1;
-        vertices_.resize(static_cast<size_t>(line) * line);
-        const auto samples = geometry.sampleSurface(N);
-        for (int r = 0; r < line; ++r) {
-            for (int c = 0; c < line; ++c) {
-                const float u = static_cast<float>(c) / N;
-                const float v = static_cast<float>(r) / N;
-                const int index = r * line + c;
-                const QuadGeometry::SurfaceSample& s = samples[index];
-                vertices_[index].position[0] = s.position.x;
-                vertices_[index].position[1] = s.position.y;
-                vertices_[index].texCoord[0] = u * s.q;
-                vertices_[index].texCoord[1] = v * s.q;
-                vertices_[index].texCoord[2] = s.q;
-            }
-        }
-        return true;
-    }
-
-    // Control grid may be non-uniform (ADR-038): iterate per-axis using the
-    // actual division coordinates for tex coords, and index the vpr-wide grid.
-    const int vpr = geometry.vertsPerRow();
-    const int vpc = geometry.vertsPerCol();
-    const auto& uCoords = geometry.getUCoords();
-    const auto& vCoords = geometry.getVCoords();
-
-    vertices_.resize(static_cast<size_t>(vpr) * vpc);
-    auto meshPositions = geometry.generateMeshPositions();
-
-    for (int row = 0; row < vpc; ++row) {
-        for (int col = 0; col < vpr; ++col) {
-            int index = row * vpr + col;
-            vertices_[index].position[0] = meshPositions[index].x;
-            vertices_[index].position[1] = meshPositions[index].y;
-            vertices_[index].texCoord[0] = uCoords[col];
-            vertices_[index].texCoord[1] = vCoords[row];
-            vertices_[index].texCoord[2] = 1.0f;
-        }
-    }
-
-    // Generate index data (two triangles per cell)
-    indices_.resize(static_cast<size_t>(geometry.getColumns()) * geometry.getRows() * 6);
-
-    int indexOffset = 0;
-    for (int row = 0; row < vpc - 1; ++row) {
-        for (int col = 0; col < vpr - 1; ++col) {
-            uint32_t topLeft = static_cast<uint32_t>(row * vpr + col);
-            uint32_t topRight = topLeft + 1;
-            uint32_t bottomLeft = static_cast<uint32_t>((row + 1) * vpr + col);
-            uint32_t bottomRight = bottomLeft + 1;
-
-            // First triangle (top-left, bottom-left, top-right)
-            indices_[indexOffset++] = topLeft;
-            indices_[indexOffset++] = bottomLeft;
-            indices_[indexOffset++] = topRight;
-
-            // Second triangle (top-right, bottom-left, bottom-right)
-            indices_[indexOffset++] = topRight;
-            indices_[indexOffset++] = bottomLeft;
-            indices_[indexOffset++] = bottomRight;
-        }
-    }
-    return false;
+    // One surface for every mode (ADR-049): S sampled at a density independent of the
+    // control grid, with the base's projective texture coordinates.
+    const IVec2 cells = MeshSubdivision::generateMesh(geometry, vertices_, indices_);
+    return cells.x == kCornerPatchDivisions && cells.y == kCornerPatchDivisions;
 }
 
 void Renderer::createCornerIndexBuffer() {
-    // The triangles of every corner-pin patch: two per cell of the N×N grid.
-    constexpr int N = kCornerPatchDivisions;
-    const int line = N + 1;
-    std::vector<uint32_t> indices(static_cast<size_t>(N) * N * 6);
-    size_t o = 0;
-    for (int r = 0; r < N; ++r) {
-        for (int c = 0; c < N; ++c) {
-            const uint32_t tl = static_cast<uint32_t>(r * line + c);
-            const uint32_t tr = tl + 1;
-            const uint32_t bl = static_cast<uint32_t>((r + 1) * line + c);
-            const uint32_t br = bl + 1;
-            indices[o++] = tl; indices[o++] = bl; indices[o++] = tr;
-            indices[o++] = tr; indices[o++] = bl; indices[o++] = br;
-        }
-    }
+    // The triangles of every N×N tessellation, as MeshSubdivision lays them out.
+    std::vector<uint32_t> indices;
+    MeshSubdivision::generateIndices(kCornerPatchDivisions, indices);
     glGenBuffers(1, &cornerIndexBuffer_);
     GlObjectStats::onVertexBufferCreated();
     // With no VAO bound, so no VAO records this element-array binding.
@@ -766,29 +689,38 @@ void Renderer::renderMeshGrid(const Quad& quad, const glm::vec4& color, float li
         return;
     }
 
+    // Each division line as a polyline along the surface, sampled at the render
+    // tessellation's parameters so it lies on the drawn image.
     const QuadGeometry& geometry = quad.getGeometry();
-    const auto positions = geometry.generateMeshPositions();  // includes edit offsets
-    const int vpr = geometry.vertsPerRow();
-    const int vpc = geometry.vertsPerCol();
+    const std::vector<float>& uLines = geometry.getUCoords();
+    const std::vector<float>& vLines = geometry.getVCoords();
+    const std::vector<float> uSteps = geometry.tessellationU();
+    const std::vector<float> vSteps = geometry.tessellationV();
+    const auto columns = geometry.sampleSurface(uLines, vSteps);  // vertical lines
+    const auto rows = geometry.sampleSurface(uSteps, vLines);     // horizontal lines
 
-    // Build a GL_LINES list: every horizontal and vertical edge of the control grid.
     gridVertices_.clear();
     auto pushSeg = [&](const Vec2& a, const Vec2& b) {
         gridVertices_.push_back(a.x); gridVertices_.push_back(a.y);
         gridVertices_.push_back(b.x); gridVertices_.push_back(b.y);
     };
-    for (int r = 0; r < vpc; ++r)
-        for (int c = 0; c + 1 < vpr; ++c)
-            pushSeg(positions[r * vpr + c], positions[r * vpr + c + 1]);
-    for (int c = 0; c < vpr; ++c)
-        for (int r = 0; r + 1 < vpc; ++r)
-            pushSeg(positions[r * vpr + c], positions[(r + 1) * vpr + c]);
+    for (size_t c = 0; c < uLines.size(); ++c)
+        for (size_t s = 0; s + 1 < vSteps.size(); ++s)
+            pushSeg(columns[s * uLines.size() + c].position,
+                    columns[(s + 1) * uLines.size() + c].position);
+    for (size_t r = 0; r < vLines.size(); ++r)
+        for (size_t s = 0; s + 1 < uSteps.size(); ++s)
+            pushSeg(rows[r * uSteps.size() + s].position, rows[r * uSteps.size() + s + 1].position);
+    drawGridLines(color, lineWidth);
+}
+
+void Renderer::drawGridLines(const glm::vec4& color, float lineWidth) {
     if (gridVertices_.empty()) {
         return;
     }
-
     glBindBuffer(GL_ARRAY_BUFFER, gridVBO_);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, gridVertices_.size() * sizeof(float), gridVertices_.data());
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(gridVertices_.size() * sizeof(float)),
+                 gridVertices_.data(), GL_DYNAMIC_DRAW);
 
     outlineShader_.bind();
     applyViewUniforms(outlineShader_);
@@ -1049,16 +981,7 @@ void Renderer::renderBezierHandles(const Quad& quad, int hovered, int dragged) {
         seg(corners[e], g.getBezierControl(e, 0));
         seg(corners[(e + 1) % 4], g.getBezierControl(e, 1));
     }
-    glBindBuffer(GL_ARRAY_BUFFER, gridVBO_);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, gridVertices_.size() * sizeof(float), gridVertices_.data());
-    outlineShader_.bind();
-    applyViewUniforms(outlineShader_);
-    outlineShader_.setVec4("u_OutlineColor", glm::vec4(0.7f, 0.6f, 0.2f, 0.7f));
-    glLineWidth(1.0f);
-    glBindVertexArray(gridVAO_);
-    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridVertices_.size() / 2));
-    glBindVertexArray(0);
-    unbindProgram();
+    drawGridLines(glm::vec4(0.7f, 0.6f, 0.2f, 0.7f), 1.0f);
 
     // Control points as round amber handles.
     handleShader_.bind();
@@ -1072,6 +995,59 @@ void Renderer::renderBezierHandles(const Quad& quad, int hovered, int dragged) {
                         : (i == hovered) ? glm::vec4(0.0f, 1.0f, 1.0f, 1.0f)
                         :                  glm::vec4(1.0f, 0.8f, 0.2f, 0.95f);
         float size = (i == dragged || i == hovered) ? 0.011f : 0.008f;
+        handleShader_.setFloat("u_HandleSize", size);
+        handleShader_.setVec4("u_HandleColor", color);
+        glBindVertexArray(handleVAO_);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
+    }
+    glBindVertexArray(0);
+    unbindProgram();
+}
+
+void Renderer::renderGridHandles(const Quad& quad, int vertex, int selectedHandle,
+                                 int hoveredHandle, int draggedHandle) {
+    if (!initialized_) {
+        return;
+    }
+    const QuadGeometry& g = quad.getGeometry();
+    const unsigned available = g.availableHandles(vertex);
+    if (available == 0) {
+        return;
+    }
+    const Vec2 origin = g.generateMeshPositions()[static_cast<size_t>(vertex)];
+    std::array<Vec2, GRID_HANDLE_COUNT> handles{};
+    gridVertices_.clear();
+    for (int h = 0; h < GRID_HANDLE_COUNT; ++h) {
+        if (!(available & (1u << h))) continue;
+        handles[static_cast<size_t>(h)] = g.gridHandlePosition(vertex, h);
+        gridVertices_.push_back(origin.x); gridVertices_.push_back(origin.y);
+        gridVertices_.push_back(handles[static_cast<size_t>(h)].x);
+        gridVertices_.push_back(handles[static_cast<size_t>(h)].y);
+    }
+    drawGridLines(glm::vec4(0.7f, 0.6f, 0.2f, 0.7f), 1.0f);
+
+    // Handles in the bezier-handle style: amber once set, dimmer while automatic;
+    // the keyboard-selected one green, as a selected vertex is.
+    const VertexTangents tangents = g.getVertexTangent(vertex);
+    handleShader_.bind();
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
+    constexpr int SEGMENTS = 16;
+    for (int h = 0; h < GRID_HANDLE_COUNT; ++h) {
+        if (!(available & (1u << h))) continue;
+        handleShader_.setVec2("u_HandleCenter", handles[static_cast<size_t>(h)]);
+        glm::vec4 color = tangents.isExplicit(h) ? glm::vec4(1.0f, 0.8f, 0.2f, 0.95f)
+                                                 : glm::vec4(1.0f, 0.8f, 0.2f, 0.5f);
+        float size = 0.006f;
+        if (h == draggedHandle) {
+            color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
+            size = 0.009f;
+        } else if (h == hoveredHandle) {
+            color = glm::vec4(0.0f, 1.0f, 1.0f, 1.0f);
+        } else if (h == selectedHandle) {
+            color = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
+            size = 0.009f;
+        }
         handleShader_.setFloat("u_HandleSize", size);
         handleShader_.setVec4("u_HandleColor", color);
         glBindVertexArray(handleVAO_);
