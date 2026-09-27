@@ -52,7 +52,7 @@ bool CameraSource::initialize() {
     decoder_->startBackgroundDecoding(8);
     ready_ = true;
 
-    Logger::debug("CameraSource: opened '{}' ({}x{}, {:.1f}fps)",
+    Logger::debug("CameraSource: opened '{}' ({}x{}, {} fps)",
                   dev, width_, height_, info.frameRate);
     return true;
 }

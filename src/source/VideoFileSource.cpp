@@ -29,7 +29,8 @@ bool VideoFileSource::initialize() {
     const VideoInfo& info = player_->getVideoInfo();
     ready_ = true;
 
-    Logger::debug("VideoFileSource: Loaded '{}' ({}x{}, {:.2f}s, {:.1f}fps)",
+    // The logger substitutes plain {} only (no format specs).
+    Logger::debug("VideoFileSource: Loaded '{}' ({}x{}, {} s, {} fps)",
                   name_, info.width, info.height, info.duration, info.frameRate);
 
     return true;

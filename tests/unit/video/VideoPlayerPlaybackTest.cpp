@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include "core/Logger.hpp"
 #include "video/VideoPlayer.hpp"
 #include "video/VideoDecoder.hpp"
 #include "video/FrameSelection.hpp"
@@ -17,6 +18,8 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <ostream>
 #include <string>
@@ -579,3 +582,27 @@ INSTANTIATE_TEST_SUITE_P(Containers, VideoDecoderLoopSeam,
                                          ClipSpec{".ts", 12},
                                          ClipSpec{".mp4", 300}),
                          clipName);
+
+// The media bin lists .mp4/.mov files as videos and asks each for a thumbnail; one that
+// holds only sound is not an error (it used to log "[ERROR] No video stream found").
+TEST(VideoDecoderOpen, AudioOnlyFileIsNotAnError) {
+    const fs::path clip = "D:/testing Videos/7.1auditionOutLeader_v2_rtb.mp4";  // AAC 7.1, no video
+    if (!fs::exists(clip)) GTEST_SKIP() << clip.string() << " not present";
+    const fs::path log = fs::temp_directory_path() / "qm_audio_only_open.log";
+    std::error_code ec;
+    fs::remove(log, ec);  // the log appends
+    const LogLevel level = Logger::getLevel();
+    Logger::setLevel(LogLevel::Debug);
+    ASSERT_TRUE(Logger::enableFileOutput(utf8FromPath(log)));
+    VideoDecoder decoder;
+    EXPECT_FALSE(decoder.open(clip));
+    Logger::disableFileOutput();
+    Logger::setLevel(level);
+
+    std::ifstream in(log);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    fs::remove(log, ec);
+    EXPECT_EQ(text.find("[ERROR]"), std::string::npos) << text;
+    EXPECT_NE(text.find("no video stream"), std::string::npos) << text;
+}

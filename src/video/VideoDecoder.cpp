@@ -520,7 +520,9 @@ public:
         }
 
         if (videoStreamIndex_ < 0) {
-            LOG_ERROR("No video stream found");
+            // Not a fault: audio-only files (.mp4/.mov of a sound track) are listed with the
+            // videos, and the media bin asks each one for a thumbnail.
+            LOG_INFO("{} has no video stream (audio only?)", formatCtx_->url ? formatCtx_->url : "The file");
             close();
             return false;
         }
