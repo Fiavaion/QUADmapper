@@ -7,6 +7,7 @@
 #include "ProjectReplace.hpp"
 #include "ReplaceMedia.hpp"
 #include "MeshLoads.hpp"
+#include "UndoRouting.hpp"
 #include "OutputPersistence.hpp"
 #include "ControlBindings.hpp"
 #include "../control/ExternalControl.hpp"
@@ -882,6 +883,7 @@ bool Application::initializeComponents() {
 
     // Create output manager and initialize it
     m_outputManager = std::make_unique<OutputManager>();
+    m_editorState->outputResolver.setOutputManager(m_outputManager.get());  // calibration undo
     auto outputResult = m_outputManager->initialize(m_window);
     if (!outputResult) {
         Logger::error("Failed to initialize output manager: {}", outputResult.error().message);
@@ -1376,11 +1378,19 @@ void Application::render() {
         saveProject();
     }
 
-    if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
-        if (es.commandHistory.undo()) m_project->setModified(true);
-    }
-    if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
-        if (es.commandHistory.redo()) m_project->setModified(true);
+    // Undo/redo also run while calibrating, on that output's calibration steps only
+    // (UndoRouting.hpp, TD-17).
+    const bool undoKey = editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false);
+    const bool redoKey = editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false);
+    if (undoKey || redoKey) {
+        std::string heldBack;
+        if (undoKey ? undoStep(es, &heldBack) : redoStep(es, &heldBack)) {
+            m_project->setModified(true);
+        } else if (!heldBack.empty()) {
+            snprintf(es.statusMessage, sizeof(es.statusMessage), "Leave calibration to %s: %s",
+                     undoKey ? "undo" : "redo", heldBack.c_str());
+            es.statusTimer = 3.0f;
+        }
     }
 
     if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
@@ -1398,6 +1408,8 @@ void Application::render() {
             // Calibrating: Delete removes the selected calibration point, never quads.
             OutputWindow* calibrated = m_outputManager->getOutput(es.calibratingOutputId);
             if (calibrated && es.calibration.selected >= 0) {
+                es.calibration.noteEdit("Delete calibration point " +
+                                        std::to_string(es.calibration.selected + 1));
                 es.calibration.removePoint(calibrated->getCalibrationPoints(),
                                            es.calibration.selected);
                 m_project->setModified(true);

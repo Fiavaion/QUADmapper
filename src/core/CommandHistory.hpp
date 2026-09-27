@@ -81,6 +81,11 @@ public:
     std::string getUndoDescription() const;
     std::string getRedoDescription() const;
 
+    // The step undo() / redo() would take next, or nullptr. For callers that decide
+    // whether to take it (calibration takes only its own steps, TD-17).
+    const Command* peekUndo() const { return canUndo() ? commands_[undoIndex_ - 1].get() : nullptr; }
+    const Command* peekRedo() const { return canRedo() ? commands_[undoIndex_].get() : nullptr; }
+
     // Clear all history
     void clear();
 

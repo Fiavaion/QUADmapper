@@ -45,9 +45,15 @@ void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mo
     if (cal.selected >= count) cal.selected = -1;
     if (cal.dragged >= count) cal.dragged = -1;
     const Vec2 mousePixel = canvasToPixel(mouseNorm, k);
-    auto changed = [&]() {
+    // Every change is named for its undo step (TD-17); CalibrationPanel records it.
+    auto changed = [&](const std::string& description, int mergeKey) {
+        cal.noteEdit(description, mergeKey);
         cal.markChanged();
         if (project) project->setModified(true);
+    };
+    auto moved = [&](int index) {
+        changed("Move calibration point " + std::to_string(index + 1),
+                CalibrationSession::moveKey(index));
     };
 
     // Second half of Add Point: this press places the picked 3D point's pixel.
@@ -59,7 +65,7 @@ void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mo
             points.push_back(point);
             cal.selected = static_cast<int>(points.size()) - 1;
             cal.pick = CalibrationSession::Pick::None;
-            changed();
+            changed("Add calibration point " + std::to_string(points.size()), 0);
         }
         return;
     }
@@ -70,7 +76,7 @@ void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mo
             const Vec2 pixel = cal.dragStartPixel + (mousePixel - cal.dragStartMousePixel);
             if (pixel != points[cal.dragged].pixel) {
                 points[cal.dragged].pixel = pixel;
-                changed();
+                moved(cal.dragged);
             }
         } else {
             cal.dragged = -1;
@@ -108,7 +114,7 @@ void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mo
                                               nudgeStep(io.KeyShift, io.KeyAlt));
                 points[cal.selected].pixel += Vec2(delta.x * static_cast<float>(k.width),
                                                    delta.y * static_cast<float>(k.height));
-                changed();
+                moved(cal.selected);
             }
         }
     }

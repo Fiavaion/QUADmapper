@@ -47,7 +47,8 @@ float reprojectionError(const CalibrationPoint& point, const ProjectorCamera& ca
     return glm::length(projected - point.pixel);
 }
 
-void CalibrationSession::begin(const ProjectorCamera& projector) {
+void CalibrationSession::begin(const std::vector<CalibrationPoint>& points,
+                               const ProjectorCamera& projector) {
     lens = projector.intrinsics;
     status.clear();
     statusIsError = false;
@@ -57,6 +58,96 @@ void CalibrationSession::begin(const ProjectorCamera& projector) {
     selected = -1;
     cancelPick();
     dirty_ = true;
+    editDescription_.clear();
+    editMergeKey_ = 0;
+    base_ = capture(points, projector);
+}
+
+void CalibrationSession::noteEdit(const std::string& description, int mergeKey) {
+    if (!editDescription_.empty()) {
+        // Two different edits in one frame are one step with no merge.
+        if (editDescription_ != description || editMergeKey_ != mergeKey) {
+            editDescription_ = "Edit calibration";
+            editMergeKey_ = 0;
+        }
+        return;
+    }
+    editDescription_ = description.empty() ? "Edit calibration" : description;
+    editMergeKey_ = mergeKey;
+}
+
+CalibrationSnapshot CalibrationSession::capture(const std::vector<CalibrationPoint>& points,
+                                                const ProjectorCamera& projector) const {
+    CalibrationSnapshot s;
+    s.points = points;
+    s.projector = projector;
+    s.lens = lens;
+    s.mode = mode;
+    s.status = status;
+    s.statusIsError = statusIsError;
+    s.warning = warning;
+    s.solved = solved;
+    s.rmsError = rmsError;
+    s.pointsUsed = pointsUsed;
+    return s;
+}
+
+std::optional<CalibrationEdit> CalibrationSession::finishFrame(
+        const std::vector<CalibrationPoint>& points, const ProjectorCamera& projector) {
+    CalibrationSnapshot now = capture(points, projector);
+    std::optional<CalibrationEdit> edit;
+    if (!editDescription_.empty() && base_ && !sameCalibrationState(*base_, now)) {
+        edit = CalibrationEdit{std::move(*base_), now, editDescription_, editMergeKey_};
+    }
+    base_ = std::move(now);
+    editDescription_.clear();
+    editMergeKey_ = 0;
+    return edit;
+}
+
+void CalibrationSession::restore(const CalibrationSnapshot& snapshot,
+                                 std::vector<CalibrationPoint>& points, ProjectorCamera& projector) {
+    points = snapshot.points;
+    projector = snapshot.projector;
+    lens = snapshot.lens;
+    mode = snapshot.mode;
+    status = snapshot.status;
+    statusIsError = snapshot.statusIsError;
+    warning = snapshot.warning;
+    solved = snapshot.solved;
+    rmsError = snapshot.rmsError;
+    pointsUsed = snapshot.pointsUsed;
+    if (selected >= static_cast<int>(points.size())) selected = -1;
+    cancelPick();
+    dirty_ = false;
+    editDescription_.clear();
+    editMergeKey_ = 0;
+    base_ = snapshot;
+}
+
+namespace {
+
+bool sameIntrinsics(const ProjectorIntrinsics& a, const ProjectorIntrinsics& b) {
+    return a.fx == b.fx && a.fy == b.fy && a.cx == b.cx && a.cy == b.cy && a.width == b.width &&
+           a.height == b.height;
+}
+
+}  // namespace
+
+bool sameCalibrationState(const CalibrationSnapshot& a, const CalibrationSnapshot& b) {
+    if (a.points.size() != b.points.size() || a.mode != b.mode || !sameIntrinsics(a.lens, b.lens) ||
+        !sameIntrinsics(a.projector.intrinsics, b.projector.intrinsics) ||
+        a.projector.calibrated != b.projector.calibrated ||
+        a.projector.pose.rotation != b.projector.pose.rotation ||
+        a.projector.pose.translation != b.projector.pose.translation) {
+        return false;
+    }
+    for (size_t i = 0; i < a.points.size(); ++i) {
+        const CalibrationPoint& p = a.points[i];
+        const CalibrationPoint& q = b.points[i];
+        if (p.world != q.world || p.pixel != q.pixel || p.enabled != q.enabled) return false;
+    }
+    return true;
 }
 
 void CalibrationSession::removePoint(std::vector<CalibrationPoint>& points, int index) {

@@ -3,10 +3,11 @@
 // order (app/ProjectReplace.hpp) and pause-while-unseen, on a real EditorState.
 // Opening a real file needs GL (its texture), so relocation is tested from the point
 // the new source exists: the rebind and the transport it is given. Also the app's
-// off-thread mesh loading (app/MeshLoads.hpp).
+// off-thread mesh loading (app/MeshLoads.hpp) and undo routing (app/UndoRouting.hpp).
 
 #include "app/MissingMedia.hpp"
 #include "app/ProjectReplace.hpp"
+#include "app/UndoRouting.hpp"
 #include "../control/FakePlayable.hpp"
 
 #include <gtest/gtest.h>
@@ -357,6 +358,129 @@ TEST(ClearProjectContentTest, ReleasesTheOldProjectsMediaAndRecordsButKeepsTheBi
     EXPECT_FALSE(fx.es.showMissingMedia);
 
     fx.es.mediaBinPanel.setMediaLibrary(nullptr);  // `library` dies before `fx`
+}
+
+// ---- Undo while calibrating (TD-17, app/UndoRouting.hpp) ------------------------------
+
+namespace {
+
+// The editor with one or two headless outputs (no windows: the manager is not
+// initialised) and a quad edit made before calibration starts.
+struct RoutingFixture {
+    EditorState es;
+    OutputManager om;
+    OutputWindow* a = nullptr;
+    OutputWindow* b = nullptr;
+    Quad* quad = nullptr;
+
+    RoutingFixture() {
+        es.outputResolver.setOutputManager(&om);
+        a = om.createOutput("A");
+        b = om.createOutput("B");
+        for (OutputWindow* o : {a, b}) {
+            CalibrationPoint p;
+            p.world = Vec3(0.0f);
+            p.pixel = Vec2(100.0f, 100.0f);
+            o->getCalibrationPoints() = {p};
+        }
+        quad = es.activeScene().createQuad();
+        es.commandHistory.execute(std::make_unique<SetQuadOpacityCommand>(es.quadRef(*quad), 0.5f));
+    }
+
+    // Calibrate `output`, move its point 1 by `dx` and record the step as the panel does.
+    void calibrationStep(OutputWindow& output, float dx) {
+        if (es.calibratingOutputId != output.getId()) {
+            es.beginCalibration(output.getId(), output.getCalibrationPoints(), output.getProjector());
+        }
+        output.getCalibrationPoints()[0].pixel.x += dx;
+        es.calibration.noteEdit("Move calibration point 1", CalibrationSession::moveKey(0));
+        es.calibration.markChanged();
+        es.calibration.update(output.getCalibrationPoints(), output.getProjector());
+        if (auto edit = es.calibration.finishFrame(output.getCalibrationPoints(), output.getProjector())) {
+            es.commandHistory.execute(
+                std::make_unique<CalibrationEditCommand>(es.outputRef(output.getId()), std::move(*edit)));
+        }
+    }
+};
+
+}  // namespace
+
+TEST(UndoRoutingTest, CalibratingUndoesOnlyThatOutputsCalibrationSteps) {
+    RoutingFixture fx;
+    fx.calibrationStep(*fx.a, 10.0f);
+    ASSERT_EQ(fx.es.commandHistory.getUndoCount(), 2u);
+
+    EXPECT_TRUE(canUndoStep(fx.es));
+    ASSERT_TRUE(undoStep(fx.es));
+    EXPECT_FLOAT_EQ(fx.a->getCalibrationPoints()[0].pixel.x, 100.0f);
+
+    // Next is the quad edit from before calibration: held back, and said so.
+    EXPECT_FALSE(canUndoStep(fx.es));
+    std::string heldBack;
+    EXPECT_FALSE(undoStep(fx.es, &heldBack));
+    EXPECT_EQ(heldBack, "Change opacity");
+    EXPECT_FLOAT_EQ(fx.quad->getOpacity(), 0.5f);
+    EXPECT_EQ(fx.es.commandHistory.getUndoCount(), 1u);  // not consumed
+
+    // Leaving calibration: the history works in order again.
+    fx.es.endCalibration();
+    ASSERT_TRUE(undoStep(fx.es));
+    EXPECT_FLOAT_EQ(fx.quad->getOpacity(), 1.0f);
+
+    // Redo: the quad step first, which calibration holds back.
+    fx.es.beginCalibration(fx.a->getId(), fx.a->getCalibrationPoints(), fx.a->getProjector());
+    EXPECT_FALSE(canRedoStep(fx.es));
+    EXPECT_FALSE(redoStep(fx.es, &heldBack));
+    fx.es.endCalibration();
+    ASSERT_TRUE(redoStep(fx.es));
+    fx.es.beginCalibration(fx.a->getId(), fx.a->getCalibrationPoints(), fx.a->getProjector());
+    EXPECT_TRUE(canRedoStep(fx.es));
+    ASSERT_TRUE(redoStep(fx.es));
+    EXPECT_FLOAT_EQ(fx.a->getCalibrationPoints()[0].pixel.x, 110.0f);
+}
+
+TEST(UndoRoutingTest, AnotherOutputsCalibrationStepIsHeldBack) {
+    RoutingFixture fx;
+    fx.calibrationStep(*fx.a, 10.0f);
+    fx.es.endCalibration();
+    fx.es.beginCalibration(fx.b->getId(), fx.b->getCalibrationPoints(), fx.b->getProjector());
+    std::string heldBack;
+    EXPECT_FALSE(undoStep(fx.es, &heldBack));
+    EXPECT_EQ(heldBack, "Move calibration point 1");
+    EXPECT_FLOAT_EQ(fx.a->getCalibrationPoints()[0].pixel.x, 110.0f);
+}
+
+TEST(UndoRoutingTest, OutsideCalibrationAStepAppliesToItsOutputById) {
+    RoutingFixture fx;
+    fx.calibrationStep(*fx.a, 10.0f);
+    fx.es.endCalibration();
+    ASSERT_TRUE(undoStep(fx.es));
+    EXPECT_FLOAT_EQ(fx.a->getCalibrationPoints()[0].pixel.x, 100.0f);
+    EXPECT_FLOAT_EQ(fx.b->getCalibrationPoints()[0].pixel.x, 100.0f);
+    ASSERT_TRUE(redoStep(fx.es));
+    EXPECT_FLOAT_EQ(fx.a->getCalibrationPoints()[0].pixel.x, 110.0f);
+}
+
+TEST(UndoRoutingTest, UndoAfterTheOutputWasDeletedAndReCreatedIsANoOp) {
+    RoutingFixture fx;
+    fx.calibrationStep(*fx.a, 10.0f);
+    fx.es.endCalibration();
+    const UUID gone = fx.a->getId();
+    fx.om.deleteOutput(gone);
+    OutputWindow* again = fx.om.createOutput("A");  // same name, new id
+    CalibrationPoint p;
+    p.pixel = Vec2(5.0f, 5.0f);
+    again->getCalibrationPoints() = {p};
+
+    EXPECT_TRUE(canUndoStep(fx.es));
+    EXPECT_FALSE(undoStep(fx.es));  // resolved to nothing; consumed, no crash
+    EXPECT_FLOAT_EQ(again->getCalibrationPoints()[0].pixel.x, 5.0f);
+    ASSERT_TRUE(undoStep(fx.es));   // the quad step still works
+    EXPECT_FLOAT_EQ(fx.quad->getOpacity(), 1.0f);
+    ASSERT_TRUE(redoStep(fx.es));   // the quad step
+    EXPECT_FALSE(redoStep(fx.es));  // the gone output's step: a no-op again
+    EXPECT_FLOAT_EQ(again->getCalibrationPoints()[0].pixel.x, 5.0f);
+    EXPECT_FALSE(fx.es.commandHistory.canRedo());
 }
 
 // ---- Meshes parsed off the render thread (TD-16a, app/MeshLoads.hpp) -----------------

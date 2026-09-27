@@ -5,6 +5,7 @@
 #include "core/UUID.hpp"
 #include "Quad.hpp"
 #include "MeshObject.hpp"
+#include "CalibrationSession.hpp"
 #include <functional>
 #include <type_traits>
 #include <string>
@@ -449,5 +450,63 @@ std::unique_ptr<Command> makeSetObjectTextureCommand(const ObjectRef& target,
 std::unique_ptr<Command> makeSetObjectVisibilityCommand(const ObjectRef& target, bool visible);
 std::unique_ptr<Command> makeSetObjectOpacityCommand(const ObjectRef& target, float opacity);
 std::unique_ptr<Command> makeRenameObjectCommand(const ObjectRef& target, const std::string& name);
+
+// ---- Projector calibration (ADR-052 §6, TD-17) ---------------------------------------
+// Calibration lives on an output (OutputWindow), which this module cannot see, so a
+// command reaches it by output id through an OutputResolver: the output's point list
+// and projector, plus the calibration session while that output is being calibrated.
+// An output that was removed (or re-created, which gives it a new id) resolves to
+// nothing and the step is a logged no-op.
+
+struct CalibrationTarget {
+    std::vector<CalibrationPoint>* points = nullptr;
+    ProjectorCamera* projector = nullptr;
+    CalibrationSession* session = nullptr;  // only while this output is being calibrated
+
+    explicit operator bool() const { return points != nullptr && projector != nullptr; }
+};
+
+class OutputResolver {
+public:
+    virtual ~OutputResolver() = default;
+    virtual CalibrationTarget findCalibration(const UUID& outputId) = 0;
+};
+
+// Stable handle to one output's calibration.
+struct OutputRef {
+    OutputResolver* resolver = nullptr;
+    UUID outputId;
+
+    CalibrationTarget target() const {
+        return resolver ? resolver->findCalibration(outputId) : CalibrationTarget{};
+    }
+    bool sameTarget(const OutputRef& other) const { return outputId == other.outputId; }
+};
+
+// One calibration edit (add, move, nudge, enable, delete, clear points; lens and mode
+// changes; Reset view) as the whole before/after state, the solved projector included
+// (see CalibrationSession::finishFrame). Moves of one point merge like corner moves.
+class CalibrationEditCommand : public Command {
+public:
+    CalibrationEditCommand(const OutputRef& target, CalibrationEdit edit);
+
+    bool execute() override;
+    bool undo() override;
+    std::string getDescription() const override { return edit_.description; }
+
+    bool canMergeWith(const Command& other) const override;
+    void mergeWith(const Command& other) override;
+
+    const UUID& getOutputId() const { return target_.outputId; }
+
+private:
+    bool apply(const CalibrationSnapshot& snapshot);
+
+    OutputRef target_;
+    CalibrationEdit edit_;
+    // The edit is already on the output when the command is recorded (or merged): the
+    // first execute only checks the output exists, so a drag in progress is not reset.
+    bool firstExecute_ = true;
+};
 
 } // namespace quadmapper

@@ -666,4 +666,55 @@ std::unique_ptr<Command> makeRenameObjectCommand(const ObjectRef& target, const 
         [](MeshObject& o, const std::string& v) { o.setName(v); }, false);
 }
 
+// ---- Projector calibration -------------------------------------------------------
+
+CalibrationEditCommand::CalibrationEditCommand(const OutputRef& target, CalibrationEdit edit)
+    : target_(target)
+    , edit_(std::move(edit))
+{
+}
+
+bool CalibrationEditCommand::apply(const CalibrationSnapshot& snapshot) {
+    const CalibrationTarget target = target_.target();
+    if (!target) {
+        LOG_WARNING("'{}': output {} no longer exists; skipped", edit_.description,
+                    target_.outputId.toString());
+        return false;
+    }
+    if (target.session) {
+        target.session->restore(snapshot, *target.points, *target.projector);
+    } else {
+        *target.points = snapshot.points;
+        *target.projector = snapshot.projector;
+    }
+    return true;
+}
+
+bool CalibrationEditCommand::execute() {
+    if (firstExecute_) {
+        firstExecute_ = false;
+        if (target_.target()) return true;
+        LOG_WARNING("'{}': output {} no longer exists; not recorded", edit_.description,
+                    target_.outputId.toString());
+        return false;
+    }
+    return apply(edit_.after);
+}
+
+bool CalibrationEditCommand::undo() {
+    return apply(edit_.before);
+}
+
+bool CalibrationEditCommand::canMergeWith(const Command& other) const {
+    auto* next = dynamic_cast<const CalibrationEditCommand*>(&other);
+    return next && edit_.mergeKey != 0 && next->edit_.mergeKey == edit_.mergeKey &&
+           target_.sameTarget(next->target_);
+}
+
+void CalibrationEditCommand::mergeWith(const Command& other) {
+    if (auto* next = dynamic_cast<const CalibrationEditCommand*>(&other)) {
+        edit_.after = next->edit_.after;
+    }
+}
+
 } // namespace quadmapper

@@ -23,6 +23,8 @@
 #include "../control/MidiMapping.hpp"
 #include "GridUndo.hpp"
 #include "../project/Project.hpp"
+#include "../output/OutputManager.hpp"
+#include "../output/OutputWindow.hpp"
 #include "../scene/CalibrationSession.hpp"
 #include "../scene/Commands.hpp"
 #include "../scene/ObjLoader.hpp"
@@ -44,6 +46,30 @@
 #include "../ui/panels/ViewportEditor.hpp"
 
 namespace quadmapper {
+
+// Resolves calibration undo steps (CalibrationEditCommand) by output id against the
+// live outputs (TD-17): the output's points and projector, plus the editor's session
+// while that output is the one being calibrated. A removed or re-created output (new
+// id) resolves to nothing.
+class OutputCalibrationResolver : public OutputResolver {
+public:
+    OutputCalibrationResolver(const UUID& calibratingOutputId, CalibrationSession& session)
+        : calibratingOutputId_(calibratingOutputId), session_(session) {}
+
+    void setOutputManager(OutputManager* outputs) { outputs_ = outputs; }
+
+    CalibrationTarget findCalibration(const UUID& outputId) override {
+        OutputWindow* output = outputs_ && !outputId.isNull() ? outputs_->getOutput(outputId) : nullptr;
+        if (!output) return {};
+        return {&output->getCalibrationPoints(), &output->getProjector(),
+                calibratingOutputId_ == outputId ? &session_ : nullptr};
+    }
+
+private:
+    const UUID& calibratingOutputId_;
+    CalibrationSession& session_;
+    OutputManager* outputs_ = nullptr;
+};
 
 // Bookkeeping for the meshes EditorState::objLoads is parsing (TD-16a, MeshLoads.hpp).
 struct MeshLoadState {
@@ -337,15 +363,20 @@ struct EditorState {
     // canvas edits that output's calibration points instead of quad vertices.
     UUID calibratingOutputId;  // null = not calibrating
     CalibrationSession calibration;
+    // Calibration undo steps resolve through this (declared after what it refers to).
+    // Application gives it the OutputManager.
+    OutputCalibrationResolver outputResolver{calibratingOutputId, calibration};
+    OutputRef outputRef(const UUID& outputId) { return OutputRef{&outputResolver, outputId}; }
 
     // Enter calibration on an output. The scene routed to it becomes the active one,
     // so the canvas shows that projector.
-    void beginCalibration(const UUID& outputId, const ProjectorCamera& projector) {
+    void beginCalibration(const UUID& outputId, const std::vector<CalibrationPoint>& points,
+                          const ProjectorCamera& projector) {
         for (auto& s : scenes) {
             if (s && s->getAssignedOutputId() == outputId) { setActiveScene(s->getId()); break; }
         }
         calibratingOutputId = outputId;
-        calibration.begin(projector);
+        calibration.begin(points, projector);
     }
     void endCalibration() {
         calibratingOutputId = UUID::null();

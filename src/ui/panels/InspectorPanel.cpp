@@ -882,7 +882,8 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
         const bool calibratingThis = es.calibratingOutputId == selectedOutput->getId();
         ImGui::BeginDisabled(calibratingThis);
         if (ImGui::Button("Calibrate Projector...")) {
-            es.beginCalibration(selectedOutput->getId(), selectedOutput->getProjector());
+            es.beginCalibration(selectedOutput->getId(), selectedOutput->getCalibrationPoints(),
+                                selectedOutput->getProjector());
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Pair points on the 3D objects with projector pixels to solve "
