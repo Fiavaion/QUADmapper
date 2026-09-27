@@ -110,16 +110,21 @@ inline UUID assignMediaToQuad(EditorState& es, SourceManager* sm, Project* proje
     return sid;
 }
 
-// The same for a 3D object (ADR-052). Objects have no legacy texturePath: the
-// "sources" table alone persists the binding.
+// The same for a 3D object (ADR-052), as one undo step (TD-16). Objects have no legacy
+// texturePath: the "sources" table alone persists the binding.
 inline UUID assignMediaToObject(EditorState& es, SourceManager* sm, Project* project,
-                                MeshObject& object, const MediaItem& item) {
-    if (!sm) return UUID();
+                                const ObjectRef& target, const MediaItem& item) {
+    const MeshObject* object = target.object();
+    if (!sm || !object) return UUID();
     bool isVideo = false;
     const UUID sid = resolveMediaSource(*sm, item, isVideo);
     if (sid.isNull()) return UUID();
 
-    object.getTexture().mediaId = sid;
+    if (object->getTexture().mediaId != sid) {
+        TextureBinding bound = object->getTexture();
+        bound.mediaId = sid;
+        es.commandHistory.execute(makeSetObjectTextureCommand(target, bound));
+    }
     if (isVideo) {
         es.activeVideoSourceId = sid;
         playAssignedVideo(*sm, sid);

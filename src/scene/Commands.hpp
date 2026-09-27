@@ -4,7 +4,10 @@
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
 #include "Quad.hpp"
+#include "MeshObject.hpp"
+#include "CalibrationSession.hpp"
 #include <functional>
+#include <type_traits>
 #include <string>
 #include <memory>
 #include <optional>
@@ -305,6 +308,205 @@ private:
     QuadRef target_;
     std::array<Vec2, 4> oldCorners_;
     Vec2 totalDelta_;
+};
+
+// ---- 3D objects (ADR-052, TD-16) ----------------------------------------------
+// Same rule as quads: a command holds (scene id, object id) and resolves them through
+// the QuadResolver on every execute/undo; a missing target is a logged no-op.
+
+// Stable handle to one 3D object in one scene.
+struct ObjectRef {
+    QuadResolver* resolver = nullptr;
+    UUID sceneId;
+    UUID objectId;
+
+    Scene* scene() const;
+    MeshObject* object() const;  // nullptr when the scene or the object is gone
+
+    bool sameTarget(const ObjectRef& other) const {
+        return sceneId == other.sceneId && objectId == other.objectId;
+    }
+};
+
+// Resolve ref for a command; logs and returns nullptr when the target is gone.
+MeshObject* resolveObjectForCommand(const ObjectRef& ref, const std::string& commandDescription);
+
+// Put a finished object (an import whose mesh has loaded) into a scene at `index`.
+// Undo takes the object back out and keeps it whole (mesh included, no copy); redo
+// puts the same object, same id, back where it was.
+class AddObjectCommand : public Command {
+public:
+    AddObjectCommand(QuadResolver& resolver, const UUID& sceneId,
+                     std::unique_ptr<MeshObject> object, size_t index);
+
+    bool execute() override;
+    bool undo() override;
+    std::string getDescription() const override;
+    void collectMediaIds(std::unordered_set<UUID>& out) const override;
+    void remapMediaId(const UUID& from, const UUID& to) override;
+
+    const UUID& getObjectId() const { return target_.objectId; }
+
+private:
+    ObjectRef target_;
+    std::unique_ptr<MeshObject> held_;  // the object while it is out of the scene
+    size_t index_;
+};
+
+// Delete an object. The command keeps it whole while deleted; undo puts it back at
+// its list position with the same id.
+class DeleteObjectCommand : public Command {
+public:
+    explicit DeleteObjectCommand(const ObjectRef& target);
+
+    bool execute() override;
+    bool undo() override;
+    std::string getDescription() const override;
+    void collectMediaIds(std::unordered_set<UUID>& out) const override;
+    void remapMediaId(const UUID& from, const UUID& to) override;
+
+private:
+    ObjectRef target_;
+    std::unique_ptr<MeshObject> held_;
+    size_t index_ = 0;
+};
+
+// Before/after value of one object property. Built by the make* functions below,
+// which read the old value from the live object. A mergeable command folds into the
+// previous one on the same object and property (a slider or drag is one step, as
+// for corner moves).
+template <typename T>
+class ObjectPropertyCommand : public Command {
+public:
+    using Apply = void (*)(MeshObject&, const T&);
+
+    ObjectPropertyCommand(std::string description, const ObjectRef& target, T oldValue,
+                          T newValue, Apply apply, bool mergeable)
+        : description_(std::move(description))
+        , target_(target)
+        , oldValue_(std::move(oldValue))
+        , newValue_(std::move(newValue))
+        , apply_(apply)
+        , mergeable_(mergeable)
+    {
+    }
+
+    bool execute() override { return applyValue(newValue_); }
+    bool undo() override { return applyValue(oldValue_); }
+    std::string getDescription() const override { return description_; }
+
+    bool canMergeWith(const Command& other) const override {
+        auto* next = dynamic_cast<const ObjectPropertyCommand<T>*>(&other);
+        return mergeable_ && next && next->mergeable_ && next->apply_ == apply_ &&
+               next->description_ == description_ && target_.sameTarget(next->target_);
+    }
+    void mergeWith(const Command& other) override {
+        if (auto* next = dynamic_cast<const ObjectPropertyCommand<T>*>(&other)) {
+            newValue_ = next->newValue_;
+        }
+    }
+
+    // A texture binding step can put either of its sources back on the object.
+    void collectMediaIds(std::unordered_set<UUID>& out) const override {
+        if constexpr (std::is_same_v<T, TextureBinding>) {
+            if (!oldValue_.mediaId.isNull()) out.insert(oldValue_.mediaId);
+            if (!newValue_.mediaId.isNull()) out.insert(newValue_.mediaId);
+        } else {
+            (void)out;
+        }
+    }
+    void remapMediaId(const UUID& from, const UUID& to) override {
+        if constexpr (std::is_same_v<T, TextureBinding>) {
+            if (oldValue_.mediaId == from) oldValue_.mediaId = to;
+            if (newValue_.mediaId == from) newValue_.mediaId = to;
+        } else {
+            (void)from;
+            (void)to;
+        }
+    }
+
+private:
+    bool applyValue(const T& value) {
+        MeshObject* object = resolveObjectForCommand(target_, description_);
+        if (!object) return false;
+        apply_(*object, value);
+        return true;
+    }
+
+    std::string description_;
+    ObjectRef target_;
+    T oldValue_;
+    T newValue_;
+    Apply apply_;
+    bool mergeable_;
+};
+
+// Object property commands. Each returns nullptr when the object does not exist
+// (CommandHistory::execute ignores a null command).
+std::unique_ptr<Command> makeSetObjectTransformCommand(const ObjectRef& target,
+                                                       const glm::mat4& transform, bool mergeable);
+std::unique_ptr<Command> makeSetObjectTextureCommand(const ObjectRef& target,
+                                                     const TextureBinding& texture);
+std::unique_ptr<Command> makeSetObjectVisibilityCommand(const ObjectRef& target, bool visible);
+std::unique_ptr<Command> makeSetObjectOpacityCommand(const ObjectRef& target, float opacity);
+std::unique_ptr<Command> makeRenameObjectCommand(const ObjectRef& target, const std::string& name);
+
+// ---- Projector calibration (ADR-052 §6, TD-17) ---------------------------------------
+// Calibration lives on an output (OutputWindow), which this module cannot see, so a
+// command reaches it by output id through an OutputResolver: the output's point list
+// and projector, plus the calibration session while that output is being calibrated.
+// An output that was removed (or re-created, which gives it a new id) resolves to
+// nothing and the step is a logged no-op.
+
+struct CalibrationTarget {
+    std::vector<CalibrationPoint>* points = nullptr;
+    ProjectorCamera* projector = nullptr;
+    CalibrationSession* session = nullptr;  // only while this output is being calibrated
+
+    explicit operator bool() const { return points != nullptr && projector != nullptr; }
+};
+
+class OutputResolver {
+public:
+    virtual ~OutputResolver() = default;
+    virtual CalibrationTarget findCalibration(const UUID& outputId) = 0;
+};
+
+// Stable handle to one output's calibration.
+struct OutputRef {
+    OutputResolver* resolver = nullptr;
+    UUID outputId;
+
+    CalibrationTarget target() const {
+        return resolver ? resolver->findCalibration(outputId) : CalibrationTarget{};
+    }
+    bool sameTarget(const OutputRef& other) const { return outputId == other.outputId; }
+};
+
+// One calibration edit (add, move, nudge, enable, delete, clear points; lens and mode
+// changes; Reset view) as the whole before/after state, the solved projector included
+// (see CalibrationSession::finishFrame). Moves of one point merge like corner moves.
+class CalibrationEditCommand : public Command {
+public:
+    CalibrationEditCommand(const OutputRef& target, CalibrationEdit edit);
+
+    bool execute() override;
+    bool undo() override;
+    std::string getDescription() const override { return edit_.description; }
+
+    bool canMergeWith(const Command& other) const override;
+    void mergeWith(const Command& other) override;
+
+    const UUID& getOutputId() const { return target_.outputId; }
+
+private:
+    bool apply(const CalibrationSnapshot& snapshot);
+
+    OutputRef target_;
+    CalibrationEdit edit_;
+    // The edit is already on the output when the command is recorded (or merged): the
+    // first execute only checks the output exists, so a drag in progress is not reset.
+    bool firstExecute_ = true;
 };
 
 } // namespace quadmapper

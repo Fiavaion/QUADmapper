@@ -3,6 +3,7 @@
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
 #include "app/MissingMedia.hpp"
+#include "app/UndoRouting.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "project/Project.hpp"
@@ -146,11 +147,12 @@ void MainMenuBar::render(EditorContext& ctx) {
     }
 
     if (ImGui::BeginMenu("Edit")) {
-        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, es.commandHistory.canUndo())) {
-            if (es.commandHistory.undo() && ctx.project) ctx.project->setModified(true);
+        // While calibrating, only that output's calibration steps (UndoRouting.hpp).
+        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndoStep(es))) {
+            if (undoStep(es) && ctx.project) ctx.project->setModified(true);
         }
-        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, es.commandHistory.canRedo())) {
-            if (es.commandHistory.redo() && ctx.project) ctx.project->setModified(true);
+        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedoStep(es))) {
+            if (redoStep(es) && ctx.project) ctx.project->setModified(true);
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Select All", "Ctrl+A")) {
@@ -180,7 +182,8 @@ void MainMenuBar::render(EditorContext& ctx) {
             if (calibrating) {
                 es.endCalibration();
             } else {
-                es.beginCalibration(toCalibrate->getId(), toCalibrate->getProjector());
+                es.beginCalibration(toCalibrate->getId(), toCalibrate->getCalibrationPoints(),
+                                    toCalibrate->getProjector());
             }
         }
         ImGui::Separator();

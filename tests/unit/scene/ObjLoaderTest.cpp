@@ -7,7 +7,12 @@
 
 #include <filesystem>
 #include <fstream>
+#include <atomic>
+#include <chrono>
+#include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace quadmapper {
 namespace test {
@@ -184,6 +189,134 @@ TEST_F(ObjLoaderTest, LoadsFromNonAsciiFolder) {
     auto missing = loadObj(folder / pathFromUtf8(u8"\u65e5\u672c.obj"));
     ASSERT_TRUE(missing.isError());
     EXPECT_NE(missing.error().message.find(u8"\u65e5\u672c.obj"), std::string::npos);
+}
+
+// ---- Parsing on the worker (TD-16a) ------------------------------------------------
+
+namespace {
+
+// An n x n grid of quads: (n+1)^2 vertices, 2 n^2 triangles.
+void writeGrid(const fs::path& file, int n) {
+    std::ofstream out(file, std::ios::binary);
+    for (int y = 0; y <= n; ++y) {
+        for (int x = 0; x <= n; ++x) out << "v " << x << ' ' << y << " 0\n";
+    }
+    for (int y = 0; y < n; ++y) {
+        for (int x = 0; x < n; ++x) {
+            const int a = y * (n + 1) + x + 1;
+            out << "f " << a << ' ' << a + 1 << ' ' << a + n + 2 << ' ' << a + n + 1 << '\n';
+        }
+    }
+}
+
+// Take results until `count` have arrived or 30 s pass.
+std::vector<ObjLoadQueue::Completed> waitFor(ObjLoadQueue& queue, size_t count) {
+    std::vector<ObjLoadQueue::Completed> all;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (all.size() < count && std::chrono::steady_clock::now() < deadline) {
+        for (auto& done : queue.takeCompleted()) all.push_back(std::move(done));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return all;
+}
+
+}  // namespace
+
+TEST_F(ObjLoaderTest, ASetCancelFlagStopsTheParse) {
+    const fs::path file = dir_ / "grid.obj";
+    writeGrid(file, 100);  // more lines than one cancel-check interval
+    std::atomic<bool> cancel{true};
+    auto result = loadObj(file, &cancel);
+    ASSERT_TRUE(result.isError());
+    EXPECT_NE(result.error().message.find("cancelled"), std::string::npos) << result.error().message;
+    cancel = false;
+    EXPECT_TRUE(loadObj(file, &cancel).isSuccess());
+}
+
+TEST_F(ObjLoaderTest, QueueParsesInOrderOffTheCallingThread) {
+    const fs::path good = write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    const fs::path bad = dir_ / "absent.obj";
+    const fs::path grid = dir_ / "grid.obj";
+    writeGrid(grid, 20);
+
+    ObjLoadQueue queue;
+    const uint64_t t1 = queue.request(good);
+    const uint64_t t2 = queue.request(bad);
+    const uint64_t t3 = queue.request(grid);
+    EXPECT_NE(t1, 0u);
+    EXPECT_NE(t1, t2);
+    EXPECT_NE(t2, t3);
+
+    auto done = waitFor(queue, 3);
+    ASSERT_EQ(done.size(), 3u);
+    EXPECT_EQ(done[0].ticket, t1);
+    EXPECT_EQ(done[0].path, good);
+    ASSERT_TRUE(done[0].mesh.isSuccess());
+    EXPECT_EQ(done[0].mesh.value().triangleCount(), 1u);
+    EXPECT_EQ(done[1].ticket, t2);
+    EXPECT_TRUE(done[1].mesh.isError());  // errors come back as results
+    EXPECT_EQ(done[2].ticket, t3);
+    ASSERT_TRUE(done[2].mesh.isSuccess());
+    EXPECT_EQ(done[2].mesh.value().triangleCount(), 2u * 20 * 20);
+    EXPECT_EQ(queue.pendingCount(), 0u);
+    EXPECT_TRUE(queue.takeCompleted().empty());
+}
+
+TEST_F(ObjLoaderTest, CancelledRequestsNeverArriveAndTheWorkerCarriesOn) {
+    const fs::path big = dir_ / "big.obj";
+    writeGrid(big, 300);
+    const fs::path small = write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+
+    ObjLoadQueue queue;
+    const uint64_t running = queue.request(big);
+    const uint64_t queued = queue.request(big);
+    queue.cancel(queued);   // still queued
+    queue.cancel(running);  // queued or already being parsed: stops either way
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (queue.pendingCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(queue.pendingCount(), 0u);
+
+    const uint64_t after = queue.request(small);
+    auto done = waitFor(queue, 1);
+    ASSERT_EQ(done.size(), 1u);
+    EXPECT_EQ(done[0].ticket, after);  // nothing from the cancelled ones
+    EXPECT_TRUE(done[0].mesh.isSuccess());
+
+    // cancelAll drops what is queued, being parsed, and finished but not yet taken.
+    const auto untilIdle = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    auto waitIdle = [&] {
+        while (queue.pendingCount() > 0 && std::chrono::steady_clock::now() < untilIdle) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    };
+    queue.request(small);
+    waitIdle();  // parsed; its result waits, untaken
+    queue.request(big);
+    queue.cancelAll();
+    waitIdle();
+    EXPECT_EQ(queue.pendingCount(), 0u);
+    EXPECT_TRUE(queue.takeCompleted().empty());
+}
+
+TEST_F(ObjLoaderTest, DestroyingTheQueueStopsAParseInProgress) {
+    const fs::path big = dir_ / "big.obj";
+    writeGrid(big, 400);
+    // Time a full parse, then destroy a queue mid-parse: it must not wait for the end.
+    const auto t0 = std::chrono::steady_clock::now();
+    ASSERT_TRUE(loadObj(big).isSuccess());
+    const auto fullParse = std::chrono::steady_clock::now() - t0;
+
+    auto queue = std::make_unique<ObjLoadQueue>();
+    queue->request(big);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const auto t1 = std::chrono::steady_clock::now();
+    queue.reset();
+    const auto teardown = std::chrono::steady_clock::now() - t1;
+    EXPECT_LT(teardown, fullParse) << "full parse "
+        << std::chrono::duration_cast<std::chrono::milliseconds>(fullParse).count() << " ms, teardown "
+        << std::chrono::duration_cast<std::chrono::milliseconds>(teardown).count() << " ms";
 }
 
 }  // namespace test

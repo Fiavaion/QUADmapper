@@ -967,7 +967,7 @@ void buildFeatureScene(Scene& scene, const std::vector<Texture*>& media,
     // A cube 0.3 across at the origin; the output's projector is fitted onto it, and
     // the quads leave the top right of the canvas for it.
     MeshObject* cube = scene.createObject("Cube");
-    MeshData& data = cube->getMesh();
+    MeshData& data = cube->editMesh();
     const float h = 0.15f;
     for (int c = 0; c < 8; ++c) {
         data.positions.push_back(Vec3((c & 1) ? h : -h, (c & 2) ? h : -h, (c & 4) ? h : -h));

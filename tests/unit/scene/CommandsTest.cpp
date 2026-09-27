@@ -6,6 +6,7 @@
 #include "scene/Scene.hpp"
 #include "app/GridUndo.hpp"
 #include "core/CommandHistory.hpp"
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace quadmapper {
 namespace test {
@@ -643,6 +644,283 @@ TEST_F(SceneCommandsTest, GridChangeUndoRestoresGridAndIsSafeAfterDelete) {
 
     manager().deleteQuad(quad->getId());
     EXPECT_FALSE(history_->undo());
+}
+
+// --- 3D object commands (TD-16) ----------------------------------------------------
+
+class ObjectCommandsTest : public SceneCommandsTest {
+protected:
+    // A textured, placed object with a small mesh.
+    MeshObject* addObject(const std::string& name) {
+        MeshObject* object = scene().createObject(name);
+        MeshData mesh;
+        mesh.positions = {Vec3(0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f)};
+        mesh.indices = {0, 1, 2};
+        object->setMesh(mesh);
+        object->setSourcePath("C:/show/" + name + ".obj");
+        object->getTexture().mediaId = UUID::generate();
+        object->setTransform(glm::mat4(2.0f));
+        object->setOpacity(0.4f);
+        return object;
+    }
+    ObjectRef oref(const MeshObject* object) {
+        return ObjectRef{&resolver_, scene().getId(), object->getId()};
+    }
+    size_t indexOf(const UUID& id) {
+        const auto& objects = scene().getObjects();
+        for (size_t i = 0; i < objects.size(); ++i) {
+            if (objects[i]->getId() == id) return i;
+        }
+        return objects.size();
+    }
+};
+
+TEST_F(ObjectCommandsTest, DeleteUndoRestoresTheSameObjectAtItsPlace) {
+    addObject("A");
+    MeshObject* middle = addObject("B");
+    addObject("C");
+    const UUID id = middle->getId();
+    const UUID media = middle->getTexture().mediaId;
+    const uint64_t revision = middle->getMeshRevision();
+
+    history_->execute(std::make_unique<DeleteObjectCommand>(oref(middle)));
+    ASSERT_EQ(scene().getObjects().size(), 2u);
+    EXPECT_EQ(scene().getObject(id), nullptr);
+
+    ASSERT_TRUE(history_->undo());
+    MeshObject* back = scene().getObject(id);
+    ASSERT_NE(back, nullptr);
+    EXPECT_EQ(indexOf(id), 1u);  // between A and C again
+    EXPECT_EQ(back->getName(), "B");
+    EXPECT_EQ(back->getTexture().mediaId, media);
+    EXPECT_EQ(back->getTransform(), glm::mat4(2.0f));
+    EXPECT_FLOAT_EQ(back->getOpacity(), 0.4f);
+    EXPECT_EQ(back->getMesh().triangleCount(), 1u);
+    EXPECT_EQ(back->getMeshRevision(), revision);  // the same object: no re-upload needed
+
+    ASSERT_TRUE(history_->redo());
+    EXPECT_EQ(scene().getObject(id), nullptr);
+    EXPECT_EQ(scene().getObjects().size(), 2u);
+}
+
+TEST_F(ObjectCommandsTest, DeletedObjectKeepsItsMediaReferencedWhileUndoCanRestoreIt) {
+    MeshObject* object = addObject("Prop");
+    const UUID media = object->getTexture().mediaId;
+    history_->execute(std::make_unique<DeleteObjectCommand>(oref(object)));
+
+    EXPECT_TRUE(referencedMediaIds(scenes_, *history_).count(media));
+    history_->undo();
+    EXPECT_TRUE(referencedMediaIds(scenes_, *history_).count(media));  // live again
+    history_->redo();
+    EXPECT_TRUE(referencedMediaIds(scenes_, *history_).count(media));
+
+    history_->clear();  // New/Load
+    EXPECT_FALSE(referencedMediaIds(scenes_, *history_).count(media));
+}
+
+TEST_F(ObjectCommandsTest, AddObjectInsertsAndUndoHoldsItWhole) {
+    addObject("First");
+    auto created = std::make_unique<MeshObject>();
+    created->setName("Imported");
+    const UUID id = created->getId();
+    const UUID media = UUID::generate();
+    created->getTexture().mediaId = media;
+    MeshData mesh;
+    mesh.positions = {Vec3(0.0f), Vec3(1.0f, 0.0f, 0.0f), Vec3(0.0f, 1.0f, 0.0f)};
+    mesh.indices = {0, 1, 2};
+    created->setMesh(mesh);
+
+    history_->execute(std::make_unique<AddObjectCommand>(resolver_, scene().getId(),
+                                                         std::move(created), 0));
+    ASSERT_NE(scene().getObject(id), nullptr);
+    EXPECT_EQ(indexOf(id), 0u);
+    EXPECT_EQ(history_->getUndoDescription(), "Import 3D object");
+
+    ASSERT_TRUE(history_->undo());
+    EXPECT_EQ(scene().getObject(id), nullptr);
+    EXPECT_TRUE(referencedMediaIds(scenes_, *history_).count(media));  // held by redo
+
+    ASSERT_TRUE(history_->redo());
+    ASSERT_NE(scene().getObject(id), nullptr);
+    EXPECT_EQ(indexOf(id), 0u);
+    EXPECT_EQ(scene().getObject(id)->getMesh().triangleCount(), 1u);
+}
+
+TEST_F(ObjectCommandsTest, AddObjectIntoAGoneSceneIsNotRecorded) {
+    const UUID sceneId = scene().getId();
+    scenes_.clear();
+    auto created = std::make_unique<MeshObject>();
+    history_->execute(std::make_unique<AddObjectCommand>(resolver_, sceneId, std::move(created), 0));
+    EXPECT_FALSE(history_->canUndo());
+}
+
+TEST_F(ObjectCommandsTest, TransformDragMergesAndResetIsItsOwnStep) {
+    MeshObject* object = addObject("Box");
+    const glm::mat4 original = object->getTransform();
+    const glm::mat4 step1 = glm::translate(original, Vec3(0.1f, 0.0f, 0.0f));
+    const glm::mat4 step2 = glm::translate(original, Vec3(0.2f, 0.0f, 0.0f));
+
+    history_->execute(makeSetObjectTransformCommand(oref(object), step1, true));
+    history_->execute(makeSetObjectTransformCommand(oref(object), step2, true));
+    EXPECT_EQ(object->getTransform(), step2);
+    EXPECT_EQ(history_->getUndoCount(), 1u);  // one drag, one step
+
+    history_->execute(makeSetObjectTransformCommand(oref(object), glm::mat4(1.0f), false));
+    EXPECT_EQ(history_->getUndoCount(), 2u);
+
+    history_->undo();
+    EXPECT_EQ(object->getTransform(), step2);
+    history_->undo();
+    EXPECT_EQ(object->getTransform(), original);
+    history_->redo();
+    EXPECT_EQ(object->getTransform(), step2);
+}
+
+TEST_F(ObjectCommandsTest, OpacitySliderMergesPerObject) {
+    MeshObject* a = addObject("A");
+    MeshObject* b = addObject("B");
+    history_->execute(makeSetObjectOpacityCommand(oref(a), 0.5f));
+    history_->execute(makeSetObjectOpacityCommand(oref(a), 0.6f));
+    history_->execute(makeSetObjectOpacityCommand(oref(b), 0.9f));  // another object: new step
+    EXPECT_EQ(history_->getUndoCount(), 2u);
+
+    history_->undo();
+    EXPECT_FLOAT_EQ(b->getOpacity(), 0.4f);
+    EXPECT_FLOAT_EQ(a->getOpacity(), 0.6f);
+    history_->undo();
+    EXPECT_FLOAT_EQ(a->getOpacity(), 0.4f);
+}
+
+TEST_F(ObjectCommandsTest, VisibilityAndRenameUndoAndRedo) {
+    MeshObject* object = addObject("Old");
+    history_->execute(makeSetObjectVisibilityCommand(oref(object), false));
+    history_->execute(makeRenameObjectCommand(oref(object), "New"));
+    history_->execute(makeRenameObjectCommand(oref(object), "Newer"));  // renames do not merge
+    EXPECT_FALSE(object->isVisible());
+    EXPECT_EQ(object->getName(), "Newer");
+    EXPECT_EQ(history_->getUndoCount(), 3u);
+
+    history_->undo();
+    EXPECT_EQ(object->getName(), "New");
+    history_->undo();
+    EXPECT_EQ(object->getName(), "Old");
+    history_->undo();
+    EXPECT_TRUE(object->isVisible());
+    history_->redo();
+    EXPECT_FALSE(object->isVisible());
+}
+
+TEST_F(ObjectCommandsTest, TextureBindingUndoRestoresTheOldSourceAndKeepsBothReferenced) {
+    MeshObject* object = addObject("Screen");
+    const UUID oldMedia = object->getTexture().mediaId;
+    const UUID newMedia = UUID::generate();
+    TextureBinding bound = object->getTexture();
+    bound.mediaId = newMedia;
+    history_->execute(makeSetObjectTextureCommand(oref(object), bound));
+    EXPECT_EQ(object->getTexture().mediaId, newMedia);
+
+    // The old source can come back by undo, so it must not be released.
+    const auto ids = referencedMediaIds(scenes_, *history_);
+    EXPECT_TRUE(ids.count(oldMedia));
+    EXPECT_TRUE(ids.count(newMedia));
+
+    history_->undo();
+    EXPECT_EQ(object->getTexture().mediaId, oldMedia);
+    EXPECT_TRUE(referencedMediaIds(scenes_, *history_).count(newMedia));  // redo can
+    history_->redo();
+    EXPECT_EQ(object->getTexture().mediaId, newMedia);
+
+    TextureBinding none = object->getTexture();
+    none.mediaId = UUID();
+    history_->execute(makeSetObjectTextureCommand(oref(object), none));
+    EXPECT_TRUE(object->getTexture().mediaId.isNull());
+    history_->undo();
+    EXPECT_EQ(object->getTexture().mediaId, newMedia);
+}
+
+TEST_F(ObjectCommandsTest, PropertyStepsFollowTheObjectThroughDeleteAndUndo) {
+    MeshObject* object = addObject("Box");
+    const UUID id = object->getId();
+    history_->execute(makeSetObjectOpacityCommand(oref(object), 1.0f));
+    history_->execute(std::make_unique<DeleteObjectCommand>(oref(object)));
+
+    history_->undo();  // back, same id
+    history_->undo();  // the opacity step resolves the restored object by id
+    ASSERT_NE(scene().getObject(id), nullptr);
+    EXPECT_FLOAT_EQ(scene().getObject(id)->getOpacity(), 0.4f);
+}
+
+TEST_F(ObjectCommandsTest, StepsOnAGoneObjectOrSceneAreSafeNoOps) {
+    MeshObject* object = addObject("Box");
+    const ObjectRef target = oref(object);
+    history_->execute(makeSetObjectOpacityCommand(target, 0.9f));
+    history_->execute(makeRenameObjectCommand(target, "Renamed"));
+
+    // The object goes outside the history (e.g. its scene was deleted), and a new one
+    // with a new id takes its place: nothing resolves to it.
+    scene().deleteObject(target.objectId);
+    MeshObject* other = addObject("Box");
+    EXPECT_FALSE(history_->undo());
+    EXPECT_FALSE(history_->undo());
+    EXPECT_EQ(other->getName(), "Box");
+    EXPECT_FLOAT_EQ(other->getOpacity(), 0.4f);
+    EXPECT_FALSE(history_->redo());
+
+    // Commands are not even made for an object that is gone.
+    EXPECT_EQ(makeSetObjectOpacityCommand(target, 0.1f), nullptr);
+    EXPECT_EQ(makeSetObjectTransformCommand(target, glm::mat4(1.0f), true), nullptr);
+    EXPECT_EQ(makeSetObjectVisibilityCommand(target, false), nullptr);
+    EXPECT_EQ(makeRenameObjectCommand(target, "x"), nullptr);
+    EXPECT_EQ(makeSetObjectTextureCommand(target, TextureBinding{}), nullptr);
+
+    // A delete of a gone object is not recorded; the undo of a delete whose scene is
+    // gone fails without losing anything else.
+    history_->execute(std::make_unique<DeleteObjectCommand>(target));
+    EXPECT_FALSE(history_->canRedo());
+    history_->execute(std::make_unique<DeleteObjectCommand>(oref(other)));
+    scenes_.clear();
+    EXPECT_FALSE(history_->undo());
+    EXPECT_FALSE(history_->redo());
+}
+
+TEST_F(ObjectCommandsTest, RemapMediaReachesObjectsInCompoundAndOpenGroups) {
+    MeshObject* a = addObject("A");
+    MeshObject* b = addObject("B");
+    const UUID from = UUID::generate();
+    const UUID to = UUID::generate();
+    a->getTexture().mediaId = from;
+    b->getTexture().mediaId = from;
+    const UUID aId = a->getId();
+    const UUID bId = b->getId();
+
+    history_->beginCompoundCommand("Delete objects");
+    history_->execute(std::make_unique<DeleteObjectCommand>(oref(a)));
+    history_->endCompoundCommand();
+    history_->beginCompoundCommand("Still open");
+    history_->execute(std::make_unique<DeleteObjectCommand>(oref(b)));
+    history_->remapMediaId(from, to);
+    history_->endCompoundCommand();
+
+    EXPECT_FALSE(referencedMediaIds(scenes_, *history_).count(from));
+    history_->undo();
+    history_->undo();
+    EXPECT_EQ(scene().getObject(aId)->getTexture().mediaId, to);
+    EXPECT_EQ(scene().getObject(bId)->getTexture().mediaId, to);
+}
+
+TEST(SceneObjectListTest, TakeAndInsertKeepOrderAndRefuseDuplicateIds) {
+    Scene scene;
+    const UUID a = scene.createObject("A")->getId();
+    const UUID b = scene.createObject("B")->getId();
+    size_t index = 99;
+    std::unique_ptr<MeshObject> taken = scene.takeObject(a, &index);
+    ASSERT_NE(taken, nullptr);
+    EXPECT_EQ(index, 0u);
+    EXPECT_EQ(scene.takeObject(a), nullptr);
+    EXPECT_NE(scene.insertObject(std::move(taken), 5), nullptr);  // clamped to the end
+    EXPECT_EQ(scene.getObjects().back()->getId(), a);
+    EXPECT_EQ(scene.insertObject(std::make_unique<MeshObject>(b), 0), nullptr);  // id taken
+    EXPECT_EQ(scene.getObjects().size(), 2u);
 }
 
 } // namespace test

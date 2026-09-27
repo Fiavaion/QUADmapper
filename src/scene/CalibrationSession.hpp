@@ -9,6 +9,7 @@
 #include "ProjectorCamera.hpp"
 #include "core/Types.hpp"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,30 @@ int requiredCalibrationPoints(CalibrationMode mode);
 // CalibrationResult::perPointError, and it stays right after later edits.
 float reprojectionError(const CalibrationPoint& point, const ProjectorCamera& camera);
 
+// Everything one calibration undo step restores (TD-17): the output's points and
+// projector, and the session's lens, mode and solve status as they were shown. Point
+// lists are small, so a step keeps whole copies.
+struct CalibrationSnapshot {
+    std::vector<CalibrationPoint> points;
+    ProjectorCamera projector;
+    ProjectorIntrinsics lens;
+    CalibrationMode mode = CalibrationMode::Auto;
+    std::string status;
+    bool statusIsError = false;
+    std::string warning;
+    bool solved = false;
+    float rmsError = 0.0f;
+    int pointsUsed = 0;
+};
+
+// One recorded edit: the state before it and after it (after the live solve).
+struct CalibrationEdit {
+    CalibrationSnapshot before;
+    CalibrationSnapshot after;
+    std::string description;
+    int mergeKey = 0;  // != 0: merges with the previous step of the same key and output
+};
+
 struct CalibrationSession {
     enum class Pick {
         None,
@@ -78,8 +103,9 @@ struct CalibrationSession {
     Vec2 dragStartPixel{0.0f};
 
     // Start (or restart) on a projector: its lens, nothing selected, and a solve on the
-    // next update so the status reflects the stored points.
-    void begin(const ProjectorCamera& projector);
+    // next update so the status reflects the stored points. The state now is the base
+    // the first recorded edit starts from.
+    void begin(const std::vector<CalibrationPoint>& points, const ProjectorCamera& projector);
 
     // Drop any pick or drag in progress.
     void cancelPick() {
@@ -100,8 +126,42 @@ struct CalibrationSession {
     // and `status` holds the reason. Returns true when the projector was replaced.
     bool update(const std::vector<CalibrationPoint>& points, ProjectorCamera& projector);
 
+    // ---- Undo (TD-17) ---------------------------------------------------------------
+    // Edits are recorded once a frame, after the live solve, so a step holds the
+    // projector the edit produced. An edit site only names what it did (noteEdit);
+    // finishFrame compares the state with the one the last step (or begin) left and
+    // returns the edit. Changes nobody noted (the frame-boundary re-framing of an
+    // uncalibrated projector) are folded into the base without a step.
+
+    // Merge key for moving point `index` (drag or nudge): consecutive moves of one
+    // point are one step, as for quad corners.
+    static int moveKey(int index) { return index + 1; }
+
+    // Name this frame's edit (the first name in a frame wins).
+    void noteEdit(const std::string& description, int mergeKey = 0);
+
+    // The session's and the output's state now.
+    CalibrationSnapshot capture(const std::vector<CalibrationPoint>& points,
+                                const ProjectorCamera& projector) const;
+
+    // Once a frame, after update(): this frame's edit, if one was noted and it changed
+    // anything.
+    std::optional<CalibrationEdit> finishFrame(const std::vector<CalibrationPoint>& points,
+                                               const ProjectorCamera& projector);
+
+    // Put a recorded state back (undo/redo of this output while it is calibrated). No
+    // solve follows: the snapshot already holds the solved projector and its status.
+    void restore(const CalibrationSnapshot& snapshot, std::vector<CalibrationPoint>& points,
+                 ProjectorCamera& projector);
+
 private:
     bool dirty_ = false;
+    std::optional<CalibrationSnapshot> base_;  // the state the next step starts from
+    std::string editDescription_;              // empty = no edit noted this frame
+    int editMergeKey_ = 0;
 };
+
+// Equal for undo purposes: the points, projector, lens and mode (not the status text).
+bool sameCalibrationState(const CalibrationSnapshot& a, const CalibrationSnapshot& b);
 
 }  // namespace quadmapper

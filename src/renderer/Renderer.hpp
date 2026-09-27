@@ -47,8 +47,8 @@ public:
     // opacity behave as for quads. The view transform and output rotation apply as
     // for quads. nearZ/farZ must be shared by every object in a pass, or depth does
     // not compare between them. Depth state is the caller's (renderMeshObjects sets
-    // it). The GPU mesh is cached per object and re-uploaded only when its MeshData
-    // is replaced.
+    // it). The GPU mesh is cached per object and re-uploaded only when the object's
+    // mesh revision changes (MeshObject::getMeshRevision, TD-15).
     void renderMeshObject(const MeshObject& object, const ProjectorCamera& camera,
                           const Texture* texture, float nearZ, float farZ);
 
@@ -145,8 +145,8 @@ private:
                               float opacity, const ColorCorrection& color,
                               const SoftEdge& edge, const Texture* texture);
 
-    // The object's GPU mesh, uploaded on first use or when its MeshData was
-    // replaced; nullptr when the mesh is empty or has out-of-range indices.
+    // The object's GPU mesh, uploaded on first use or when its mesh revision
+    // changed; nullptr when the mesh is empty or has out-of-range indices.
     const GpuMesh* meshBuffersFor(const MeshObject& object);
 
     ShaderProgram quadShader_;

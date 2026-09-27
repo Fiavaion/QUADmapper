@@ -40,6 +40,10 @@ public:
     // deleted quad). They must stay loaded while the command is in the history.
     virtual void collectMediaIds(std::unordered_set<UUID>& out) const { (void)out; }
 
+    // A media source was replaced by another (a missing file relocated): what this
+    // command would put back must use the new id.
+    virtual void remapMediaId(const UUID& from, const UUID& to) { (void)from; (void)to; }
+
 protected:
     Command() = default;
 };
@@ -77,6 +81,11 @@ public:
     std::string getUndoDescription() const;
     std::string getRedoDescription() const;
 
+    // The step undo() / redo() would take next, or nullptr. For callers that decide
+    // whether to take it (calibration takes only its own steps, TD-17).
+    const Command* peekUndo() const { return canUndo() ? commands_[undoIndex_ - 1].get() : nullptr; }
+    const Command* peekRedo() const { return canRedo() ? commands_[undoIndex_].get() : nullptr; }
+
     // Clear all history
     void clear();
 
@@ -87,6 +96,9 @@ public:
     // Every media source id an undo or redo step could restore (see
     // Command::collectMediaIds), including an open compound group.
     void collectMediaIds(std::unordered_set<UUID>& out) const;
+
+    // Command::remapMediaId on every step, including an open compound group.
+    void remapMediaId(const UUID& from, const UUID& to);
 
     // Get current stack sizes
     size_t getUndoCount() const { return undoIndex_; }
@@ -132,6 +144,7 @@ public:
     void addCommand(std::unique_ptr<Command> command);
     bool isEmpty() const { return commands_.empty(); }
     void collectMediaIds(std::unordered_set<UUID>& out) const override;
+    void remapMediaId(const UUID& from, const UUID& to) override;
 
 private:
     std::string description_;

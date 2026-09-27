@@ -6,6 +6,8 @@
 #include "MissingMedia.hpp"
 #include "ProjectReplace.hpp"
 #include "ReplaceMedia.hpp"
+#include "MeshLoads.hpp"
+#include "UndoRouting.hpp"
 #include "OutputPersistence.hpp"
 #include "ControlBindings.hpp"
 #include "../control/ExternalControl.hpp"
@@ -443,8 +445,9 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
             }
         }
 
-        // 3D objects (ADR-052): the mesh is re-imported from its file; the media
-        // binding is remapped onto the live source like a quad's.
+        // 3D objects (ADR-052): the mesh is re-imported from its file, on a worker
+        // (TD-16a, requestMeshLoads below); the media binding is remapped onto the
+        // live source like a quad's.
         for (const Project::ObjectData& od : sd.objects) {
             auto object = std::make_unique<MeshObject>(od.id);
             object->setName(od.name);
@@ -468,14 +471,10 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
                 }
             }
 
-            auto mesh = od.path.empty() ? Err<MeshData>("no mesh file path saved")
-                      : od.missing      ? Err<MeshData>("file not found")
-                                        : loadObj(pathFromUtf8(od.path));
-            if (mesh) {
-                object->getMesh() = std::move(mesh.value());
-            } else {
-                Logger::warning("3D object '{}': mesh not loaded ({})", od.name,
-                                mesh.error().message);
+            if (od.path.empty() || od.missing) {
+                const std::string why = od.path.empty() ? "no mesh file path saved" : "file not found";
+                Logger::warning("3D object '{}': mesh not loaded ({})", od.name, why);
+                if (!od.path.empty()) es.meshLoads.errors[od.path] = why;
             }
             scene->adoptObject(std::move(object));
         }
@@ -505,6 +504,8 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         es.activeScene();  // lazily creates a default scene
     }
     es.setActiveScene(es.scenes.front()->getId());
+    // Start parsing the meshes now, so they count as loading (not missing) at once.
+    requestMeshLoads(es);
 
     // Preserve "launch is aimed at the projector": if outputs exist but no scene is
     // assigned to any (e.g. a v1/v2 file), route the active scene to the first output
@@ -882,6 +883,7 @@ bool Application::initializeComponents() {
 
     // Create output manager and initialize it
     m_outputManager = std::make_unique<OutputManager>();
+    m_editorState->outputResolver.setOutputManager(m_outputManager.get());  // calibration undo
     auto outputResult = m_outputManager->initialize(m_window);
     if (!outputResult) {
         Logger::error("Failed to initialize output manager: {}", outputResult.error().message);
@@ -1376,11 +1378,19 @@ void Application::render() {
         saveProject();
     }
 
-    if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
-        if (es.commandHistory.undo()) m_project->setModified(true);
-    }
-    if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
-        if (es.commandHistory.redo()) m_project->setModified(true);
+    // Undo/redo also run while calibrating, on that output's calibration steps only
+    // (UndoRouting.hpp, TD-17).
+    const bool undoKey = editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false);
+    const bool redoKey = editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false);
+    if (undoKey || redoKey) {
+        std::string heldBack;
+        if (undoKey ? undoStep(es, &heldBack) : redoStep(es, &heldBack)) {
+            m_project->setModified(true);
+        } else if (!heldBack.empty()) {
+            snprintf(es.statusMessage, sizeof(es.statusMessage), "Leave calibration to %s: %s",
+                     undoKey ? "undo" : "redo", heldBack.c_str());
+            es.statusTimer = 3.0f;
+        }
     }
 
     if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
@@ -1398,12 +1408,17 @@ void Application::render() {
             // Calibrating: Delete removes the selected calibration point, never quads.
             OutputWindow* calibrated = m_outputManager->getOutput(es.calibratingOutputId);
             if (calibrated && es.calibration.selected >= 0) {
+                es.calibration.noteEdit("Delete calibration point " +
+                                        std::to_string(es.calibration.selected + 1));
                 es.calibration.removePoint(calibrated->getCalibrationPoints(),
                                            es.calibration.selected);
                 m_project->setModified(true);
             }
         } else if (quadManager.hasSelection()) {
+            // Selecting an object deselects the quads, so a quad selection is newer.
             es.deleteSelectedQuads();
+            m_project->setModified(true);
+        } else if (es.deleteSelectedObject()) {
             m_project->setModified(true);
         }
     }
@@ -1813,41 +1828,58 @@ AsyncFileDialog::Request objectFileRequest() {
     return request;
 }
 
-// File > Import 3D Object (ADR-052): the object goes into the active scene. An
-// uncalibrated projector on that scene's output is re-aimed to frame it, so the
-// object is in view as soon as it is imported.
-void importObjectFile(EditorState& es, OutputManager* om, Project* project,
-                      const std::string& path) {
+// File > Import 3D Object (ADR-052): the object goes into the active scene at once,
+// selected, and shows as loading while its file parses on a worker (TD-16a);
+// adoptObjectMeshes completes it.
+void importObjectFile(EditorState& es, Project* project, const std::string& path) {
     const std::filesystem::path file = pathFromUtf8(path);
-    auto mesh = loadObj(file);
-    if (!mesh) {
-        Logger::error("Import 3D object failed: {}", mesh.error().message);
-        postStatus(es, "Import failed: " + mesh.error().message);
-        return;
-    }
-    Scene& scene = es.activeScene();
-    MeshObject* object = scene.createObject(utf8FromPath(file.stem()));
-    object->setSourcePath(absolutePathString(file));
-    object->getMesh() = std::move(mesh.value());
-
-    OutputWindow* output = (om && scene.hasAssignedOutput())
-                               ? om->getOutput(scene.getAssignedOutputId()) : nullptr;
-    if (output && !output->getProjector().calibrated) {
-        Vec3 boxMin, boxMax;
-        object->worldBounds(boxMin, boxMax);
-        const IVec2 res = output->getEffectiveResolution();
-        output->getProjector() = ProjectorCamera::framing(
-            boxMin, boxMax, ProjectorIntrinsics::fromThrowRatio(1.5f, res.x, res.y));
-    }
-
+    MeshObject* object = beginObjectImport(es, utf8FromPath(file.stem()), absolutePathString(file));
     es.selectedObjectId = object->getId();
-    scene.getQuadManager().deselectAll();  // Delete/arrows must not reach a hidden quad
+    es.activeScene().getQuadManager().deselectAll();  // Delete/arrows must not reach a hidden quad
     es.currentSelectionType = EditorState::SelectionType::Object;
     es.mediaBinPanel.clearSelection();
     es.outputPanel.clearSelection();
     if (project) project->setModified(true);
-    postStatus(es, "Imported 3D object: " + object->getName() + " (" +
-                   std::to_string(object->getMesh().triangleCount()) + " triangles)");
+    postStatus(es, "Importing 3D object: " + object->getName() + "...");
+}
+
+// Frame boundary: queue parses for meshes that need one and adopt the finished ones.
+// A finished import re-aims an uncalibrated projector on its scene's output to frame
+// the object, so it is in view as soon as it has loaded; a failed one is removed and
+// reported as the synchronous import did. A show's mesh that fails is reported and
+// listed in Missing Media, as a load that found it missing does.
+void adoptObjectMeshes(EditorState& es, OutputManager* om, Project* project) {
+    for (const MeshImportOutcome& done : adoptLoadedMeshes(es)) {
+        if (!done.import) {
+            postStatus(es, (done.objectId.isNull() ? "Could not use " + done.name
+                                                   : "3D object '" + done.name + "': mesh not loaded") +
+                               " (" + done.error + ")");
+            es.showMissingMedia = true;
+            continue;
+        }
+        if (!done.ok) {
+            Logger::error("Import 3D object failed: {}", done.error);
+            postStatus(es, "Import failed: " + done.error);
+            if (es.selectedObjectId == done.objectId) es.selectedObjectId = UUID();
+            continue;
+        }
+        Scene* scene = es.quadResolver.findScene(done.sceneId);
+        MeshObject* object = scene ? scene->getObject(done.objectId) : nullptr;
+        if (!object) continue;
+        OutputWindow* output = (om && scene->hasAssignedOutput())
+                                   ? om->getOutput(scene->getAssignedOutputId()) : nullptr;
+        if (output && !output->getProjector().calibrated) {
+            Vec3 boxMin, boxMax;
+            object->worldBounds(boxMin, boxMax);
+            const IVec2 res = output->getEffectiveResolution();
+            output->getProjector() = ProjectorCamera::framing(
+                boxMin, boxMax, ProjectorIntrinsics::fromThrowRatio(1.5f, res.x, res.y));
+        }
+        if (project) project->setModified(true);
+        postStatus(es, "Imported 3D object: " + object->getName() + " (" +
+                       std::to_string(object->getMesh().triangleCount()) + " triangles)");
+    }
+    requestMeshLoads(es);
 }
 
 }  // namespace
@@ -1991,6 +2023,7 @@ void Application::runFrameBoundaryTasks() {
         offerRecovery("");
     }
     processPendingFileAction();
+    adoptObjectMeshes(*m_editorState, m_outputManager.get(), m_project.get());
     processExternalControl();
     pollMissingMediaSearch();
     if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager);
@@ -2106,7 +2139,7 @@ void Application::processPendingFileAction() {
             if (m_projectDialog->open(objectFileRequest())) {
                 m_onProjectFileChosen = [this](const std::string& path) {
                     if (path.empty()) return;
-                    importObjectFile(*m_editorState, m_outputManager.get(), m_project.get(), path);
+                    importObjectFile(*m_editorState, m_project.get(), path);
                 };
             }
             break;

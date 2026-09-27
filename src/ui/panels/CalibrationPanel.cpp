@@ -10,6 +10,7 @@
 #include "renderer/Renderer.hpp"
 #include "scene/CalibrationSession.hpp"
 #include "scene/MeshObject.hpp"
+#include "scene/Commands.hpp"
 #include "scene/RayPick.hpp"
 #include "ui/Theme.hpp"
 #include "scene/Scene.hpp"
@@ -31,6 +32,7 @@ namespace {
 constexpr float ERROR_WARN_PX = 3.0f;     // per-point error shown red above this
 constexpr float SNAP_RADIUS_PX = 10.0f;   // model-view vertex snapping
 constexpr float ORBIT_DEG_PER_PX = 0.4f;
+constexpr int LENS_EDIT_KEY = -1;         // undo merge key of lens edits (points use >= 1)
 
 const ImVec4 ERROR_COLOR(1.0f, 0.35f, 0.3f, 1.0f);
 const ImVec4 HINT_COLOR(1.0f, 0.75f, 0.3f, 1.0f);
@@ -139,6 +141,7 @@ void CalibrationPanel::render(EditorContext& ctx) {
                                           static_cast<int>(CalibrationMode::Full));
         if (modeChanged) {
             cal.mode = static_cast<CalibrationMode>(mode);
+            cal.noteEdit("Change calibration lens mode");
             cal.markChanged();
             setModified();
         }
@@ -156,6 +159,8 @@ void CalibrationPanel::render(EditorContext& ctx) {
             cal.lens = ProjectorIntrinsics::fromThrowRatio(std::max(throwRatio, 0.05f), lens.width,
                                                            lens.height, lensShift);
             if (!projector.calibrated) projector.intrinsics = cal.lens;
+            // Typing a value or holding a +/- button is one step.
+            cal.noteEdit("Change projector lens", LENS_EDIT_KEY);
             cal.markChanged();
             setModified();
         }
@@ -178,6 +183,7 @@ void CalibrationPanel::render(EditorContext& ctx) {
             points.clear();
             cal.selected = -1;
             cal.cancelPick();
+            cal.noteEdit("Clear calibration points");
             cal.markChanged();
             setModified();
         }
@@ -193,6 +199,7 @@ void CalibrationPanel::render(EditorContext& ctx) {
             cal.solved = false;
             cal.statusIsError = false;
             cal.status = "View reset: edit a point to solve again";
+            cal.noteEdit("Reset projector view");
             setModified();
         }
         ImGui::EndDisabled();
@@ -247,6 +254,8 @@ void CalibrationPanel::render(EditorContext& ctx) {
                 }
                 ImGui::TableNextColumn();
                 if (ImGui::Checkbox("##On", &p.enabled)) {
+                    cal.noteEdit(std::string(p.enabled ? "Enable" : "Disable") +
+                                 " calibration point " + std::to_string(i + 1));
                     cal.markChanged();
                     setModified();
                 }
@@ -258,6 +267,7 @@ void CalibrationPanel::render(EditorContext& ctx) {
             ImGui::EndTable();
         }
         if (deleteIndex >= 0) {
+            cal.noteEdit("Delete calibration point " + std::to_string(deleteIndex + 1));
             cal.removePoint(points, deleteIndex);
             setModified();
         }
@@ -380,11 +390,14 @@ void CalibrationPanel::render(EditorContext& ctx) {
     }
     ImGui::End();
 
-    if (!open) {
-        es.endCalibration();
-        return;
-    }
+    // The live solve, then this frame's edit (canvas and panel) as one undo step that
+    // holds the solved projector (TD-17).
     cal.update(points, projector);
+    if (auto edit = cal.finishFrame(points, projector)) {
+        es.commandHistory.execute(
+            std::make_unique<CalibrationEditCommand>(es.outputRef(output->getId()), std::move(*edit)));
+    }
+    if (!open) es.endCalibration();
 }
 
 void CalibrationPanel::drawCanvasOverlay(EditorContext& ctx) {

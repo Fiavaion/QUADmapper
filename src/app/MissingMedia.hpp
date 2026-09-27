@@ -10,6 +10,7 @@
 #include "ControlBindings.hpp"
 #include "EditorState.hpp"
 #include "MediaAssign.hpp"
+#include "MeshLoads.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
@@ -17,7 +18,6 @@
 #include "project/MediaRelocation.hpp"
 #include "project/Project.hpp"
 #include "scene/MeshObject.hpp"
-#include "scene/ObjLoader.hpp"
 #include "source/SourceManager.hpp"
 
 #include <algorithm>
@@ -39,10 +39,6 @@ struct MissingMediaItem {
     int quadUses = 0;
     int objectUses = 0;
 };
-
-inline bool isMeshMissing(const MeshObject& object) {
-    return !object.getSourcePath().empty() && object.getMesh().empty();
-}
 
 // Missing files the scenes use, sorted by path. A source only an undo step still
 // holds is left out: nothing on screen needs it.
@@ -70,7 +66,7 @@ inline std::vector<MissingMediaItem> collectMissingMedia(const EditorState& es) 
         for (const auto& object : scene->getObjects()) {
             if (!object) continue;
             if (MissingMediaItem* item = sourceItem(object->getTexture().mediaId)) ++item->objectUses;
-            if (!isMeshMissing(*object)) continue;
+            if (!isMeshMissing(es, *object)) continue;
             auto [it, added] = meshItems.emplace(object->getSourcePath(), items.size());
             if (added) {
                 MissingMediaItem item;
@@ -110,10 +106,12 @@ inline void rebindMissingSource(EditorState& es, const UUID& missingId, const st
             if (object && object->getTexture().mediaId == missingId) object->getTexture().mediaId = newId;
         }
     }
-    // Quads only an undo step holds re-bind from their media path once restored.
+    // Quads only an undo step holds re-bind from their media path once restored;
+    // objects and object media steps in the history are moved onto the new id.
     for (auto& [quadId, quadPath] : es.quadTexturePaths) {
         if (quadPath == oldPath) quadPath = newPath;
     }
+    es.commandHistory.remapMediaId(missingId, newId);
     const std::unordered_map<UUID, UUID> moved{{missingId, newId}};
     for (auto& mapping : es.midiMappings) {
         mapping.target = remapTargetPath(mapping.target, "source", moved);
@@ -150,23 +148,11 @@ inline std::string relocateMissingSource(EditorState& es, SourceManager& sm, con
     return {};
 }
 
-// Load newPath as the mesh of every object whose mesh at oldPath is missing.
+// Load newPath as the mesh of every object whose mesh at oldPath is missing, on the
+// mesh worker (beginMeshRelocation): accepted here, adopted at a frame boundary.
 inline std::string relocateMissingMesh(EditorState& es, const std::string& oldPath,
                                        const std::filesystem::path& newPath) {
-    auto mesh = loadObj(newPath);
-    if (!mesh) return mesh.error().message;
-    const std::string path = absoluteMediaPath(newPath);
-    int relocated = 0;
-    for (const auto& scene : es.scenes) {
-        if (!scene) continue;
-        for (const auto& object : scene->getObjects()) {
-            if (!object || object->getSourcePath() != oldPath || !isMeshMissing(*object)) continue;
-            object->getMesh() = mesh.value();
-            object->setSourcePath(path);
-            ++relocated;
-        }
-    }
-    return relocated > 0 ? std::string() : "It is no longer missing.";
+    return beginMeshRelocation(es, oldPath, absoluteMediaPath(newPath));
 }
 
 inline std::string relocateMissingItem(EditorState& es, SourceManager* sm,

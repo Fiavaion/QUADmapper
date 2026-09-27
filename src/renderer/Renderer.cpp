@@ -424,8 +424,9 @@ void Renderer::applySurfaceUniforms(ShaderProgram& shader, const TextureBinding&
 }
 
 // A MeshObject's vertex data on the GPU (ADR-052): interleaved position + uv, and
-// indices, owned RAII. Built once per MeshData; the recorded storage lets the
-// Renderer tell when the object's mesh was replaced and must be uploaded again.
+// indices, owned RAII. Built from one mesh revision (TD-15); the Renderer uploads
+// again when the object's revision differs, whether its mesh was replaced or edited
+// in place.
 struct GpuMesh {
     GLuint vao = 0;
     GLuint vbo = 0;
@@ -434,8 +435,11 @@ struct GpuMesh {
     Vec3 boundsMin{0.0f};    // model space
     Vec3 boundsMax{0.0f};
     uint64_t lastPass = 0;
+    uint64_t revision = 0;   // MeshObject::getMeshRevision() of the uploaded data
 
-    explicit GpuMesh(const MeshData& mesh) : source_(signature(mesh)) { upload(mesh); }
+    explicit GpuMesh(const MeshObject& object) : revision(object.getMeshRevision()) {
+        upload(object.getMesh());
+    }
     ~GpuMesh() {
         if (vao != 0) { glDeleteVertexArrays(1, &vao); GlObjectStats::onVertexArrayDestroyed(); }
         if (vbo != 0) { glDeleteBuffers(1, &vbo); GlObjectStats::onVertexBufferDestroyed(); }
@@ -444,69 +448,52 @@ struct GpuMesh {
     GpuMesh(const GpuMesh&) = delete;
     GpuMesh& operator=(const GpuMesh&) = delete;
 
-    bool builtFrom(const MeshData& mesh) const { return signature(mesh) == source_; }
-
 private:
-    // Storage identity plus the end vertices: constant-time, and it changes whenever
-    // the MeshData is replaced (a reload or a different mesh).
-    struct Signature {
-        const void* positions = nullptr;
-        const void* uvs = nullptr;
-        const void* indices = nullptr;
-        size_t positionCount = 0, uvCount = 0, indexCount = 0;
-        Vec3 first{0.0f}, last{0.0f};
-        bool operator==(const Signature& o) const {
-            return positions == o.positions && uvs == o.uvs && indices == o.indices &&
-                   positionCount == o.positionCount && uvCount == o.uvCount &&
-                   indexCount == o.indexCount && first == o.first && last == o.last;
-        }
-    };
-    static Signature signature(const MeshData& m) {
-        Signature s;
-        s.positions = m.positions.data();
-        s.uvs = m.uvs.data();
-        s.indices = m.indices.data();
-        s.positionCount = m.positions.size();
-        s.uvCount = m.uvs.size();
-        s.indexCount = m.indices.size();
-        if (!m.positions.empty()) {
-            s.first = m.positions.front();
-            s.last = m.positions.back();
-        }
-        return s;
-    }
-
+    // Runs on the render thread for every vertex of a mesh (a 2M-triangle mesh has
+    // about 1M), so the loops use plain pointers and scalar maths: container and glm
+    // calls are not inlined in Debug builds (TD-16a).
     void upload(const MeshData& mesh) {
         const size_t vertexCount = mesh.positions.size();
         const size_t indexTotal = mesh.triangleCount() * 3;
+        const uint32_t* index = mesh.indices.data();
         for (size_t i = 0; i < indexTotal; ++i) {
-            if (mesh.indices[i] >= vertexCount) {
+            if (index[i] >= vertexCount) {
                 Logger::warning("Mesh index {} out of range ({} vertices); object not drawn",
-                                mesh.indices[i], vertexCount);
+                                index[i], vertexCount);
                 return;
             }
         }
         if (indexTotal == 0) return;
 
-        boundsMin = Vec3(std::numeric_limits<float>::max());
-        boundsMax = Vec3(std::numeric_limits<float>::lowest());
-        for (const Vec3& p : mesh.positions) {
-            boundsMin = glm::min(boundsMin, p);
-            boundsMax = glm::max(boundsMax, p);
+        const Vec3* position = mesh.positions.data();
+        float lo[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                       std::numeric_limits<float>::max()};
+        float hi[3] = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                       std::numeric_limits<float>::lowest()};
+        for (size_t i = 0; i < vertexCount; ++i) {
+            const float p[3] = {position[i].x, position[i].y, position[i].z};
+            for (int a = 0; a < 3; ++a) {
+                if (p[a] < lo[a]) lo[a] = p[a];
+                if (p[a] > hi[a]) hi[a] = p[a];
+            }
         }
+        boundsMin = Vec3(lo[0], lo[1], lo[2]);
+        boundsMax = Vec3(hi[0], hi[1], hi[2]);
 
         // Without UVs, map the XY bounds onto the texture: +X right, +Y up, so the
         // image stands upright seen from the front (v = 0 is the image's top row).
         const bool hasUvs = mesh.uvs.size() == vertexCount;
-        const Vec2 extent = glm::max(Vec2(boundsMax - boundsMin), Vec2(1e-6f));
-        std::vector<float> interleaved;
-        interleaved.reserve(vertexCount * 5);
-        for (size_t i = 0; i < vertexCount; ++i) {
-            const Vec3& p = mesh.positions[i];
-            const Vec2 uv = hasUvs ? mesh.uvs[i]
-                                   : Vec2((p.x - boundsMin.x) / extent.x,
-                                          (boundsMax.y - p.y) / extent.y);
-            interleaved.insert(interleaved.end(), {p.x, p.y, p.z, uv.x, uv.y});
+        const Vec2* uv = mesh.uvs.data();
+        const float extentX = std::max(hi[0] - lo[0], 1e-6f);
+        const float extentY = std::max(hi[1] - lo[1], 1e-6f);
+        std::vector<float> interleaved(vertexCount * 5);
+        float* out = interleaved.data();
+        for (size_t i = 0; i < vertexCount; ++i, out += 5) {
+            out[0] = position[i].x;
+            out[1] = position[i].y;
+            out[2] = position[i].z;
+            out[3] = hasUvs ? uv[i].x : (position[i].x - lo[0]) / extentX;
+            out[4] = hasUvs ? uv[i].y : (hi[1] - position[i].y) / extentY;
         }
 
         glGenVertexArrays(1, &vao);
@@ -531,8 +518,6 @@ private:
 
         indexCount = static_cast<GLsizei>(indexTotal);
     }
-
-    Signature source_;
 };
 
 const GpuMesh* Renderer::meshBuffersFor(const MeshObject& object) {
@@ -542,9 +527,9 @@ const GpuMesh* Renderer::meshBuffersFor(const MeshObject& object) {
         return nullptr;
     }
     std::unique_ptr<GpuMesh>& slot = meshCache_[object.getId()];
-    if (!slot || !slot->builtFrom(mesh)) {
+    if (!slot || slot->revision != object.getMeshRevision()) {
         slot.reset();  // free the old buffers before allocating the new ones
-        slot = std::make_unique<GpuMesh>(mesh);
+        slot = std::make_unique<GpuMesh>(object);
     }
     slot->lastPass = meshPass_;
     return slot->indexCount > 0 ? slot.get() : nullptr;

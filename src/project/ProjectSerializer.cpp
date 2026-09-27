@@ -39,6 +39,9 @@ namespace quadmapper {
 //         - quad geometry "meshTangents" (ADR-049 §3): grid-line handles, per vertex
 //           [{"vertex": i, "handles": [u-, u+, v-, v+]}], each [x, y] or null (auto);
 //           written only for vertices with a handle set. Missing = all automatic.
+//         - objects[].absPath: the mesh's absolute path, written beside a relative
+//           "path" (TD-16). A reader tries "path" first, then "absPath"; missing =
+//           "path" only.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
@@ -898,6 +901,8 @@ static std::optional<Project::SourceData> deserializeSource(const nlohmann::json
 
 // ---- 3D objects (.qmap v3.2, ADR-052) ------------------------------------------
 // transform[16] is column-major, as glm stores it. The mesh is re-imported from path.
+// A relative path gets its absolute form beside it as "absPath" (v3.3, TD-16), so a
+// show file moved away from a mesh outside its folder still finds the mesh.
 
 static nlohmann::json serializeObject(const Project::ObjectData& object,
                                       const std::unordered_set<UUID>& knownSourceIds,
@@ -909,7 +914,9 @@ static nlohmann::json serializeObject(const Project::ObjectData& object,
     nlohmann::json j;
     j["id"] = object.id.toString();
     j["name"] = object.name;
-    j["path"] = toProjectRelative(object.path, baseDir);
+    const std::string written = toProjectRelative(object.path, baseDir);
+    j["path"] = written;
+    if (written != object.path) j["absPath"] = object.path;
     j["transform"] = transform;
     j["texture"] = serializeTextureBinding(object.texture);
     const UUID& mediaId = object.texture.mediaId;
@@ -933,6 +940,17 @@ static Project::ObjectData deserializeObject(const nlohmann::json& j, const fs::
         fs::path p = pathFromUtf8(j["path"].get<std::string>());
         if (!p.empty() && p.is_relative() && !baseDir.empty()) p = (baseDir / p).lexically_normal();
         object.path = utf8FromPath(p);
+    }
+    // The absolute fallback is used only when "path" does not lead to a file and it
+    // does (or "path" is empty). Otherwise "path" stays, for Missing Media to show.
+    if (j.contains("absPath") && j["absPath"].is_string()) {
+        const fs::path fallback = pathFromUtf8(j["absPath"].get<std::string>());
+        std::error_code ec;
+        if (!fallback.empty() && fallback.is_absolute() &&
+            (object.path.empty() ||
+             (!fs::exists(pathFromUtf8(object.path), ec) && fs::exists(fallback, ec)))) {
+            object.path = utf8FromPath(fallback.lexically_normal());
+        }
     }
     if (j.contains("transform")) {
         const auto& t = checkedArray(j["transform"], 16);

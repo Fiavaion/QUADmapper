@@ -10,8 +10,10 @@
 
 #include <glm/glm.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace quadmapper {
@@ -49,8 +51,22 @@ public:
     const std::string& getSourcePath() const { return sourcePath_; }
     void setSourcePath(const std::string& path) { sourcePath_ = path; }
 
-    MeshData& getMesh() { return mesh_; }
     const MeshData& getMesh() const { return mesh_; }
+    // Every way to change the mesh gives it a new revision (TD-15), which is what the
+    // renderer's GPU copy is keyed on: replace it whole with setMesh, or edit it in
+    // place through editMesh. editMesh bumps the revision when called, so call it for
+    // each edit and do not keep the reference past the frame.
+    void setMesh(MeshData mesh) {
+        mesh_ = std::move(mesh);
+        meshRevision_ = nextMeshRevision();
+    }
+    MeshData& editMesh() {
+        meshRevision_ = nextMeshRevision();
+        return mesh_;
+    }
+    // Unique across every object in the process, so two meshes never share one: a
+    // copy (duplicate scene, undo snapshot) keeps it because it holds the same data.
+    uint64_t getMeshRevision() const { return meshRevision_; }
 
     // Model -> world.
     const glm::mat4& getTransform() const { return transform_; }
@@ -64,28 +80,49 @@ public:
     float getOpacity() const { return opacity_; }
     void setOpacity(float opacity) { opacity_ = opacity; }
 
-    // World-space bounding box of the mesh (min > max when the mesh is empty).
+    // World-space bounding box of the mesh (min > max when the mesh is empty). Cached:
+    // recomputed only when the mesh revision or the transform changed since the last
+    // call, so per-frame callers (projector fitting, the canvas) never walk a large
+    // mesh's vertices every frame. Main thread only (the cache is not synchronised).
     void worldBounds(Vec3& min, Vec3& max) const;
 
 private:
+    static uint64_t nextMeshRevision() {
+        static std::atomic<uint64_t> counter{0};
+        return ++counter;
+    }
+
     UUID id_;
     std::string name_ = "Object";
     std::string sourcePath_;
     MeshData mesh_;
+    uint64_t meshRevision_ = nextMeshRevision();
     glm::mat4 transform_{1.0f};
     TextureBinding texture_;
     bool visible_ = true;
     float opacity_ = 1.0f;
+
+    // worldBounds cache, valid for boundsRevision_ and boundsTransform_ (0 = never).
+    mutable uint64_t boundsRevision_ = 0;
+    mutable glm::mat4 boundsTransform_{1.0f};
+    mutable Vec3 boundsMin_{0.0f};
+    mutable Vec3 boundsMax_{0.0f};
 };
 
 inline void MeshObject::worldBounds(Vec3& min, Vec3& max) const {
-    min = Vec3(1e30f);
-    max = Vec3(-1e30f);
-    for (const Vec3& p : mesh_.positions) {
-        const Vec3 w = Vec3(transform_ * glm::vec4(p, 1.0f));
-        min = glm::min(min, w);
-        max = glm::max(max, w);
+    if (boundsRevision_ != meshRevision_ || boundsTransform_ != transform_) {
+        boundsMin_ = Vec3(1e30f);
+        boundsMax_ = Vec3(-1e30f);
+        for (const Vec3& p : mesh_.positions) {
+            const Vec3 w = Vec3(transform_ * glm::vec4(p, 1.0f));
+            boundsMin_ = glm::min(boundsMin_, w);
+            boundsMax_ = glm::max(boundsMax_, w);
+        }
+        boundsRevision_ = meshRevision_;
+        boundsTransform_ = transform_;
     }
+    min = boundsMin_;
+    max = boundsMax_;
 }
 
 }  // namespace quadmapper

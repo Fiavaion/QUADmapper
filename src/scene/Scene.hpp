@@ -89,6 +89,12 @@ public:
     MeshObject* createObject(const std::string& name = "Object");
     MeshObject* adoptObject(std::unique_ptr<MeshObject> object);  // e.g. from a loader
     void deleteObject(const UUID& id);
+    // Remove an object and hand it over whole (undo keeps it); `index` receives its
+    // list position. nullptr when there is no such object.
+    std::unique_ptr<MeshObject> takeObject(const UUID& id, size_t* index = nullptr);
+    // Put an object in at `index` (clamped to the end of the list). nullptr, and the
+    // object is dropped, when it is null or its id is already in the scene.
+    MeshObject* insertObject(std::unique_ptr<MeshObject> object, size_t index);
     MeshObject* getObject(const UUID& id);
     const std::vector<std::unique_ptr<MeshObject>>& getObjects() const { return objects_; }
     // World bounds of every visible object with a mesh; false when there are none.

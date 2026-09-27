@@ -506,4 +506,215 @@ void DuplicateQuadCommand::collectMediaIds(std::unordered_set<UUID>& out) const 
     collectSnapshotMedia(snapshot_, out);
 }
 
+// ---- 3D objects ------------------------------------------------------------------
+
+Scene* ObjectRef::scene() const {
+    return resolver ? resolver->findScene(sceneId) : nullptr;
+}
+
+MeshObject* ObjectRef::object() const {
+    Scene* s = scene();
+    return s ? s->getObject(objectId) : nullptr;
+}
+
+MeshObject* resolveObjectForCommand(const ObjectRef& ref, const std::string& commandDescription) {
+    MeshObject* object = ref.object();
+    if (!object) {
+        LOG_WARNING("'{}': object {} no longer exists; skipped", commandDescription,
+                    ref.objectId.toString());
+    }
+    return object;
+}
+
+namespace {
+
+void collectHeldMedia(const std::unique_ptr<MeshObject>& held, std::unordered_set<UUID>& out) {
+    if (held && !held->getTexture().mediaId.isNull()) out.insert(held->getTexture().mediaId);
+}
+
+void remapHeldMedia(const std::unique_ptr<MeshObject>& held, const UUID& from, const UUID& to) {
+    if (held && held->getTexture().mediaId == from) held->getTexture().mediaId = to;
+}
+
+// Put a held object back into its scene; false (and the object stays held) when the
+// scene is gone or already has an object with that id.
+bool reinsertHeld(const ObjectRef& target, std::unique_ptr<MeshObject>& held, size_t index,
+                  const std::string& description) {
+    Scene* scene = target.scene();
+    if (!scene || !held || scene->getObject(held->getId())) {
+        LOG_WARNING("'{}': scene no longer exists or object {} is already there; skipped",
+                    description, target.objectId.toString());
+        return false;
+    }
+    return scene->insertObject(std::move(held), index) != nullptr;
+}
+
+// Take the target out of its scene into `held`; false when it is gone.
+bool takeIntoHeld(const ObjectRef& target, std::unique_ptr<MeshObject>& held, size_t& index,
+                  const std::string& description) {
+    Scene* scene = target.scene();
+    std::unique_ptr<MeshObject> object = scene ? scene->takeObject(target.objectId, &index) : nullptr;
+    if (!object) {
+        LOG_WARNING("'{}': object {} no longer exists; skipped", description,
+                    target.objectId.toString());
+        return false;
+    }
+    held = std::move(object);
+    return true;
+}
+
+}  // namespace
+
+AddObjectCommand::AddObjectCommand(QuadResolver& resolver, const UUID& sceneId,
+                                   std::unique_ptr<MeshObject> object, size_t index)
+    : target_{&resolver, sceneId, object ? object->getId() : UUID()}
+    , held_(std::move(object))
+    , index_(index)
+{
+}
+
+bool AddObjectCommand::execute() {
+    return reinsertHeld(target_, held_, index_, getDescription());
+}
+
+bool AddObjectCommand::undo() {
+    return takeIntoHeld(target_, held_, index_, getDescription());
+}
+
+std::string AddObjectCommand::getDescription() const {
+    return "Import 3D object";
+}
+
+void AddObjectCommand::collectMediaIds(std::unordered_set<UUID>& out) const {
+    collectHeldMedia(held_, out);
+}
+
+void AddObjectCommand::remapMediaId(const UUID& from, const UUID& to) {
+    remapHeldMedia(held_, from, to);
+}
+
+DeleteObjectCommand::DeleteObjectCommand(const ObjectRef& target)
+    : target_(target)
+{
+}
+
+bool DeleteObjectCommand::execute() {
+    return takeIntoHeld(target_, held_, index_, getDescription());
+}
+
+bool DeleteObjectCommand::undo() {
+    return reinsertHeld(target_, held_, index_, getDescription());
+}
+
+std::string DeleteObjectCommand::getDescription() const {
+    return "Delete 3D object";
+}
+
+void DeleteObjectCommand::collectMediaIds(std::unordered_set<UUID>& out) const {
+    collectHeldMedia(held_, out);
+}
+
+void DeleteObjectCommand::remapMediaId(const UUID& from, const UUID& to) {
+    remapHeldMedia(held_, from, to);
+}
+
+namespace {
+
+template <typename T>
+std::unique_ptr<Command> makeObjectCommand(const char* description, const ObjectRef& target,
+                                           T (*read)(const MeshObject&), const T& value,
+                                           typename ObjectPropertyCommand<T>::Apply apply,
+                                           bool mergeable) {
+    const MeshObject* object = target.object();
+    if (!object) return nullptr;
+    return std::make_unique<ObjectPropertyCommand<T>>(description, target, read(*object), value,
+                                                      apply, mergeable);
+}
+
+}  // namespace
+
+std::unique_ptr<Command> makeSetObjectTransformCommand(const ObjectRef& target,
+                                                       const glm::mat4& transform, bool mergeable) {
+    return makeObjectCommand<glm::mat4>(
+        "Transform 3D object", target, [](const MeshObject& o) { return o.getTransform(); },
+        transform, [](MeshObject& o, const glm::mat4& v) { o.setTransform(v); }, mergeable);
+}
+
+std::unique_ptr<Command> makeSetObjectTextureCommand(const ObjectRef& target,
+                                                     const TextureBinding& texture) {
+    return makeObjectCommand<TextureBinding>(
+        "Change 3D object media", target, [](const MeshObject& o) { return o.getTexture(); },
+        texture, [](MeshObject& o, const TextureBinding& v) { o.getTexture() = v; }, false);
+}
+
+std::unique_ptr<Command> makeSetObjectVisibilityCommand(const ObjectRef& target, bool visible) {
+    return makeObjectCommand<bool>(
+        visible ? "Show 3D object" : "Hide 3D object", target,
+        [](const MeshObject& o) { return o.isVisible(); }, visible,
+        [](MeshObject& o, const bool& v) { o.setVisible(v); }, false);
+}
+
+std::unique_ptr<Command> makeSetObjectOpacityCommand(const ObjectRef& target, float opacity) {
+    return makeObjectCommand<float>(
+        "Change 3D object opacity", target, [](const MeshObject& o) { return o.getOpacity(); },
+        opacity, [](MeshObject& o, const float& v) { o.setOpacity(v); }, true);
+}
+
+std::unique_ptr<Command> makeRenameObjectCommand(const ObjectRef& target, const std::string& name) {
+    return makeObjectCommand<std::string>(
+        "Rename 3D object", target, [](const MeshObject& o) { return o.getName(); }, name,
+        [](MeshObject& o, const std::string& v) { o.setName(v); }, false);
+}
+
+// ---- Projector calibration -------------------------------------------------------
+
+CalibrationEditCommand::CalibrationEditCommand(const OutputRef& target, CalibrationEdit edit)
+    : target_(target)
+    , edit_(std::move(edit))
+{
+}
+
+bool CalibrationEditCommand::apply(const CalibrationSnapshot& snapshot) {
+    const CalibrationTarget target = target_.target();
+    if (!target) {
+        LOG_WARNING("'{}': output {} no longer exists; skipped", edit_.description,
+                    target_.outputId.toString());
+        return false;
+    }
+    if (target.session) {
+        target.session->restore(snapshot, *target.points, *target.projector);
+    } else {
+        *target.points = snapshot.points;
+        *target.projector = snapshot.projector;
+    }
+    return true;
+}
+
+bool CalibrationEditCommand::execute() {
+    if (firstExecute_) {
+        firstExecute_ = false;
+        if (target_.target()) return true;
+        LOG_WARNING("'{}': output {} no longer exists; not recorded", edit_.description,
+                    target_.outputId.toString());
+        return false;
+    }
+    return apply(edit_.after);
+}
+
+bool CalibrationEditCommand::undo() {
+    return apply(edit_.before);
+}
+
+bool CalibrationEditCommand::canMergeWith(const Command& other) const {
+    auto* next = dynamic_cast<const CalibrationEditCommand*>(&other);
+    return next && edit_.mergeKey != 0 && next->edit_.mergeKey == edit_.mergeKey &&
+           target_.sameTarget(next->target_);
+}
+
+void CalibrationEditCommand::mergeWith(const Command& other) {
+    if (auto* next = dynamic_cast<const CalibrationEditCommand*>(&other)) {
+        edit_.after = next->edit_.after;
+    }
+}
+
 } // namespace quadmapper

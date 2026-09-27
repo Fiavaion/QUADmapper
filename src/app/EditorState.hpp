@@ -23,8 +23,11 @@
 #include "../control/MidiMapping.hpp"
 #include "GridUndo.hpp"
 #include "../project/Project.hpp"
+#include "../output/OutputManager.hpp"
+#include "../output/OutputWindow.hpp"
 #include "../scene/CalibrationSession.hpp"
 #include "../scene/Commands.hpp"
+#include "../scene/ObjLoader.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../renderer/Texture.hpp"
@@ -43,6 +46,46 @@
 #include "../ui/panels/ViewportEditor.hpp"
 
 namespace quadmapper {
+
+// Resolves calibration undo steps (CalibrationEditCommand) by output id against the
+// live outputs (TD-17): the output's points and projector, plus the editor's session
+// while that output is the one being calibrated. A removed or re-created output (new
+// id) resolves to nothing.
+class OutputCalibrationResolver : public OutputResolver {
+public:
+    OutputCalibrationResolver(const UUID& calibratingOutputId, CalibrationSession& session)
+        : calibratingOutputId_(calibratingOutputId), session_(session) {}
+
+    void setOutputManager(OutputManager* outputs) { outputs_ = outputs; }
+
+    CalibrationTarget findCalibration(const UUID& outputId) override {
+        OutputWindow* output = outputs_ && !outputId.isNull() ? outputs_->getOutput(outputId) : nullptr;
+        if (!output) return {};
+        return {&output->getCalibrationPoints(), &output->getProjector(),
+                calibratingOutputId_ == outputId ? &session_ : nullptr};
+    }
+
+private:
+    const UUID& calibratingOutputId_;
+    CalibrationSession& session_;
+    OutputManager* outputs_ = nullptr;
+};
+
+// Bookkeeping for the meshes EditorState::objLoads is parsing (TD-16a, MeshLoads.hpp).
+struct MeshLoadState {
+    std::unordered_map<std::string, uint64_t> tickets;    // mesh path -> its parse
+    std::unordered_map<std::string, std::string> errors;  // mesh path -> why it did not load
+    // Missing meshes being relocated: the new file's path -> the missing paths whose
+    // objects move to it once it has parsed (Missing Media "Locate..." / search).
+    std::unordered_map<std::string, std::vector<std::string>> relocations;
+    // Imported objects whose import completes (becomes an undo step) once their mesh
+    // has loaded.
+    struct Import {
+        UUID sceneId;
+        UUID objectId;
+    };
+    std::vector<Import> imports;
+};
 
 struct EditorState {
     // quadResolver refers to this object's own `scenes`, so a copy or move would
@@ -230,6 +273,10 @@ struct EditorState {
     std::unique_ptr<Texture> missingPatternTexture;
     std::unique_ptr<Texture> missingBlackTexture;
 
+    // ---- 3D object meshes parsed off the render thread (TD-16a, MeshLoads.hpp) --
+    ObjLoadQueue objLoads;
+    MeshLoadState meshLoads;
+
     // UV test-grid toggle (#2): when on, newly-created quads get a colored UV
     // reference grid texture. seenQuadIds tracks which quads have already been
     // reconciled so the grid is applied once, at creation, across every code
@@ -319,15 +366,20 @@ struct EditorState {
     // canvas edits that output's calibration points instead of quad vertices.
     UUID calibratingOutputId;  // null = not calibrating
     CalibrationSession calibration;
+    // Calibration undo steps resolve through this (declared after what it refers to).
+    // Application gives it the OutputManager.
+    OutputCalibrationResolver outputResolver{calibratingOutputId, calibration};
+    OutputRef outputRef(const UUID& outputId) { return OutputRef{&outputResolver, outputId}; }
 
     // Enter calibration on an output. The scene routed to it becomes the active one,
     // so the canvas shows that projector.
-    void beginCalibration(const UUID& outputId, const ProjectorCamera& projector) {
+    void beginCalibration(const UUID& outputId, const std::vector<CalibrationPoint>& points,
+                          const ProjectorCamera& projector) {
         for (auto& s : scenes) {
             if (s && s->getAssignedOutputId() == outputId) { setActiveScene(s->getId()); break; }
         }
         calibratingOutputId = outputId;
-        calibration.begin(projector);
+        calibration.begin(points, projector);
     }
     void endCalibration() {
         calibratingOutputId = UUID::null();
@@ -366,14 +418,33 @@ struct EditorState {
     // viewport (ADR-042). Distinct from the corner/mesh drag latches.
     bool canvasMouseDownPrev = false;
 
-    // Undo/redo for quad edits, deletes and duplicates. Commands hold (scene id, quad
-    // id) and resolve through quadResolver, so a quad or scene destroyed while its
-    // commands are queued makes those steps safe no-ops.
+    // Undo/redo for quad and 3D-object edits, deletes and duplicates. Commands hold
+    // (scene id, quad or object id) and resolve through quadResolver, so a target or
+    // scene destroyed while its commands are queued makes those steps safe no-ops.
     CommandHistory commandHistory;
 
     // Stable command target for a quad of the active scene.
     QuadRef quadRef(const Quad& quad) {
         return QuadRef{&quadResolver, activeScene().getId(), quad.getId()};
+    }
+
+    // Stable command target for a 3D object of the active scene (TD-16).
+    ObjectRef objectRef(const MeshObject& object) {
+        return ObjectRef{&quadResolver, activeScene().getId(), object.getId()};
+    }
+
+    // Delete key on a selected 3D object (the Object selection of the active scene), as
+    // an undo step. False when no object is selected, or a quad is (selecting an object
+    // deselects the quads, so a quad selection is the newer one).
+    bool deleteSelectedObject() {
+        if (currentSelectionType != SelectionType::Object || selectedObjectId.isNull()) return false;
+        if (activeScene().getQuadManager().hasSelection()) return false;
+        Scene& scene = activeScene();
+        if (!scene.getObject(selectedObjectId)) return false;
+        commandHistory.execute(std::make_unique<DeleteObjectCommand>(
+            ObjectRef{&quadResolver, scene.getId(), selectedObjectId}));
+        selectedObjectId = UUID();
+        return true;
     }
 
     // Delete every selected quad of the active scene as ONE undo step, through

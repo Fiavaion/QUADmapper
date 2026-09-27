@@ -610,6 +610,116 @@ TEST_F(ProjectPersistenceTest, ObjectWithTransformAndMediaRoundTrips) {
     EXPECT_FLOAT_EQ(o.opacity, 0.25f);
 }
 
+// TD-16c: a mesh outside the show folder is saved as a relative path plus an absolute
+// fallback. Loading tries the relative path first, then the absolute one.
+TEST_F(ProjectPersistenceTest, MeshOutsideTheShowFolderFallsBackToItsAbsolutePath) {
+    const fs::path mesh = dir_ / "library" / "props" / "column.obj";
+    touch(mesh);
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    Project::ObjectData object;
+    object.id = UUID::generate();
+    object.path = utf8FromPath(mesh);
+    scene.objects.push_back(object);
+    project.getScenes().push_back(scene);
+    const fs::path file = dir_ / "shows" / "tonight" / "show.qmap";
+    fs::create_directories(file.parent_path());
+
+    ASSERT_TRUE(ProjectSerializer::save(project, file).isSuccess());
+    const auto json = nlohmann::json::parse(slurp(file));
+    const auto& saved = json["scenes"][0]["objects"][0];
+    EXPECT_EQ(saved["path"], "../../library/props/column.obj");
+    EXPECT_EQ(saved["absPath"], utf8FromPath(mesh));
+    EXPECT_EQ(json["version"], "3.3.0");
+
+    // Round trip in place: the relative path resolves.
+    auto loaded = ProjectSerializer::load(file);
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const Project::ObjectData& here = loaded.value().getScenes()[0].objects[0];
+    EXPECT_FALSE(here.missing);
+    EXPECT_TRUE(fs::equivalent(pathFromUtf8(here.path), mesh));
+
+    // The show file alone moved elsewhere: "../../library/..." now leads nowhere, so
+    // the absolute path is used.
+    const fs::path moved = dir_ / "usb" / "show.qmap";
+    fs::create_directories(moved.parent_path());
+    fs::copy_file(file, moved);
+    auto fromUsb = ProjectSerializer::load(moved);
+    ASSERT_TRUE(fromUsb.isSuccess()) << fromUsb.error().message;
+    const Project::ObjectData& found = fromUsb.value().getScenes()[0].objects[0];
+    EXPECT_FALSE(found.missing);
+    EXPECT_TRUE(fs::equivalent(pathFromUtf8(found.path), mesh));
+
+    // Saving the moved show keeps both forms, relative to its new place.
+    ASSERT_TRUE(ProjectSerializer::save(fromUsb.value(), moved).isSuccess());
+    const auto resaved = nlohmann::json::parse(slurp(moved))["scenes"][0]["objects"][0];
+    EXPECT_EQ(resaved["path"], "../library/props/column.obj");
+    EXPECT_EQ(resaved["absPath"], utf8FromPath(mesh.lexically_normal()));
+}
+
+TEST_F(ProjectPersistenceTest, MeshRelativePathWinsOverTheAbsoluteFallback) {
+    // A show folder copied with its meshes: both paths exist, the relative one (the
+    // copy next to the show) is used, not the original machine's absolute path.
+    const fs::path original = dir_ / "a" / "show" / "models" / "prop.obj";
+    const fs::path copy = dir_ / "b" / "show" / "models" / "prop.obj";
+    touch(original);
+    touch(copy);
+    const fs::path file = dir_ / "b" / "show" / "show.qmap";
+    std::ofstream(file, std::ios::binary) << R"({"version": "3.3.0", "scenes": [{"id": ")"
+        << UUID::generate().toString() << R"(", "objects": [{"id": ")" << UUID::generate().toString()
+        << R"(", "path": "models/prop.obj", "absPath": )" << nlohmann::json(utf8FromPath(original)).dump()
+        << "}]}], \"outputs\": []}";
+
+    auto loaded = ProjectSerializer::load(file);
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const Project::ObjectData& o = loaded.value().getScenes()[0].objects[0];
+    EXPECT_TRUE(fs::equivalent(pathFromUtf8(o.path), copy));
+    EXPECT_FALSE(o.missing);
+}
+
+TEST_F(ProjectPersistenceTest, MeshMissingAtBothPathsKeepsTheRelativeOneAndIsMissing) {
+    const fs::path file = dir_ / "show" / "show.qmap";
+    fs::create_directories(file.parent_path());
+    const std::string gone = utf8FromPath(dir_ / "nowhere" / "prop.obj");
+    std::ofstream(file, std::ios::binary) << R"({"version": "3.3.0", "scenes": [{"id": ")"
+        << UUID::generate().toString() << R"(", "objects": [{"id": ")" << UUID::generate().toString()
+        << R"(", "path": "models/prop.obj", "absPath": )" << nlohmann::json(gone).dump()
+        << R"(}, {"id": ")" << UUID::generate().toString()
+        << R"(", "absPath": )" << nlohmann::json(gone).dump()
+        << R"(}, {"id": ")" << UUID::generate().toString()
+        << R"(", "path": "models/prop.obj", "absPath": "relative/not/used.obj"}]}], "outputs": []})";
+
+    auto loaded = ProjectSerializer::load(file);
+    ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;
+    const auto& objects = loaded.value().getScenes()[0].objects;
+    ASSERT_EQ(objects.size(), 3u);
+    EXPECT_TRUE(fs::path(pathFromUtf8(objects[0].path)) ==
+                (file.parent_path() / "models" / "prop.obj").lexically_normal());
+    EXPECT_TRUE(objects[0].missing);
+    // No "path" at all: the absolute one is all there is, so it is kept to relocate.
+    EXPECT_EQ(pathFromUtf8(objects[1].path), pathFromUtf8(gone).lexically_normal());
+    EXPECT_TRUE(objects[1].missing);
+    // A relative "absPath" is ignored.
+    EXPECT_TRUE(fs::path(pathFromUtf8(objects[2].path)) ==
+                (file.parent_path() / "models" / "prop.obj").lexically_normal());
+}
+
+TEST_F(ProjectPersistenceTest, MeshWithoutAProjectFolderIsSavedAbsoluteWithoutAFallback) {
+    ProjectSerializer serializer;
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    Project::ObjectData object;
+    object.path = utf8FromPath(dir_ / "prop.obj");
+    scene.objects.push_back(object);
+    project.getScenes().push_back(scene);
+    const auto json = nlohmann::json::parse(serializer.serialize(project));  // no file: absolute
+    const auto& saved = json["scenes"][0]["objects"][0];
+    EXPECT_EQ(saved["path"], object.path);
+    EXPECT_FALSE(saved.contains("absPath"));
+}
+
 // A show folder named outside the ANSI code page: the model holds UTF-8, the .qmap
 // stores it as UTF-8 (relative to the project), and every path resolves after reload.
 TEST_F(ProjectPersistenceTest, NonAsciiMediaPathsRoundTripAndResolve) {

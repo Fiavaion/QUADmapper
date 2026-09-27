@@ -3,6 +3,7 @@
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
 #include "app/MediaAssign.hpp"
+#include "app/MeshLoads.hpp"
 #include "app/GridUndo.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
@@ -881,7 +882,8 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
         const bool calibratingThis = es.calibratingOutputId == selectedOutput->getId();
         ImGui::BeginDisabled(calibratingThis);
         if (ImGui::Button("Calibrate Projector...")) {
-            es.beginCalibration(selectedOutput->getId(), selectedOutput->getProjector());
+            es.beginCalibration(selectedOutput->getId(), selectedOutput->getCalibrationPoints(),
+                                selectedOutput->getProjector());
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Pair points on the 3D objects with projector pixels to solve "
@@ -1112,12 +1114,15 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
 
     snprintf(objectName_, sizeof(objectName_), "%s", object->getName().c_str());
     if (ImGui::InputText("Name", objectName_, sizeof(objectName_),
-                         ImGuiInputTextFlags_EnterReturnsTrue)) {
-        object->setName(objectName_);
+                         ImGuiInputTextFlags_EnterReturnsTrue) &&
+        object->getName() != objectName_) {
+        es.commandHistory.execute(makeRenameObjectCommand(es.objectRef(*object), objectName_));
         ctx.project->setModified(true);
     }
 
-    if (object->getMesh().empty()) {
+    if (isMeshLoading(es, *object)) {
+        ImGui::TextDisabled("Loading mesh...");
+    } else if (object->getMesh().empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Mesh not loaded");
     } else {
         ImGui::Text("Mesh: %zu triangles", object->getMesh().triangleCount());
@@ -1128,12 +1133,12 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
 
     bool visible = object->isVisible();
     if (ImGui::Checkbox("Visible", &visible)) {
-        object->setVisible(visible);
+        es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(*object), visible));
         ctx.project->setModified(true);
     }
     float opacity = object->getOpacity();
     if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
-        object->setOpacity(opacity);
+        es.commandHistory.execute(makeSetObjectOpacityCommand(es.objectRef(*object), opacity));
         ctx.project->setModified(true);
     }
 
@@ -1153,15 +1158,18 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
     changed |= ImGui::DragFloat3("Rotation (deg)", &objectRotationDeg_.x, 0.5f, -360.0f, 360.0f, "%.1f");
     changed |= ImGui::DragFloat("Scale", &objectScale_, 0.01f, 0.001f, 1000.0f, "%.3f",
                                 ImGuiSliderFlags_AlwaysClamp);
+    bool reset = false;
     if (ImGui::Button("Reset Transform")) {
         objectPosition_ = Vec3(0.0f);
         objectRotationDeg_ = Vec3(0.0f);
         objectScale_ = 1.0f;
-        changed = true;
+        reset = true;
     }
-    if (changed) {
+    if (changed || reset) {
+        // A drag is one undo step (merged); Reset is a step of its own.
         transformShown_ = composeObjectTransform(objectPosition_, objectRotationDeg_, objectScale_);
-        object->setTransform(transformShown_);
+        es.commandHistory.execute(
+            makeSetObjectTransformCommand(es.objectRef(*object), transformShown_, !reset));
         ctx.project->setModified(true);
     }
 
@@ -1185,8 +1193,10 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
     }
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::BeginCombo("##ObjectMedia", preview.c_str())) {
-        if (ImGui::Selectable("None", boundId.isNull())) {
-            object->getTexture().mediaId = UUID();
+        if (ImGui::Selectable("None", boundId.isNull()) && !boundId.isNull()) {
+            TextureBinding unbound = object->getTexture();
+            unbound.mediaId = UUID();
+            es.commandHistory.execute(makeSetObjectTextureCommand(es.objectRef(*object), unbound));
             ctx.project->setModified(true);
         }
         if (ctx.mediaLibrary) {
@@ -1194,7 +1204,7 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
                 if (!item || item->getType() == MediaType::AUDIO) continue;
                 ImGui::PushID(item->getId().toString().c_str());
                 if (ImGui::Selectable(item->getName().c_str(), isBound(*item))) {
-                    assignMediaToObject(es, ctx.sourceManager, ctx.project, *object, *item);
+                    assignMediaToObject(es, ctx.sourceManager, ctx.project, es.objectRef(*object), *item);
                 }
                 ImGui::PopID();
             }
