@@ -79,7 +79,8 @@ public:
 
     // Every target an OSC address names: the one resolve() finds when the address
     // resolves literally; otherwise, when it holds wildcards, every target the
-    // pattern matches (an entity part matches an entity's UUID or its name), globals
+    // pattern matches (an entity part matches an entity's name; it matches a UUID too
+    // only when spelled out, without ? * or []), globals
     // first, then each collection's entities x actions. Empty when nothing matches
     // or the pattern is malformed.
     std::vector<Resolved> resolveAll(const std::string& address);

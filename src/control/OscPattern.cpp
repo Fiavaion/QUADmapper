@@ -120,6 +120,14 @@ std::optional<OscPattern> OscPattern::compile(std::string_view pattern) {
     return compiled;
 }
 
+bool OscPattern::isExplicitPart(size_t index) const {
+    if (index >= parts_.size()) return false;
+    for (const Token& token : parts_[index]) {
+        if (token.kind != Token::Kind::Literal && token.kind != Token::Kind::Choice) return false;
+    }
+    return true;
+}
+
 bool OscPattern::matchPart(size_t index, std::string_view text) const {
     if (index >= parts_.size()) return false;
     const Part& part = parts_[index];

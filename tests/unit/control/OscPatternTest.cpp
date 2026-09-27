@@ -201,8 +201,10 @@ TEST(OscPatternTest, RegistryExpandsPatternsInListOrder) {
               (std::vector<std::string>{"/qm/quad/q1/opacity", "/qm/quad/q2/opacity", "/qm/quad/q3/opacity"}));
     EXPECT_EQ(paths("/qm/quad/[lr]*/opacity"),
               (std::vector<std::string>{"/qm/quad/q1/opacity", "/qm/quad/q2/opacity"}));
-    EXPECT_EQ(paths("/qm/quad/q?/visible"),  // by id
-              (std::vector<std::string>{"/qm/quad/q1/visible", "/qm/quad/q2/visible", "/qm/quad/q3/visible"}));
+    // A wildcard entity part searches names only; a spelled-out one may name ids.
+    EXPECT_TRUE(paths("/qm/quad/q?/visible").empty());
+    EXPECT_EQ(paths("/qm/quad/{q1,q3}/visible"),
+              (std::vector<std::string>{"/qm/quad/q1/visible", "/qm/quad/q3/visible"}));
     EXPECT_EQ(paths("/qm/quad/Top/*"),  // entity literal, action wildcard
               (std::vector<std::string>{"/qm/quad/q3/opacity", "/qm/quad/q3/visible"}));
     EXPECT_EQ(paths("/qm/master/*"), (std::vector<std::string>{"/qm/master/volume", "/qm/master/mute"}));
@@ -215,6 +217,25 @@ TEST(OscPatternTest, RegistryExpandsPatternsInListOrder) {
     EXPECT_TRUE(paths("/qm/quad/*/nothing").empty());
     EXPECT_TRUE(paths("/qm/quad/[/opacity").empty());  // malformed
     EXPECT_TRUE(paths("/zz/*").empty());
+}
+
+TEST(OscPatternTest, AWildcardNeverPicksAnEntityByItsUuid) {
+    // "F*" meant the scene named Finale, not whichever scene's random id starts with f.
+    ControlRegistry registry;
+    registry.addEntityTarget("scene", {"take", TargetKind::Trigger, 0, 1, true,
+                                       [](const std::string&, float) {}, nullptr});
+    registry.setEntities("scene", {{"f3a9c2d0-0000-4000-8000-000000000001", "Opening"},
+                                   {"0b7e1f42-0000-4000-8000-000000000002", "Finale"}});
+    auto paths = [&](const std::string& address) {
+        std::vector<std::string> out;
+        for (const auto& r : registry.resolveAll(address)) out.push_back(r.canonicalPath);
+        return out;
+    };
+    EXPECT_EQ(paths("/qm/scene/F*/take"),
+              (std::vector<std::string>{"/qm/scene/0b7e1f42-0000-4000-8000-000000000002/take"}));
+    EXPECT_EQ(paths("/qm/scene/[0-9]*/take"), std::vector<std::string>{});  // only an id starts with a digit
+    EXPECT_EQ(paths("/qm/scene/{f3a9c2d0-0000-4000-8000-000000000001,nothing}/take"),
+              (std::vector<std::string>{"/qm/scene/f3a9c2d0-0000-4000-8000-000000000001/take"}));
 }
 
 TEST(OscPatternTest, DispatcherAppliesAPatternToEveryMatch) {

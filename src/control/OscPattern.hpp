@@ -36,6 +36,9 @@ public:
     size_t partCount() const { return parts_.size(); }
     // Does part `index` of the pattern match `text` (one address part, no '/')?
     bool matchPart(size_t index, std::string_view text) const;
+    // Is part `index` spelled out: only literal characters and {foo,bar} choices,
+    // no ? * or [] (so it names its matches rather than searching for them)?
+    bool isExplicitPart(size_t index) const;
     // Does the whole pattern match `address` ("/a/b/c")?
     bool matches(std::string_view address) const;
 

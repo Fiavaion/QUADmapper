@@ -153,8 +153,11 @@ std::vector<ControlRegistry::Resolved> ControlRegistry::resolveAll(const std::st
             if (pattern->matchPart(3, action.action)) actions.push_back(&action);
         }
         if (actions.empty()) continue;
+        // Only a spelled-out entity part may name UUIDs: "F*" or "[a-f]*" would
+        // otherwise pick entities whose random id happens to start with that letter.
+        const bool idsToo = pattern->isExplicitPart(2);
         for (const auto& entity : collection.entities) {
-            if (!pattern->matchPart(2, entity.id) && !pattern->matchPart(2, entity.name)) continue;
+            if (!pattern->matchPart(2, entity.name) && !(idsToo && pattern->matchPart(2, entity.id))) continue;
             for (const ControlTarget* action : actions) {
                 found.push_back(Resolved{action, entity.id,
                                          "/qm/" + collection.name + "/" + entity.id + "/" + action->action});
