@@ -350,8 +350,16 @@ SceneTake planSceneTake(const SceneList& scenes, const UUID& activeSceneId, int 
             if (shows(o, activeSceneId)) take.outputIds.push_back(o.id);
         }
         if (take.outputIds.empty()) {
-            for (const SceneTakeOutput& o : outputs) {
-                if (o.enabled && !o.id.isNull()) { take.outputIds.push_back(o.id); break; }
+            // No output shows the active scene (it was just added, or clicked in the
+            // Scenes panel): the first enabled output, with every output showing what
+            // it shows, so a blended group still changes together.
+            const auto first = std::find_if(outputs.begin(), outputs.end(), [](const SceneTakeOutput& o) {
+                return o.enabled && !o.id.isNull();
+            });
+            if (first != outputs.end()) {
+                for (const SceneTakeOutput& o : outputs) {
+                    if (o.id == first->id || shows(o, first->sceneId)) take.outputIds.push_back(o.id);
+                }
             }
         }
     }

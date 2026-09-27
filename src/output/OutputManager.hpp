@@ -402,19 +402,35 @@ public:
                                        const OutputWindow& output);
 
     /**
-     * Route `scene` to `output` (null = show nothing). An output without slices
-     * gets one slice of the whole canvas; slices it has keep their place on the
-     * picture when the canvas size changes (rescaleSlices from the scene it showed).
+     * Route `scene` to `output` (null = show nothing; the slices are kept). An output
+     * without slices gets one slice of the whole canvas. Slices it has are rescaled
+     * from the canvas they were made for (OutputWindow::getSlicesCanvas) to the new
+     * one, so they keep their place on the picture whatever the output showed in
+     * between; slices of an unknown canvas are replaced by one whole-canvas slice.
      */
     static void showScene(OutputWindow& output, const Scene* scene,
                           const std::vector<std::unique_ptr<Scene>>& scenes);
+
+    /**
+     * An operator's routing (Inspector, Scenes panel, scene takes): showScene, then,
+     * when `output` is the only output showing the scene and shows it through its
+     * default slicing (isDefaultSlicing), the canvas takes the output's effective
+     * (rotated) resolution, so the picture is not resampled and the editor has the
+     * projector's aspect. Quads are normalized, so the projector shows the same.
+     * Returns true when the canvas size changed.
+     */
+    bool routeScene(OutputWindow& output, Scene* scene,
+                    const std::vector<std::unique_ptr<Scene>>& scenes);
 
     /**
      * Once per frame: a scene shown by one output alone, through its default slice
      * (the whole canvas, no warp, no blend), whose canvas is that output's effective
      * resolution, keeps following that resolution when it changes (a resolution or
      * rotation edit), as the editor canvas did before canvases (ADR-047 part A).
-     * Every other scene keeps its canvas size. Returns true when a canvas changed.
+     * Every other scene keeps its canvas size. Returns true when a canvas changed in
+     * a way the show should be saved with. A change that comes with an output going
+     * fullscreen or back (F11 enter/exit sets the monitor's mode, then restores the
+     * windowed size) is followed but not reported: it is undone on exit.
      */
     bool followOutputSizes(std::vector<std::unique_ptr<Scene>>& scenes);
 
@@ -532,8 +548,13 @@ private:
     std::unordered_map<UUID, SceneCanvas> canvases_;
     std::vector<UUID> canvasScenes_;
 
-    // Each output's effective resolution when followOutputSizes last saw it.
-    std::unordered_map<UUID, IVec2> knownSizes_;
+    // Each output's effective resolution, and whether it was fullscreen (or
+    // borderless), when followOutputSizes last saw it.
+    struct KnownOutputSize {
+        IVec2 size;
+        bool presenting = false;
+    };
+    std::unordered_map<UUID, KnownOutputSize> knownSizes_;
 
     // Signalled when the frames drawn by renderFrames are complete; each output
     // context waits on it on the GPU before copying (a change made in one context is

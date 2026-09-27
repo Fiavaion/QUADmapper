@@ -593,46 +593,72 @@ void OutputManager::showScene(OutputWindow& output, const Scene* scene,
         output.setSceneId(UUID::null());
         return;
     }
-    if (output.getSlices().empty()) {
-        output.getSlices().push_back(makeFullCanvasSlice(scene->getCanvasSize()));
-    } else if (const Scene* shown = sceneForOutput(scenes, output)) {
-        rescaleSlices(output.getSlices(), shown->getCanvasSize(), scene->getCanvasSize());
+    const IVec2 canvas = scene->getCanvasSize();
+    auto& slices = output.getSlices();
+    IVec2 from = output.getSlicesCanvas();
+    if (from.x <= 0 || from.y <= 0) {
+        // Not recorded (slices loaded without a scene): the scene shown now, if any.
+        const Scene* shown = sceneForOutput(scenes, output);
+        from = shown ? shown->getCanvasSize() : IVec2(0, 0);
     }
+    if (slices.empty() || from.x <= 0 || from.y <= 0) {
+        slices.assign(1, makeFullCanvasSlice(canvas));
+    } else {
+        rescaleSlices(slices, from, canvas);
+    }
+    output.setSlicesCanvas(canvas);
     output.setSceneId(scene->getId());
+}
+
+bool OutputManager::routeScene(OutputWindow& output, Scene* scene,
+                               const std::vector<std::unique_ptr<Scene>>& scenes) {
+    showScene(output, scene, scenes);
+    if (!scene || !isDefaultSlicing(output.getSlices(), scene->getCanvasSize())) return false;
+    const bool alone = std::none_of(outputs_.begin(), outputs_.end(), [&](const auto& o) {
+        return o.get() != &output && o->getSceneId() == scene->getId();
+    });
+    if (!alone) return false;
+    const IVec2 before = scene->getCanvasSize();
+    scene->setCanvasSize(output.getEffectiveResolution());
+    const IVec2 canvas = scene->getCanvasSize();
+    output.getSlices().front().input =
+        CanvasRect{0.0f, 0.0f, static_cast<float>(canvas.x), static_cast<float>(canvas.y)};
+    output.setSlicesCanvas(canvas);
+    return canvas != before;
 }
 
 bool OutputManager::followOutputSizes(std::vector<std::unique_ptr<Scene>>& scenes) {
     bool changed = false;
     for (const auto& output : outputs_) {
         const IVec2 now = output->getEffectiveResolution();
+        const bool presenting = output->isFullscreen() || output->isBorderless();
         auto known = knownSizes_.find(output->getId());
         if (known == knownSizes_.end()) {
-            knownSizes_.emplace(output->getId(), now);
+            knownSizes_.emplace(output->getId(), KnownOutputSize{now, presenting});
             continue;
         }
-        const IVec2 before = known->second;
-        known->second = now;
-        if (before == now) continue;
+        const KnownOutputSize before = known->second;
+        known->second = KnownOutputSize{now, presenting};
+        if (before.size == now) continue;
 
         Scene* scene = nullptr;
         for (auto& s : scenes) {
             if (s && s->getId() == output->getSceneId()) { scene = s.get(); break; }
         }
-        auto& slices = output->getSlices();
-        if (!scene || scene->getCanvasSize() != before || slices.size() != 1) continue;
-        const Slice& only = slices.front();
-        const CanvasRect whole{0.0f, 0.0f, static_cast<float>(before.x), static_cast<float>(before.y)};
-        const bool isDefault = only.input == whole && isIdentityWarp(only.warp) &&
-                               only.blend == std::array<BlendEdge, SLICE_EDGE_COUNT>{} &&
-                               only.blackLevel == 0.0f;
+        if (!scene || scene->getCanvasSize() != before.size ||
+            !isDefaultSlicing(output->getSlices(), before.size)) {
+            continue;
+        }
         const bool alone = std::none_of(outputs_.begin(), outputs_.end(), [&](const auto& o) {
             return o.get() != output.get() && o->getSceneId() == scene->getId();
         });
-        if (!isDefault || !alone) continue;
+        if (!alone) continue;
         scene->setCanvasSize(now);
-        slices.front().input = CanvasRect{0.0f, 0.0f, static_cast<float>(scene->getCanvasSize().x),
-                                          static_cast<float>(scene->getCanvasSize().y)};
-        changed = true;
+        const IVec2 canvas = scene->getCanvasSize();
+        output->getSlices().front().input =
+            CanvasRect{0.0f, 0.0f, static_cast<float>(canvas.x), static_cast<float>(canvas.y)};
+        output->setSlicesCanvas(canvas);
+        if (before.presenting == presenting) changed = true;  // not an F11 enter/exit
     }
     for (auto it = knownSizes_.begin(); it != knownSizes_.end();) {
         it = getOutput(it->first) ? std::next(it) : knownSizes_.erase(it);

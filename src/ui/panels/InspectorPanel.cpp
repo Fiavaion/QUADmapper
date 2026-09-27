@@ -802,7 +802,7 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
                 ImGui::PushID(scene.get());
                 const bool isShown = scene.get() == shown;
                 if (ImGui::Selectable(scene->getName().c_str(), isShown) && !isShown) {
-                    OutputManager::showScene(*selectedOutput, scene.get(), es.scenes);
+                    ctx.outputManager->routeScene(*selectedOutput, scene.get(), es.scenes);
                     if (ctx.project) ctx.project->setModified(true);
                 }
                 if (isShown) ImGui::SetItemDefaultFocus();

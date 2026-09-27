@@ -130,6 +130,12 @@ public:
     std::vector<Slice>& getSlices() { return slices_; }
     const std::vector<Slice>& getSlices() const { return slices_; }
 
+    // The canvas size the slices' pixel rectangles were made for (0 x 0 = unknown).
+    // It outlives the routing, so a slice kept through "no scene" or a deleted scene
+    // is rescaled from the right size when the next scene is routed (showScene).
+    IVec2 getSlicesCanvas() const { return slicesCanvas_; }
+    void setSlicesCanvas(IVec2 size) { slicesCanvas_ = size; }
+
     // GLFW window management
     /**
      * Create the GLFW window with shared OpenGL context.
@@ -257,6 +263,7 @@ private:
     // Scene assignments
     UUID sceneId_;
     std::vector<Slice> slices_;
+    IVec2 slicesCanvas_ = IVec2(0, 0);
 
     // GLFW window
     GLFWwindow* window_ = nullptr;

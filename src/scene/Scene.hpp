@@ -161,8 +161,8 @@ struct SceneTake {
 // Decide the take for scene `number` (1-based, list order). If an output in `outputs`
 // already shows scene N, it just becomes active. Otherwise it goes on every output that
 // shows the active scene, so a blended group of projectors changes together; when no
-// output shows the active scene, on the first enabled output; with none, N just
-// becomes active.
+// output shows the active scene, on the first enabled output and every output showing
+// the same scene as it (its group); with no enabled output, N just becomes active.
 SceneTake planSceneTake(const SceneList& scenes, const UUID& activeSceneId, int number,
                         const std::vector<SceneTakeOutput>& outputs);
 

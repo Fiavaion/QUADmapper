@@ -537,6 +537,19 @@ TEST_F(SceneTakeTest, UnroutedActiveSceneFallsBackToTheFirstEnabledOutput) {
     EXPECT_EQ(shownOn(out2), id(1));
 }
 
+TEST_F(SceneTakeTest, FallbackTakesTheFirstEnabledOutputsWholeGroup) {
+    // Active A is on no output; C is blended over outputs 1 and 3, B is on output 2.
+    outputs = {{out1, true, id(2)}, {out2, true, id(1)}, {out3, true, id(2)}};
+    active = id(0);
+    const SceneTake t = take(1);
+
+    EXPECT_EQ(t.kind, SceneTake::Kind::Route);
+    EXPECT_EQ(t.outputIds, (std::vector<UUID>{out1, out3}));
+    EXPECT_EQ(shownOn(out1), id(0));
+    EXPECT_EQ(shownOn(out3), id(0));
+    EXPECT_EQ(shownOn(out2), id(1));  // another scene's output: untouched
+}
+
 TEST_F(SceneTakeTest, FallbackOutputIsTakenFromTheSceneOnIt) {
     // Active A is on no output; C is on the first enabled output. B takes it from C.
     outputs = {{out1, true, id(2)}, {out2, true, UUID()}};

@@ -174,11 +174,20 @@ struct EditorState {
         gridInsertDragIndex = -1;
     }
 
-    bool deleteScene(const UUID& id) {
+    // Delete a scene. Outputs showing it (in `outputs`, when given) then show no
+    // scene; they keep their slices for the next scene routed to them.
+    bool deleteScene(const UUID& id, OutputManager* outputs) {
         if (scenes.size() <= 1) return false;  // never delete the last scene
         auto it = std::find_if(scenes.begin(), scenes.end(),
             [&](const std::unique_ptr<Scene>& s) { return s && s->getId() == id; });
         if (it == scenes.end()) return false;
+        if (outputs) {
+            for (const auto& output : outputs->getOutputs()) {
+                if (output && output->getSceneId() == id) {
+                    OutputManager::showScene(*output, nullptr, scenes);
+                }
+            }
+        }
         bool wasActive = (id == activeSceneId);
         scenes.erase(it);
         if (wasActive) setActiveScene(scenes.front()->getId());
@@ -198,10 +207,10 @@ struct EditorState {
         }
         const SceneTake take = planSceneTake(scenes, activeScene().getId(), number, routing);
         if (take.kind == SceneTake::Kind::Route) {
-            const Scene* target = scenes[static_cast<size_t>(findSceneIndex(scenes, take.sceneId))].get();
+            Scene* target = scenes[static_cast<size_t>(findSceneIndex(scenes, take.sceneId))].get();
             for (const UUID& id : take.outputIds) {
                 if (OutputWindow* output = outputs.getOutput(id)) {
-                    OutputManager::showScene(*output, target, scenes);
+                    outputs.routeScene(*output, target, scenes);
                 }
             }
         }

@@ -2,13 +2,16 @@
 
 #include "output/OutputWindow.hpp"
 #include "project/Project.hpp"
+#include "scene/Scene.hpp"
 
 namespace quadmapper {
 
 // Save writes an output's DESIRED monitor (QM-090), never the monitor it resolves
 // to right now: a fallback taken while the projector was unplugged must not
-// replace the projector's identity in the .qmap.
-inline Project::OutputData outputToData(const OutputWindow& output) {
+// replace the projector's identity in the .qmap. An output that shows no scene of
+// `scenes` (none, or a deleted one) is written with no scene and no slices: their
+// pixel rectangles belong to a canvas the file would not name.
+inline Project::OutputData outputToData(const OutputWindow& output, const SceneList& scenes) {
     Project::OutputData data;
     data.id = output.getId();
     data.name = output.getName();
@@ -21,8 +24,10 @@ inline Project::OutputData outputToData(const OutputWindow& output) {
     data.enabled = output.isEnabled();
     data.projector = output.getProjector();
     data.calibrationPoints = output.getCalibrationPoints();
-    data.sceneId = output.getSceneId();
-    data.slices = output.getSlices();
+    if (findSceneIndex(scenes, output.getSceneId()) >= 0) {
+        data.sceneId = output.getSceneId();
+        data.slices = output.getSlices();
+    }
     return data;
 }
 

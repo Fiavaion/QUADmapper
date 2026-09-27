@@ -228,10 +228,7 @@ static void syncEditorToProject(EditorState& es, OutputManager* om, SourceManage
     if (om) {
         for (const auto& outPtr : om->getOutputs()) {
             if (!outPtr) continue;
-            Project::OutputData od = outputToData(*outPtr);
-            // A deleted scene is no longer shown; its id is not written.
-            if (!OutputManager::sceneForOutput(es.scenes, *outPtr)) od.sceneId = UUID::null();
-            project.getOutputs().push_back(std::move(od));
+            project.getOutputs().push_back(outputToData(*outPtr, es.scenes));
         }
     }
 
@@ -509,6 +506,13 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
     if (es.scenes.empty()) {
         es.activeScene();  // lazily creates a default scene
     }
+    // A routed output's slices are in its scene's canvas pixels.
+    if (om) {
+        for (const auto& o : om->getOutputs()) {
+            const Scene* shown = o ? OutputManager::sceneForOutput(es.scenes, *o) : nullptr;
+            if (shown) o->setSlicesCanvas(shown->getCanvasSize());
+        }
+    }
     es.setActiveScene(es.scenes.front()->getId());
     // Start parsing the meshes now, so they count as loading (not missing) at once.
     requestMeshLoads(es);
@@ -520,7 +524,7 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         const bool anyShown = std::any_of(om->getOutputs().begin(), om->getOutputs().end(),
                                           [&](const auto& o) { return o && OutputManager::sceneForOutput(es.scenes, *o); });
         if (!anyShown) {
-            OutputManager::showScene(*om->getOutputs().front(), &es.activeScene(), es.scenes);
+            om->routeScene(*om->getOutputs().front(), &es.activeScene(), es.scenes);
         }
     }
 

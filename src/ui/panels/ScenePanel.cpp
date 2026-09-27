@@ -54,7 +54,7 @@ void ScenePanel::renderActionButtons(EditorContext& ctx) {
 
     ImGui::BeginDisabled(!es.canDeleteScene());
     if (ImGui::Button("Delete")) {
-        if (es.deleteScene(es.activeSceneId) && ctx.project) ctx.project->setModified(true);
+        if (es.deleteScene(es.activeSceneId, ctx.outputManager) && ctx.project) ctx.project->setModified(true);
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -178,7 +178,7 @@ void ScenePanel::renderSceneList(EditorContext& ctx) {
                     const bool shows = output->getSceneId() == scene->getId();
                     if (ImGui::Selectable(output->getName().c_str(), shows,
                                           ImGuiSelectableFlags_DontClosePopups)) {
-                        OutputManager::showScene(*output, shows ? nullptr : scene, es.scenes);
+                        om->routeScene(*output, shows ? nullptr : scene, es.scenes);
                         if (ctx.project) ctx.project->setModified(true);
                     }
                 }
@@ -193,7 +193,7 @@ void ScenePanel::renderSceneList(EditorContext& ctx) {
     ImGui::EndChild();
 
     if (!pendingDelete.isNull()) {
-        if (es.deleteScene(pendingDelete) && ctx.project) ctx.project->setModified(true);
+        if (es.deleteScene(pendingDelete, ctx.outputManager) && ctx.project) ctx.project->setModified(true);
     }
     if (!pendingDuplicate.isNull()) {
         if (es.duplicateScene(pendingDuplicate) && ctx.project) ctx.project->setModified(true);

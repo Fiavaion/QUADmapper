@@ -296,6 +296,105 @@ TEST(OutputManagerTest, CanvasFollowsALoneOutputsSize) {
     EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(1080, 1920));
 }
 
+// Slices remember the canvas they were made for, so an output that showed no scene
+// in between (Inspector "(no scene)", a Scenes-panel toggle, a deleted scene) still
+// rescales them onto the next scene's canvas.
+TEST(OutputManagerTest, SlicesFollowTheNextSceneAfterShowingNone) {
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    scenes.push_back(std::make_unique<Scene>());
+    scenes[0]->setCanvasSize(IVec2(1920, 1080));
+    scenes[1]->setCanvasSize(IVec2(1280, 800));
+    OutputWindow output;
+    OutputManager::showScene(output, scenes[0].get(), scenes);
+    OutputManager::showScene(output, nullptr, scenes);
+    OutputManager::showScene(output, scenes[1].get(), scenes);
+    ASSERT_EQ(output.getSlices().size(), 1u);
+    EXPECT_EQ(output.getSlices()[0].input, (CanvasRect{0.0f, 0.0f, 1280.0f, 800.0f}));
+
+    // An edited slice (the right half) keeps its place on the picture as well.
+    output.getSlices()[0].input = CanvasRect{640.0f, 0.0f, 640.0f, 800.0f};
+    OutputManager::showScene(output, nullptr, scenes);
+    OutputManager::showScene(output, scenes[0].get(), scenes);
+    EXPECT_EQ(output.getSlices()[0].input, (CanvasRect{960.0f, 0.0f, 960.0f, 1080.0f}));
+}
+
+TEST(OutputManagerTest, SlicesFollowTheNextSceneAfterTheirSceneIsDeleted) {
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    scenes.push_back(std::make_unique<Scene>());
+    scenes[0]->setCanvasSize(IVec2(1920, 1080));
+    scenes[1]->setCanvasSize(IVec2(1280, 800));
+    OutputWindow output;
+    OutputManager::showScene(output, scenes[0].get(), scenes);
+    scenes.erase(scenes.begin());  // the output's sceneId now names no scene
+    OutputManager::showScene(output, scenes[0].get(), scenes);
+    ASSERT_EQ(output.getSlices().size(), 1u);
+    EXPECT_EQ(output.getSlices()[0].input, (CanvasRect{0.0f, 0.0f, 1280.0f, 800.0f}));
+}
+
+// Routing a scene onto an output alone, through its default slice, gives the canvas
+// the output's effective resolution: nothing is resampled, and the editor has the
+// projector's aspect. A group, or an edited slice, keeps the canvas.
+TEST(OutputManagerTest, RoutingOntoALoneOutputAdoptsItsResolution) {
+    OutputManager manager;
+    OutputWindow* lone = manager.createOutput("Lone");
+    OutputWindow* left = manager.createOutput("Left");
+    OutputWindow* right = manager.createOutput("Right");
+    lone->setResolution(IVec2(1280, 800));
+    lone->setRotation(Rotation::R90);
+    std::vector<std::unique_ptr<Scene>> scenes;
+    for (int i = 0; i < 3; ++i) scenes.push_back(std::make_unique<Scene>());
+    scenes[1]->setCanvasSize(IVec2(3200, 1080));
+
+    EXPECT_TRUE(manager.routeScene(*lone, scenes[0].get(), scenes));
+    EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(800, 1280));
+    EXPECT_EQ(lone->getSlices()[0].input, (CanvasRect{0.0f, 0.0f, 800.0f, 1280.0f}));
+    EXPECT_FALSE(manager.routeScene(*lone, scenes[0].get(), scenes));  // already its size
+
+    manager.routeScene(*left, scenes[1].get(), scenes);   // alone for now: adopts 1920x1080
+    EXPECT_EQ(scenes[1]->getCanvasSize(), IVec2(1920, 1080));
+    scenes[1]->setCanvasSize(IVec2(3200, 1080));           // the wide canvas, both sliced
+    left->getSlices()[0].input = CanvasRect{0.0f, 0.0f, 1920.0f, 1080.0f};
+    left->setSlicesCanvas(scenes[1]->getCanvasSize());
+    EXPECT_FALSE(manager.routeScene(*right, scenes[1].get(), scenes));
+    EXPECT_EQ(scenes[1]->getCanvasSize(), IVec2(3200, 1080)) << "shown by two outputs";
+
+    // An edited slice keeps its canvas.
+    lone->getSlices()[0].blend[SLICE_EDGE_LEFT].width = 20.0f;
+    scenes[2]->setCanvasSize(IVec2(800, 1280));
+    EXPECT_FALSE(manager.routeScene(*lone, scenes[2].get(), scenes));
+    lone->setResolution(IVec2(1920, 1080));
+    lone->setRotation(Rotation::R0);
+    EXPECT_FALSE(manager.routeScene(*lone, scenes[2].get(), scenes));
+    EXPECT_EQ(scenes[2]->getCanvasSize(), IVec2(800, 1280));
+}
+
+// F11 puts an output on its monitor's mode and exit restores the windowed size. A
+// lone default canvas follows both, but neither is a change to save: no "unsaved
+// changes" prompt for entering and leaving perform mode.
+TEST(OutputManagerTest, FullscreenEnterAndExitFollowButDoNotModifyTheShow) {
+    OutputManager manager;
+    OutputWindow* output = manager.createOutput("P1");
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    OutputManager::showScene(*output, scenes[0].get(), scenes);  // 1920x1080 both
+    EXPECT_FALSE(manager.followOutputSizes(scenes));
+
+    output->setFullscreen(true);  // what goFullscreen does, with the monitor's mode
+    output->setResolution(IVec2(1280, 800));
+    EXPECT_FALSE(manager.followOutputSizes(scenes));
+    EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(1280, 800)) << "followed all the same";
+
+    output->setFullscreen(false);  // goWindowed
+    output->setResolution(IVec2(1920, 1080));
+    EXPECT_FALSE(manager.followOutputSizes(scenes));
+    EXPECT_EQ(scenes[0]->getCanvasSize(), IVec2(1920, 1080));
+
+    output->setResolution(IVec2(1280, 720));  // the operator's own edit is saved
+    EXPECT_TRUE(manager.followOutputSizes(scenes));
+}
+
 TEST(OutputManagerTest, CreateMultipleOutputsAndDelete) {
     OutputManager manager;
 
@@ -784,7 +883,7 @@ TEST(OutputPersistenceTest, UnresolvedOutputSavesItsDesiredIdentity) {
     manager.resolveOutputs();
     EXPECT_EQ(output->getMonitor(), -1);
 
-    Project::OutputData saved = outputToData(*output);
+    Project::OutputData saved = outputToData(*output, {});
     EXPECT_EQ(saved.monitor, 1);
     EXPECT_EQ(saved.monitorName, "EPSON PJ");
     EXPECT_EQ(saved.monitorPosition, IVec2(1920, 0));
@@ -800,7 +899,7 @@ TEST(OutputPersistenceTest, FallbackIsNotWrittenBackToTheProject) {
     ASSERT_EQ(r.match, MonitorMatch::SavedIndex);
     output.setMonitor(r.index);
 
-    Project::OutputData saved = outputToData(output);
+    Project::OutputData saved = outputToData(output, {});
     EXPECT_EQ(saved.monitor, 1);
     EXPECT_EQ(saved.monitorName, kGeneric);
     EXPECT_EQ(saved.monitorPosition, IVec2(1920, 0));  // the projector, not the Dell
@@ -821,7 +920,30 @@ TEST(OutputPersistenceTest, ExplicitChoiceBecomesTheDesiredIdentity) {
     manager.assignMonitor(*output, -1);  // "Automatic"
     EXPECT_TRUE(output->getDesiredMonitor().name.empty());
     EXPECT_EQ(output->getDesiredMonitor().savedIndex, -1);
-    EXPECT_EQ(outputToData(*output).monitor, -1);
+    EXPECT_EQ(outputToData(*output, {}).monitor, -1);
+}
+
+// An output that shows no scene, or a deleted one, is saved with neither: its slices
+// are in the pixels of a canvas the file would not name.
+TEST(OutputPersistenceTest, UnroutedOutputSavesNoSceneAndNoSlices) {
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    scenes.push_back(std::make_unique<Scene>());
+    OutputWindow shows, none, deleted;
+    OutputManager::showScene(shows, scenes[0].get(), scenes);
+    OutputManager::showScene(none, scenes[0].get(), scenes);
+    OutputManager::showScene(none, nullptr, scenes);
+    OutputManager::showScene(deleted, scenes[1].get(), scenes);
+    scenes.pop_back();
+
+    const Project::OutputData a = outputToData(shows, scenes);
+    EXPECT_EQ(a.sceneId, scenes[0]->getId());
+    EXPECT_EQ(a.slices.size(), 1u);
+    for (const OutputWindow* o : {&none, &deleted}) {
+        const Project::OutputData d = outputToData(*o, scenes);
+        EXPECT_TRUE(d.sceneId.isNull());
+        EXPECT_TRUE(d.slices.empty());
+    }
 }
 
 // ---- Swap pacing (QM-090) ----------------------------------------------------
