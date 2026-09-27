@@ -75,6 +75,9 @@ private:
 struct MeshLoadState {
     std::unordered_map<std::string, uint64_t> tickets;    // mesh path -> its parse
     std::unordered_map<std::string, std::string> errors;  // mesh path -> why it did not load
+    // Missing meshes being relocated: the new file's path -> the missing paths whose
+    // objects move to it once it has parsed (Missing Media "Locate..." / search).
+    std::unordered_map<std::string, std::vector<std::string>> relocations;
     // Imported objects whose import completes (becomes an undo step) once their mesh
     // has loaded.
     struct Import {

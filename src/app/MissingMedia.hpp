@@ -18,7 +18,6 @@
 #include "project/MediaRelocation.hpp"
 #include "project/Project.hpp"
 #include "scene/MeshObject.hpp"
-#include "scene/ObjLoader.hpp"
 #include "source/SourceManager.hpp"
 
 #include <algorithm>
@@ -149,23 +148,11 @@ inline std::string relocateMissingSource(EditorState& es, SourceManager& sm, con
     return {};
 }
 
-// Load newPath as the mesh of every object whose mesh at oldPath is missing.
+// Load newPath as the mesh of every object whose mesh at oldPath is missing, on the
+// mesh worker (beginMeshRelocation): accepted here, adopted at a frame boundary.
 inline std::string relocateMissingMesh(EditorState& es, const std::string& oldPath,
                                        const std::filesystem::path& newPath) {
-    auto mesh = loadObj(newPath);
-    if (!mesh) return mesh.error().message;
-    const std::string path = absoluteMediaPath(newPath);
-    int relocated = 0;
-    for (const auto& scene : es.scenes) {
-        if (!scene) continue;
-        for (const auto& object : scene->getObjects()) {
-            if (!object || object->getSourcePath() != oldPath || !isMeshMissing(es, *object)) continue;
-            object->setMesh(mesh.value());
-            object->setSourcePath(path);
-            ++relocated;
-        }
-    }
-    return relocated > 0 ? std::string() : "It is no longer missing.";
+    return beginMeshRelocation(es, oldPath, absoluteMediaPath(newPath));
 }
 
 inline std::string relocateMissingItem(EditorState& es, SourceManager* sm,

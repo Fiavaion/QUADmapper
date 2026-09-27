@@ -34,8 +34,15 @@ namespace quadmapper {
 
 // The object's mesh file is being parsed.
 inline bool isMeshLoading(const EditorState& es, const MeshObject& object) {
-    return object.getMesh().empty() && !object.getSourcePath().empty() &&
-           es.meshLoads.tickets.count(object.getSourcePath()) > 0;
+    if (!object.getMesh().empty() || object.getSourcePath().empty()) return false;
+    if (es.meshLoads.tickets.count(object.getSourcePath()) > 0) return true;
+    // Its missing file is being relocated to another one that is parsing.
+    for (const auto& [newPath, oldPaths] : es.meshLoads.relocations) {
+        if (std::find(oldPaths.begin(), oldPaths.end(), object.getSourcePath()) != oldPaths.end()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // The object has a mesh file but no mesh, and none is on its way: it is missing (the
@@ -73,8 +80,34 @@ inline MeshObject* beginObjectImport(EditorState& es, const std::string& name,
     return object;
 }
 
+// Missing Media relocation of a missing mesh (oldPath) to the file at newPath, which
+// is parsed on the worker like any other: the objects show as loading, and when the
+// parse succeeds they take the mesh and the new path. When it fails they stay missing
+// at oldPath and the window shows why (EditorState::missingMediaErrors). Returns an
+// error when nothing is missing at oldPath.
+inline std::string beginMeshRelocation(EditorState& es, const std::string& oldPath,
+                                       const std::string& newPath) {
+    bool anyMissing = false;
+    for (const auto& scene : es.scenes) {
+        if (!scene) continue;
+        for (const auto& object : scene->getObjects()) {
+            if (object && object->getSourcePath() == oldPath && isMeshMissing(es, *object)) {
+                anyMissing = true;
+            }
+        }
+    }
+    if (!anyMissing) return "It is no longer missing.";
+    es.meshLoads.errors.erase(newPath);  // a new attempt at that file
+    es.meshLoads.relocations[newPath].push_back(oldPath);
+    if (!es.meshLoads.tickets.count(newPath)) {
+        es.meshLoads.tickets[newPath] = es.objLoads.request(pathFromUtf8(newPath));
+    }
+    return {};
+}
+
 // What adoptLoadedMeshes did, for the caller's status line and projector framing:
-// every import that finished (ok or not), and every other object whose mesh failed.
+// every import that finished (ok or not), and every other object whose mesh failed
+// (a relocation that failed reports once, with no object id).
 struct MeshImportOutcome {
     bool import = true;  // false: an object from the show whose mesh did not load
     bool ok = false;
@@ -94,6 +127,31 @@ inline std::vector<MeshImportOutcome> adoptLoadedMeshes(EditorState& es) {
         if (ticket == es.meshLoads.tickets.end() || ticket->second != done.ticket) continue;
         es.meshLoads.tickets.erase(ticket);
         if (!done.mesh) es.meshLoads.errors[path] = done.mesh.error().message;
+
+        // Relocations to this file: on success their objects move to it (and so wait
+        // for it below); on failure they stay missing where they were.
+        auto relocation = es.meshLoads.relocations.find(path);
+        if (relocation != es.meshLoads.relocations.end()) {
+            const std::vector<std::string> oldPaths = std::move(relocation->second);
+            es.meshLoads.relocations.erase(relocation);
+            for (const std::string& oldPath : oldPaths) {
+                if (!done.mesh) {
+                    es.missingMediaErrors[oldPath] = done.mesh.error().message;
+                    outcomes.push_back({false, false, UUID(), UUID(), utf8FromPath(done.path.filename()),
+                                        done.mesh.error().message});
+                    continue;
+                }
+                es.missingMediaErrors.erase(oldPath);
+                for (const auto& scene : es.scenes) {
+                    if (!scene) continue;
+                    for (const auto& object : scene->getObjects()) {
+                        if (object && object->getMesh().empty() && object->getSourcePath() == oldPath) {
+                            object->setSourcePath(path);
+                        }
+                    }
+                }
+            }
+        }
 
         // Every object waiting for this file.
         std::vector<std::pair<Scene*, MeshObject*>> waiting;

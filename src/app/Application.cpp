@@ -1848,7 +1848,9 @@ void importObjectFile(EditorState& es, Project* project, const std::string& path
 void adoptObjectMeshes(EditorState& es, OutputManager* om, Project* project) {
     for (const MeshImportOutcome& done : adoptLoadedMeshes(es)) {
         if (!done.import) {
-            postStatus(es, "3D object '" + done.name + "': mesh not loaded (" + done.error + ")");
+            postStatus(es, (done.objectId.isNull() ? "Could not use " + done.name
+                                                   : "3D object '" + done.name + "': mesh not loaded") +
+                               " (" + done.error + ")");
             es.showMissingMedia = true;
             continue;
         }

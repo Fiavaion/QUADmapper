@@ -717,3 +717,69 @@ TEST(MeshLoadsTest, AStaleResultForAPathLoadedAgainIsIgnored) {
     EXPECT_TRUE(object->getMesh().empty());
     EXPECT_EQ(fx.es.meshLoads.tickets.count(path), 1u);
 }
+
+TEST(MeshLoadsTest, RelocatingAMissingMeshLoadsOnTheWorkerAndMovesItsObjects) {
+    MeshLoadFixture fx;
+    const std::string gone = utf8FromPath(fx.dir / "gone" / "prop.obj");
+    Scene& scene = fx.es.activeScene();
+    MeshObject* a = fx.savedObject(scene, gone);
+    MeshObject* b = fx.savedObject(scene, gone);
+    requestMeshLoads(fx.es);
+    fx.adoptAll();  // the file is not there
+    ASSERT_TRUE(isMeshMissing(fx.es, *a));
+    ASSERT_EQ(collectMissingMedia(fx.es).size(), 1u);
+    const MissingMediaItem item = collectMissingMedia(fx.es)[0];
+
+    const std::string found = fx.writeObj("prop.obj", 4);
+    EXPECT_EQ(locateMissingMedia(fx.es, nullptr, nullptr, item, pathFromUtf8(found)), 1);
+    // Accepted, not loaded yet: loading, not missing, and not parsed on this thread.
+    EXPECT_TRUE(a->getMesh().empty());
+    EXPECT_TRUE(isMeshLoading(fx.es, *a));
+    EXPECT_TRUE(collectMissingMedia(fx.es).empty());
+
+    fx.adoptAll();
+    for (MeshObject* o : {a, b}) {
+        EXPECT_EQ(o->getMesh().triangleCount(), 4u);
+        EXPECT_EQ(pathFromUtf8(o->getSourcePath()), pathFromUtf8(found));
+    }
+    EXPECT_TRUE(fx.es.meshLoads.relocations.empty());
+    EXPECT_FALSE(fx.es.commandHistory.canUndo());
+}
+
+TEST(MeshLoadsTest, ARelocationToABadFileLeavesTheMeshMissingWithTheReason) {
+    MeshLoadFixture fx;
+    const std::string gone = utf8FromPath(fx.dir / "gone" / "prop.obj");
+    MeshObject* object = fx.savedObject(fx.es.activeScene(), gone);
+    requestMeshLoads(fx.es);
+    fx.adoptAll();
+    const MissingMediaItem item = collectMissingMedia(fx.es).at(0);
+
+    const fs::path bad = fx.dir / "bad.obj";
+    std::ofstream(bad, std::ios::binary) << "f 1 2 3\n";
+    EXPECT_EQ(relocateMissingItem(fx.es, nullptr, item, bad), "");
+    const auto outcomes = fx.adoptAll();
+    ASSERT_EQ(outcomes.size(), 1u);
+    EXPECT_FALSE(outcomes[0].ok);
+    EXPECT_TRUE(outcomes[0].objectId.isNull());
+    EXPECT_EQ(object->getSourcePath(), gone);  // still where it was, still missing
+    EXPECT_TRUE(isMeshMissing(fx.es, *object));
+    ASSERT_EQ(fx.es.missingMediaErrors.count(gone), 1u);
+    EXPECT_FALSE(fx.es.missingMediaErrors[gone].empty());
+
+    // Nothing missing at a path: refused at once.
+    EXPECT_EQ(relocateMissingMesh(fx.es, "C:/not/missing.obj", bad), "It is no longer missing.");
+}
+
+TEST(MeshLoadsTest, NewOrLoadDropsARelocationInProgress) {
+    MeshLoadFixture fx;
+    const std::string gone = utf8FromPath(fx.dir / "gone" / "prop.obj");
+    fx.savedObject(fx.es.activeScene(), gone);
+    requestMeshLoads(fx.es);
+    fx.adoptAll();
+    const MissingMediaItem item = collectMissingMedia(fx.es).at(0);
+    ASSERT_EQ(relocateMissingItem(fx.es, nullptr, item, pathFromUtf8(fx.writeObj("prop.obj", 50))), "");
+    clearProjectContent(fx.es, nullptr);
+    EXPECT_TRUE(fx.es.meshLoads.relocations.empty());
+    fx.waitIdle();
+    EXPECT_TRUE(adoptLoadedMeshes(fx.es).empty());
+}
