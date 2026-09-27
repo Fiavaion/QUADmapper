@@ -242,7 +242,8 @@ bool Texture::createCompressed(int width, int height, GpuCompressedFormat fmt,
 }
 
 bool Texture::updateCompressed(const unsigned char* data, size_t size) {
-    if (!isValid() || !isCompressed() || !data || size == 0) {
+    // With a pixel unpack buffer bound, data is an offset into it and may be null.
+    if (!isValid() || !isCompressed() || size == 0) {
         return false;
     }
 

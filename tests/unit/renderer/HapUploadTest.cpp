@@ -18,6 +18,7 @@
 #include <glm/glm.hpp>
 
 #include "renderer/Texture.hpp"
+#include "renderer/CompressedUpload.hpp"
 #include "renderer/GpuCapabilities.hpp"
 #include "renderer/Renderer.hpp"
 #include "renderer/Framebuffer.hpp"
@@ -118,6 +119,58 @@ TEST(HapUploadTest, SyntheticCompressedUploadNoGlError) {
     }
 }
 
+// TD-31: frames go up through the source's pixel buffers, copied there off the main
+// thread. Each texture holds exactly the frame uploaded, whether prefetch() staged it
+// (the next frame, as in steady playback) or not (a seek or a dropped frame), and no
+// unpack buffer is left bound for later client-memory uploads.
+TEST(HapUploadTest, PixelBufferUploadsMatchTheFrameWithAndWithoutPrefetch) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    auto& caps = GpuCapabilities::get();
+    caps.queryOnce();
+    if (!caps.s3tc) GTEST_SKIP() << "GPU lacks GL_EXT_texture_compression_s3tc";
+    while (glGetError() != GL_NO_ERROR) {}
+
+    const int W = 64, H = 32;
+    const size_t bytes = blockBytes(W, H, /*dxt1=*/false);
+    auto frame = [bytes](int seed) {
+        auto blob = std::make_shared<std::vector<uint8_t>>(bytes);
+        for (size_t i = 0; i < bytes; ++i) (*blob)[i] = static_cast<uint8_t>(i * 7 + seed * 31);
+        return std::shared_ptr<const std::vector<uint8_t>>(blob);
+    };
+    auto readBack = [bytes](const Texture& tex) {
+        std::vector<uint8_t> out(bytes);
+        tex.bind(0);
+        glGetCompressedTexImage(GL_TEXTURE_2D, 0, out.data());
+        Texture::unbind();
+        return out;
+    };
+
+    Texture tex;
+    ASSERT_TRUE(tex.createCompressed(W, H, GpuCompressedFormat::BC3_RGBA, nullptr, bytes));
+    CompressedUploader uploader;
+    CompressedUploadState state;
+    const auto f1 = frame(1), f2 = frame(2), f3 = frame(3), f4 = frame(4);
+
+    ASSERT_TRUE(uploader.upload(f1, tex, state));  // nothing staged yet
+    EXPECT_EQ(readBack(tex), *f1);
+    uploader.prefetch(f2, state);
+    ASSERT_TRUE(uploader.upload(f2, tex, state));  // the staged frame
+    EXPECT_EQ(readBack(tex), *f2);
+    uploader.prefetch(f3, state);
+    ASSERT_TRUE(uploader.upload(f4, tex, state));  // not the staged one: f3 was skipped
+    EXPECT_EQ(readBack(tex), *f4);
+
+    GLint unpack = -1;
+    glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpack);
+    EXPECT_EQ(unpack, 0);
+    EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+    // The uploader keeps no frame alive once it is uploaded.
+    EXPECT_EQ(f1.use_count(), 1);
+    EXPECT_EQ(f2.use_count(), 1);
+    EXPECT_EQ(f4.use_count(), 1);
+}
+
 TEST(HapUploadTest, CapabilityQueryReportsExtensions) {
     GLContext ctx;
     if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
@@ -167,7 +220,8 @@ TEST(HapUploadTest, RealHapClipUploadsCompressedTexture) {
 
     EXPECT_GT(frame->width, 0);
     EXPECT_GT(frame->height, 0);
-    EXPECT_FALSE(frame->pixels.empty());
+    ASSERT_TRUE(frame->compressed);
+    EXPECT_FALSE(frame->compressed->empty());
     // 5sec_hap.mov is Hap Q -> BC3_YCoCg.
     EXPECT_EQ(frame->compressedFormat, GpuCompressedFormat::BC3_YCoCg);
 
@@ -176,7 +230,7 @@ TEST(HapUploadTest, RealHapClipUploadsCompressedTexture) {
     Texture tex;
     ASSERT_TRUE(tex.createCompressed(frame->width, frame->height,
                                      frame->compressedFormat,
-                                     frame->pixels.data(), frame->pixels.size()));
+                                     frame->compressed->data(), frame->compressed->size()));
     EXPECT_NE(tex.getId(), 0u);
     EXPECT_TRUE(tex.isCompressed());
     EXPECT_EQ(tex.colorSpace(), TextureColorSpace::YCoCg);
@@ -331,7 +385,7 @@ TEST(HapUploadTest, A5VisualCaptureThroughRealPipeline) {
     Texture tex;
     ASSERT_TRUE(tex.createCompressed(frame->width, frame->height,
                                      frame->compressedFormat,
-                                     frame->pixels.data(), frame->pixels.size()));
+                                     frame->compressed->data(), frame->compressed->size()));
     ASSERT_EQ(tex.colorSpace(), TextureColorSpace::YCoCg);
     ASSERT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
 

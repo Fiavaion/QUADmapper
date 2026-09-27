@@ -2,17 +2,18 @@
 
 #include "core/YuvPicture.hpp"
 
-#include <vector>
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace quadmapper {
 
 /**
  * @brief GPU-compressed (BCn) frame format — for HAP playback (ADR-044).
  *
- * When a FrameData's compressedFormat is not None, `pixels` holds raw BCn
+ * When a FrameData's compressedFormat is not None, `compressed` holds raw BCn
  * block bytes ready for glCompressedTexSubImage2D (NOT decoded RGB(A) pixels),
- * `channels` is unused, and getDataSize() returns the byte count directly.
+ * `pixels` is empty, `channels` is unused, and getDataSize() returns the byte count.
  * BC3_YCoCg uploads as an ordinary BC3 texture but the fragment shader applies
  * a YCoCg->RGB conversion (HapQ); the colorspace is carried on the GPU Texture.
  */
@@ -32,7 +33,7 @@ enum class GpuCompressedFormat {
  * produce FrameData that the SourceManager uploads to GPU.
  */
 struct FrameData {
-    std::vector<uint8_t> pixels;    // RGB/RGBA pixels, OR raw BCn bytes when compressed
+    std::vector<uint8_t> pixels;    // RGB/RGBA pixels (empty when compressed)
     int width = 0;
     int height = 0;
     int channels = 3;               // 3 = RGB, 4 = RGBA (unused when compressed)
@@ -42,6 +43,12 @@ struct FrameData {
     // GPU-compressed (HAP/BCn) path (ADR-044). None = ordinary pixel upload.
     GpuCompressedFormat compressedFormat = GpuCompressedFormat::None;
     bool isCompressed() const { return compressedFormat != GpuCompressedFormat::None; }
+    // The BCn bytes, shared: the source reuses the buffer for a later frame once no one
+    // holds it, and the upload may still be copying it into a pixel buffer.
+    std::shared_ptr<const std::vector<uint8_t>> compressed;
+    // The compressed frame expected after this one, if already staged: the upload starts
+    // copying it early. Empty when unknown.
+    std::shared_ptr<const std::vector<uint8_t>> nextCompressed;
 
     // Decoded video kept as YUV planes (ADR-055): when valid, `pixels` is empty and the
     // upload converts these into the source's RGBA texture on the GPU.
@@ -56,15 +63,15 @@ struct FrameData {
      */
     bool isValid() const {
         if (isYuv()) return width > 0 && height > 0;
-        return !pixels.empty() && width > 0 && height > 0 &&
-               (isCompressed() || channels > 0);
+        if (isCompressed()) return compressed && !compressed->empty() && width > 0 && height > 0;
+        return !pixels.empty() && width > 0 && height > 0 && channels > 0;
     }
 
     /**
      * @brief Get expected data size in bytes (BCn byte count when compressed)
      */
     size_t getDataSize() const {
-        if (isCompressed()) return pixels.size();
+        if (isCompressed()) return compressed ? compressed->size() : 0;
         return static_cast<size_t>(width) * height * channels;
     }
 
@@ -79,6 +86,8 @@ struct FrameData {
         timestamp = 0;
         frameNumber = 0;
         compressedFormat = GpuCompressedFormat::None;
+        compressed.reset();
+        nextCompressed.reset();
         yuv = YuvPicture{};
         nextYuv = YuvPicture{};
     }

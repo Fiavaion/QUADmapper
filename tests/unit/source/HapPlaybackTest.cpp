@@ -152,6 +152,41 @@ TEST_F(HapPlayback, LoopShowsTheFirstFramesAfterEachWrap) {
     EXPECT_TRUE(source_->getErrorMessage().empty());
 }
 
+// TD-31: frame buffers are reused, so playing allocates and frees nothing per frame,
+// but never while anyone still holds one (a frame shown, queued, or being uploaded).
+// The frame after the one shown is offered to the upload early (nextCompressed).
+TEST_F(HapPlayback, FrameBuffersAreReusedButNeverWhileHeld) {
+    source_->setLoopMode(LoopMode::LOOP);
+    source_->play();
+    std::vector<std::shared_ptr<const std::vector<uint8_t>>> held;  // the first pass, kept
+    std::vector<const void*> seen;                                   // every buffer shown
+    std::shared_ptr<const std::vector<uint8_t>> offered;             // the previous frame's hint
+    int offeredMatches = 0;
+    for (int step = 0; step < 3 * FRAMES; ++step) {
+        ASSERT_GE(showAt((step + 0.5) / FPS), 0) << "step " << step;
+        const FrameData* frame = source_->getCurrentFrame();
+        ASSERT_TRUE(frame && frame->compressed);
+        if (offered) {
+            EXPECT_EQ(offered, frame->compressed) << "the hint was not the next frame, step " << step;
+            ++offeredMatches;
+        }
+        offered = frame->nextCompressed;
+        seen.push_back(frame->compressed.get());
+        if (step < FRAMES) held.push_back(frame->compressed);
+        if (step == FRAMES - 1) held.clear();  // let the first pass go
+    }
+    // Held buffers are never handed out again while held.
+    std::vector<const void*> firstPass(seen.begin(), seen.begin() + FRAMES);
+    std::sort(firstPass.begin(), firstPass.end());
+    EXPECT_EQ(std::unique(firstPass.begin(), firstPass.end()), firstPass.end());
+    // Once let go, the last pass reuses a bounded set of buffers.
+    std::vector<const void*> later(seen.begin() + 2 * FRAMES, seen.end());
+    std::sort(later.begin(), later.end());
+    later.erase(std::unique(later.begin(), later.end()), later.end());
+    EXPECT_LE(later.size(), 12u);  // HapFileSource's pool: queue (8) + 4
+    EXPECT_GT(offeredMatches, 0);
+}
+
 TEST_F(HapPlayback, PingPongReverseLegIsFrameExact) {
     source_->setLoopMode(LoopMode::PING_PONG);
     EXPECT_TRUE(source_->getLoopModeNotice().empty());

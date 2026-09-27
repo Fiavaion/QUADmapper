@@ -47,7 +47,8 @@ public:
     bool createCompressed(int width, int height, GpuCompressedFormat fmt,
                           const unsigned char* data = nullptr, size_t size = 0);
 
-    // Re-upload the full compressed level for an existing compressed texture.
+    // Re-upload the full compressed level for an existing compressed texture. While a
+    // GL_PIXEL_UNPACK_BUFFER is bound, `data` is an offset into that buffer (as in GL).
     bool updateCompressed(const unsigned char* data, size_t size);
 
     // Update texture data

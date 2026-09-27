@@ -5,6 +5,7 @@
 #include "CameraSource.hpp"
 #include "procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
+#include "renderer/CompressedUpload.hpp"
 #include "renderer/YuvConverter.hpp"
 #include "renderer/DxInterop.hpp"
 #include "renderer/GpuCapabilities.hpp"
@@ -58,6 +59,7 @@ bool isHapContainer(const std::filesystem::path& path) {
 
 SourceManager::SourceManager()
     : yuvConverter_(std::make_unique<YuvConverter>())  // no GL work until the first video frame
+    , compressedUploader_(std::make_unique<CompressedUploader>())  // nor until the first HAP frame
     , dxInterop_(std::make_unique<DxInterop>())        // nor any D3D11 work
 {
     masterTimeline_.play(std::chrono::steady_clock::now());
@@ -434,6 +436,8 @@ void SourceManager::createGPUTexture(SourceEntry& entry) {
         // live as long as the source, so its GL object count never changes mid-play.
         if (dynamic_cast<VideoFileSource*>(entry.source.get())) {
             entry.yuvUpload = std::make_unique<YuvUploadState>();
+        } else if (dynamic_cast<HapFileSource*>(entry.source.get())) {
+            entry.compressedUpload = std::make_unique<CompressedUploadState>();  // likewise (ADR-044)
         }
     }
 }
@@ -466,17 +470,19 @@ void SourceManager::uploadFrameToTexture(SourceEntry& entry) {
 
         // (Re)create when the texture is missing, was an ordinary RGB(A) texture
         // (e.g. createGPUTexture pre-provisioned RGBA), or its dimensions/format
-        // changed. Otherwise re-upload the level in place.
+        // changed; storage only, the frame arrives through the pixel buffers.
         if (entry.texture->getId() == 0 ||
             !entry.texture->isCompressed() ||
             entry.texture->compressedFormat() != frame->compressedFormat ||
             entry.texture->getWidth() != frame->width ||
             entry.texture->getHeight() != frame->height) {
-            entry.texture->createCompressed(frame->width, frame->height,
-                                            frame->compressedFormat,
-                                            frame->pixels.data(), frame->pixels.size());
-        } else {
-            entry.texture->updateCompressed(frame->pixels.data(), frame->pixels.size());
+            entry.texture->createCompressed(frame->width, frame->height, frame->compressedFormat,
+                                            nullptr, frame->compressed->size());
+        }
+        // Through the source's pixel buffers, the bytes copied off the main thread (TD-31).
+        if (!entry.compressedUpload) entry.compressedUpload = std::make_unique<CompressedUploadState>();
+        if (compressedUploader_->upload(frame->compressed, *entry.texture, *entry.compressedUpload)) {
+            compressedUploader_->prefetch(frame->nextCompressed, *entry.compressedUpload);
         }
 
         entry.source->markFrameConsumed();

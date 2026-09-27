@@ -15,6 +15,8 @@ namespace quadmapper {
 class Texture;
 class YuvConverter;
 class YuvUploadState;
+class CompressedUploader;
+class CompressedUploadState;
 class DxInterop;
 class DxInteropTarget;
 
@@ -287,6 +289,7 @@ private:
         uint64_t lastFrameNumber = 0;           // For detecting new frames
         bool compressedUnsupportedLogged = false; // Rate-limit the BCn-unsupported skip log (ADR-044)
         std::unique_ptr<YuvUploadState> yuvUpload; // plane textures + PBOs of a YUV video (ADR-055)
+        std::unique_ptr<CompressedUploadState> compressedUpload; // PBOs of a HAP video (ADR-044)
         std::unique_ptr<DxInteropTarget> zeroCopy; // D3D11 texture shared with GL (ADR-056)
         bool zeroCopyFailed = false;               // this source fell back; zeroCopy is unused
                                                    // and released at most one a frame
@@ -296,6 +299,7 @@ private:
     PlaybackClock masterTimeline_;
     UploadStats uploadStats_;
     std::unique_ptr<YuvConverter> yuvConverter_;  // YUV -> RGBA pass for video frames
+    std::unique_ptr<CompressedUploader> compressedUploader_;  // BCn uploads of HAP frames
     std::unique_ptr<DxInterop> dxInterop_;        // zero-copy hardware frames (ADR-056)
 
     SourceAddedCallback sourceAddedCallback_;

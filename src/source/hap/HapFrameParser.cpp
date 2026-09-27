@@ -135,7 +135,8 @@ static HapTextureFormat mapTextureFormat(uint8_t lowNibble) {
 // Returns false on any failure.
 // ---------------------------------------------------------------------------
 static bool appendSnappy(const uint8_t* src, size_t srcLen, std::vector<uint8_t>& dest) {
-    std::vector<uint8_t> tmp;
+    // Reused per thread: a playing clip decodes every frame into the same memory.
+    thread_local std::vector<uint8_t> tmp;
     if (!snappy::decompressSnappy(src, srcLen, tmp)) return false;
     dest.insert(dest.end(), tmp.begin(), tmp.end());
     return true;
@@ -290,18 +291,27 @@ static bool decodeSingleSection(const uint8_t* data, size_t size,
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
-HapDecodedFrame parseHapFrame(const uint8_t* data, size_t size) {
-    HapDecodedFrame result;
-    if (!data || size < 4) return result; // need at least a 4-byte header
+bool parseHapFrame(const uint8_t* data, size_t size, HapDecodedFrame& out) {
+    // Cleared, not freed: the caller's buffers keep their capacity.
+    out.format = HapTextureFormat::None;
+    out.textureData.clear();
+    out.alphaPlane.clear();
+    auto fail = [&out]() {
+        out.format = HapTextureFormat::None;
+        out.textureData.clear();
+        out.alphaPlane.clear();
+        return false;
+    };
+    if (!data || size < 4) return fail(); // need at least a 4-byte header
 
     Reader r{data, size};
 
     uint8_t  topType = 0;
     uint32_t topSize = 0;
-    if (!readSectionHeader(r, topType, topSize)) return result;
+    if (!readSectionHeader(r, topType, topSize)) return fail();
 
     // Validate the declared section size fits in the remaining buffer.
-    if (topSize > (size - r.pos)) return result;
+    if (topSize > (size - r.pos)) return fail();
 
     const uint8_t* payload    = data + r.pos;
     size_t         payloadLen = topSize;
@@ -318,8 +328,8 @@ HapDecodedFrame parseHapFrame(const uint8_t* data, size_t size) {
         while (!mr.atEnd()) {
             uint8_t  subType = 0;
             uint32_t subSize = 0;
-            if (!readSectionHeader(mr, subType, subSize)) return result;
-            if (subSize > (payloadLen - mr.pos)) return result;
+            if (!readSectionHeader(mr, subType, subSize)) return fail();
+            if (subSize > (payloadLen - mr.pos)) return fail();
 
             uint8_t lowNibble  = subType & 0x0F;
             HapTextureFormat fmt = mapTextureFormat(lowNibble);
@@ -328,23 +338,26 @@ HapDecodedFrame parseHapFrame(const uint8_t* data, size_t size) {
                 continue; // skip unknown sub-sections gracefully
             }
 
-            std::vector<uint8_t> subBytes;
-            if (!decodeSingleSection(mr.data + mr.pos, subSize, subType, subBytes)) {
-                return result;
+            // A plane already parsed is still decoded (and must be valid), then dropped.
+            thread_local std::vector<uint8_t> unused;
+            const bool primary   = !parsedPrimary && fmt != HapTextureFormat::Alpha_RGTC1;
+            const bool secondary = !parsedSecondary && fmt == HapTextureFormat::Alpha_RGTC1;
+            std::vector<uint8_t>& dest = primary ? out.textureData : secondary ? out.alphaPlane : unused;
+            dest.clear();
+            if (!decodeSingleSection(mr.data + mr.pos, subSize, subType, dest)) {
+                return fail();
             }
 
-            if (!parsedPrimary && fmt != HapTextureFormat::Alpha_RGTC1) {
-                result.format      = fmt;
-                result.textureData = std::move(subBytes);
-                parsedPrimary      = true;
-            } else if (!parsedSecondary && fmt == HapTextureFormat::Alpha_RGTC1) {
-                result.alphaPlane  = std::move(subBytes);
-                parsedSecondary    = true;
+            if (primary) {
+                out.format    = fmt;
+                parsedPrimary = true;
+            } else if (secondary) {
+                parsedSecondary = true;
             }
 
             mr.pos += subSize;
         }
-        return result; // valid() if parsedPrimary
+        return parsedPrimary ? true : fail();
     }
 
     // -----------------------------------------------------------------------
@@ -352,13 +365,17 @@ HapDecodedFrame parseHapFrame(const uint8_t* data, size_t size) {
     // -----------------------------------------------------------------------
     uint8_t lowNibble = topType & 0x0F;
     HapTextureFormat fmt = mapTextureFormat(lowNibble);
-    if (fmt == HapTextureFormat::None) return result; // unsupported format
+    if (fmt == HapTextureFormat::None) return fail(); // unsupported format
 
-    std::vector<uint8_t> textureBytes;
-    if (!decodeSingleSection(payload, payloadLen, topType, textureBytes)) return result;
+    if (!decodeSingleSection(payload, payloadLen, topType, out.textureData)) return fail();
 
-    result.format      = fmt;
-    result.textureData = std::move(textureBytes);
+    out.format = fmt;
+    return out.valid() ? true : fail();
+}
+
+HapDecodedFrame parseHapFrame(const uint8_t* data, size_t size) {
+    HapDecodedFrame result;
+    parseHapFrame(data, size, result);
     return result;
 }
 

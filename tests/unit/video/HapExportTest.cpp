@@ -205,7 +205,7 @@ struct HapPlayback {
             if (f && std::lround(f->timestamp / 1e6 * fps) == index) {
                 const bool q = f->compressedFormat == GpuCompressedFormat::BC3_YCoCg;
                 EXPECT_TRUE(q || f->compressedFormat == GpuCompressedFormat::BC1_RGB);
-                std::vector<uint8_t> rgba = bctest::decodeBlocks(f->pixels, f->width, f->height, q);
+                std::vector<uint8_t> rgba = bctest::decodeBlocks(*f->compressed, f->width, f->height, q);
                 if (q) bctest::ycocgToRgb(rgba);
                 return rgba;
             }

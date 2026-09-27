@@ -44,5 +44,9 @@ namespace hap {
 /// never throws, never crashes, never allocates based on unvalidated sizes.
 HapDecodedFrame parseHapFrame(const uint8_t* data, size_t size);
 
+/// The same, into `out`, whose buffers are cleared and reused rather than freed, so
+/// playback decodes each frame into memory it already has. Returns out.valid().
+bool parseHapFrame(const uint8_t* data, size_t size, HapDecodedFrame& out);
+
 } // namespace hap
 } // namespace quadmapper

@@ -142,6 +142,7 @@ public:
             formatCtx_ = nullptr;
         }
         clearQueue();
+        buffers_.clear();
         videoStreamIndex_ = -1;
         width_ = 0;
         height_ = 0;
@@ -234,6 +235,8 @@ public:
                     out = std::move(frameQueue_.front().data);
                     frameQueue_.pop();
                 });
+            // The upload starts copying the next frame early (ADR-044 amendment).
+            if (taken > 0 && !frameQueue_.empty()) out.nextCompressed = frameQueue_.front().data.compressed;
         }
         if (taken > 0) {
             refreshPending_ = false;
@@ -366,12 +369,31 @@ private:
         }
     }
 
+    // A frame buffer no one else holds (not queued, shown or being uploaded), or a new
+    // one. Reusing them keeps the 1-8 MB allocations and their release off both threads:
+    // freeing them on the main thread cost up to a millisecond a frame (TD-31).
+    std::shared_ptr<std::vector<uint8_t>> takeBuffer() {
+        for (const auto& buffer : buffers_) {
+            if (buffer.use_count() == 1) {
+                // The last other holder has let go: its reads come before our writes.
+                std::atomic_thread_fence(std::memory_order_acquire);
+                return buffer;
+            }
+        }
+        auto buffer = std::make_shared<std::vector<uint8_t>>();
+        if (buffers_.size() < kMaxBuffers) buffers_.push_back(buffer);
+        return buffer;
+    }
+
     // Parse a HAP packet into a staged frame; false (and a logged reason) if unusable.
     bool stage(const AVPacket* packet, double pts, StagedFrame& staged, std::string& failure) {
-        // The packet bytes ARE the HAP frame — parse straight to BCn.
-        hap::HapDecodedFrame decoded =
-            hap::parseHapFrame(packet->data, static_cast<size_t>(packet->size));
-        if (!decoded.valid()) {
+        // The packet bytes ARE the HAP frame — parse straight to BCn, into a reused buffer.
+        std::shared_ptr<std::vector<uint8_t>> buffer = takeBuffer();
+        hap::HapDecodedFrame& decoded = decoded_;
+        decoded.textureData.swap(*buffer);
+        hap::parseHapFrame(packet->data, static_cast<size_t>(packet->size), decoded);
+        buffer->swap(decoded.textureData);
+        if (buffer->empty() || decoded.format == hap::HapTextureFormat::None) {
             Logger::warning("HapFileSource: parseHapFrame produced an invalid frame; skipping");
             failure = "HAP frames could not be decoded";
             return false;
@@ -388,7 +410,7 @@ private:
         staged.data.width = width_;
         staged.data.height = height_;
         staged.data.compressedFormat = cf;
-        staged.data.pixels = std::move(decoded.textureData);
+        staged.data.compressed = std::move(buffer);
         staged.data.timestamp = static_cast<uint64_t>(std::max(pts, 0.0) * 1000000.0);
         staged.data.frameNumber = frameCounter_++;
         return true;
@@ -609,6 +631,11 @@ private:
 
     // Staging queue (background -> main)
     static constexpr size_t kMaxQueued = 8;
+    // Reused frame buffers (demux thread): the queue, the frame shown, the one the upload
+    // is copying, and slack. Past this a frame gets a buffer of its own.
+    static constexpr size_t kMaxBuffers = kMaxQueued + 4;
+    std::vector<std::shared_ptr<std::vector<uint8_t>>> buffers_;
+    hap::HapDecodedFrame decoded_;  // demux thread; its buffers are reused too
     std::thread thread_;
     std::atomic<bool> stopFlag_{false};
     std::atomic<bool> atEnd_{false};
