@@ -15,7 +15,7 @@ ScopedTimer::ScopedTimer(const std::string& name)
 
 ScopedTimer::~ScopedTimer() {
     double elapsed = getElapsedMs();
-    LOG_TRACE("Timer [{}]: {:.3f} ms", name_, elapsed);
+    LOG_TRACE("Timer [{}]: {} ms", name_, elapsed);
 }
 
 double ScopedTimer::getElapsedMs() const {
