@@ -10,6 +10,8 @@
 #include "video/PlaybackClock.hpp"
 #include "../video/TestClips.hpp"
 
+#include <process.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -59,7 +61,8 @@ class HapPlayback : public testing::Test {
 protected:
     void SetUp() override {
         std::string name = testing::UnitTest::GetInstance()->current_test_info()->name();
-        path_ = fs::temp_directory_path() / ("qm_hap_" + name + ".mov");
+        // The process id keeps concurrent test runs (other build trees) off each other's file.
+        path_ = fs::temp_directory_path() / ("qm_hap_" + name + "_" + std::to_string(_getpid()) + ".mov");
         if (!testclips::writeHapClip(path_, FRAMES, FPS)) GTEST_SKIP() << "FFmpeg cannot write HAP";
         source_ = std::make_unique<HapFileSource>(path_);
         source_->setTimeSource([this] { return now_; });
@@ -119,7 +122,7 @@ protected:
 // The HAP demuxer opens a clip in a folder named outside the ANSI code page.
 TEST(HapFileSourcePaths, OpensClipInNonAsciiFolder) {
     const fs::path folder = fs::temp_directory_path() /
-                            pathFromUtf8(u8"qm_hap_\u00fc \u65e5\u672c \u0416");
+                            pathFromUtf8(u8"qm_hap_\u00fc \u65e5\u672c \u0416_" + std::to_string(_getpid()));
     std::error_code ec;
     fs::create_directories(folder, ec);
     const fs::path path = folder / pathFromUtf8(u8"\u0416.mov");

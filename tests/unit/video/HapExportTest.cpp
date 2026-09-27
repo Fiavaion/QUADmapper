@@ -18,6 +18,8 @@ extern "C" {
 #include "video/HapExport.hpp"
 #include "video/VideoDecoder.hpp"
 
+#include <process.h>
+
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -303,7 +305,8 @@ class HapExport : public testing::Test {
 protected:
     void SetUp() override {
         folder_ = fs::temp_directory_path() /
-                  ("qm_hapexport_" + std::string(testing::UnitTest::GetInstance()->current_test_info()->name()));
+                  ("qm_hapexport_" + std::string(testing::UnitTest::GetInstance()->current_test_info()->name()) +
+                   "_" + std::to_string(_getpid()));
         std::error_code ec;
         fs::remove_all(folder_, ec);
         fs::create_directories(folder_, ec);
