@@ -1816,5 +1816,44 @@ TEST(CanvasSliceRenderTest, ShaderMatchesSliceBlendGainOnEveryEdge) {
     manager.shutdown();
 }
 
+// Only quads are drawn into a scene canvas, so it has no depth buffer (16 MB a scene
+// at 1080p); an output frame, which 3D objects are drawn into, keeps one.
+TEST(CanvasSliceRenderTest, CanvasIsColourOnly) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    OutputManager manager;
+    ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+    OutputWindow* output = manager.createOutput("Depth");
+    ASSERT_NE(output, nullptr);
+    glfwSetWindowSize(output->getGLFWwindow(), 32, 32);
+    glfwMakeContextCurrent(gl.win);
+
+    std::vector<std::unique_ptr<Scene>> scenes;
+    scenes.push_back(std::make_unique<Scene>());
+    scenes.front()->setCanvasSize(IVec2(64, 32));
+    fullCanvasQuad(*scenes.front());
+    OutputManager::showScene(*output, scenes.front().get(), scenes);
+    std::unordered_map<UUID, Texture*> textures;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    manager.renderOutputFrames(scenes, textures, renderer);
+
+    auto depthType = [](const Framebuffer& target) {
+        target.bind();
+        GLint type = -1;
+        glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                              GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
+        Framebuffer::unbind();
+        return type;
+    };
+    ASSERT_NE(manager.sceneCanvas(scenes.front()->getId()), nullptr);
+    EXPECT_EQ(depthType(*manager.sceneCanvas(scenes.front()->getId())), GL_NONE);
+    EXPECT_EQ(depthType(*manager.outputFrame(output->getId())), GL_RENDERBUFFER);
+
+    renderer.shutdown();
+    manager.shutdown();
+}
+
 } // namespace test
 } // namespace quadmapper

@@ -21,10 +21,12 @@ struct SceneViewState {
     bool snapToGrid = false;
 };
 
-// A canvas when nothing gives another size (ADR-047 §1), and the largest allowed.
+// A canvas when nothing gives another size (ADR-047 §1), and the largest allowed:
+// 8192, the texture size every GL 3.3 (Direct3D 10 class) GPU supports, so a canvas
+// texture (256 MB at the limit) can always be allocated.
 constexpr int DEFAULT_CANVAS_WIDTH = 1920;
 constexpr int DEFAULT_CANVAS_HEIGHT = 1080;
-constexpr int MAX_CANVAS_DIMENSION = 16384;
+constexpr int MAX_CANVAS_DIMENSION = 8192;
 
 class Scene {
 public:

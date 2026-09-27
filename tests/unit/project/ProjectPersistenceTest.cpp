@@ -1153,6 +1153,16 @@ TEST(ProjectFixtureTest, RoutedOutputWithoutSlicesGetsAWholeCanvasSlice) {
     EXPECT_TRUE(p.getOutputs()[1].slices.empty()) << "an unrouted output has nothing to slice";
 }
 
+// A canvas is bounded on load by what every GL 3.3 GPU can hold as a texture.
+TEST(ProjectFixtureTest, CanvasIsClampedOnLoad) {
+    const std::string json = R"({"version": "3.4.0", "name": "S",
+        "scenes": [{"name": "A", "canvas": [16384, 0], "quads": []}]})";
+    Project p;
+    ASSERT_TRUE(ProjectSerializer().deserialize(json, p).isSuccess());
+    EXPECT_EQ(MAX_CANVAS_DIMENSION, 8192);
+    EXPECT_EQ(p.getScenes()[0].canvas, IVec2(MAX_CANVAS_DIMENSION, 1));
+}
+
 TEST(ProjectFixtureTest, V34FixtureKeepsCanvasRoutingAndBlendedSlices) {
     auto loaded = ProjectSerializer::load(fs::path(QM_PROJECT_FIXTURES_DIR) / "v3.4-canvas-slices.qmap");
     ASSERT_TRUE(loaded.isSuccess()) << loaded.error().message;

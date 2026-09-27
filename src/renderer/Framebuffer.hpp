@@ -6,15 +6,18 @@ namespace quadmapper {
 
 // RAII offscreen render target: an RGBA8 color texture backed by an FBO, used
 // for rendering a scene to a texture instead of the screen (e.g. the per-output
-// live previews, ADR-039 P4). A 24-bit depth renderbuffer lets 3D objects
-// (ADR-052) occlude correctly; 2D quads are painter-ordered and ignore it.
+// live previews, ADR-039 P4). By default a 24-bit depth renderbuffer lets 3D
+// objects (ADR-052) occlude correctly; 2D quads are painter-ordered and ignore it,
+// so a target only quads are drawn into (a scene canvas, ADR-047) is colour only.
 //
 // Create and destroy with the GL context that owns it current. The color texture
 // is filled bottom-up (GL origin bottom-left), so when sampling for display flip
 // V (uv0 = {0,1}, uv1 = {1,0}).
 class Framebuffer {
 public:
-    Framebuffer() = default;
+    enum class Depth { With, Without };
+
+    explicit Framebuffer(Depth depth = Depth::With) : withDepth_(depth == Depth::With) {}
     ~Framebuffer();
 
     // Non-copyable (owns GL handles); not moved (held via unique_ptr where needed).
@@ -23,7 +26,8 @@ public:
 
     // Allocate the FBO + color texture, or give them a new size (same GL names, so
     // colorTexture() is unchanged by a resize). Returns true if the framebuffer is
-    // complete and ready to use.
+    // complete and ready to use; false (and nothing allocated) when the GPU is out of
+    // memory for it.
     bool resize(int width, int height);
 
     // Bind for drawing and set the GL viewport to the framebuffer's size.
@@ -45,6 +49,7 @@ private:
     GLuint fbo_ = 0;
     GLuint color_ = 0;
     GLuint depth_ = 0;  // renderbuffer; lives and dies with fbo_, so the FBO count covers it
+    bool withDepth_ = true;
     int width_ = 0;
     int height_ = 0;
 };

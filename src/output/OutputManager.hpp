@@ -544,9 +544,11 @@ private:
     struct SceneCanvas {
         std::unique_ptr<Framebuffer> target;
         Rotation rotation = Rotation::R0;
+        IVec2 failedSize = IVec2(0, 0);  // texture size that could not be allocated
     };
     std::unordered_map<UUID, SceneCanvas> canvases_;
     std::vector<UUID> canvasScenes_;
+    GLint maxTextureSize_ = 0;  // GL_MAX_TEXTURE_SIZE, queried on the first canvas
 
     // Each output's effective resolution, and whether it was fullscreen (or
     // borderless), when followOutputSizes last saw it.

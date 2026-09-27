@@ -19,7 +19,7 @@ bool Framebuffer::resize(int width, int height) {
     if (created) {
         glGenTextures(1, &color_);
         GlObjectStats::onTextureCreated();
-        glGenRenderbuffers(1, &depth_);
+        if (withDepth_) glGenRenderbuffers(1, &depth_);
         glGenFramebuffers(1, &fbo_);
         GlObjectStats::onFramebufferCreated();
     }
@@ -29,12 +29,20 @@ bool Framebuffer::resize(int width, int height) {
     // A new size re-specifies the storage of the same objects: the colour texture
     // keeps its name, so a draw already recorded with it (an ImGui::Image of an
     // output frame) samples the resized texture instead of a deleted one.
+    // Earlier errors are not this allocation's; clear them so an out-of-memory
+    // below (which leaves the old storage in place) is seen. Bounded: a lost context
+    // can report an error on every call.
+    for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) {
+    }
     glBindTexture(GL_TEXTURE_2D, color_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, nullptr);
-    glBindRenderbuffer(GL_RENDERBUFFER, depth_);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width_, height_);
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    if (withDepth_) {
+        glBindRenderbuffer(GL_RENDERBUFFER, depth_);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width_, height_);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    }
+    const bool allocated = glGetError() != GL_OUT_OF_MEMORY;
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     if (created) {
@@ -44,10 +52,13 @@ bool Framebuffer::resize(int width, int height) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                                color_, 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
+        if (withDepth_) {
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_);
+        }
     }
 
-    bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    const bool complete =
+        allocated && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
 

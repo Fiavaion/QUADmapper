@@ -736,7 +736,9 @@ void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& sc
         }
         SceneCanvas& canvas = canvases_[sceneId];
         if (!canvas.target) {
-            canvas.target = std::make_unique<Framebuffer>();
+            // Colour only: quads are painter-ordered, and 3D objects are drawn per
+            // output into its frame, never into the canvas.
+            canvas.target = std::make_unique<Framebuffer>(Framebuffer::Depth::Without);
         }
         // The rotation all its outputs share, else none.
         bool first = true;
@@ -752,9 +754,22 @@ void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& sc
         }
         const IVec2 size = scene->getCanvasSize();
         const bool quarterTurn = canvas.rotation == Rotation::R90 || canvas.rotation == Rotation::R270;
-        if (!canvas.target->resize(quarterTurn ? size.y : size.x, quarterTurn ? size.x : size.y)) {
+        const IVec2 texSize = quarterTurn ? IVec2(size.y, size.x) : size;
+        if (texSize == canvas.failedSize) {
+            continue;  // failed at this size before: not retried every frame
+        }
+        if (maxTextureSize_ == 0) {
+            glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize_);
+        }
+        const bool fits = texSize.x <= maxTextureSize_ && texSize.y <= maxTextureSize_;
+        if (!fits || !canvas.target->resize(texSize.x, texSize.y)) {
+            canvas.failedSize = texSize;
+            LOG_ERROR("Scene '{}': cannot allocate its {}x{} canvas ({}); its outputs show no quads",
+                      scene->getName(), size.x, size.y,
+                      fits ? "out of GPU memory" : "larger than the GPU's texture limit");
             continue;
         }
+        canvas.failedSize = IVec2(0, 0);
         renderer.setOutputRotation(canvas.rotation);
         canvas.target->bind();  // also sets the viewport to the canvas size
         glDisable(GL_DEPTH_TEST);
