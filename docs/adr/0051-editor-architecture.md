@@ -146,6 +146,19 @@ enum class Outcome { Ran, Disabled, Locked, Unknown };
 
 E0 can run alongside anything. E1, E2, E3 and E5 all touch `Application.cpp`, so they merge in order. E4 runs alone because it renames headers.
 
+**E4 as built (2026-09-28).** Where it differs from the plan above:
+- `StatusLine.hpp` moved to `src/editor` too; `MeshLoads` needs it.
+- **Preferences (D2):** the `AppPreferences` model and its file I/O are now in `editor/Preferences.{hpp,cpp}`. `ui/dialogs/PreferencesDialog` keeps the window and the config path. `ui` no longer links nlohmann_json.
+- **Test targets:**
+  - `test_editor` links `quadmapper_editor` alone.
+  - `test_ui` is new: the Preferences window and the calibration view on the canvas, split out of `ControlBindingsTest` and `SceneTakeRoutingTest`.
+  - `test_control_app` is renamed `test_app` and holds the project session only.
+  - `test_ai_assist` links the editor instead of `ui`.
+- **`layering_check`** is `tests/LayeringCheck.cmake`. It also catches relative includes (`"../ui/…"`).
+- **Still to do:**
+  - Three lower-module tests include editor headers header-only: `OutputManagerTest` (`OutputPersistence`), `ProjectTest` (`UnsavedIndicator`) and `AudioSyncTest` (`SourceAudio`).
+  - CLAUDE.md and `.claude/rules/scene-geometry.md` still name `src/app` paths for `EditorState` and `MeshEditKeys`. They are left for E8.
+
 ### 6. Gates
 - Every slice keeps `ctest` green, including `bench_smoke`, which drives Tab + arrow nudges and 1–9 through the real GLFW key callback: the automated success-metric gate.
 - **Tests:**
