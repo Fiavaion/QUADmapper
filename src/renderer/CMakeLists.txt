@@ -13,6 +13,18 @@ add_library(quadmapper_renderer STATIC
     ComputeShader.cpp
     Texture.hpp
     Texture.cpp
+    YuvConverter.hpp
+    YuvConverter.cpp
+    CompressedUpload.hpp
+    CompressedUpload.cpp
+    DxInterop.hpp
+    DxInterop.cpp
+    GpuCapabilities.hpp
+    GpuCapabilities.cpp
+    Framebuffer.hpp
+    Framebuffer.cpp
+    UvTestGrid.hpp
+    UvTestGrid.cpp
     Mesh.hpp
     Mesh.cpp
     VertexArray.hpp

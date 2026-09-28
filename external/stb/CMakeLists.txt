@@ -3,12 +3,15 @@
 #
 # Setup instructions:
 # 1. Download stb_image.h from https://github.com/nothings/stb/blob/master/stb_image.h
-# 2. Place it in this directory
+# 2. Download stb_dxt.h (v1.12) from https://github.com/nothings/stb/blob/master/stb_dxt.h
+#    (BC1/BC3 compressor for Convert to HAP, QM-082)
+# 3. Place them in this directory, unmodified
 #
-# This creates a static library with the implementation
+# This creates a static library with the implementations
 
 add_library(stb STATIC
     stb_image.cpp
+    stb_dxt.cpp
 )
 
 target_include_directories(stb PUBLIC

@@ -1,0 +1,62 @@
+{
+  "$schema": "quadmapper/project/2.0",
+  "version": "2.0.0",
+  "name": "Scenes v2.0",
+  "scenes": [
+    {
+      "id": "2a1b2c3d-0000-4000-8000-0000000000c1",
+      "name": "Main",
+      "isActive": true,
+      "viewState": {
+        "panOffset": [0.0, 0.0],
+        "zoomLevel": 1.0,
+        "gridVisible": true,
+        "snapToGrid": false
+      },
+      "quads": [
+        {
+          "id": "2a1b2c3d-0000-4000-8000-000000000001",
+          "name": "Quad 1",
+          "zOrder": 0,
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "geometry": {
+            "corners": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+            "meshResolution": 4,
+            "meshMode": 0
+          },
+          "textureBinding": {
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": false,
+            "flipV": false
+          }
+        }
+      ],
+      "groups": [
+        {
+          "id": "2a1b2c3d-0000-4000-8000-0000000000a1",
+          "name": "Group 1",
+          "visible": true,
+          "locked": false,
+          "collapsed": false,
+          "members": ["2a1b2c3d-0000-4000-8000-000000000001"]
+        }
+      ]
+    },
+    {
+      "id": "2a1b2c3d-0000-4000-8000-0000000000c2",
+      "name": "Encore",
+      "isActive": false,
+      "viewState": {
+        "panOffset": [0.0, 0.0],
+        "zoomLevel": 1.0,
+        "gridVisible": true,
+        "snapToGrid": false
+      },
+      "quads": []
+    }
+  ]
+}

@@ -1,82 +1,92 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-06-16T15:00:00Z",
+  "lastUpdated": "2026-06-19T16:35:00Z",
   "sessionInfo": {
-    "sessionNumber": 12,
-    "startTime": "2026-06-16T14:00:00Z",
-    "endTime": "2026-06-16T15:00:00Z",
+    "sessionNumber": 20,
+    "startTime": "2026-06-19T11:45:00Z",
+    "endTime": "2026-06-19T16:10:00Z",
     "status": "completed"
   },
   "currentWork": {
     "activeTaskId": null,
-    "activeTaskTitle": "ADR-031 refactor DONE + MERGED to master — ready to start v1.1",
-    "currentFile": "master (no work in progress)",
+    "activeTaskTitle": "Session-20 mapping-editor UX overhaul: 6 feature areas implemented, built, 633/633 ctest. COMMITTED + PUSHED to origin/dev.",
+    "currentFile": "branch dev in sync with origin/dev @ 83deff2. Session-20 = 721b61a (feature code, 29 files) + 83deff2 (ADRs + tracking). Only imgui.ini/project.qmap remain uncommitted (scratch).",
     "currentFunction": null,
-    "workInProgress": "Session 12 closed. TD-02 render() decomposition (ADR-034) COMPLETE (all 6 batches, ending with batch 4 ViewportEditor f2dd41f). PR #1 MERGED into master (merge commit 5ef8809) — the whole ADR-031 keep-and-refactor is now on master; refactor phase done. Application.cpp 2411->~960 lines; render() ~1910->~400. Media workflow verified end-to-end this session (image knowledge-graph.png + video greenCrystals_15Sec_4x3.mp4 both load->assign->warp->F11 projector, watched working); added tests/smoke/drive_media_smoke.ps1 + drive_image_smoke.ps1 (6caf8dc). The core projection-mapping workflow is confirmed fully functional. Next session starts v1.1 from a clean master.",
+    "workInProgress": "Nothing mid-edit. Build clean + 633/633. Session-20 stack is COMMITTED and PUSHED to origin/dev. Remaining: user must visually verify the interactive features (couldn't auto-drive the UI under desktop-sharing).",
     "nextSteps": [
-      "Start v1.1: Color correction per quad (US-104, P1) — Quad property + shader uniforms + Inspector section + additive .qmap field (ADR-032 versioning covers it). No new deps, no success-metric risk. Open an ADR + checkable acceptance criteria FIRST, then build in small build->test->verify batches.",
-      "Alternative v1.1 features: soft-edge blending (US-101, moderate risk) or MIDI/OSC control (US-102/103, needs a dependency-approval ADR — Change Boundary).",
-      "TD-09: converge the two media models onto the source architecture (deferred from TD-02; success-metric risk — do as a deliberate feature, not debt cleanup).",
-      "TD-07: build exit-code flake (gtest discovery timeout) - touches CMake, needs approval. TD-08: defer audio snapshot reclamation to the control thread (LOW)."
+      "User visual-verify: smooth corner-pin distortion, bezier corner handles (toggle Curved edges -> drag amber handles), hover-to-play thumbnails, undo/redo, Scenes New, canvas drag-drop, click-to-select.",
+      "QM-079 (DEFERRED, user wants it next): bezier handles on the GRID DIVISION LINES (corner bezier is done; interior division curves need a richer surface model).",
+      "Revert preferences.json defaultMediaFolder (set to D:\\testing Videos for verification) if unwanted.",
+      "ADR-040 dev->master PR still gated on QM-061 (hardware). dev is pushed; master untouched."
     ]
   },
   "context": {
     "recentFiles": [
+      "src/scene/QuadGeometry.cpp",
+      "src/scene/QuadGeometry.hpp",
+      "src/renderer/Renderer.cpp",
       "src/ui/panels/ViewportEditor.cpp",
-      "src/app/Application.cpp",
+      "src/ui/panels/InspectorPanel.cpp",
+      "src/ui/panels/MediaBinPanel.cpp",
+      "src/ui/panels/MainMenuBar.cpp",
       "src/app/EditorState.hpp",
-      "tests/smoke/drive_media_smoke.ps1",
-      "tests/smoke/drive_image_smoke.ps1",
-      "docs/adr/0034-render-decomposition.md"
+      "src/app/Application.cpp",
+      "src/app/GridUndo.hpp",
+      "src/app/MediaAssign.hpp",
+      "src/project/ProjectSerializer.cpp",
+      "docs/adr/0041-viewport-zoom-pan-and-canvas-aspect.md",
+      "docs/adr/0042-simple-advanced-ui-modes.md",
+      "docs/adr/0043-smooth-tessellation-and-bezier-edges.md"
     ],
     "keyDecisions": [
-      "ADR-032: additive .qmap versioning + migration; one validateVersion() policy; no on-disk format change.",
-      "ADR-033: delete the unwired multi-scene track (SceneManager/ScenePanel/scene-serializer) rather than wire it up; EditorState::scene is the one source of truth; legacy v2 files still read via the flat-flatten path.",
-      "ADR-031: refactor-in-place, not full rebuild. Accepted.",
-      "Verification gate = tests/smoke/drive_smoke.ps1 (drives the real app, screenshots monitors).",
-      "Git author for this repo: Jones <fiavaion101@gmail.com> (local config)."
+      "ADR-041: editor canvas renders into the dockspace central node with a view transform (u_ViewScale/u_ViewOffset added to quad/outline/handle vertex shaders; identity default keeps output/preview byte-identical). Aspect from the assigned output's effective resolution (portrait auto). Zoom/pan session-only (no .qmap change). Hit-test inverts the same transform so the success-metric warp is preserved.",
+      "ADR-042: Simple/Advanced UI mode (EditorState::UiMode, persisted in prefs, default Simple). Per-panel gating, Advanced branch unchanged. Centralized assignMediaToQuad/bindSourceToQuad (fixed a latent bug: dropped videos were created as image sources). Canvas drag-drop uses manual GetDragDropPayload + IsMouseReleased because BeginDragDropTargetCustom can't register over a PassthruCentralNode.",
+      "ADR-043: surfacePoint(u,v) is the single render sampler; CORNERS_ONLY quads tessellate 32x32 (kills the diagonal fold). Bezier edges = 8 control-point offsets from the 1/3 & 2/3 points (zero = straight), blended as a Coons patch; amber drag handles; additive .qmap persistence; corner bezier done, grid-line bezier deferred (QM-079).",
+      "Undo/redo: reused the dormant CommandHistory + command classes AS-IS (raw Quad* pointers). Made it crash-safe by CLEARING history on quad delete / scene switch (a count/scene guard in Application::render), instead of rewriting commands to be UUID-based. Covers geometry+rename+grid edits. Undoable create/delete deferred (needs Quad::setId + identity-preserving commands).",
+      "Video thumbnails: one-shot VideoDecoder.open+decodeNextFrame -> RGBA -> cached RAII Texture (no persistent decoder). Hover-to-play uses ONE dedicated createVideoSource (not getOrCreate) so it never disturbs a quad's assigned video."
     ],
     "openQuestions": [],
-    "blockers": []
+    "blockers": [
+      "QM-061 (AI real-device validation) still needs physical projector + surface + phone (unchanged).",
+      "Interactive UI features built but NOT visually verified by the assistant (shared-desktop blocks reliable synthetic UI driving) — user verification pending."
+    ]
   },
   "projectState": {
-    "currentPhase": "ADR-031 Refactor COMPLETE + merged to master; next = v1.1 features",
+    "currentPhase": "Mapping-editor UX overhaul (Session 20): zoom/pan, Simple/Advanced UI, bin thumbnails+hover, undo/redo, smooth distortion, bezier corner edges. ALL UNCOMMITTED on dev. ADR-040 (shared sources + per-quad crop) COMPLETE (P1-P5, Session 19).",
     "completedPhases": [
-      "Phase 0: Infrastructure Setup",
-      "Phase 1: Core Foundation",
-      "Phase 2: Mesh & Multi-Quad",
-      "Phase 3: Video Playback",
-      "Phase 4: Multi-Output",
-      "Phase 5: Scene System",
-      "Phase 6: Audio System",
-      "Phase 7: Polish",
-      "Phase 8: ADR-031 Refactor (in progress)"
+      "Phase 0-7: Foundation through Polish",
+      "Phase 8: ADR-031 Refactor (merged to master)",
+      "Phase 9: AI Pre-Show Assist - software-complete; QM-061 hardware gate outstanding",
+      "Kantan-style grid (ADR-038) Tier 1",
+      "ADR-039 multi-scene routing P1-P5 - COMPLETE",
+      "ADR-040 shared media sources + per-quad crop P1-P5 - COMPLETE (Session 19)",
+      "Session 20: ADR-041 viewport zoom/pan, ADR-042 Simple/Advanced UI, bin thumbnails+hover-play, undo/redo, ADR-043 smooth tessellation + bezier corners - IMPLEMENTED, UNCOMMITTED"
     ],
     "buildStatus": "success",
-    "lastSuccessfulBuild": "2026-06-16T14:20:00Z",
-    "note": "ADR-031 refactor COMPLETE and MERGED to master (PR #1, merge commit 5ef8809). Full success metric verified end-to-end incl. MEDIA: image (knowledge-graph.png) AND video (greenCrystals_15Sec_4x3.mp4) both load->assign->warp->F11 projector, watched working this session. 590/590 tests (4 audio integration skipped). TD-02 render()->panels decomposition done (all 6 batches: MainMenuBar, QuadListPanel, InspectorPanel, VideoPlayerPanel, ViewportEditor + EditorContext); dead PreviewPanel shell deleted. Application.cpp 2411->~960 lines; render() ~1910->~400. Next: v1.1 features (Color correction per quad recommended). Open debt (none blocking): TD-07, TD-08, TD-09."
+    "lastSuccessfulBuild": "2026-06-19T16:05:00Z",
+    "note": "Session 20. Large mapping-editor UX overhaul (ADR-041/042/043 + thumbnails + undo/redo), build green, 633/633 ctest. COMMITTED + PUSHED to origin/dev: 721b61a (code) + 83deff2 (docs). Next: user visual-verify, then QM-079 grid-line bezier."
   },
   "statistics": {
-    "totalSessions": 12,
-    "tasksCompleted": 55,
+    "totalSessions": 20,
+    "tasksCompleted": 78,
     "tasksInProgress": 0,
     "tasksTodo": 3
   },
-  "session9Accomplishments": {
-    "shipped": "branch refactor/app-decomposition pushed; PR #1 (https://github.com/Fiavaion/QUADmapper/pull/1)",
+  "session20Accomplishments": {
+    "shipped": "6 feature areas implemented + built + 633/633 ctest, ALL UNCOMMITTED on dev. ADRs 041/042/043 written.",
     "items": [
-      "ADR-031 audit (refactor-in-place) + UI smoke harness",
-      "TD-02 step 1: render() statics -> owned EditorState",
-      "TD-01: projector output renders warped scene (success metric complete)",
-      "TD-04: atomic cross-thread video decoder state",
-      "TD-03: lock-free + alloc-free audio RT callback",
-      "TD-06: deleted dead code",
-      "Fixed two full-build regressions (AudioBuffer capacity, test signature)"
+      "QM-073 viewport zoom/pan + aspect canvas (ADR-041): central-node render + view-transform shaders; Fit/wheel/middle-drag; portrait auto; hit-test inverts transform.",
+      "QM-074 native Load Video dialog + crop Left/Right/Top/Bottom % insets.",
+      "QM-075 Simple/Advanced UI (ADR-042): toolbar toggle (persisted); curated Simple panels; video auto-play on assign; canvas drag-drop (manual release detection); click-to-select quad; centralized assignMediaToQuad; Scenes New seeds a quad.",
+      "QM-076 media-bin thumbnails: video first-frame + procedural live texture + hover-to-play (dedicated preview decoder).",
+      "QM-077 undo/redo: CommandHistory + Ctrl+Z/Y + Edit menu; corner/mesh drag+nudge, rename, grid edits; crash-safe via clear-on-delete/scene-switch guard.",
+      "QM-078 Report Bug button + smooth 32x32 corner-pin tessellation + bezier corner edges (ADR-043, Coons patch, amber handles, additive persistence, undoable)."
     ],
     "lessons": [
-      "LESSON-BUILD-007: full-build before ctest (partial builds run stale test exes)",
-      "LESSON-TEST-004: GLFW maps keys by scancode, not VK",
-      "LESSON-ARCH-006: de-static a god-function via owned struct + same-named aliases"
+      "ImGui BeginDragDropTargetCustom cannot register over a PassthruCentralNode (no window is hovered there) — for canvas drops, detect manually via GetDragDropPayload() + IsMouseReleased() over the region rect.",
+      "The dormant CommandHistory holds raw Quad* and recreates quads with NEW ids on undo, so undoable delete would dangle/crash. Shipping a SAFE subset (geometry+rename+grid, history cleared on structural change) beats a full-but-crashing undo; full create/delete undo needs Quad::setId + UUID-based commands.",
+      "A corner-pin quad is a 1x1 control cell -> 2 triangles -> diagonal fold; decoupling render tessellation from the control grid (sample surfacePoint at 32x32) is the fix, and the same sampler cleanly hosts the bezier Coons patch.",
+      "Under desktop-sharing the assistant can't reliably synthetic-drive the app window (VS Code steals foreground); interactive features must be handed to the user for visual verification rather than claimed."
     ]
   }
 }

@@ -2,10 +2,19 @@
 
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
+#include "app/MediaAssign.hpp"
+#include "app/QuadSelection.hpp"
+#include "app/MeshLoads.hpp"
+#include "app/GridUndo.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGeometry.hpp"
+#include "scene/Commands.hpp"
+#include "scene/CropInsets.hpp"
+#include "scene/MeshObject.hpp"
+#include "scene/Scene.hpp"
 #include "renderer/Texture.hpp"
+#include "renderer/UvTestGrid.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
 #include "source/SourceManager.hpp"
@@ -13,14 +22,19 @@
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "project/Project.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 #include "core/Types.hpp"
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 #include <algorithm>
+#include <cmath>
+#include <filesystem>
 #include <string>
 #include <cstdio>
 #include <cstring>
+#include <cfloat>  // FLT_MIN (full-width button sizing)
 
 namespace quadmapper {
 
@@ -43,6 +57,9 @@ void InspectorPanel::render(EditorContext& ctx) {
         case SelectionType::Media:
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f), "Media Properties");
             break;
+        case SelectionType::Object:
+            ImGui::TextColored(ImVec4(0.8f, 0.6f, 1.0f, 1.0f), "Object Properties");
+            break;
         default:
             ImGui::TextDisabled("Properties");
             break;
@@ -55,6 +72,8 @@ void InspectorPanel::render(EditorContext& ctx) {
         renderOutputProperties(ctx);
     } else if (es.currentSelectionType == SelectionType::Media) {
         renderMediaProperties(ctx);
+    } else if (es.currentSelectionType == SelectionType::Object) {
+        renderObjectProperties(ctx);
     } else {
         // -------- No Selection --------
         ImGui::TextDisabled("Nothing selected");
@@ -69,7 +88,7 @@ void InspectorPanel::render(EditorContext& ctx) {
 // ============================================================
 void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
     EditorState& es = ctx.es;
-    auto& quadManager        = es.quadManager;
+    auto& quadManager        = es.quadManager();
     auto& quadTextures       = es.quadTextures;
     auto& quadTexturePaths   = es.quadTexturePaths;
     auto& currentTexturePath = es.currentTexturePath;
@@ -78,6 +97,14 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
     Quad* selectedQuad = quadManager.getPrimarySelectedQuad();
 
+    // Simple mode (ADR-042): a curated panel — Flip U/V, Rotate, Crop, Reset Quad —
+    // so a non-technical user isn't faced with the full control set.
+    if (es.uiMode == EditorState::UiMode::Simple) {
+        if (selectedQuad) renderSimpleQuadProperties(ctx, *selectedQuad);
+        else ImGui::TextDisabled("Select a quad to edit it");
+        return;
+    }
+
     if (selectedQuad) {
         // Editable name
         strncpy(quadName_, selectedQuad->getName().c_str(), sizeof(quadName_) - 1);
@@ -85,8 +112,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
         if (ImGui::InputText("Name", quadName_, sizeof(quadName_),
                              ImGuiInputTextFlags_EnterReturnsTrue)) {
-            selectedQuad->setName(quadName_);
-            ctx.project->setModified(true);
+            ctx.es.commandHistory.execute(
+                std::make_unique<RenameQuadCommand>(ctx.es.quadRef(*selectedQuad), quadName_));
         }
 
         ImGui::Separator();
@@ -96,20 +123,23 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
         // Drag-drop target for media from Media Bin
         ImGui::BeginGroup();
+        followTexturePath(es, selectedQuad, pathFieldQuad_, pathFieldPath_);
         ImGui::InputText("Path", currentTexturePath, sizeof(currentTexturePath));
         ImGui::SameLine();
         if (ImGui::Button("Load")) {
             if (strlen(currentTexturePath) > 0) {
-                auto texture = std::make_unique<Texture>();
-                if (texture->loadFromFile(currentTexturePath)) {
-                    quadTextures[selectedQuad->getId()] = std::move(texture);
-                    quadTexturePaths[selectedQuad->getId()] = currentTexturePath;
+                // ADR-040 P2: bind via a (deduped) SourceManager source + mediaId
+                // instead of loading a per-quad Texture into quadTextures.
+                UUID sid = ctx.sourceManager
+                    ? ctx.sourceManager->getOrCreateImageSource(pathFromUtf8(currentTexturePath)) : UUID();
+                if (!sid.isNull()) {
+                    bindSourceToQuad(ctx.es, *selectedQuad, sid,
+                                     currentTexturePath, /*isVideo=*/false);
                     Logger::info("Loaded texture for quad '{}': {}",
                                  selectedQuad->getName(), currentTexturePath);
                     snprintf(statusMessage, sizeof(statusMessage),
                              "Loaded texture: %s", currentTexturePath);
                     statusTimer = 3.0f;
-                    ctx.project->setModified(true);
                 } else {
                     Logger::error("Failed to load texture: {}", currentTexturePath);
                     snprintf(statusMessage, sizeof(statusMessage),
@@ -123,17 +153,41 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             }
         }
 
-        auto texIt = quadTextures.find(selectedQuad->getId());
-        if (texIt != quadTextures.end() && texIt->second) {
-            ImGui::Text("Size: %dx%d",
-                        texIt->second->getWidth(), texIt->second->getHeight());
+        // Show the bound texture's size: image via mediaId -> SourceManager, with
+        // a fallback to any legacy quadTextures entry (e.g. the UV test grid).
+        Texture* boundTex = nullptr;
+        if (ctx.sourceManager && !selectedQuad->getTexture().mediaId.isNull()) {
+            boundTex = ctx.sourceManager->getTexture(selectedQuad->getTexture().mediaId);
+        }
+        if (!boundTex) {
+            auto texIt = quadTextures.find(selectedQuad->getId());
+            if (texIt != quadTextures.end()) boundTex = texIt->second.get();
+        }
+        if (boundTex) {
+            ImGui::Text("Size: %dx%d", boundTex->getWidth(), boundTex->getHeight());
             if (ImGui::Button("Clear Texture")) {
+                selectedQuad->getTexture().mediaId = UUID();
                 quadTextures.erase(selectedQuad->getId());
                 quadTexturePaths.erase(selectedQuad->getId());
                 currentTexturePath[0] = '\0';
-                ctx.project->setModified(true);
             }
         }
+
+        // UV test grid (#2): apply a colored UV reference grid to this quad, and
+        // toggle whether new quads get it automatically.
+        if (ImGui::Button("Apply UV Test Grid")) {
+            assignUvTestGrid(quadTextures, quadTexturePaths,
+                             selectedQuad->getId(), 1024, 8);
+            // Override any assigned source (renderer resolves mediaId first).
+            selectedQuad->getTexture().mediaId = UUID();
+            currentTexturePath[0] = '\0';
+            snprintf(statusMessage, sizeof(statusMessage), "Applied UV test grid");
+            statusTimer = 3.0f;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Colored UV reference grid — check orientation/stretch");
+        }
+        ImGui::Checkbox("UV grid on new quads", &ctx.es.uvGridOnNewQuads);
         ImGui::EndGroup();
 
         // Drag-drop target for media from Media Bin
@@ -142,21 +196,16 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                     ImGui::AcceptDragDropPayload("MEDIA_ITEM_ID")) {
                 UUID mediaId = *(const UUID*)payload->Data;
                 MediaItem* item = ctx.mediaLibrary->getItem(mediaId);
-                if (item && item->getType() != MediaType::PROCEDURAL) {
-                    auto texture = std::make_unique<Texture>();
-                    if (texture->loadFromFile(item->getPath().string())) {
-                        quadTextures[selectedQuad->getId()] = std::move(texture);
-                        quadTexturePaths[selectedQuad->getId()] =
-                            item->getPath().string();
-                        strncpy(currentTexturePath, item->getPath().string().c_str(),
-                                sizeof(currentTexturePath) - 1);
-                        currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
+                if (item) {
+                    // Centralized bind (ADR-042 P2): resolves image vs video correctly.
+                    UUID sid = assignMediaToQuad(ctx.es, ctx.sourceManager,
+                                                 *selectedQuad, *item);
+                    if (!sid.isNull()) {
                         Logger::info("Assigned media '{}' to quad '{}'",
                                      item->getName(), selectedQuad->getName());
                         snprintf(statusMessage, sizeof(statusMessage),
                                  "Assigned: %s", item->getName().c_str());
                         statusTimer = 3.0f;
-                        ctx.project->setModified(true);
                     }
                 }
             }
@@ -171,19 +220,23 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             // Flip buttons at the top
             if (ImGui::Button(texBinding.flipH ? "Flip H [ON]" : "Flip H")) {
                 texBinding.flipH = !texBinding.flipH;
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button(texBinding.flipV ? "Flip V [ON]" : "Flip V")) {
                 texBinding.flipV = !texBinding.flipV;
-                ctx.project->setModified(true);
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Reset UV")) {
-                texBinding.resetUV();
+
+            // Prominent one-click reset for the whole UV transform (offset / coverage
+            // / scale / rotation / flips) back to defaults.
+            ImGui::Spacing();
+            if (ImGui::Button("Reset Transform (Offset / Coverage / Scale / Rotation)",
+                              ImVec2(-FLT_MIN, 0.0f))) {
+                texBinding.resetUV();   // uvOffset=0, uvScale=1 (=100% coverage), uvRotation=0
                 texBinding.flipH = false;
                 texBinding.flipV = false;
-                ctx.project->setModified(true);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Reset pan, coverage/scale, rotation and flips to defaults");
             }
 
             ImGui::Spacing();
@@ -194,15 +247,11 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::Text("Offset (Pan):");
             ImGui::TextDisabled("Ctrl+Click to type value");
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Offset X", &texBinding.uvOffset.x,
-                                 0.01f, -2.0f, 2.0f, "%.3f")) {
-                ctx.project->setModified(true);
-            }
+            ImGui::DragFloat("Offset X", &texBinding.uvOffset.x,
+                             0.01f, -2.0f, 2.0f, "%.3f");
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Offset Y", &texBinding.uvOffset.y,
-                                 0.01f, -2.0f, 2.0f, "%.3f")) {
-                ctx.project->setModified(true);
-            }
+            ImGui::DragFloat("Offset Y", &texBinding.uvOffset.y,
+                             0.01f, -2.0f, 2.0f, "%.3f");
 
             ImGui::Spacing();
 
@@ -220,13 +269,11 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             if (ImGui::DragFloat("U Coverage", &coverageU,
                                  1.0f, 10.0f, 400.0f, "%.0f%%")) {
                 texBinding.uvScale.x = 100.0f / std::max(coverageU, 1.0f);
-                ctx.project->setModified(true);
             }
             ImGui::SetNextItemWidth(200.0f);
             if (ImGui::DragFloat("V Coverage", &coverageV,
                                  1.0f, 10.0f, 400.0f, "%.0f%%")) {
                 texBinding.uvScale.y = 100.0f / std::max(coverageV, 1.0f);
-                ctx.project->setModified(true);
             }
 
             ImGui::Spacing();
@@ -234,15 +281,11 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             // Scale (direct control)
             ImGui::Text("Scale (Zoom):");
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Scale X", &texBinding.uvScale.x,
-                                 0.01f, 0.1f, 10.0f, "%.3f")) {
-                ctx.project->setModified(true);
-            }
+            ImGui::DragFloat("Scale X", &texBinding.uvScale.x,
+                             0.01f, 0.1f, 10.0f, "%.3f");
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Scale Y", &texBinding.uvScale.y,
-                                 0.01f, 0.1f, 10.0f, "%.3f")) {
-                ctx.project->setModified(true);
-            }
+            ImGui::DragFloat("Scale Y", &texBinding.uvScale.y,
+                             0.01f, 0.1f, 10.0f, "%.3f");
 
             ImGui::Spacing();
 
@@ -253,28 +296,31 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             if (ImGui::DragFloat("Rotation##uv", &rotationDegrees,
                                  0.5f, -180.0f, 180.0f, "%.1f deg")) {
                 texBinding.uvRotation = rotationDegrees * 3.14159265f / 180.0f;
-                ctx.project->setModified(true);
             }
             // Quick rotation buttons
             ImGui::SameLine();
             if (ImGui::Button("0##rot")) {
                 texBinding.uvRotation = 0.0f;
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("90##rot")) {
                 texBinding.uvRotation = 90.0f * 3.14159265f / 180.0f;
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("180##rot")) {
                 texBinding.uvRotation = 180.0f * 3.14159265f / 180.0f;
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("270##rot")) {
                 texBinding.uvRotation = 270.0f * 3.14159265f / 180.0f;
-                ctx.project->setModified(true);
+            }
+
+            // Crop (ADR-040) — sample a sub-rectangle of the source, stretched to
+            // fill the quad. Collapsed by default to keep the inspector tidy.
+            ImGui::Spacing();
+            if (ImGui::TreeNode("Crop (source region)")) {
+                renderCropControls(ctx, texBinding);
+                ImGui::TreePop();
             }
         }
 
@@ -297,19 +343,94 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
             if (cornersChanged) {
                 geometry.setCorners(corners);
-                ctx.project->setModified(true);
             }
 
             if (ImGui::Button("Reset Corners")) {
                 geometry.resetCorners();
-                ctx.project->setModified(true);
+            }
+
+            // Curved (bezier) edges — drag the amber handles on the canvas to bow the
+            // four edges. Only meaningful in corner-pin (CORNERS_ONLY) mode.
+            {
+                bool bez = geometry.isBezierEnabled();
+                if (ImGui::Checkbox("Curved edges (bezier)", &bez)) {
+                    geometry.setBezierEnabled(bez);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Drag the amber edge handles on the canvas to curve the edges");
+                }
+                if (bez) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Reset Curves")) {
+                        geometry.resetBezier();
+                    }
+                }
             }
 
             ImGui::Separator();
+            // Even grid (uniform N×N) — the convenience action; resets divisions.
             int meshRes = geometry.getMeshResolution();
-            if (ImGui::SliderInt("Mesh Resolution", &meshRes, 2, 64)) {
-                geometry.setMeshResolution(meshRes);
-                ctx.project->setModified(true);
+            if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64)) {
+                GridSnapshot before = captureGrid(geometry);
+                geometry.setUniformGrid(meshRes);
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Even Grid",
+                               before, captureGrid(geometry));
+            }
+
+            // Non-uniform grid divisions (ADR-038 Tier 1): add/remove division
+            // lines at an arbitrary position, then warp the control vertices in
+            // mesh-edit mode. Columns split U (vertical lines), rows split V.
+            ImGui::Text("Grid: %d x %d cells", geometry.getColumns(),
+                        geometry.getRows());
+            ImGui::SetNextItemWidth(160.0f);
+            ImGui::SliderFloat("Insert pos", &gridInsertPos_, 0.02f, 0.98f, "%.2f");
+            if (ImGui::Button("Add Column")) {
+                GridSnapshot before = captureGrid(geometry);
+                geometry.insertUDivision(gridInsertPos_);
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Add Column",
+                               before, captureGrid(geometry));
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Row")) {
+                GridSnapshot before = captureGrid(geometry);
+                geometry.insertVDivision(gridInsertPos_);
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Add Row",
+                               before, captureGrid(geometry));
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Del Column") && geometry.getColumns() > MIN_MESH_RESOLUTION) {
+                GridSnapshot before = captureGrid(geometry);
+                geometry.removeUDivision(geometry.getColumns() - 1);
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Delete Column",
+                               before, captureGrid(geometry));
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Del Row") && geometry.getRows() > MIN_MESH_RESOLUTION) {
+                GridSnapshot before = captureGrid(geometry);
+                geometry.removeVDivision(geometry.getRows() - 1);
+                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Delete Row",
+                               before, captureGrid(geometry));
+            }
+
+            // Click-on-edge insert tool (ADR-038 Tier 1 batch 3b): arm, then click
+            // in the viewport to place a division where you click. Arming switches
+            // to mesh-edit so the grid is visible.
+            using GridInsert = EditorState::GridInsert;
+            const bool armCol = (ctx.es.gridInsert == GridInsert::Column);
+            const bool armRow = (ctx.es.gridInsert == GridInsert::Row);
+            if (ImGui::Button(armCol ? "Click-add Column [ON]" : "Click-add Column")) {
+                ctx.es.gridInsert = armCol ? GridInsert::None : GridInsert::Column;
+                if (!armCol) geometry.setMeshMode(MeshMode::MESH_EDIT);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(armRow ? "Click-add Row [ON]" : "Click-add Row")) {
+                ctx.es.gridInsert = armRow ? GridInsert::None : GridInsert::Row;
+                if (!armRow) geometry.setMeshMode(MeshMode::MESH_EDIT);
+            }
+            if (ctx.es.gridInsert != GridInsert::None) {
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                                   "Press in the viewport and drag to position the line "
+                                   "(Esc to cancel)");
             }
 
             // Mesh Edit Mode
@@ -324,10 +445,10 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 es.meshDraggedVertex   = -1;
                 es.meshHoveredVertex   = -1;
                 es.meshSelectedVertex  = -1;
+                es.meshSelectedHandle = es.meshHoveredHandle = es.meshDraggedHandle = -1;
                 es.cornerDraggedVertex = -1;
                 es.cornerHoveredVertex = -1;
                 es.cornerSelectedVertex = -1;
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip(
@@ -340,16 +461,16 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
                 if (geometry.hasMeshModifications()) {
                     ImGui::SameLine();
-                    if (ImGui::Button("Reset Mesh to Bilinear")) {
+                    if (ImGui::Button("Reset Mesh")) {
                         geometry.resetMesh();
-                        ctx.project->setModified(true);
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip(
-                            "Clear all mesh vertex offsets and return to bilinear"
-                            " interpolation");
+                            "Clear every mesh vertex offset and grid-line handle, back"
+                            " to the corner-pin surface");
                     }
                 }
+                ImGui::TextDisabled("H / Shift+H: the selected vertex's grid-line handles");
 
                 // Show vertex count info
                 ImGui::Text("Vertices: %d (%dx%d grid)",
@@ -364,7 +485,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             float opacity = selectedQuad->getOpacity();
             if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f)) {
                 selectedQuad->setOpacity(opacity);
-                ctx.project->setModified(true);
             }
 
             ImGui::Separator();
@@ -376,7 +496,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             // Z-order buttons with proper labels
             if (ImGui::Button("Bring to Front")) {
                 quadManager.moveQuadToBottom(selectedQuad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Ctrl+Shift+]");
@@ -384,7 +503,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::SameLine();
             if (ImGui::Button("Send to Back")) {
                 quadManager.moveQuadToTop(selectedQuad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Ctrl+Shift+[");
@@ -392,7 +510,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
             if (ImGui::Button("Bring Forward")) {
                 quadManager.moveQuadDown(selectedQuad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Ctrl+]");
@@ -400,16 +517,189 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::SameLine();
             if (ImGui::Button("Send Backward")) {
                 quadManager.moveQuadUp(selectedQuad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Ctrl+[");
+            }
+        }
+
+        // Color Correction section (ADR-036 / US-104). Slider ranges match the
+        // ColorCorrection valid ranges; edits flag the project dirty.
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Color Correction")) {
+            ColorCorrection& cc = selectedQuad->getColorCorrection();
+            ImGui::SliderFloat("Brightness", &cc.brightness, -1.0f, 1.0f);
+            ImGui::SliderFloat("Contrast", &cc.contrast, 0.0f, 2.0f);
+            ImGui::SliderFloat("Gamma", &cc.gamma, 0.1f, 4.0f);
+            ImGui::SliderFloat3("RGB Gain", &cc.rgbGain.x, 0.0f, 2.0f);
+            if (ImGui::Button("Reset Color")) {
+                cc.reset();
+            }
+        }
+
+        // Soft Edge Blending section (ADR-037 / US-101). Per-edge feather widths
+        // (fraction of the quad) + falloff gamma; for multi-projector overlaps.
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Soft Edge Blending")) {
+            SoftEdge& se = selectedQuad->getSoftEdge();
+            ImGui::SliderFloat("Left", &se.left, 0.0f, 0.5f);
+            ImGui::SliderFloat("Right", &se.right, 0.0f, 0.5f);
+            ImGui::SliderFloat("Top", &se.top, 0.0f, 0.5f);
+            ImGui::SliderFloat("Bottom", &se.bottom, 0.0f, 0.5f);
+            ImGui::SliderFloat("Edge Gamma", &se.gamma, 0.1f, 4.0f);
+            if (ImGui::Button("Reset Edges")) {
+                se.reset();
             }
         }
     } else {
         ImGui::TextDisabled("No quad selected");
         ImGui::TextDisabled("Select a quad from the Quad List");
     }
+}
+
+// Crop controls (Left/Right/Top/Bottom edge insets). Shared by the Advanced crop
+// tree and the Simple-mode panel so the two never drift (ADR-042). The stored model
+// stays normalized {x,y,w,h}; the insets are a pure UI re-parameterization
+// (CropInsets.hpp), shown in source pixels when the source has a real pixel size and
+// as a percentage otherwise (procedural sources, or media not loaded yet).
+void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texBinding) {
+    NormalizedRect& crop = texBinding.cropRect;
+
+    int srcWidth = 0;
+    int srcHeight = 0;
+    if (ctx.sourceManager && !texBinding.mediaId.isNull()) {
+        const TextureSource* source = ctx.sourceManager->getSource(texBinding.mediaId);
+        if (source && !dynamic_cast<const ProceduralSource*>(source)) {
+            srcWidth = source->getWidth();
+            srcHeight = source->getHeight();
+        }
+    }
+    const bool inPixels = srcWidth > 0 && srcHeight > 0;
+
+    struct EdgeControl { const char* label; CropEdge edge; };
+    constexpr EdgeControl edges[] = {
+        {"Crop Left##crop", CropEdge::Left},   {"Crop Right##crop", CropEdge::Right},
+        {"Crop Top##crop", CropEdge::Top},     {"Crop Bottom##crop", CropEdge::Bottom},
+    };
+
+    if (inPixels) {
+        ImGui::TextDisabled("Crop in from each edge (source pixels, %d x %d)",
+                            srcWidth, srcHeight);
+        for (const EdgeControl& c : edges) {
+            int px = cropInsetPixels(crop, c.edge, srcWidth, srcHeight);
+            const int maxPx = maxCropInsetPixels(crop, c.edge, srcWidth, srcHeight);
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::DragInt(c.label, &px, 1.0f, 0, maxPx, "%d px",
+                               ImGuiSliderFlags_AlwaysClamp)) {
+                crop = withCropInsetPixels(crop, c.edge, px, srcWidth, srcHeight);
+            }
+        }
+        const int left = cropInsetPixels(crop, CropEdge::Left, srcWidth, srcHeight);
+        const int top = cropInsetPixels(crop, CropEdge::Top, srcWidth, srcHeight);
+        const int right = cropInsetPixels(crop, CropEdge::Right, srcWidth, srcHeight);
+        const int bottom = cropInsetPixels(crop, CropEdge::Bottom, srcWidth, srcHeight);
+        ImGui::TextDisabled("Region: %d x %d px at (%d, %d)",
+                            srcWidth - left - right, srcHeight - top - bottom, left, top);
+    } else {
+        ImGui::TextDisabled("Crop in from each edge (%% of source)");
+        for (const EdgeControl& c : edges) {
+            float pct = static_cast<float>(cropInset(crop, c.edge) * 100.0);
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::DragFloat(c.label, &pct, 0.5f, 0.0f, 100.0f, "%.1f%%")) {
+                crop = withCropInset(crop, c.edge, pct / 100.0, 0.01);
+            }
+        }
+    }
+
+    auto setCrop = [&](float x, float y, float w, float h) {
+        crop = NormalizedRect{x, y, w, h};
+    };
+    ImGui::TextDisabled("Halves (two-face split):");
+    if (ImGui::Button("Left 1/2"))   setCrop(0.0f, 0.0f, 0.5f, 1.0f); ImGui::SameLine();
+    if (ImGui::Button("Right 1/2"))  setCrop(0.5f, 0.0f, 0.5f, 1.0f); ImGui::SameLine();
+    if (ImGui::Button("Top 1/2"))    setCrop(0.0f, 0.0f, 1.0f, 0.5f); ImGui::SameLine();
+    if (ImGui::Button("Bottom 1/2")) setCrop(0.0f, 0.5f, 1.0f, 0.5f);
+
+    ImGui::TextDisabled("Vertical quarters (box-wrap):");
+    auto column = [&](const char* label, float x) {
+        if (ImGui::Button(label)) setCrop(x, 0.0f, 0.25f, 1.0f);
+    };
+    column("1##cq", 0.0f);  ImGui::SameLine();
+    column("2##cq", 0.25f); ImGui::SameLine();
+    column("3##cq", 0.5f);  ImGui::SameLine();
+    column("4##cq", 0.75f); ImGui::SameLine();
+    if (ImGui::Button("Full##cq")) {
+        texBinding.resetCrop();
+    }
+}
+
+// Simple-mode quad panel (ADR-042): only the handful of controls a basic projection
+// mapping needs — flip, rotate, crop, and a one-click full reset. On-canvas corner
+// warping (Tab/arrows/drag) stays available in both modes via the ViewportEditor.
+void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) {
+    constexpr float kPi = 3.14159265f;
+    TextureBinding& texBinding = quad.getTexture();
+
+    // Editable name (rename works in Simple mode too).
+    strncpy(quadName_, quad.getName().c_str(), sizeof(quadName_) - 1);
+    quadName_[sizeof(quadName_) - 1] = '\0';
+    if (ImGui::InputText("Name", quadName_, sizeof(quadName_),
+                         ImGuiInputTextFlags_EnterReturnsTrue)) {
+        ctx.es.commandHistory.execute(
+            std::make_unique<RenameQuadCommand>(ctx.es.quadRef(quad), quadName_));
+    }
+    ImGui::Separator();
+
+    // Flip
+    if (ImGui::Button(texBinding.flipH ? "Flip U [ON]" : "Flip U")) {
+        texBinding.flipH = !texBinding.flipH;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(texBinding.flipV ? "Flip V [ON]" : "Flip V")) {
+        texBinding.flipV = !texBinding.flipV;
+    }
+
+    // Rotation
+    float deg = texBinding.uvRotation * 180.0f / kPi;
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::DragFloat("Rotation", &deg, 1.0f, -360.0f, 360.0f, "%.0f deg")) {
+        texBinding.uvRotation = deg * kPi / 180.0f;
+    }
+    auto rotBtn = [&](const char* label, float d) {
+        if (ImGui::Button(label)) { texBinding.uvRotation = d * kPi / 180.0f; }
+    };
+    rotBtn("0##r",   0.0f);   ImGui::SameLine();
+    rotBtn("90##r",  90.0f);  ImGui::SameLine();
+    rotBtn("180##r", 180.0f); ImGui::SameLine();
+    rotBtn("270##r", 270.0f);
+
+    // Curved (bezier) edges — drag the amber handles on the canvas to bow the edges.
+    bool bez = quad.getGeometry().isBezierEnabled();
+    if (ImGui::Checkbox("Curved edges (bezier)", &bez)) {
+        quad.getGeometry().setBezierEnabled(bez);
+    }
+    if (bez) {
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Curves")) {
+            quad.getGeometry().resetBezier();
+        }
+    }
+
+    // Crop
+    ImGui::Separator();
+    renderCropControls(ctx, texBinding);
+
+    // Reset Quad — full reset, keeps the assigned media (confirmed UX).
+    ImGui::Separator();
+    if (ImGui::Button("Reset Quad")) {
+        texBinding.resetUV();
+        texBinding.flipH = false;
+        texBinding.flipV = false;
+        texBinding.resetCrop();
+        quad.getGeometry().resetCorners();
+        quad.getGeometry().resetBezier();
+    }
+    ImGui::SetItemTooltip("Reset warp, flip, rotation and crop (keeps the assigned media)");
 }
 
 // ============================================================
@@ -434,34 +724,49 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
             selectedOutput->setName(outputName_);
         }
 
+        // The scene this output shows (ADR-047); several outputs may show one scene.
+        ImGui::Text("Scene:");
+        const Scene* shown = OutputManager::sceneForOutput(es.scenes, *selectedOutput);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##OutputScene", shown ? shown->getName().c_str() : "(no scene)")) {
+            if (ImGui::Selectable("(no scene)", shown == nullptr)) {
+                OutputManager::showScene(*selectedOutput, nullptr, es.scenes);
+            }
+            for (const auto& scene : es.scenes) {
+                if (!scene) continue;
+                ImGui::PushID(scene.get());
+                const bool isShown = scene.get() == shown;
+                if (ImGui::Selectable(scene->getName().c_str(), isShown) && !isShown) {
+                    ctx.outputManager->routeScene(*selectedOutput, scene.get(), es.scenes);
+                }
+                if (isShown) ImGui::SetItemDefaultFocus();
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+
         ImGui::Separator();
 
         // Monitor dropdown
         ImGui::Text("Display:");
         const auto& monitors = ctx.outputManager->getMonitors();
-        int currentMonitor = selectedOutput->getMonitor();
-        if (currentMonitor < 0) currentMonitor = 0;
-
-        // Build monitor combo string
-        std::string monitorPreview = "Monitor " + std::to_string(currentMonitor + 1);
-        if (currentMonitor < static_cast<int>(monitors.size())) {
-            monitorPreview = monitors[currentMonitor].name + " (" +
-                std::to_string(monitors[currentMonitor].resolution.x) + "x" +
-                std::to_string(monitors[currentMonitor].resolution.y) + ")";
-        }
+        const int currentMonitor = selectedOutput->getMonitor();  // -1: none connected
+        const bool automatic = selectedOutput->isMonitorAutomatic();
+        const std::string monitorPreview =
+            OutputManager::describeMonitorChoice(monitors, *selectedOutput);
 
         ImGui::SetNextItemWidth(-1);
         if (ImGui::BeginCombo("##Monitor", monitorPreview.c_str())) {
+            if (ImGui::Selectable("Automatic (not the editor's display)", automatic)) {
+                ctx.outputManager->assignMonitor(*selectedOutput, -1);
+            }
+            ImGui::Separator();
             for (size_t i = 0; i < monitors.size(); ++i) {
                 const auto& mon = monitors[i];
-                std::string label = mon.name + " (" +
-                    std::to_string(mon.resolution.x) + "x" +
-                    std::to_string(mon.resolution.y) + ")";
-                if (mon.isPrimary) label += " [Primary]";
-
-                bool isSelected = (static_cast<int>(i) == currentMonitor);
+                const std::string label = mon.getDisplayString();
+                const bool isSelected = !automatic && static_cast<int>(i) == currentMonitor;
                 if (ImGui::Selectable(label.c_str(), isSelected)) {
-                    selectedOutput->setMonitor(static_cast<int>(i));
+                    ctx.outputManager->assignMonitor(*selectedOutput, static_cast<int>(i));
                     selectedOutput->setResolution(mon.resolution);
                     if (selectedOutput->isCreated()) {
                         selectedOutput->applyResolution();
@@ -527,6 +832,32 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
                 }
             }
             ImGui::EndCombo();
+        }
+
+        // Slices of the scene's canvas (ADR-047 part B)
+        ImGui::Separator();
+        sliceEditor_.render(ctx, *selectedOutput);
+
+        // Projector calibration (ADR-052 §6). It needs the untouched default slice
+        // (EditorState::canCalibrate, ADR-047 Amendment 3).
+        ImGui::Separator();
+        const bool calibratingThis = es.calibratingOutputId == selectedOutput->getId();
+        const bool canCalibrate = es.canCalibrate(*selectedOutput);
+        ImGui::BeginDisabled(calibratingThis || !canCalibrate);
+        if (ImGui::Button("Calibrate Projector...")) {
+            es.beginCalibration(*selectedOutput);
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(canCalibrate
+                                  ? "Pair points on the 3D objects with projector pixels to solve "
+                                    "this projector's lens and position"
+                                  : "Calibration needs this output's default slice: one slice of the "
+                                    "whole canvas with no warp and no blend");
+        ImGui::SameLine();
+        ImGui::TextDisabled(selectedOutput->getProjector().calibrated ? "calibrated" : "not calibrated");
+        if (!canCalibrate && !calibratingThis) {
+            ImGui::TextWrapped("Calibration is off while this output's slices are edited (warp, "
+                               "blend or part of the canvas).");
         }
 
         // Enabled checkbox
@@ -608,7 +939,7 @@ void InspectorPanel::renderMediaProperties(EditorContext& ctx) {
         if (selectedMedia->hasPath()) {
             ImGui::Separator();
             ImGui::Text("File:");
-            ImGui::TextWrapped("%s", selectedMedia->getPath().string().c_str());
+            ImGui::TextWrapped("%s", utf8FromPath(selectedMedia->getPath()).c_str());
         }
 
         // Procedural source parameters
@@ -697,6 +1028,152 @@ void InspectorPanel::renderMediaProperties(EditorContext& ctx) {
     } else {
         ImGui::TextDisabled("No media selected");
         ImGui::TextDisabled("Select media from the Media tab");
+    }
+}
+
+// ============================================================
+//  3D Object Properties (ADR-052)
+// ============================================================
+namespace {
+
+constexpr float kDegPerRad = 57.2957795f;
+
+// model = translate(position) * Rx * Ry * Rz (degrees) * uniform scale.
+glm::mat4 composeObjectTransform(const Vec3& position, const Vec3& rotationDeg, float scale) {
+    glm::mat4 m = glm::translate(glm::mat4(1.0f), position);
+    m = glm::rotate(m, rotationDeg.x / kDegPerRad, Vec3(1, 0, 0));
+    m = glm::rotate(m, rotationDeg.y / kDegPerRad, Vec3(0, 1, 0));
+    m = glm::rotate(m, rotationDeg.z / kDegPerRad, Vec3(0, 0, 1));
+    return glm::scale(m, Vec3(scale));
+}
+
+// The inverse of composeObjectTransform for a rotation + uniform scale + translation
+// (a sheared or non-uniformly scaled matrix is read by its first axis's length).
+void decomposeObjectTransform(const glm::mat4& m, Vec3& position, Vec3& rotationDeg, float& scale) {
+    position = Vec3(m[3]);
+    scale = glm::length(Vec3(m[0]));
+    if (scale < 1e-6f) scale = 1.0f;
+    const glm::mat3 r = glm::mat3(m) / scale;  // r[col][row]
+    // R = Rx(a) Ry(b) Rz(c): R(0,2) = sin b, R(1,2) = -sin a cos b, R(2,2) = cos a cos b,
+    // R(0,1) = -cos b sin c, R(0,0) = cos b cos c.
+    const float b = std::atan2(r[2][0], std::sqrt(r[2][1] * r[2][1] + r[2][2] * r[2][2]));
+    float a, c;
+    if (std::cos(b) > 1e-5f) {
+        a = std::atan2(-r[2][1], r[2][2]);
+        c = std::atan2(-r[1][0], r[0][0]);
+    } else {  // gimbal lock: fold the whole remaining rotation into x
+        a = std::atan2(r[1][2], r[1][1]);
+        c = 0.0f;
+    }
+    rotationDeg = Vec3(a, b, c) * kDegPerRad;
+}
+
+}  // namespace
+
+void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    MeshObject* object = es.selectedObjectId.isNull()
+                             ? nullptr : es.activeScene().getObject(es.selectedObjectId);
+    if (!object) {
+        ImGui::TextDisabled("No object selected");
+        ImGui::TextDisabled("Select an object in the Quad List, or use");
+        ImGui::TextDisabled("File > Import 3D Object (OBJ)...");
+        return;
+    }
+
+    snprintf(objectName_, sizeof(objectName_), "%s", object->getName().c_str());
+    if (ImGui::InputText("Name", objectName_, sizeof(objectName_),
+                         ImGuiInputTextFlags_EnterReturnsTrue) &&
+        object->getName() != objectName_) {
+        es.commandHistory.execute(makeRenameObjectCommand(es.objectRef(*object), objectName_));
+    }
+
+    if (isMeshLoading(es, *object)) {
+        ImGui::TextDisabled("Loading mesh...");
+    } else if (object->getMesh().empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Mesh not loaded");
+    } else {
+        ImGui::Text("Mesh: %zu triangles", object->getMesh().triangleCount());
+    }
+    if (!object->getSourcePath().empty()) {
+        ImGui::TextWrapped("File: %s", object->getSourcePath().c_str());
+    }
+
+    bool visible = object->isVisible();
+    if (ImGui::Checkbox("Visible", &visible)) {
+        es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(*object), visible));
+    }
+    float opacity = object->getOpacity();
+    if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
+        es.commandHistory.execute(makeSetObjectOpacityCommand(es.objectRef(*object), opacity));
+    }
+
+    // Transform, shown as position / rotation / uniform scale. The fields are re-read
+    // from the matrix only when the object or its matrix changed elsewhere, so editing
+    // one field never re-derives (and nudges) the others.
+    ImGui::Separator();
+    ImGui::Text("Transform:");
+    if (transformObjectId_ != object->getId() || transformShown_ != object->getTransform()) {
+        decomposeObjectTransform(object->getTransform(), objectPosition_, objectRotationDeg_,
+                                 objectScale_);
+        transformObjectId_ = object->getId();
+        transformShown_ = object->getTransform();
+    }
+    bool changed = false;
+    changed |= ImGui::DragFloat3("Position", &objectPosition_.x, 0.01f, 0.0f, 0.0f, "%.3f");
+    changed |= ImGui::DragFloat3("Rotation (deg)", &objectRotationDeg_.x, 0.5f, -360.0f, 360.0f, "%.1f");
+    changed |= ImGui::DragFloat("Scale", &objectScale_, 0.01f, 0.001f, 1000.0f, "%.3f",
+                                ImGuiSliderFlags_AlwaysClamp);
+    bool reset = false;
+    if (ImGui::Button("Reset Transform")) {
+        objectPosition_ = Vec3(0.0f);
+        objectRotationDeg_ = Vec3(0.0f);
+        objectScale_ = 1.0f;
+        reset = true;
+    }
+    if (changed || reset) {
+        // A drag is one undo step (merged); Reset is a step of its own.
+        transformShown_ = composeObjectTransform(objectPosition_, objectRotationDeg_, objectScale_);
+        es.commandHistory.execute(
+            makeSetObjectTransformCommand(es.objectRef(*object), transformShown_, !reset));
+    }
+
+    // Media: the same bin items quads can be given (audio cannot texture anything).
+    ImGui::Separator();
+    ImGui::Text("Media:");
+    const UUID& boundId = object->getTexture().mediaId;
+    const std::filesystem::path boundPath =
+        (ctx.sourceManager && !boundId.isNull()) ? ctx.sourceManager->getSourcePath(boundId)
+                                                 : std::filesystem::path();
+    auto isBound = [&](const MediaItem& item) {
+        if (boundId.isNull()) return false;
+        if (item.hasSource()) return item.getSourceId() == boundId;
+        return item.hasPath() && !boundPath.empty() && item.getPath() == boundPath;
+    };
+    std::string preview = boundId.isNull() ? "None" : "(assigned)";
+    if (ctx.mediaLibrary) {
+        for (const auto& item : ctx.mediaLibrary->getItems()) {
+            if (item && isBound(*item)) { preview = item->getName(); break; }
+        }
+    }
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##ObjectMedia", preview.c_str())) {
+        if (ImGui::Selectable("None", boundId.isNull()) && !boundId.isNull()) {
+            TextureBinding unbound = object->getTexture();
+            unbound.mediaId = UUID();
+            es.commandHistory.execute(makeSetObjectTextureCommand(es.objectRef(*object), unbound));
+        }
+        if (ctx.mediaLibrary) {
+            for (const auto& item : ctx.mediaLibrary->getItems()) {
+                if (!item || item->getType() == MediaType::AUDIO) continue;
+                ImGui::PushID(item->getId().toString().c_str());
+                if (ImGui::Selectable(item->getName().c_str(), isBound(*item))) {
+                    assignMediaToObject(es, ctx.sourceManager, es.objectRef(*object), *item);
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndCombo();
     }
 }
 

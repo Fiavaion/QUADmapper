@@ -41,9 +41,11 @@ public:
 
     /**
      * @brief Initialize the audio device system
+     * @param nullBackend Use miniaudio's null backend (a silent device that still runs
+     *                    callbacks in real time), for tests and headless runs
      * @return true if successful
      */
-    bool initialize();
+    bool initialize(bool nullBackend = false);
 
     /**
      * @brief Shutdown the audio device system
@@ -93,6 +95,19 @@ public:
      * @return true if successful
      */
     bool selectDefaultDevice();
+
+    /**
+     * @brief ID of the playback device named `name`, or empty if none is present
+     */
+    std::string findDeviceIdByName(const std::string& name) const;
+
+    // --- For AudioMixer: the miniaudio objects behind this enumeration ---
+
+    /** The ma_context devices were enumerated with (nullptr before initialize()). */
+    void* nativeContext();
+
+    /** The ma_device_id of device `deviceId`, or nullptr for an empty or unknown id. */
+    const void* nativeDeviceId(const std::string& deviceId) const;
 
     // --- Device Parameters ---
 

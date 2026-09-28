@@ -1,67 +1,59 @@
 # Current Status
 
-**Last updated:** 2026-06-16 (end of Session 12)
-**Phase / focus:** **ADR-031 refactor COMPLETE and MERGED to `master`.** Ready to start **v1.1 features**.
-**Branch:** `master` (PR #1 merged, commit `5ef8809`) — clean baseline for new work.
-**Build:** ✅ app builds & launches   **Tests:** ✅ 590/590 (`ctest --test-dir build/debug`)   **Smoke:** ✅ green incl. F11 projector + media (image & video)
+**Last updated:** 2026-06-19 (Session 20)
+**Phase / focus:** **Mapping-editor UX overhaul** — viewport zoom/pan, Simple/Advanced UI,
+media-bin thumbnails, undo/redo, smooth distortion, bezier corner edges. ADR-040 (one video →
+many cropped quads) is COMPLETE (P1–P5, from Session 19). AI wedge (Phase 9) stays
+software-complete, gated on 🚩 QM-061 (hardware).
+**Branch:** `dev` — **committed + pushed** to `origin/dev` (in sync @ `83deff2`). Session-20 work is
+`721b61a` (feature code, 29 files) + `83deff2` (ADRs + tracking). Only `imgui.ini` / `project.qmap`
+(layout/scratch) remain uncommitted by design. **Build:** ✅ app builds & launches. **Tests:** ✅ 633/633 ctest.
 
-## What works right now (grounded, verified this session)
-The **core projection-mapping workflow is fully functional and watched working** this session:
-add a quad → warp it to map a surface (mouse drag *or* precise keyboard: Tab-cycle + arrow-nudge,
-Shift ×10 / Alt ×0.1) → apply an **image or video** → perform it fullscreen to a projector (F11).
+## Session-20 stack is committed + pushed
+QM-073..078 landed as two compiling commits (code + docs) rather than per-feature — the core files
+each span several features and per-feature splits would need interactive `git add -p` (and wouldn't
+compile in isolation). The `721b61a` body enumerates QM-073..078 for traceability.
 
-- **Video:** `greenCrystals_15Sec_4x3.mp4` (768×576, FFmpeg) load → Assign to Selected Quad →
-  Play → warp → F11: renders on the warped quad in the editor **and** fullscreen on monitor 2.
-- **Image:** `knowledge-graph.png` (1800×1200) via Inspector Texture Path → Load → warp → F11:
-  same, on the projector.
-- The projector path (`renderToProjectorOutputs()`) feeds outputs the **same** texture map
-  (`quadTextures` + video wrapper) the editor viewport uses.
+## What shipped this session (built + ctest-green; ⚠️ user-visual-verify the interactive bits)
+- **QM-073 — Viewport zoom/pan + aspect canvas (ADR-041).** Canvas renders into the dockspace
+  central node, letterboxed to the assigned output's aspect (portrait auto via effective res);
+  Fit/±/wheel zoom + middle-drag pan; success-metric hit-test inverts the same transform.
+- **QM-074 — Video picker + crop insets.** "Load Video…" opens a native file dialog; crop UI is
+  now Left/Right/Top/Bottom % insets (storage stays `{x,y,w,h}`); "Right ½"/"Left ½" align two faces.
+- **QM-075 — Simple/Advanced UI (ADR-042).** Toolbar toggle (persisted, default Simple). Simple =
+  curated Inspector/Video-Player + Media-only Resources + toolbar Apply-Test-Grid / Send-to-Projector.
+  Plus: video auto-plays on assign; **drag clip from bin onto canvas quad** (manual
+  `GetDragDropPayload`+release — custom target can't sit over the passthrough node); **click a quad
+  to select it**; centralized `assignMediaToQuad` (fixed a video-as-image bug); Scenes "New" seeds a quad.
+- **QM-076 — Bin thumbnails.** Video first-frame thumbnails (one-shot decode→cached texture),
+  procedural live-texture thumbnails, and **hover-to-play** (one dedicated preview decoder).
+- **QM-077 — Undo/Redo.** `CommandHistory` in `EditorState`; Ctrl+Z/Y + Edit menu; routes
+  corner/mesh drag+nudge, rename, and grid edits (add/del col/row, even-grid, click-insert). Safe
+  via a guard that **clears history on quad delete / scene switch** (commands hold raw pointers).
+- **QM-078 — Report Bug + smooth distortion + bezier corners (ADR-043).** Toolbar "Report Bug"
+  (opens the GitHub bug template). Corner-pin quads tessellate 32×32 → no diagonal fold. **Bezier
+  edges on the 4 corners**: Coons patch via `surfacePoint`, amber drag handles, toggle + Reset in
+  Inspector (Simple **and** Advanced), `.qmap`-persisted (additive), undoable.
 
-**ADR-031 refactor (TD-01..TD-06 + all of TD-02) is done and merged.** TD-02 decomposed the
-~1900-line `render()` into panel classes over the live `EditorState` model via a per-frame
-`EditorContext`: `MainMenuBar`, `QuadListPanel`, `InspectorPanel` (context-sensitive Properties),
-`VideoPlayerPanel`, and `ViewportEditor` (the non-`Panel`, pre-`NewFrame()` on-canvas warp
-surface). `Application.cpp` 2411 → ~960 lines; `render()` body ~1910 → ~400.
-
-## NEXT TASK — resume here (start v1.1 from `master`)
-**Recommended: Color correction per quad** (US-104, P1, v1.1). Lowest-risk, best-fit first feature:
-- A `Quad` property (brightness/contrast/gamma) + a few shader uniforms + an `InspectorPanel`
-  section + an additive `.qmap` field (ADR-032 versioning already supports additive fields).
-- No new dependencies; no success-metric risk.
-- **Process:** open an ADR + write *checkable acceptance criteria* FIRST, then build in small
-  build → test → verify (smoke) batches. Branch off `master`.
-
-Alternatives: **soft-edge blending** (US-101, moderate rendering risk) or **MIDI/OSC control**
-(US-102/103 — needs a NEW vcpkg dependency → an ADR + approval first, Change Boundary).
-
-## Open debt (none blocking — see TECHNICAL_DEBT.md)
-- **TD-09** — converge the two media models (MediaBin `SourceManager` vs quad-assignment
-  `quadTextures`/`videoPlayer`) onto the source architecture. ⚠️ Touches the assignment path +
-  on-canvas editing → success-metric risk; do as a **deliberate feature with its own ADR**.
-- **TD-07** — build exit-code flake (gtest discovery timeout); touches CMake → needs approval.
-- **TD-08** — defer audio snapshot reclamation to the control thread (LOW).
-
-## The EditorContext contract (every panel uses it)
-`EditorContext{ EditorState& es; Project*; MediaLibrary*; SourceManager*; OutputManager*; Renderer*; GLFWwindow* }`
-— built once per frame in `render()`; panels take `render(EditorContext&)` and never store it;
-panels are value members of `EditorState`; **ImGui window names preserved exactly** (imgui.ini
-docking layout keys). `ViewportEditor` follows the contract but is **not** a `Panel` — it runs
-pre-`NewFrame()` and draws via the OpenGL `Renderer`.
+## NEXT TASK — resume here
+1. **🚩 User visual-verify** (couldn't auto-drive the UI reliably — shared desktop): smooth
+   distortion (extreme corner-pin), bezier handles (toggle Curved edges → drag amber handles),
+   hover-to-play, undo/redo, scene-New, canvas drag-drop, click-select.
+2. **QM-079 — bezier on grid division lines (DEFERRED).** Corner bezier is done; curving interior
+   division lines is a larger surface-model change. The user explicitly wants it next.
+3. **Revert test pref:** `preferences.json` `defaultMediaFolder` was set to `D:\testing Videos`
+   for verification (auto-loads 17 clips each launch). Clear it if unwanted.
+4. ADR-040 dev→master PR still gated on 🚩 QM-061 (hardware). `dev` is pushed; `master` untouched.
 
 ## Verification gate (non-negotiable)
-`cmake --build build/debug` → `ctest --test-dir build/debug` (590/590; trust the "100% tests
-passed" line — TD-07 build-exit-code flake) → `tests/smoke/drive_smoke.ps1` (warp + projector).
-When media is touched, also `drive_media_smoke.ps1` (video) / `drive_image_smoke.ps1` (image) —
-both maximize the window, clipboard-paste the media path, and capture editor + projector frames.
-
-## Blockers
-None. `master` is fully green, merged, and pushed.
+`cmake --build build/debug` → `ctest --test-dir build/debug` (633/633) → success-metric warp
+(corner drag + Tab/arrow + F11 projector). **Build gotcha:** the running app locks
+`QUADmapper.exe`; close it before relinking. Shader edits need `cmake --preset debug` to re-embed.
 
 ## Reference links
-- Decisions: @docs/adr/0034-render-decomposition.md · @docs/adr/0031-keep-vs-rebuild.md · @docs/adr/0032-qmap-migration.md · @docs/adr/0033-retire-multi-scene.md
-- Roadmap: @QUAD_MAPPER_MVP_SPECIFICATION.md (§14.2 Post-MVP) · @docs/PRD.md (§3.2 / §4.2)
-- Debt: @TECHNICAL_DEBT.md (TD-02 resolved; TD-07/08/09 open) · Success metric: @CLAUDE.md#success-metric
-- Tasks: @TASKS.md · Machine state: @SESSION_STATE.json · Latest log: @docs/sessions/2026-06-16-td02-batch4-merge-media-verify.md
+- Decisions this session: @docs/adr/0041-viewport-zoom-pan-and-canvas-aspect.md ·
+  @docs/adr/0042-simple-advanced-ui-modes.md · @docs/adr/0043-smooth-tessellation-and-bezier-edges.md
+- Tasks: @TASKS.md · Machine state: @SESSION_STATE.json · Success metric: @CLAUDE.md#success-metric
 
 <!-- Rewrite this whole file at /end. It is the restart package: the next session reads
 THIS (plus the latest docs/sessions/ log), not the chat history. Keep it to one page. -->

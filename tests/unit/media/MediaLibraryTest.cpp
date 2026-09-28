@@ -231,6 +231,37 @@ TEST(MediaLibraryTest, GetTypeFromExtensionReturnsCorrectTypes) {
     EXPECT_EQ(MediaLibrary::getTypeFromExtension(".mov"), MediaType::VIDEO);
 }
 
+// TD-24: an extension that is neither image nor video has no type (it used to fall
+// through to IMAGE).
+TEST(MediaLibraryTest, GetTypeFromExtensionHasNoTypeForOtherFiles) {
+    for (const char* ext : {".txt", ".xyz", ".doc", ".wav", "", "."}) {
+        EXPECT_FALSE(MediaLibrary::getTypeFromExtension(ext).has_value()) << ext;
+    }
+}
+
+TEST(MediaLibraryTest, GetTypeFromExtensionAgreesWithIsExtensionSupported) {
+    for (const auto* list : {&MediaLibrary::getSupportedImageExtensions(),
+                             &MediaLibrary::getSupportedVideoExtensions()}) {
+        for (const std::string& ext : *list) {
+            EXPECT_TRUE(MediaLibrary::getTypeFromExtension(ext).has_value()) << ext;
+            EXPECT_TRUE(MediaLibrary::isExtensionSupported(ext)) << ext;
+        }
+    }
+    for (const std::string& ext : MediaLibrary::getSupportedImageExtensions()) {
+        EXPECT_EQ(MediaLibrary::getTypeFromExtension(ext), MediaType::IMAGE) << ext;
+    }
+    for (const std::string& ext : MediaLibrary::getSupportedVideoExtensions()) {
+        EXPECT_EQ(MediaLibrary::getTypeFromExtension(ext), MediaType::VIDEO) << ext;
+    }
+}
+
+TEST(MediaLibraryTest, AddItemRefusesAFileThatIsNeitherImageNorVideo) {
+    MediaLibrary library;
+    EXPECT_EQ(library.addItem("notes.txt"), nullptr);
+    EXPECT_EQ(library.addItem("no-extension"), nullptr);
+    EXPECT_EQ(library.getItemCount(), 0u);
+}
+
 TEST(MediaLibraryTest, GetTypeFromExtensionIsCaseInsensitive) {
     EXPECT_EQ(MediaLibrary::getTypeFromExtension(".PNG"), MediaType::IMAGE);
     EXPECT_EQ(MediaLibrary::getTypeFromExtension(".MP4"), MediaType::VIDEO);

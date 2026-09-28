@@ -15,6 +15,21 @@ add_library(quadmapper_scene STATIC
     MeshSubdivision.cpp
     Commands.hpp
     Commands.cpp
+    ProjectorCamera.hpp
+    ProjectorCamera.cpp
+    ProjectorCalibration.hpp
+    ProjectorCalibration.cpp
+    CalibrationSession.hpp
+    CalibrationSession.cpp
+    RayPick.hpp
+    RayPick.cpp
+    SmallLinAlg.hpp
+    MeshObject.hpp
+    ObjLoader.hpp
+    ObjLoader.cpp
+    MediaReferences.hpp
+    Slice.hpp
+    Slice.cpp
 )
 
 target_include_directories(quadmapper_scene

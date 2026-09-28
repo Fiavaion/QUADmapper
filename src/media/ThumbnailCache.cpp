@@ -1,8 +1,8 @@
 #include "ThumbnailCache.hpp"
+#include "ImageLoader.hpp"
 #include "MediaLibrary.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
-
-#include <stb_image.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -21,10 +21,15 @@ ThumbnailCache::~ThumbnailCache() {
 }
 
 std::filesystem::path ThumbnailCache::getCacheDir() {
-    const char* appData = std::getenv("APPDATA");
-    if (appData) {
-        return std::filesystem::path(appData) / "QUADmapper" / "thumbnails";
+    // Wide: a narrow getenv narrows a non-ASCII user folder to the ANSI code page.
+    wchar_t* appData = nullptr;
+    size_t length = 0;
+    if (_wdupenv_s(&appData, &length, L"APPDATA") == 0 && appData) {
+        const std::filesystem::path dir = std::filesystem::path(appData) / "QUADmapper" / "thumbnails";
+        free(appData);
+        return dir;
     }
+    free(appData);
     // Fallback to temp directory
     return std::filesystem::temp_directory_path() / "QUADmapper" / "thumbnails";
 }
@@ -32,8 +37,9 @@ std::filesystem::path ThumbnailCache::getCacheDir() {
 std::filesystem::path ThumbnailCache::getCachePath(const std::filesystem::path& filePath) const {
     // Create a hash from the full path for a unique filename
     std::hash<std::string> hasher;
-    size_t hash = hasher(filePath.string());
-    return getCacheDir() / (std::to_string(hash) + ".thumb");
+    size_t hash = hasher(utf8FromPath(filePath));
+    // "v2": thumbnails are now always stored top row first; older ones could be flipped.
+    return getCacheDir() / (std::to_string(hash) + ".v2.thumb");
 }
 
 bool ThumbnailCache::isCacheValid(const std::filesystem::path& filePath,
@@ -58,7 +64,7 @@ bool ThumbnailCache::isCacheValid(const std::filesystem::path& filePath,
 GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int maxSize) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
 
-    std::string pathKey = filePath.string();
+    std::string pathKey = utf8FromPath(filePath);
 
     // Check memory cache first
     auto it = textureCache_.find(pathKey);
@@ -86,13 +92,13 @@ GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int m
 
 bool ThumbnailCache::hasThumbnail(const std::filesystem::path& filePath) const {
     std::lock_guard<std::mutex> lock(cacheMutex_);
-    return textureCache_.find(filePath.string()) != textureCache_.end();
+    return textureCache_.find(utf8FromPath(filePath)) != textureCache_.end();
 }
 
 void ThumbnailCache::invalidate(const std::filesystem::path& filePath) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
 
-    std::string pathKey = filePath.string();
+    std::string pathKey = utf8FromPath(filePath);
     auto it = textureCache_.find(pathKey);
     if (it != textureCache_.end()) {
         glDeleteTextures(1, &it->second);
@@ -150,18 +156,22 @@ size_t ThumbnailCache::getMemoryCacheCount() const {
 
 GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, int maxSize) {
     // Check if it's a supported image format
-    std::string ext = filePath.extension().string();
+    std::string ext = utf8FromPath(filePath.extension());
     if (!MediaLibrary::isExtensionSupported(ext)) {
         return 0;
     }
 
-    // Load original image
-    int width, height, channels;
-    unsigned char* data = stbi_load(filePath.string().c_str(), &width, &height, &channels, 4);
-    if (!data) {
-        Logger::debug("ThumbnailCache: Failed to load image: {}", filePath.filename().string());
+    // Load through ImageLoader so every image format (TIFF included) thumbnails, always
+    // as RGBA stored top row first.
+    auto loaded = ImageLoader::loadWithChannels(filePath, 4);
+    if (!loaded.isSuccess()) {
+        Logger::debug("ThumbnailCache: Failed to load image: {}", utf8FromPath(filePath.filename()));
         return 0;
     }
+    const ImageData& image = loaded.value();
+    const int width = image.width;
+    const int height = image.height;
+    const uint8_t* data = image.pixels.data();
 
     // Calculate thumbnail dimensions maintaining aspect ratio
     int thumbWidth, thumbHeight;
@@ -177,7 +187,7 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     thumbWidth = std::max(1, thumbWidth);
     thumbHeight = std::max(1, thumbHeight);
 
-    // Simple nearest-neighbor resize
+    // Simple nearest-neighbor resize, top row first (the bin draws UV (0,0) at the top).
     unsigned char* thumbData = new unsigned char[thumbWidth * thumbHeight * 4];
     for (int y = 0; y < thumbHeight; ++y) {
         for (int x = 0; x < thumbWidth; ++x) {
@@ -192,8 +202,6 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
             thumbData[dstIdx + 3] = data[srcIdx + 3];
         }
     }
-
-    stbi_image_free(data);
 
     // Create OpenGL texture
     GLuint texId = 0;
@@ -213,7 +221,7 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     delete[] thumbData;
 
     Logger::debug("ThumbnailCache: Generated thumbnail for: {} ({}x{})",
-                 filePath.filename().string(), thumbWidth, thumbHeight);
+                 utf8FromPath(filePath.filename()), thumbWidth, thumbHeight);
 
     return texId;
 }
@@ -269,7 +277,7 @@ void ThumbnailCache::saveThumbnailToCache(const std::filesystem::path& cachePath
     // [width: 4 bytes][height: 4 bytes][RGBA data: width*height*4 bytes]
     std::ofstream file(cachePath, std::ios::binary);
     if (!file) {
-        Logger::debug("ThumbnailCache: Failed to create cache file: {}", cachePath.filename().string());
+        Logger::debug("ThumbnailCache: Failed to create cache file: {}", utf8FromPath(cachePath.filename()));
         return;
     }
 

@@ -4,6 +4,10 @@ add_executable(QUADmapper
     main.cpp
     Application.hpp
     Application.cpp
+    StressHarness.hpp
+    StressHarness.cpp
+    Bench.hpp
+    Bench.cpp
 )
 
 target_link_libraries(QUADmapper
@@ -17,6 +21,8 @@ target_link_libraries(QUADmapper
         quadmapper_audio
         quadmapper_output
         quadmapper_source
+        quadmapper_ai
+        quadmapper_control
         quadmapper_ui
         quadmapper_input
         glad
@@ -30,6 +36,10 @@ if(WIN32)
     set_target_properties(QUADmapper PROPERTIES
         WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>
     )
+
+    # H3 stress harness: working-set query via GetProcessMemoryInfo (psapi).
+    # Psapi is a Windows system library — no vcpkg dependency.
+    target_link_libraries(QUADmapper PRIVATE Psapi)
 
     # Copy resources to build directory
     add_custom_command(TARGET QUADmapper POST_BUILD

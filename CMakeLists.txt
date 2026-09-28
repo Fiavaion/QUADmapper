@@ -56,6 +56,7 @@ if(PkgConfig_FOUND)
     pkg_check_modules(FFMPEG IMPORTED_TARGET
         libavcodec
         libavformat
+        libavdevice
         libavutil
         libswscale
         libswresample
@@ -77,6 +78,8 @@ add_subdirectory(src/video)
 add_subdirectory(src/audio)
 add_subdirectory(src/output)
 add_subdirectory(src/source)
+add_subdirectory(src/ai)
+add_subdirectory(src/control)
 add_subdirectory(src/ui)
 add_subdirectory(src/input)
 add_subdirectory(src/shaders)

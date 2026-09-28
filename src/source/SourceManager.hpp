@@ -5,6 +5,7 @@
 #include "core/Types.hpp"
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <filesystem>
 #include <functional>
 
@@ -12,6 +13,12 @@ namespace quadmapper {
 
 // Forward declarations
 class Texture;
+class YuvConverter;
+class YuvUploadState;
+class CompressedUploader;
+class CompressedUploadState;
+class DxInterop;
+class DxInteropTarget;
 
 /**
  * @brief Central manager for all texture sources
@@ -59,11 +66,46 @@ public:
     UUID createImageSource(const std::filesystem::path& path);
 
     /**
+     * @brief Find an existing image source already loaded from `path`
+     * @return Its UUID, or null UUID if none
+     */
+    UUID findImageSourceByPath(const std::filesystem::path& path) const;
+
+    /**
+     * @brief Reuse the existing image source for `path`, else create one (ADR-040).
+     *
+     * Dedupe by path so the same file shared across many quads decodes/uploads
+     * once — the basis for one image (and, in P3, one video) feeding many quads.
+     */
+    UUID getOrCreateImageSource(const std::filesystem::path& path);
+
+    /**
+     * @brief Find an existing video source already loaded from `path`
+     * @return Its UUID, or null UUID if none
+     */
+    UUID findVideoSourceByPath(const std::filesystem::path& path) const;
+
+    /**
+     * @brief Reuse the existing video source for `path`, else create one (ADR-040).
+     *
+     * Dedupe by path so one video shared across many quads decodes once — the
+     * basis for wrapping a single video around a box's faces.
+     */
+    UUID getOrCreateVideoSource(const std::filesystem::path& path);
+
+    /**
      * @brief Create a video file source
      * @param path Path to video file
      * @return UUID of created source, or null UUID on failure
      */
     UUID createVideoSource(const std::filesystem::path& path);
+
+    /**
+     * @brief Create a live camera / capture-device source
+     * @param deviceName dshow device name; empty = first available device
+     * @return UUID of created source, or null UUID on failure
+     */
+    UUID createCameraSource(const std::string& deviceName = "");
 
     /**
      * @brief Create a procedural texture source
@@ -94,6 +136,19 @@ public:
      */
     void clear();
 
+    /**
+     * @brief Release file-backed sources nothing uses any more (QM-088)
+     * @param inUse Ids still referenced (quad bindings, the Video Player's source, ...)
+     * @return Number of sources released
+     *
+     * Image, video (incl. HAP) and procedural sources not in inUse are shut down
+     * (decode thread joined) and their GPU textures freed, as are camera sources
+     * (the AI capture path opens its own CameraSource, not one managed here); callers
+     * put every source the media bin still offers into inUse. Call at a frame
+     * boundary, never while a render pass holds texture pointers.
+     */
+    size_t releaseUnreferenced(const std::unordered_set<UUID>& inUse);
+
     // --- Source Access ---
 
     /**
@@ -120,6 +175,11 @@ public:
      * @param id Source UUID
      */
     bool hasSource(const UUID& id) const;
+
+    /**
+     * @brief File a source was loaded from (image, video or HAP), else empty
+     */
+    std::filesystem::path getSourcePath(const UUID& id) const;
 
     /**
      * @brief Get all source IDs
@@ -166,8 +226,52 @@ public:
      *
      * Must be called each frame from the main thread.
      * This updates all sources and uploads any new frame data to GPU textures.
+     * Video frames arrive as YUV planes and are converted into the source's RGBA
+     * texture by a GPU pass (ADR-055), which restores the GL state it changes. Hardware
+     * frames left on the GPU are converted there and shared with OpenGL (ADR-056); a
+     * source that cannot share them falls back to the planes. It keeps its last frame
+     * until its decoder delivers frames in memory: nothing is read back from the GPU on
+     * this thread.
      */
     void updateAll(double deltaTime);
+
+    /**
+     * @brief Main-thread time updateAll() has spent uploading frames, since construction
+     *
+     * Wall time around each source's GPU upload (and, for video, its conversion pass),
+     * for the --bench video scenario (ADR-055).
+     */
+    struct UploadStats {
+        double seconds = 0.0;
+        uint64_t uploads = 0;
+    };
+    const UploadStats& getUploadStats() const { return uploadStats_; }
+
+    /**
+     * @brief Reset every playable source (videos, etc.) to time 0.
+     * Drives the "restart all" / reset-playheads button (ADR-042). Video sources
+     * carry their own audio, so this also restarts audio-from-video in sync.
+     * Restarts the master timeline too, so timeline-locked sources start over.
+     */
+    void seekAllToStart();
+
+    // --- Master timeline (ADR-050 §3) ---
+
+    /**
+     * @brief The project's master timeline, which timeline-locked sources follow
+     *
+     * Running from construction. updateAll() passes it to every locked source before
+     * updating it, so a locked source's position is the master time mapped onto its clip.
+     */
+    const PlaybackClock& getMasterTimeline() const { return masterTimeline_; }
+    void playMasterTimeline();
+    void pauseMasterTimeline();
+    void restartMasterTimeline();  // back to 0, keeping play/pause
+
+    /**
+     * @brief Lock or unlock a playable source to the master timeline
+     */
+    void setTimelineLocked(const UUID& id, bool locked);
 
     // --- Callbacks ---
 
@@ -183,9 +287,20 @@ private:
         std::unique_ptr<Texture> texture;       // GPU texture (owned for CPU sources)
         bool needsTextureUpdate = true;         // True if frame data changed
         uint64_t lastFrameNumber = 0;           // For detecting new frames
+        bool compressedUnsupportedLogged = false; // Rate-limit the BCn-unsupported skip log (ADR-044)
+        std::unique_ptr<YuvUploadState> yuvUpload; // plane textures + PBOs of a YUV video (ADR-055)
+        std::unique_ptr<CompressedUploadState> compressedUpload; // PBOs of a HAP video (ADR-044)
+        std::unique_ptr<DxInteropTarget> zeroCopy; // D3D11 texture shared with GL (ADR-056)
+        bool zeroCopyFailed = false;               // this source fell back; zeroCopy is unused
+                                                   // and released at most one a frame
     };
 
     std::unordered_map<UUID, SourceEntry> sources_;
+    PlaybackClock masterTimeline_;
+    UploadStats uploadStats_;
+    std::unique_ptr<YuvConverter> yuvConverter_;  // YUV -> RGBA pass for video frames
+    std::unique_ptr<CompressedUploader> compressedUploader_;  // BCn uploads of HAP frames
+    std::unique_ptr<DxInterop> dxInterop_;        // zero-copy hardware frames (ADR-056)
 
     SourceAddedCallback sourceAddedCallback_;
     SourceRemovedCallback sourceRemovedCallback_;
@@ -193,6 +308,8 @@ private:
     // Internal helpers
     void createGPUTexture(SourceEntry& entry);
     void uploadFrameToTexture(SourceEntry& entry);
+    void uploadYuvFrame(SourceEntry& entry, const FrameData& frame);
+    void fallBackFromZeroCopy(SourceEntry& entry, const std::string& why);
 };
 
 } // namespace quadmapper

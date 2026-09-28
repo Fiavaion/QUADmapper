@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 #include "project/Project.hpp"
 #include "project/ProjectSerializer.hpp"
+#include "app/UnsavedIndicator.hpp"
+
+#include <filesystem>
+#include <string>
 
 namespace quadmapper {
 namespace test {
@@ -18,26 +22,16 @@ TEST(ProjectTest, SetNameUpdatesName) {
     EXPECT_EQ(project.getName(), "My Project");
 }
 
-TEST(ProjectTest, NewProjectIsNotModified) {
+// Unsaved-changes tracking (Application::isProjectDirty) compares serialized content
+// rather than a flag on Project (see UnsavedIndicatorTest below); an edit like
+// addQuad must actually change what gets serialized for that comparison to work.
+TEST(ProjectTest, AddQuadChangesSerializedContent) {
     Project project;
-
-    EXPECT_FALSE(project.isModified());
-}
-
-TEST(ProjectTest, AddQuadMarksModified) {
-    Project project;
+    const std::string before = ProjectSerializer().serialize(project);
     Quad quad;
     project.addQuad(quad);
 
-    EXPECT_TRUE(project.isModified());
-}
-
-TEST(ProjectTest, SetModifiedFalseClearsFlag) {
-    Project project;
-    project.setModified(true);
-    project.setModified(false);
-
-    EXPECT_FALSE(project.isModified());
+    EXPECT_NE(ProjectSerializer().serialize(project), before);
 }
 
 TEST(ProjectTest, HasEmptyFilePathByDefault) {
@@ -51,12 +45,13 @@ TEST(ProjectTest, HasEmptyFilePathByDefault) {
     EXPECT_EQ(project.getFilePath(), "C:/test/project.qmap");
 }
 
-TEST(ProjectTest, GetSettingsReturnsValidSettings) {
+TEST(ProjectTest, NewProjectHasDefaultSettings) {
     Project project;
 
     const ProjectSettings& settings = project.getSettings();
-    // Settings should be valid (just checking it doesn't crash)
-    EXPECT_TRUE(true);
+    EXPECT_EQ(settings.defaultResolution, IVec2(1920, 1080));
+    EXPECT_EQ(settings.gridSize, 32);
+    EXPECT_FALSE(settings.snapToGrid);
 }
 
 TEST(ProjectTest, QuadManagement) {
@@ -98,7 +93,8 @@ TEST(ProjectSerializerTest, SerializeEmptyProject) {
 
     EXPECT_FALSE(json.empty());
     EXPECT_NE(json.find("Test Project"), std::string::npos);
-    EXPECT_NE(json.find("1.0.0"), std::string::npos);
+    // Writer version 1.2.0: additive colorCorrection (ADR-036) + control grid (ADR-038).
+    EXPECT_NE(json.find("1.2.0"), std::string::npos);
 }
 
 TEST(ProjectSerializerTest, SerializeDeserializeRoundTrip) {
@@ -163,6 +159,52 @@ TEST(ProjectSerializerTest, DeserializeMissingVersionFails) {
     auto result = ProjectSerializer().deserialize("{\"name\": \"Test\"}", project);
 
     EXPECT_TRUE(result.isError());
+}
+
+// The "(modified)" label follows the unsaved-changes rule (the show no longer
+// serializes to what was saved or loaded): a show just opened reads unmodified, and
+// so does an edit undone back to the loaded state.
+TEST(UnsavedIndicatorTest, AnOpenedShowAndAnUndoneEditAreNotModified) {
+    auto loaded = ProjectSerializer::load(std::filesystem::path(QM_PROJECT_FIXTURES_DIR) /
+                                          "v3.4-canvas-slices.qmap");
+    ASSERT_TRUE(loaded.isSuccess());
+    Project project = std::move(loaded.value());
+    const std::string saved = ProjectSerializer().serialize(project);
+    auto dirty = [&] { return ProjectSerializer().serialize(project) != saved; };
+
+    UnsavedIndicator label;
+    EXPECT_FALSE(label.shown(10.0, dirty)) << "just opened";
+
+    ASSERT_FALSE(project.getScenes().empty());
+    ASSERT_FALSE(project.getScenes()[0].quads.empty());
+    QuadGeometry& geometry = project.getScenes()[0].quads[0].getGeometry();
+    const Vec2 corner = geometry.getCorners()[0];
+    geometry.setCorner(0, corner + Vec2(0.05f, 0.0f));  // an edit
+    label.invalidate();
+    EXPECT_TRUE(label.shown(10.1, dirty)) << "edited";
+
+    geometry.setCorner(0, corner);  // undone
+    label.invalidate();
+    EXPECT_FALSE(label.shown(10.2, dirty)) << "undone back to the loaded state";
+}
+
+// Serializing every frame costs too much: without invalidate() the answer is kept
+// for REFRESH_SECONDS, then asked again.
+TEST(UnsavedIndicatorTest, RefreshesAtMostEveryHalfSecondUnlessInvalidated) {
+    UnsavedIndicator label;
+    int asked = 0;
+    bool dirty = false;
+    auto check = [&] { ++asked; return dirty; };
+    EXPECT_FALSE(label.shown(1.0, check));
+    dirty = true;
+    EXPECT_FALSE(label.shown(1.2, check));
+    EXPECT_EQ(asked, 1);
+    EXPECT_TRUE(label.shown(1.0 + UnsavedIndicator::REFRESH_SECONDS, check));
+    EXPECT_EQ(asked, 2);
+    dirty = false;
+    label.invalidate();
+    EXPECT_FALSE(label.shown(1.6, check));
+    EXPECT_EQ(asked, 3);
 }
 
 } // namespace test

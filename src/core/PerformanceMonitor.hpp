@@ -3,6 +3,7 @@
 #include <string>
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <unordered_map>
 #include <mutex>
 
@@ -55,7 +56,12 @@ class PerformanceMonitor {
 public:
     static constexpr size_t HISTORY_SIZE = 120;  // ~2 seconds at 60fps
 
-    PerformanceMonitor();
+    using Clock = std::chrono::high_resolution_clock;
+    using TimeSource = std::function<Clock::time_point()>;
+
+    // `now` is injectable so tests can drive frame timing deterministically; empty
+    // means the real clock.
+    explicit PerformanceMonitor(TimeSource now = {});
     ~PerformanceMonitor() = default;
 
     // Non-copyable
@@ -98,8 +104,7 @@ public:
     void reset();
 
 private:
-    using Clock = std::chrono::high_resolution_clock;
-
+    TimeSource now_;
     Clock::time_point frameStartTime_;
     std::unordered_map<std::string, Clock::time_point> sectionStartTimes_;
 

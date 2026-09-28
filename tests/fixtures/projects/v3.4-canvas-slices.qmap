@@ -1,0 +1,109 @@
+{
+  "$schema": "quadmapper/project/1.0",
+  "version": "3.4.0",
+  "name": "Show v3.4 two-projector blend",
+  "sources": [
+    {
+      "id": "5a1b2c3d-0000-4000-8000-0000000000f1",
+      "kind": "procedural",
+      "proceduralType": "Test Pattern",
+      "width": 3200,
+      "height": 1080
+    }
+  ],
+  "scenes": [
+    {
+      "id": "5a1b2c3d-0000-4000-8000-0000000000c1",
+      "name": "Wide",
+      "canvas": [3200, 1080],
+      "assignedOutputId": "5a1b2c3d-0000-4000-8000-0000000000e1",
+      "view": {
+        "pan": [0.0, 0.0],
+        "zoom": 1.0,
+        "gridVisible": true,
+        "snapToGrid": false
+      },
+      "quads": [
+        {
+          "id": "5a1b2c3d-0000-4000-8000-000000000001",
+          "name": "Across both",
+          "zOrder": 0,
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "geometry": {
+            "corners": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            "meshResolution": 1,
+            "meshMode": 0
+          },
+          "textureBinding": {
+            "mediaId": "5a1b2c3d-0000-4000-8000-0000000000f1",
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": false,
+            "flipV": false
+          }
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "id": "5a1b2c3d-0000-4000-8000-0000000000e1",
+      "name": "Projector Left",
+      "monitor": -1,
+      "resolution": [1920, 1080],
+      "rotation": 0,
+      "enabled": true,
+      "sceneId": "5a1b2c3d-0000-4000-8000-0000000000c1",
+      "slices": [
+        {
+          "id": "5a1b2c3d-0000-4000-8000-0000000000a1",
+          "name": "Left",
+          "input": [0.0, 0.0, 1920.0, 1080.0],
+          "warp": {
+            "corners": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            "meshResolution": 1,
+            "meshMode": 0
+          },
+          "blend": {
+            "left": {"width": 0.0, "gamma": 2.2, "curve": 2.0},
+            "right": {"width": 640.0, "gamma": 2.2, "curve": 2.0},
+            "top": {"width": 0.0, "gamma": 2.2, "curve": 2.0},
+            "bottom": {"width": 0.0, "gamma": 2.2, "curve": 2.0}
+          },
+          "blackLevel": 0.0
+        }
+      ]
+    },
+    {
+      "id": "5a1b2c3d-0000-4000-8000-0000000000e2",
+      "name": "Projector Right",
+      "monitor": -1,
+      "resolution": [1920, 1080],
+      "rotation": 0,
+      "enabled": true,
+      "sceneId": "5a1b2c3d-0000-4000-8000-0000000000c1",
+      "slices": [
+        {
+          "id": "5a1b2c3d-0000-4000-8000-0000000000a2",
+          "name": "Right",
+          "input": [1280.0, 0.0, 1920.0, 1080.0],
+          "warp": {
+            "corners": [[0.0, 0.02], [0.98, 0.0], [1.0, 1.0], [0.0, 0.97]],
+            "meshResolution": 1,
+            "meshMode": 0
+          },
+          "blend": {
+            "left": {"width": 640.0, "gamma": 2.2, "curve": 2.0},
+            "right": {"width": 0.0, "gamma": 2.2, "curve": 2.0},
+            "top": {"width": 0.0, "gamma": 2.2, "curve": 2.0},
+            "bottom": {"width": 0.0, "gamma": 2.2, "curve": 2.0}
+          },
+          "blackLevel": 0.02
+        }
+      ]
+    }
+  ]
+}

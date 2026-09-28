@@ -2,6 +2,7 @@
 #include "Logger.hpp"
 #include <algorithm>
 #include <numeric>
+#include <utility>
 
 namespace quadmapper {
 
@@ -14,7 +15,7 @@ ScopedTimer::ScopedTimer(const std::string& name)
 
 ScopedTimer::~ScopedTimer() {
     double elapsed = getElapsedMs();
-    LOG_TRACE("Timer [{}]: {:.3f} ms", name_, elapsed);
+    LOG_TRACE("Timer [{}]: {} ms", name_, elapsed);
 }
 
 double ScopedTimer::getElapsedMs() const {
@@ -23,7 +24,10 @@ double ScopedTimer::getElapsedMs() const {
 }
 
 // PerformanceMonitor implementation
-PerformanceMonitor::PerformanceMonitor() = default;
+PerformanceMonitor::PerformanceMonitor(TimeSource now)
+    : now_(now ? std::move(now) : TimeSource([] { return Clock::now(); }))
+{
+}
 
 PerformanceMonitor& PerformanceMonitor::getInstance() {
     static PerformanceMonitor instance;
@@ -33,7 +37,7 @@ PerformanceMonitor& PerformanceMonitor::getInstance() {
 void PerformanceMonitor::beginFrame() {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    frameStartTime_ = Clock::now();
+    frameStartTime_ = now_();
 
     // Reset per-frame stats
     currentStats_.drawCalls = 0;
@@ -43,7 +47,7 @@ void PerformanceMonitor::beginFrame() {
 void PerformanceMonitor::endFrame() {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    auto now = Clock::now();
+    auto now = now_();
     double frameTime = std::chrono::duration<double, std::milli>(now - frameStartTime_).count();
 
     currentStats_.frameTimeMs = frameTime;
@@ -57,7 +61,7 @@ void PerformanceMonitor::endFrame() {
 
 void PerformanceMonitor::beginSection(const std::string& name) {
     std::lock_guard<std::mutex> lock(mutex_);
-    sectionStartTimes_[name] = Clock::now();
+    sectionStartTimes_[name] = now_();
 }
 
 void PerformanceMonitor::endSection(const std::string& name) {
@@ -69,7 +73,7 @@ void PerformanceMonitor::endSection(const std::string& name) {
         return;
     }
 
-    auto now = Clock::now();
+    auto now = now_();
     double elapsed = std::chrono::duration<double, std::milli>(now - it->second).count();
     sectionStartTimes_.erase(it);
 

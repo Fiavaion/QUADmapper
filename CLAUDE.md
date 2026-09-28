@@ -202,16 +202,25 @@ See `.claude/agent-state/spawn-rules.json` for full configuration.
 
 ### Adding a New Panel
 
-1. Create `src/ui/panels/NewPanel.hpp` and `.cpp`
-2. Inherit from `Panel` base class
-3. Register in `UIManager::initializePanels()`
-4. Add menu entry in `MainMenu`
+1. Create `src/ui/panels/NewPanel.hpp` and `.cpp` (add both to `src/ui/CMakeLists.txt`) with a
+   `render(EditorContext& ctx)` that returns early when its `show…` flag is off, like
+   `VideoPlayerPanel` or `ControlPanel`.
+2. Hold the panel and its visibility flag in `EditorState` (`src/app/EditorState.hpp`).
+3. Draw it from `Application::render()` next to the other panels.
+4. Add a toggle in the Window menu (`src/ui/panels/MainMenuBar.cpp`).
+5. Check the dock layout on a first run (`imgui.ini`) so it docks sensibly.
 
 ### Adding a New Keyboard Shortcut
 
-1. Add action enum in `src/input/KeyboardShortcuts.hpp`
-2. Add default binding in `KeyboardShortcuts::initializeDefaults()`
-3. Handle action in appropriate manager class
+- **Editor-wide shortcuts** go in the shortcut block of `Application::render()`, behind its
+  guards (no text field active, no popup open), with `ImGui::IsKeyPressed(key, false)`.
+- **Canvas editing keys** (vertex select and nudge) live in `ViewportEditor.cpp` and
+  `src/input/VertexKeyboard.hpp`, which claim the keys with `SetKeyOwner`. Never let a new
+  shortcut take Tab, the arrows, Shift or Alt from the canvas.
+- **Keys on a focused projector window** go through the output windows' GLFW key callback
+  (`OutputManager`), as scene takes and Ctrl+B blackout do.
+- Keys that must not depend on the keyboard layout (scene takes 1–9) use physical GLFW key
+  codes, not `ImGuiKey`.
 
 ### Adding a New Media Type
 
@@ -247,7 +256,8 @@ QUADmapper succeeds when a live-event technician can, in under two minutes:
 
 This is the gate. Feature count, test count, and coverage % are **not** the metric — this
 workflow, verified working by running the app, is. Implemented in
-[Application.cpp:674-808](src/app/Application.cpp#L674-L808); never regress it.
+[ViewportEditor.cpp](src/ui/panels/ViewportEditor.cpp) (vertex drag/nudge) with the keyboard
+maths and key ownership in [VertexKeyboard.hpp](src/input/VertexKeyboard.hpp); never regress it.
 
 ## Model Selection Policy
 
@@ -310,6 +320,12 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
 
 ## Dev & Bug-Fix Discipline
 
+- **Minimalism ladder — before writing code, walk it in order:** (1) does this need to exist?
+  — if not, skip it (YAGNI); (2) does the C++17 stdlib do it? (3) a feature of an
+  already-linked lib (GLM / GLFW / ImGui / FFmpeg / stb / miniaudio)? (4) only then a new
+  dependency — and that needs an **ADR + approval** (see Change Boundaries); (5) can it be a few
+  lines? (6) then the minimum that works. Never cut validation, error handling, RAII/GL cleanup,
+  or the success-metric UX to be "minimal."
 - **Build → test → commit, one change at a time.** One feature/fix per commit; no `wip`
   commits on `main`. Incremental, reversible steps.
 - **Reviewer mode before "done".** After writing code, re-read your own diff as a senior

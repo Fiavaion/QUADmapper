@@ -1,6 +1,12 @@
 #include <gtest/gtest.h>
 #include "output/OutputWindow.hpp"
 
+#include <GLFW/glfw3.h>
+
+#include <array>
+#include <memory>
+#include <type_traits>
+
 namespace quadmapper {
 namespace test {
 
@@ -85,91 +91,24 @@ TEST(OutputWindowTest, SetFullscreenUpdatesState) {
     EXPECT_FALSE(window.isFullscreen());
 }
 
-TEST(OutputWindowTest, NoAssignedScenesInitially) {
+TEST(OutputWindowTest, ShowsNoSceneAndNoSlicesInitially) {
     OutputWindow window;
 
-    EXPECT_TRUE(window.getAssignedScenes().empty());
+    EXPECT_TRUE(window.getSceneId().isNull());
+    EXPECT_TRUE(window.getSlices().empty());
 }
 
-TEST(OutputWindowTest, AssignSceneAddsToList) {
+TEST(OutputWindowTest, ShowsTheSceneItWasGiven) {
     OutputWindow window;
-    UUID sceneId = UUID::generate();
+    const UUID first = UUID::generate();
+    const UUID second = UUID::generate();
 
-    window.assignScene(sceneId);
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 1);
-    EXPECT_TRUE(window.hasScene(sceneId));
-}
-
-TEST(OutputWindowTest, AssignSceneDoesNotDuplicate) {
-    OutputWindow window;
-    UUID sceneId = UUID::generate();
-
-    window.assignScene(sceneId);
-    window.assignScene(sceneId);  // Assign same scene again
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 1);
-}
-
-TEST(OutputWindowTest, AssignMultipleScenes) {
-    OutputWindow window;
-    UUID scene1 = UUID::generate();
-    UUID scene2 = UUID::generate();
-    UUID scene3 = UUID::generate();
-
-    window.assignScene(scene1);
-    window.assignScene(scene2);
-    window.assignScene(scene3);
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 3);
-    EXPECT_TRUE(window.hasScene(scene1));
-    EXPECT_TRUE(window.hasScene(scene2));
-    EXPECT_TRUE(window.hasScene(scene3));
-}
-
-TEST(OutputWindowTest, RemoveSceneRemovesFromList) {
-    OutputWindow window;
-    UUID sceneId = UUID::generate();
-
-    window.assignScene(sceneId);
-    EXPECT_TRUE(window.hasScene(sceneId));
-
-    window.removeScene(sceneId);
-    EXPECT_FALSE(window.hasScene(sceneId));
-    EXPECT_TRUE(window.getAssignedScenes().empty());
-}
-
-TEST(OutputWindowTest, RemoveNonexistentSceneIsNoOp) {
-    OutputWindow window;
-    UUID scene1 = UUID::generate();
-    UUID scene2 = UUID::generate();
-
-    window.assignScene(scene1);
-    window.removeScene(scene2);  // Try to remove scene that wasn't added
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 1);
-    EXPECT_TRUE(window.hasScene(scene1));
-}
-
-TEST(OutputWindowTest, ClearScenesRemovesAll) {
-    OutputWindow window;
-
-    window.assignScene(UUID::generate());
-    window.assignScene(UUID::generate());
-    window.assignScene(UUID::generate());
-
-    EXPECT_EQ(window.getAssignedScenes().size(), 3);
-
-    window.clearScenes();
-
-    EXPECT_TRUE(window.getAssignedScenes().empty());
-}
-
-TEST(OutputWindowTest, HasSceneReturnsFalseForUnknown) {
-    OutputWindow window;
-    UUID unknownId = UUID::generate();
-
-    EXPECT_FALSE(window.hasScene(unknownId));
+    window.setSceneId(first);
+    EXPECT_EQ(window.getSceneId(), first);
+    window.setSceneId(second);  // one scene at a time: the new one replaces it
+    EXPECT_EQ(window.getSceneId(), second);
+    window.setSceneId(UUID::null());
+    EXPECT_TRUE(window.getSceneId().isNull());
 }
 
 TEST(OutputWindowTest, PositionDefaultIs100_100) {
@@ -187,31 +126,55 @@ TEST(OutputWindowTest, SetPositionUpdatesPosition) {
     EXPECT_EQ(window.getPosition().y, 300);
 }
 
-TEST(OutputWindowTest, MoveConstructorTransfersOwnership) {
-    OutputWindow window1;
-    window1.setName("Test Window");
-    window1.setResolution(IVec2(800, 600));
-    window1.assignScene(UUID::generate());
-    UUID id = window1.getId();
+// TD-13: the GLFW window's user pointer is the OutputWindow's address, so moving one
+// would leave it stale. Outputs are held by unique_ptr instead.
+static_assert(!std::is_move_constructible_v<OutputWindow>, "OutputWindow must not move");
+static_assert(!std::is_move_assignable_v<OutputWindow>, "OutputWindow must not move");
+static_assert(!std::is_copy_constructible_v<OutputWindow>, "OutputWindow must not copy");
 
-    OutputWindow window2(std::move(window1));
+// TD-13: a key callback that clears itself while it runs (Esc leaving perform mode)
+// must not destroy the function object it is executing. Drives the real GLFW key
+// callback on a hidden window; skips where no window can be made (headless CI).
+TEST(OutputWindowTest, KeyCallbackMayClearItselfWhileRunning) {
+    if (!glfwInit()) GTEST_SKIP() << "GLFW unavailable";
+    {
+        OutputWindow window;
+        if (!window.create(nullptr)) {
+            glfwTerminate();
+            GTEST_SKIP() << "no window could be created";
+        }
+        GLFWwindow* glfwWindow = window.getGLFWwindow();
 
-    EXPECT_EQ(window2.getId(), id);
-    EXPECT_EQ(window2.getName(), "Test Window");
-    EXPECT_EQ(window2.getResolution().x, 800);
-    EXPECT_EQ(window2.getAssignedScenes().size(), 1);
-}
+        auto token = std::make_shared<int>(42);
+        // Big enough that std::function keeps the lambda on the heap, where the debug
+        // CRT overwrites freed memory: reading a destroyed capture would not see 42.
+        std::array<int, 64> payload;
+        payload.fill(42);
+        int seenAfterClear = 0;
+        int calls = 0;
+        window.setKeyCallback([token, payload, &window, &seenAfterClear, &calls](int, int, int, int) {
+            ++calls;
+            window.setKeyCallback(nullptr);
+            seenAfterClear = payload[63];  // the capture must still be alive here
+        });
+        EXPECT_EQ(glfwGetWindowUserPointer(glfwWindow), &window);
+        EXPECT_EQ(token.use_count(), 2);
 
-TEST(OutputWindowTest, MoveAssignmentTransfersOwnership) {
-    OutputWindow window1;
-    window1.setName("Test Window");
-    UUID id = window1.getId();
+        // The installed GLFW callback, exactly as glfwPollEvents would call it.
+        const GLFWkeyfun installed = glfwSetKeyCallback(glfwWindow, nullptr);
+        glfwSetKeyCallback(glfwWindow, installed);
+        ASSERT_NE(installed, nullptr);
+        installed(glfwWindow, GLFW_KEY_ESCAPE, 0, GLFW_PRESS, 0);
 
-    OutputWindow window2;
-    window2 = std::move(window1);
+        EXPECT_EQ(calls, 1);
+        EXPECT_EQ(seenAfterClear, 42);
+        EXPECT_FALSE(window.getKeyCallback());
+        EXPECT_EQ(token.use_count(), 1);  // the running copy was released afterwards
 
-    EXPECT_EQ(window2.getId(), id);
-    EXPECT_EQ(window2.getName(), "Test Window");
+        installed(glfwWindow, GLFW_KEY_ESCAPE, 0, GLFW_PRESS, 0);  // cleared: no call
+        EXPECT_EQ(calls, 1);
+    }
+    glfwTerminate();
 }
 
 TEST(OutputWindowTest, IsVisibleFalseWhenNotCreated) {

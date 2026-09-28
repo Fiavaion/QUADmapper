@@ -41,9 +41,10 @@ $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+. "$PSScriptRoot/screen_capture.ps1"   # not CopyFromScreen; see that file
 
 # Make the process DPI-aware BEFORE querying screen metrics, so Screen bounds and
-# CopyFromScreen use physical pixels (the secondary monitor runs at 150% scaling).
+# screen captures use physical pixels (the secondary monitor runs at 150% scaling).
 
 # Win32 helpers for focusing the GLFW window.
 if (-not ([System.Management.Automation.PSTypeName]'Win32Native').Type) {
@@ -59,6 +60,8 @@ public static class Win32Native {
     [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint uCode, uint uMapType);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int w, int h, bool repaint);
 }
 "@
 }
@@ -77,19 +80,24 @@ $OutDir = (Resolve-Path $OutDir).Path
 Write-Host "[smoke] exe   : $ExePath"
 Write-Host "[smoke] outdir: $OutDir"
 
+# The editor's GLFW window: a Debug build also owns a console window, which
+# Process.MainWindowHandle sometimes returns instead.
+function Get-EditorWindow { [Win32Native]::FindWindow('GLFW30', 'QUADmapper') }
+function Place-App {
+    # A fixed rect on the primary monitor, clear of the taskbar, so the Properties
+    # corner values are on screen in every capture.
+    $h = Get-EditorWindow
+    [Win32Native]::ShowWindow($h, 9) | Out-Null   # SW_RESTORE
+    [Win32Native]::MoveWindow($h, 0, 0, 2560, 1360, $true) | Out-Null
+    Start-Sleep -Milliseconds 500
+}
 function Focus-App($proc) {
-    [Win32Native]::ShowWindow($proc.MainWindowHandle, 9) | Out-Null   # SW_RESTORE
-    [Win32Native]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+    [Win32Native]::SetForegroundWindow((Get-EditorWindow)) | Out-Null
     Start-Sleep -Milliseconds 200
 }
 
 function Capture([string]$name, [System.Drawing.Rectangle]$bounds) {
-    $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-    $path = Join-Path $OutDir $name
-    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
+    Save-ScreenRect $bounds (Join-Path $OutDir $name)
     Write-Host "[smoke] captured $name ($($bounds.Width)x$($bounds.Height))"
 }
 
@@ -145,6 +153,7 @@ try {
     }
     if ($proc.MainWindowHandle -eq 0) { throw "App window never appeared." }
     Start-Sleep -Seconds 2   # let init + first frames settle
+    Place-App
     Focus-App $proc
 
     # Capture bounds = the monitor the app window is on (primary).
@@ -153,10 +162,7 @@ try {
     # ---- Drive the success-metric vertex workflow (CORNERS_ONLY default) ----
     Capture "01_initial.png" $screen
 
-    # Click empty canvas (above the quad) to clear ImGui nav/widget focus, so
-    # Tab-cycle-vertex wins over ImGui keyboard navigation. (See ADR-031 finding.)
-    Click ($screen.X + 960) ($screen.Y + 180)
-    Focus-App $proc
+    # No canvas click first: with a quad selected the canvas owns Tab/arrows (QM-089).
 
     Tap $VK.TAB                                       # select corner 0 (top-left)
     Chord $VK.SHIFT $VK.RIGHT 20                      # Shift+Right x20 => +0.20 normalized (TL.x 0.300 -> 0.500)

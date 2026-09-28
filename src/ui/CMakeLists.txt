@@ -3,6 +3,8 @@
 add_library(quadmapper_ui STATIC
     Theme.hpp
     Theme.cpp
+    AsyncFileDialog.hpp
+    AsyncFileDialog.cpp
     panels/Panel.hpp
     panels/InspectorPanel.hpp
     panels/InspectorPanel.cpp
@@ -14,16 +16,28 @@ add_library(quadmapper_ui STATIC
     panels/MainMenuBar.cpp
     panels/QuadListPanel.hpp
     panels/QuadListPanel.cpp
+    panels/ScenePanel.hpp
+    panels/ScenePanel.cpp
+    panels/SliceEditor.hpp
+    panels/SliceEditor.cpp
+    panels/OutputPreviewPanel.hpp
+    panels/OutputPreviewPanel.cpp
     panels/VideoPlayerPanel.hpp
     panels/VideoPlayerPanel.cpp
     panels/MediaBinPanel.hpp
     panels/MediaBinPanel.cpp
     panels/ProceduralEditorPanel.hpp
     panels/ProceduralEditorPanel.cpp
+    panels/CalibrationPanel.hpp
+    panels/CalibrationPanel.cpp
+    panels/ControlPanel.hpp
+    panels/ControlPanel.cpp
     dialogs/PreferencesDialog.hpp
     dialogs/PreferencesDialog.cpp
     dialogs/OutputConfigDialog.hpp
     dialogs/OutputConfigDialog.cpp
+    dialogs/HapConvertWindow.hpp
+    dialogs/HapConvertWindow.cpp
     widgets/QuadCornerWidget.hpp
     widgets/QuadCornerWidget.cpp
     widgets/PlaybackControls.hpp
@@ -51,6 +65,7 @@ target_link_libraries(quadmapper_ui
         quadmapper_output
         quadmapper_source
         quadmapper_input
+        quadmapper_control
         imgui
     PRIVATE
         nlohmann_json::nlohmann_json

@@ -1,4 +1,6 @@
 #include "QuadManager.hpp"
+#include "Quad.hpp"
+#include "QuadGeometry.hpp"
 #include "core/Logger.hpp"
 #include <algorithm>
 #include <sstream>
@@ -46,27 +48,16 @@ void QuadManager::deleteQuad(const UUID& id) {
     }
 }
 
-void QuadManager::deleteSelectedQuads() {
-    if (selectedIds_.empty()) {
-        return;
+Quad* QuadManager::insertQuad(std::unique_ptr<Quad> quad, size_t index) {
+    if (!quad || getQuad(quad->getId()) != nullptr) {
+        return nullptr;
     }
-
-    // Collect IDs to delete (can't modify while iterating)
-    std::vector<UUID> toDelete(selectedIds_.begin(), selectedIds_.end());
-
-    for (const auto& id : toDelete) {
-        auto it = std::find_if(quads_.begin(), quads_.end(),
-            [&id](const auto& q) { return q->getId() == id; });
-        if (it != quads_.end()) {
-            Logger::debug("Deleting quad '{}'", (*it)->getName());
-            quads_.erase(it);
-        }
-    }
-
-    selectedIds_.clear();
-    primarySelectedId_.reset();
+    index = std::min(index, quads_.size());
+    Quad* ptr = quad.get();
+    quads_.insert(quads_.begin() + static_cast<std::ptrdiff_t>(index), std::move(quad));
     updateZOrders();
-    notifySelectionChanged();
+    Logger::debug("Inserted quad '{}' with ID {} at {}", ptr->getName(), ptr->getId().toString(), index);
+    return ptr;
 }
 
 void QuadManager::clear() {
@@ -98,6 +89,21 @@ std::vector<Quad*> QuadManager::getQuadsByZOrder() const {
     std::sort(sorted.begin(), sorted.end(),
         [](const Quad* a, const Quad* b) { return a->getZOrder() < b->getZOrder(); });
     return sorted;
+}
+
+Quad* QuadManager::quadAtPoint(const Vec2& p) const {
+    // getQuadsByZOrder is back -> front; iterate front-most first so the topmost
+    // quad wins. The hit area is the drawn surface (ADR-049): surfaceParamsAt returns
+    // (u,v) in [0,1] inside it, (-1,-1) outside.
+    auto byZ = getQuadsByZOrder();
+    for (auto it = byZ.rbegin(); it != byZ.rend(); ++it) {
+        Quad* q = *it;
+        if (!q || !q->isVisible()) continue;
+        if (q->getGeometry().surfaceParamsAt(p).x >= 0.0f) {
+            return q;
+        }
+    }
+    return nullptr;
 }
 
 void QuadManager::selectQuad(const UUID& id) {
@@ -386,33 +392,24 @@ std::vector<Quad*> QuadManager::getQuadsByZOrderDescending() const {
     return sorted;
 }
 
-Quad* QuadManager::duplicateQuad(const UUID& id) {
+Quad* QuadManager::duplicateQuad(const UUID& id, const UUID& newId) {
     const Quad* source = getQuad(id);
-    if (!source) {
+    if (!source || getQuad(newId) != nullptr) {
         return nullptr;
     }
 
-    auto newQuad = std::make_unique<Quad>();
+    auto newQuad = std::make_unique<Quad>(source->cloneWithId(newId));
     newQuad->setName(source->getName() + " Copy");
     newQuad->setZOrder(static_cast<int>(quads_.size()));
-    newQuad->setVisible(source->isVisible());
-    newQuad->setLocked(source->isLocked());
-    newQuad->setOpacity(source->getOpacity());
 
-    // Copy geometry
-    auto& newGeometry = newQuad->getGeometry();
-    const auto& srcGeometry = source->getGeometry();
-    newGeometry.setCorners(srcGeometry.getCorners());
-    newGeometry.setMeshResolution(srcGeometry.getMeshResolution());
-    newGeometry.setMeshMode(srcGeometry.getMeshMode());
-
-    // Offset position slightly so it's visible
-    auto corners = newGeometry.getCorners();
+    // Offset position slightly so it's visible. Mesh and bezier offsets are
+    // relative to the corners, so they follow.
+    auto corners = newQuad->getGeometry().getCorners();
     for (auto& corner : corners) {
         corner.x += 0.05f;
         corner.y += 0.05f;
     }
-    newGeometry.setCorners(corners);
+    newQuad->getGeometry().setCorners(corners);
 
     Quad* ptr = newQuad.get();
     quads_.push_back(std::move(newQuad));

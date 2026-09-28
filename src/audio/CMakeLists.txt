@@ -12,6 +12,15 @@ add_library(quadmapper_audio STATIC
     AudioSource.cpp
     AudioDevice.hpp
     AudioDevice.cpp
+    SeqLock.hpp
+    SyncedAudioSource.hpp
+    SyncedAudioSource.cpp
+    AudioDriftController.hpp
+    AudioDriftController.cpp
+    AudioAttachment.hpp
+    AudioAttachment.cpp
+    AudioEngine.hpp
+    AudioEngine.cpp
 )
 
 target_include_directories(quadmapper_audio

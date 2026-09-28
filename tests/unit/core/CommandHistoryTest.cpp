@@ -14,12 +14,14 @@ public:
         , description_(desc)
     {}
 
-    void execute() override {
+    bool execute() override {
         ++executeCount_;
+        return true;
     }
 
-    void undo() override {
+    bool undo() override {
         ++undoCount_;
+        return true;
     }
 
     std::string getDescription() const override {
@@ -41,12 +43,14 @@ public:
         , totalDelta_(delta)
     {}
 
-    void execute() override {
+    bool execute() override {
         value_ += delta_;
+        return true;
     }
 
-    void undo() override {
+    bool undo() override {
         value_ -= totalDelta_;
+        return true;
     }
 
     std::string getDescription() const override {

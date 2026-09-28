@@ -1,0 +1,84 @@
+{
+  "$schema": "quadmapper/project/1.0",
+  "version": "3.2.0",
+  "name": "Show v3.2",
+  "sources": [
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000f1",
+      "kind": "procedural",
+      "proceduralType": "Plasma",
+      "width": 1280,
+      "height": 720
+    }
+  ],
+  "scenes": [
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000c1",
+      "name": "Scene 1",
+      "assignedOutputId": "4a1b2c3d-0000-4000-8000-0000000000e1",
+      "view": {"pan": [0.0, 0.0], "zoom": 1.0, "gridVisible": true, "snapToGrid": false},
+      "quads": [
+        {
+          "id": "4a1b2c3d-0000-4000-8000-000000000001",
+          "name": "Quad 1",
+          "zOrder": 0,
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "geometry": {
+            "corners": [[0.1, 0.1], [0.5, 0.1], [0.5, 0.9], [0.1, 0.9]],
+            "meshResolution": 1,
+            "meshMode": 0
+          },
+          "textureBinding": {
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": false,
+            "flipV": false
+          }
+        }
+      ],
+      "objects": [
+        {
+          "id": "4a1b2c3d-0000-4000-8000-0000000000a1",
+          "name": "Column",
+          "path": "models/not-shipped.obj",
+          "transform": [2, 0, 0, 0,  0, 2, 0, 0,  0, 0, 2, 0,  0.5, 0, -1, 1],
+          "texture": {
+            "mediaId": "4a1b2c3d-0000-4000-8000-0000000000f1",
+            "uvOffset": [0.0, 0.0],
+            "uvScale": [1.0, 1.0],
+            "uvRotation": 0.0,
+            "flipH": true,
+            "flipV": false
+          },
+          "visible": true,
+          "opacity": 0.75
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "id": "4a1b2c3d-0000-4000-8000-0000000000e1",
+      "name": "Projector 1",
+      "monitor": 1,
+      "resolution": [1920, 1080],
+      "rotation": 0,
+      "enabled": true,
+      "projector": {
+        "intrinsics": {"fx": 2400.0, "fy": 2400.0, "cx": 960.0, "cy": 600.0, "width": 1920, "height": 1080},
+        "pose": {
+          "rotation": [0, -1, 0,  1, 0, 0,  0, 0, 1],
+          "translation": [0.0, 0.0, 5.0]
+        },
+        "calibrated": true,
+        "points": [
+          {"world": [0.0, 0.0, 0.0], "pixel": [960.0, 600.0], "enabled": true},
+          {"world": [1.0, 0.0, 0.0], "pixel": [1440.0, 600.0], "enabled": false}
+        ]
+      }
+    }
+  ]
+}

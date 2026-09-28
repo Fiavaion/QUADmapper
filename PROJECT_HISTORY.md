@@ -6,6 +6,341 @@ This document maintains a chronological record of all development activities, de
 
 ## Session Log
 
+### Session 20 - 2026-06-19 - Mapping-editor UX overhaul (zoom/pan, Simple/Advanced, thumbnails, undo/redo, bezier)
+
+**Focus:** A long interactive session driven by hands-on testing with a real projector. Reworked
+the editor UX in six areas. Everything **builds + 633/633 ctest**, and the stack is **committed +
+pushed to `origin/dev`** (`721b61a` feature code + `83deff2` ADRs/tracking; two compiling commits
+rather than per-feature because the core files span multiple features). ADR-040 (one video → many
+cropped quads) had already completed (P1–P5) in Session 19.
+
+**Completed this session:**
+- **QM-073 — Viewport zoom/pan + aspect canvas ([ADR-041](docs/adr/0041-viewport-zoom-pan-and-canvas-aspect.md)).**
+  Canvas renders into the dockspace central node with a view transform (`u_ViewScale`/`u_ViewOffset`
+  added to `quad`/`outline`/`handle` vertex shaders; identity default → output/preview unchanged).
+  Letterboxed to the assigned output's effective resolution (portrait auto). Fit / wheel-zoom /
+  middle-drag pan. The success-metric hit-test inverts the same transform. Fixed `CropRenderTest`
+  to set the new uniforms.
+- **QM-074 — Video picker + crop insets.** Native "Load Video…" file dialog; crop UI reworked to
+  Left/Right/Top/Bottom % insets (storage stays `{x,y,w,h}`); two-face split presets.
+- **QM-075 — Simple/Advanced UI ([ADR-042](docs/adr/0042-simple-advanced-ui-modes.md)).** Persisted
+  toolbar toggle (default Simple); curated Simple Inspector/Video-Player + Media-only Resources +
+  toolbar Apply-Test-Grid / Send-to-Projector. Video auto-plays on assign. Drag a clip from the bin
+  onto a canvas quad (manual `GetDragDropPayload`+release — a custom target can't sit over the
+  passthrough central node). Click a quad to select it (`QuadManager::quadAtPoint`). Centralized
+  `assignMediaToQuad`/`bindSourceToQuad` (fixed a bug where dropped videos became image sources).
+  Scenes "New" seeds a starter quad.
+- **QM-076 — Media-bin thumbnails.** Video first-frame thumbnails (one-shot decode → cached RAII
+  texture), procedural live-texture thumbnails, and hover-to-play (one dedicated preview decoder).
+- **QM-077 — Undo/Redo.** Reused the dormant `CommandHistory` + command classes; `EditorState`
+  owns the stack; Ctrl+Z/Y + Edit menu. Routes corner/mesh drag+nudge, rename, and grid edits
+  (add/del col/row, even-grid, click-insert). Crash-safe via a guard that clears history on quad
+  delete / scene switch (commands hold raw pointers). Undoable create/delete deferred.
+- **QM-078 — Report Bug + smooth distortion + bezier corners ([ADR-043](docs/adr/0043-smooth-tessellation-and-bezier-edges.md)).**
+  Toolbar "Report Bug" opens the GitHub bug template. Corner-pin quads tessellate 32×32 via
+  `surfacePoint` (no diagonal fold). Bezier edges on the 4 corners: Coons patch, amber drag
+  handles, toggle + Reset in both Inspectors, additive `.qmap` persistence, undoable.
+
+**Decisions:** see ADR-041/042/043 and SESSION_STATE.json `keyDecisions`.
+
+**Handoff:** (1) COMMIT the stack in chunks (QM-073..078) — per-chunk file lists in
+notes/CURRENT_STATUS.md; exclude `imgui.ini`/`project.qmap`. (2) User must visually verify the
+interactive features (assistant couldn't reliably synthetic-drive the UI under desktop-sharing).
+(3) **QM-079** bezier on grid division lines is the deferred half the user wants next. (4)
+`preferences.json` `defaultMediaFolder` was pointed at `D:\testing Videos` for verification — clear
+if unwanted. (5) `dev` unpushed; dev→master still gated on 🚩 QM-061 (hardware).
+
+---
+
+### Session 18 - 2026-06-17 - follow-up fixes + ADR-040 (shared media + crop) scoped & P1 shipped
+
+**Focus:** Two cleanups the user requested (groups-on-load, the TD-07 build flake), then a
+hypothetical that became MVP work: wrap one video around a box's faces across two projectors.
+Scoped it as **[ADR-040](docs/adr/0040-shared-media-sources-and-per-quad-crop.md)** (Accepted) and
+shipped **P1 (per-quad crop)**, GPU-verified. 8 commits on `dev` (`4ca12c5`..`f2f253e`),
+**unpushed**; `master` untouched (`fb4c85b`). **630/630 ctest**; build green.
+
+**Completed this session:**
+- **Groups-on-load FIXED** (`d586da6`). Two breaks: `deserializeQuad`/`deserializeGroup` ignored
+  the persisted `id` (so loaded quads got fresh ids while group members kept saved ids — linkage
+  severed), and `syncProjectToEditor` never rebuilt groups. Fixed both: defensive id-preserving
+  parse (`parseIdOrNull`; malformed → fresh, older files still load) + a remapping group rebuild
+  on load (members + nested parents). Test `V3GroupMembershipRoundTrips`.
+- **TD-07 RESOLVED** (`4ca12c5`). `gtest_discover_tests DISCOVERY_TIMEOUT 60` ends the spurious
+  `cmake --build` non-zero exit; discovery mode unchanged so `ctest --test-dir` is unaffected.
+  (First tried `PRE_TEST` mode — reverted, it broke the standard no-`-C` ctest invocation.)
+- **ADR-040 scoped & Accepted** (`f41a317`). One decoded video → many quads, each cropped, from a
+  single decode → frame-sync is structural, decode cost is flat. Converges TD-09 (renderer reads
+  `SourceManager` via the dormant `TextureBinding::mediaId`). `.qmap` → additive v3.1. Phased
+  QM-068–072.
+- **QM-068 (ADR-040 P1) — per-quad crop DONE** (`f5c2920`, `b3912fc`). Normalized
+  `TextureBinding::cropRect`; `quad.frag` composes crop outside the UV transform (identity = no-op);
+  Renderer sets `u_CropOffset`/`u_CropSize`; collapsed Inspector "Crop (source region)" with
+  X/Width/Y/Height + vertical-quarter quick-sets (1/2/3/4/Full); `.qmap` writes `crop` only when
+  non-identity (pre-crop files byte-stable). **Verified at the GPU level:** new `test_render_gl`
+  target renders a 2×1 red|green source through the real shader into an FBO and reads back the
+  centre — left-half crop → red, right-half/right-quarter → green (skip-if-no-context).
+
+**Files changed:** 14 files, +602 / −28. New: `docs/adr/0040-*.md`, `tests/unit/renderer/
+CropRenderTest.cpp`. See
+[docs/sessions/2026-06-17-session18-fixes-and-adr040-crop.md](docs/sessions/2026-06-17-session18-fixes-and-adr040-crop.md).
+
+**Commits (dev, UNPUSHED):** `4ca12c5` TD-07 · `d586da6` groups · `f41a317` ADR-040 scope ·
+`f5c2920` P1 crop · `b3912fc` P1 GPU test · plus 3 docs commits (`17563fe`, `44dd898`, `f2f253e`).
+
+**Decisions:** crop is normalized (reuses the UV shader pipeline, identity is byte-clean) and
+written conditionally (no version bump, color/soft-edge precedent); the heavy media-model
+convergence is P2 (QM-069) and is success-metric-adjacent, so it's deferred to a fresh start with
+an advisor pass. Verification depth for P1 was the user's call → GPU readback test (the repo's
+first real-GL test), not just data round-trip.
+
+**Handoff:** resume at **ADR-040 P2 (QM-069)** — renderer resolves a quad's texture from
+`SourceManager` via `mediaId`, retire `quadTextures`, behavior-preserving first. `dev` is 8 commits
+ahead of `origin/dev` and **unpushed** (push when ready). Still holding the `dev`→`master` PR until
+🚩 QM-061 (hardware) per the user.
+
+### Session 17 - 2026-06-17 - ADR-039 multi-scene: UI + preview + persistence (P3–P5) — COMPLETE
+
+**Focus:** Finish the multi-projector feature. Sessions 15–16 built the runtime foundation (P1)
+and per-output routing (P2, hardware-verified), but it was **not user-operable**. This session
+shipped **P3 + P4 + P5**, completing **ADR-039 (P1–P5)**. 4 commits on `dev` (pushed to
+`origin/dev` @ `e5c08fa`); `master` untouched (`fb4c85b`). **624/624 ctest** (+5 new serializer
+migration tests); every phase app-verified by running the real app.
+
+**Completed this session:**
+- **QM-065 (P3) — Scenes UI.** A "Scenes" tab (`ScenePanel`) over `EditorState`: New/Delete/
+  rename/switch-active + per-scene output-assignment dropdown (one-scene-per-output enforced);
+  viewport/QuadList/Inspector follow the active scene via existing accessors. `EditorState`
+  gained thin scene-list mutators. Reviewer-mode fix: deferred context-menu Delete to avoid a
+  use-after-free. Verified: created Scene 2 → auto-active, "(2 scenes)", Delete enabled.
+- **QM-066 (P4) — Live per-output preview.** New RAII `Framebuffer`; `OutputManager::
+  updatePreviews()` renders each output's assigned scene to a 320×180 offscreen FBO in the main
+  GL context (saves/restores framebuffer+viewport); `OutputPreviewPanel` shows V-flipped
+  thumbnails with a "name → scene" label. Verified: "Projector 1 → New Scene" with the quad
+  rendered on black. (The reference `PreviewPanel` was an interactive editor overlapping
+  `ViewportEditor`, so a true FBO thumbnail shipped instead.)
+- **QM-067 (P5) — `.qmap` v3 persistence** (protected boundary; additive + backward-compatible).
+  Serializer writes v3 (`scenes[]` + `outputs[]`) when scenes exist, else legacy v1.2 flat;
+  unified reader yields ≥1 scene for v1/v2/v3; `kMaxSupportedMajor` 2→3 (v4 rejected). `Project`
+  gained `SceneData`/`OutputData` DTOs; Application `syncEditorToProject`/`syncProjectToEditor`
+  round-trip ALL scenes + outputs (load rebuilds outputs and remaps `assignedOutputId`).
+  Verified end-to-end: default save → v3 file with output+scene+assignment; 2-scene v3 load →
+  Scenes "Alpha→Beamer"/"Beta→(no output)", Preview "Beamer → Alpha" rendering the quad.
+
+**Files changed:** 18 files, +1290 / −110. New: `ScenePanel.*`, `OutputPreviewPanel.*`,
+`Framebuffer.*`, `drive_scenes_smoke.ps1`. See
+[docs/sessions/2026-06-17-session17-multiscene-ui-preview-persist.md](docs/sessions/2026-06-17-session17-multiscene-ui-preview-persist.md)
+for the detailed log.
+
+**Commits (dev, pushed):** `1fcaf43` P3 · `72adf6e` P4 · `3a721d3` P5a · `e5c08fa` P5b.
+
+**Decisions:** P3 wired the panel as the active-scene controller (not the retired SceneManager);
+one-scene-per-output enforced because `sceneForOutput` returns the first match; P4 previews
+render in the main context; the writer stays v1.2 for flat-only projects (byte-clean).
+
+**Known limitation (pre-existing):** groups round-trip in the file but the load bridge does not
+re-apply them to live scenes (same as the old flat bridge).
+
+**Handoff:** ADR-039 done. Remaining is independent — 🚩 QM-061 hardware AI test, debt
+TD-07/08/09, optional groups-on-load follow-up. Consider opening the `dev`→`master` PR
+(`master` is still at pre-Session-16 `fb4c85b`; `dev` has all of Sessions 16+17).
+
+---
+
+### Session 16 - 2026-06-17 - mapping-editor fixes + multi-scene output routing (ADR-039 P1+P2)
+
+**Focus:** Field-driven fixes to the on-canvas mapping editor, then the start of the
+multi-projector feature — reviving multi-scene (retired in ADR-033 as dead code) as a *wired*
+capability so each projector shows its own mapping. 8 commits on `dev` (pushed to `origin/dev`,
+`54dcec0`); `master` untouched. 619/619 ctest throughout.
+
+**Completed this session:**
+- **Mapping-editor UX fixes** (diagnosed by running the app + driving synthetic Win32 input):
+  - **Picking** normalized by **window** size, not framebuffer size (DPI-correct hit-tests).
+  - **Round handles** — aspect-corrected handle shader (was 2:1 ellipses); smaller mesh dots so a
+    dense grid is readable. Verified on screen.
+  - **Mesh-grid wireframe** drawn in edit mode (cyan), so division lines are visible and warp live.
+  - **Clean 1×1 default grid** (`MIN_MESH_RESOLUTION=1`) — a new quad has no internal divisions;
+    you add them. (Stopgap: control grid still = render mesh until Tier 2; textured warps are
+    affine until divisions are added — user-approved tradeoff.)
+  - **Drag-to-position division insert** — arm Click-add Column/Row, press in the viewport and
+    drag the new line into place; release commits + auto-disarms (Esc cancels). `insertU/VDivision`
+    return the inserted index; new `moveU/VDivision` clamps between neighbours.
+  - **Prominent "Reset Transform"** button (offset/coverage/scale/rotation/flips).
+  - +3 control-grid unit tests; MeshSubdivision validity test updated for MIN=1.
+- **ADR-039 written** — multi-scene project model + per-scene output routing + live preview;
+  deliberately supersedes ADR-033's removal (which anticipated this revival). `.qmap` → additive v3
+  reading v1/v2. Phased P1–P5.
+- **QM-063 (P1) DONE** — multi-scene runtime foundation: `EditorState` holds a scene list and edits
+  the **active** scene via `activeScene()`/`quadManager()` accessors (lazily guarantees one scene).
+  Behaviour-preserving; all editor call sites migrated.
+- **QM-064 (P2) DONE** — per-output scene routing: `Scene::assignedOutputId`; `renderToOutputs`
+  renders each output's assigned scene (was: all quads to every output); pure unit-tested
+  `OutputManager::sceneForOutput()`; startup creates a default output and routes the default scene
+  to the **2nd monitor**. **Verified on real 2-monitor hardware** — perform mode showed each
+  projector rendering its own scene (centred quad on monitor 1, top-left quad on monitor 0).
+
+**Decisions:** ADR-039 (revive multi-scene as a wired feature; 1 scene → at most 1 output; restore
+deleted `SceneManager`/`ScenePanel`/`PreviewPanel`/v2-serializer from `669a05c^` as reference and
+wire them properly). Live scenes belong in `EditorState` (runtime truth); `Project` becomes the
+serialized DTO (v3, P5). Multi-scene UX clarified by the user: a project holds multiple scenes,
+each a separate mapping assigned to one output; editor edits one active scene at a time.
+
+**Files (highlights):** `src/shaders/handle.vert`, `src/renderer/Renderer.{hpp,cpp}` (round
+handles + mesh-grid wireframe), `src/ui/panels/ViewportEditor.cpp` + `InspectorPanel.cpp`
+(picking, drag-insert, reset), `src/scene/QuadGeometry.{hpp,cpp}` (1×1 default, move/insert),
+`src/app/EditorState.hpp` (multi-scene accessor), `src/scene/Scene.hpp` (assignedOutputId),
+`src/output/OutputManager.{hpp,cpp}` (per-output routing), `src/app/Application.cpp` (default
+output + render call), `docs/adr/0039-*`, tests.
+
+**Handoff → next session resumes at QM-065 (P3: Scenes UI).** The multi-projector engine works
+but isn't user-operable yet — there's no UI to create a 2nd scene or assign outputs. P3 adds a
+Scenes panel (add/rename/switch active + assign output) with viewport/QuadList/Inspector following
+the active scene. Then P4 (per-output live preview; revive `PreviewPanel` from `669a05c^`) and P5
+(`.qmap` v3 scenes+outputs persistence + v1/v2/v3 migration tests). Build gotcha noted: `cmake
+--build --target` sometimes skips the exe relink — `touch` the .cpp to force it.
+
+### Session 15 - 2026-06-17 - v1.1 polish + Kantan-style grid Tier 1 (2D wedge focus)
+
+**Focus:** Independent-of-AI 2D-wedge work while QM-061 stays hardware-gated: paid down TD-10,
+shipped two v1.1 polish features, answered four user feature questions (sizing each honestly),
+shelved 3D as out-of-scope, and built **Tier 1 of the Kantan-style non-uniform grid warp** end
+to end. 14 commits, all on `dev` (pushed to `origin/dev`); `master` untouched.
+
+**Completed this session:**
+- **TD-10 resolved** — `SidecarClient::startAsync()` runs attach/launch/health-poll on a worker
+  thread (atomic state + new `Starting`; worker joined in stop()/dtor). AI-enable no longer
+  freezes the UI ~1–3s; run-loop posts the connect outcome. Unit test added.
+- **US-104** per-quad color correction (ADR-036) — brightness/contrast/gamma/RGB gain in
+  `quad.frag`; additive `.qmap` field; Inspector section. Identity = render no-op.
+- **US-101** per-quad soft-edge blending (ADR-037) — per-edge feather + gamma; for multi-projector
+  overlap. **Visually verified** (feathered projector screenshot).
+- **Load-path fix** — `syncProjectToScene` now carries colorCorrection/softEdge (they round-tripped
+  in JSON but were dropped on the app's scene rebuild).
+- **#2 UV test-grid** — Blender-style colored UV grid (`src/renderer/UvTestGrid.*`, `test_renderer`)
+  + "Apply UV Test Grid" button + "UV grid on new quads" toggle. **Visually verified** warped on
+  quad+projector.
+- **#3 Kantan grid — ADR-038 accepted; Tier 1 COMPLETE** (Kantan Linear parity):
+  - batch 1: non-uniform control-grid model (uCoords/vCoords replace uniform N×N), behavior-
+    preserving; insert/remove division logic. Success-metric edit path is index-based → unchanged.
+  - batch 2: `.qmap` persistence + migration (coords written only when non-uniform; old files
+    migrate losslessly); writer `1.1.0 → 1.2.0`.
+  - batch 3a: Inspector — Even Grid slider + Insert-pos + Add/Del Column/Row.
+  - batch 3b: viewport **click-on-edge insert** via `QuadGeometry::inverseBilinear` (unit-tested
+    round-trips); arming suppresses drag-starts.
+- **#4 3D scan / model-UV — researched then SHELVED** (deliberate 2D focus; roadmap/spike preserved).
+- **QM-061** turnkey hardware runbook + ready `dev`→`master` PR-prep doc.
+
+**Decisions:** ADR-036 (color correction), ADR-037 (soft-edge), ADR-038 (Kantan grid — Tiers 1+2
+then field-test then Tier 3; **one mesh model**, uniform migrated away + "even grid" action). 3D
+shelved. `.qmap` bumped 1.0.0 → 1.2.0 (two additive MINOR steps, major unchanged, backward+forward
+compatible).
+
+**Verification:** build clean; **615/615 ctest** (+19 this session); success-metric smoke green
+throughout; US-101 / #2 / Tier-1 grid each visually confirmed via temporary env demos (scaffolding
+removed). The live *positioned mouse-click* grid gesture isn't automatable by the keyboard-only
+smoke harness — its pieces (inverse-bilinear round-trip, insert logic, division rendering) are each
+verified; needs a ~10s manual click-confirm.
+
+**Files (highlights):** `src/scene/QuadGeometry.*` (control-grid model + inverseBilinear),
+`src/scene/MeshSubdivision.cpp`, `src/renderer/Renderer.cpp` + `UvTestGrid.*`,
+`src/ui/panels/{InspectorPanel,ViewportEditor}.cpp`, `src/ai/SidecarClient.*`,
+`src/app/{Application,EditorState}.*`, `src/project/ProjectSerializer.cpp`, `src/shaders/quad.frag`,
+ADR-036/037/038, `docs/QM-061-*`, `docs/research/3d-...-roadmap`.
+
+**Handoff / next:** **Tier 2 — Bezier handles + decoupled fine tessellation** (smooth curves, full
+Kantan parity), then field-test → **Tier 3** (local subdivision + T-junction stitching). Also still
+open: **🚩 QM-061** hardware test → then the `dev`→`master` PR (body ready). Optional debt: TD-07/08/09.
+
+---
+
+### Session 14 - 2026-06-16 - AI Pre-Show wedge built end-to-end (QM-055→060 + 062)
+
+**Focus:** Took Phase 9 from "QM-055 done, uncommitted" to **the entire AI pre-show initiative
+software-complete** — Surface-Snap Assist + One-Flash auto-warp + anamorphic — in 7 tasks, each
+watched working in the real app. Only the hardware-gated QM-061 remains.
+
+**Completed this session:**
+- **QM-055** committed (2-commit split: docs/ADR + code) and merged to master.
+- **QM-056** — AI sidecar skeleton + IPC contract: Python stdlib HTTP server (`tools/ai-sidecar/`,
+  versioned `/health` + stub `/surface`); C++ `src/ai/SidecarClient` — WinHTTP client (no vcpkg
+  dep) + spawn in a **Job Object (KILL_ON_JOB_CLOSE)** so no orphan; "AI" menu launches on demand,
+  disables cleanly when absent. Contract test (C++) + 6 GPU-free pytest.
+- **QM-057** — Metric3D surface service: metric depth (fixes the spike's affine bow) + Open3D
+  `segment_plane` → 4 corners + confidence; **verticality gate** drops the gallery floor-trap to
+  ~0. On the 3 spike scenes: screen 0.58 (encloses), facade 0.59, gallery 0.00. ~350ms steady GPU.
+- **QM-058** — Detect Surface UI: capture → sidecar → apply proposed quad to the selected quad,
+  refine with Tab+arrow; low-confidence → "tap the surface". **Phase 1 ships.**
+- **QM-059** — One-Flash pattern emit + capture: ChArUco asset (`resources/patterns/`),
+  `OutputManager::renderPatternToOutputs()` flashes a fullscreen identity quad on the projector;
+  capture → camera PNG to disk via shared `captureCameraFrameToPng()`.
+- **QM-060** — One-Flash homography solve: `POST /oneflash` detects ChArUco in reference + photo,
+  matches by id → H (projector-norm ↔ photo px); surface target → H⁻¹ → projector corners.
+  **Validated without hardware** by a synthetic known-homography test (corners <0.02, conf 0.99,
+  0.13px RMS) + in-app Solve & Apply.
+- **QM-062** — anamorphic / audience-perspective warp: reuse the One-Flash H, map a centered
+  audience rect back so content reads frontal from the captured viewpoint.
+
+**Verification:** every step watched working in the real app via guarded headless self-test hooks
+(`QM_AI_SELFTEST` ∈ {1, oneflash, solve, anamorphic}, `QM_AI_TEST_IMAGE`), since ImGui menu-driving
+was unreliable (a foreground app steals focus; the window moves; DPI-scaled fonts). Gate held all
+session: **596/596 ctest**, **15/15 sidecar pytest**, success-metric smoke green, no regression.
+
+**Decisions:** WinHTTP + Job Object for the C++↔sidecar transport (ADR-035's HTTP choice);
+authorized running the local ComfyUI Metric3D model + installing open3d/addict/yapf into Python
+3.11; ChArUco written 3-channel (a grayscale PNG loads as GL_RED → red-on-black); the faithful
+anamorphic uses the One-Flash homography (a projector-off version is geometrically
+underdetermined — the spike's finding). New debt **TD-10** (sidecar `start()` blocks the UI
+~1–3s; async deferred).
+
+**Git/merges (tidied):** all 7 tasks merged; **all session work now lives on `dev`** (pushed to
+`origin/dev`, PR-able) and **`master` reset to the clean Session-12 baseline** (`fb4c85b`) — main
+stays clean until a dev→master PR. Stale merged branches deleted; tmp scaffolding removed.
+
+**🚩 Handoff — the only remaining AI work is QM-061 (hardware-only):** connect a projector as a 2nd
+display → AI▸Enable → One-Flash▸Emit Pattern → F11 → photograph surface+pattern with a phone →
+point `QM_AI_TEST_IMAGE` at it → Solve & Apply / Anamorphic Warp → check alignment; document
+failure modes. Fallback if it fails: port MIT gray-code structured-light behind the same
+`/oneflash` contract. Detailed log: `docs/sessions/2026-06-16-session14-ai-wedge.md`.
+
+---
+
+### Session 13 - 2026-06-16 - AI pre-show planning + QM-055 (camera capture rail)
+
+**Focus:** A planning thread on integrating AI into the **pre-show setup** stage, carried to a
+verified first implementation. Detailed log: `docs/sessions/2026-06-16-session13-ai-preshow-qm055.md`.
+
+**Planning (Phase 9 opened — "AI Pre-Show Assist"):**
+- Ran `deep-research`; synthesized 3 cited docs in `docs/research/` (AI prior-art landscape;
+  17-product competitor audit; feasibility spike). Key market finding: the affordable + easy +
+  AI-assisted niche is **empty** — Lightform vacated it in 2022, camera auto-warp is paywalled to
+  the high end, mobile "AI mapping" is vaporware.
+- **Feasibility spike (GO):** Depth-Anything-V2 runs locally (RTX 3080; weights already on disk),
+  ~0.6s/photo, planes fit <0.5% RMS. Reshaped the feature: fully-automatic surface picking is
+  unreliable → **human-confirm is load-bearing**; projector-off passive warp is geometrically
+  impossible → build **One-Flash Auto-Warp** (one pattern + one phone photo).
+- **ADR-035 Accepted:** AI via an **optional out-of-process Python sidecar** (render path / C++
+  build / `.qmap` untouched). Roadmap QM-055..062 with 🚩 QM-061 (real-device test) as the gate.
+
+**Completed — QM-055 (capture rail + PNG), verified on the real webcam:**
+- `VideoDecoder::openCamera()` (FFmpeg dshow; `libavdevice` linked — already in vcpkg, no new dep;
+  `open()` refactored into shared `setupDecoderFromFormat()`, behavior-preserving).
+- `CameraSource : TextureSource` + `CameraDevices` DirectShow enumeration +
+  `SourceManager::createCameraSource`; `test_source` group (2 tests, real-hardware, skip-if-absent).
+- **AC2:** `writeRgbPng()` — dependency-free PNG encoder (default vcpkg ffmpeg has no PNG encoder);
+  **verified readable by OpenCV** (720×1280×3).
+- **Gate:** 592/592 ctest (+2); media smoke green (video→quad→projector success metric intact).
+- **Deferred (user decision):** on-quad camera *display* → TD-09 (renderer not wired to
+  `SourceManager`). Capture+PNG — the AI-roadmap-critical part — is complete.
+
+**Decisions:** ADR-035 (Python sidecar); One-Flash reframe; enable libavdevice (no new dep);
+on-quad display deferred to TD-09.
+
+**⚠️ Handoff:** work is **uncommitted** on `feature/qm-055-camera-input` (verified, clean). Next:
+commit (split docs/ADR from code), then **QM-056** (AI sidecar skeleton, consumes the captured PNG).
+
+---
+
 ### Session 12 - 2026-06-16 - TD-02 batch 4 (last): ViewportEditor — render() decomposition COMPLETE
 
 **Focus:** The final, success-metric-critical batch of TD-02 (QM-054). Plan-first, then

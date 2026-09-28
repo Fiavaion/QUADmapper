@@ -1,9 +1,12 @@
 #include "Renderer.hpp"
+#include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
 #include "ShaderSources.hpp"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace quadmapper {
 
@@ -26,6 +29,12 @@ bool Renderer::initialize() {
         return false;
     }
 
+    // 3D objects share quad.frag so every surface option behaves the same (ADR-052).
+    if (!mesh3dShader_.create(shaders::MESH3D_VERT, shaders::QUAD_FRAG)) {
+        Logger::error("Failed to create 3D mesh shader");
+        return false;
+    }
+
     // Create outline shader
     if (!outlineShader_.create(shaders::OUTLINE_VERT, shaders::OUTLINE_FRAG)) {
         Logger::error("Failed to create outline shader");
@@ -38,13 +47,24 @@ bool Renderer::initialize() {
         return false;
     }
 
-    // Create buffers
-    createQuadBuffers();
+    if (!sliceShader_.create(shaders::SLICE_VERT, shaders::SLICE_FRAG)) {
+        Logger::error("Failed to create slice shader");
+        return false;
+    }
+
+    // Create buffers (each quad's surface buffers are made on first draw)
+    createCornerIndexBuffer();
     createOutlineBuffers();
     createHandleBuffers();
 
     // Create default texture
     createDefaultTexture();
+
+    // Blend state is per GL context. Every Renderer lives in its own context (the
+    // editor, or one per output window), so each sets it here; otherwise opacity
+    // and soft edge would only composite in the editor.
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     initialized_ = true;
     Logger::info("Renderer initialized successfully");
@@ -56,40 +76,53 @@ void Renderer::shutdown() {
         return;
     }
 
+    meshCache_.clear();
+    quadCache_.clear();  // before the shared corner indices their VAOs use
+    if (cornerIndexBuffer_ != 0) {
+        glDeleteBuffers(1, &cornerIndexBuffer_);
+        GlObjectStats::onVertexBufferDestroyed();
+        cornerIndexBuffer_ = 0;
+        cornerIndexCount_ = 0;
+    }
     quadShader_.destroy();
+    mesh3dShader_.destroy();
     outlineShader_.destroy();
     handleShader_.destroy();
+    sliceShader_.destroy();
     defaultTexture_.destroy();
 
-    if (quadVAO_ != 0) {
-        glDeleteVertexArrays(1, &quadVAO_);
-        quadVAO_ = 0;
-    }
-    if (quadVBO_ != 0) {
-        glDeleteBuffers(1, &quadVBO_);
-        quadVBO_ = 0;
-    }
-    if (quadEBO_ != 0) {
-        glDeleteBuffers(1, &quadEBO_);
-        quadEBO_ = 0;
-    }
     if (outlineVAO_ != 0) {
         glDeleteVertexArrays(1, &outlineVAO_);
+        GlObjectStats::onVertexArrayDestroyed();
         outlineVAO_ = 0;
     }
     if (outlineVBO_ != 0) {
         glDeleteBuffers(1, &outlineVBO_);
+        GlObjectStats::onVertexBufferDestroyed();
         outlineVBO_ = 0;
+    }
+    if (gridVAO_ != 0) {
+        glDeleteVertexArrays(1, &gridVAO_);
+        GlObjectStats::onVertexArrayDestroyed();
+        gridVAO_ = 0;
+    }
+    if (gridVBO_ != 0) {
+        glDeleteBuffers(1, &gridVBO_);
+        GlObjectStats::onVertexBufferDestroyed();
+        gridVBO_ = 0;
     }
     if (handleVAO_ != 0) {
         glDeleteVertexArrays(1, &handleVAO_);
+        GlObjectStats::onVertexArrayDestroyed();
         handleVAO_ = 0;
     }
     if (handleVBO_ != 0) {
         glDeleteBuffers(1, &handleVBO_);
+        GlObjectStats::onVertexBufferDestroyed();
         handleVBO_ = 0;
     }
 
+    boundProgram_ = 0;  // the ids may be reused by programs made later
     initialized_ = false;
     Logger::debug("Renderer shutdown complete");
 }
@@ -99,41 +132,156 @@ void Renderer::beginFrame() {
 }
 
 void Renderer::endFrame() {
-    // Frame cleanup if needed
+    // Surface draws leave their program, texture and VAO bound for the next one
+    // (ADR-054); unbind them so no other GL code can change a quad's VAO, and so
+    // the next pass binds its program again whatever ran in between.
+    glBindVertexArray(0);
+    Texture::unbind();
+    unbindProgram();
 }
 
-void Renderer::createQuadBuffers() {
-    // Create VAO
-    glGenVertexArrays(1, &quadVAO_);
-    glGenBuffers(1, &quadVBO_);
-    glGenBuffers(1, &quadEBO_);
+void Renderer::useSurfaceProgram(ShaderProgram& shader) {
+    // glUseProgram costs as much as several uniform uploads even when the program
+    // is already current, and consecutive surface draws share it.
+    if (boundProgram_ != shader.getId()) {
+        shader.bind();
+        boundProgram_ = shader.getId();
+    }
+}
 
-    glBindVertexArray(quadVAO_);
+void Renderer::unbindProgram() {
+    ShaderProgram::unbind();
+    boundProgram_ = 0;
+}
 
-    // Setup VBO
-    glBindBuffer(GL_ARRAY_BUFFER, quadVBO_);
-    // Reserve space for max mesh size (65x65 vertices for 64 resolution)
-    glBufferData(GL_ARRAY_BUFFER, 65 * 65 * sizeof(QuadVertex), nullptr, GL_DYNAMIC_DRAW);
+void Renderer::setViewTransform(const glm::vec2& scale, const glm::vec2& offset, float canvasAspect) {
+    viewScale_ = scale;
+    viewOffset_ = offset;
+    canvasAspect_ = canvasAspect;
+}
 
-    // Setup EBO
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO_);
-    // Reserve space for max indices (64x64 quads = 64x64x6 indices)
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, 64 * 64 * 6 * sizeof(uint32_t), nullptr, GL_DYNAMIC_DRAW);
+void Renderer::resetViewTransform() {
+    viewScale_ = glm::vec2(1.0f, 1.0f);
+    viewOffset_ = glm::vec2(0.0f, 0.0f);
+    canvasAspect_ = 0.0f;
+}
 
-    // Position attribute
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, position));
+void Renderer::applyViewUniforms(ShaderProgram& shader) {
+    shader.setVec2("u_ViewScale", viewScale_);
+    shader.setVec2("u_ViewOffset", viewOffset_);
+}
 
-    // TexCoord attribute
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(QuadVertex), (void*)offsetof(QuadVertex, texCoord));
+// A quad's tessellated surface on the GPU. VAOs are per context, like the Renderer
+// that owns it. Rebuilt only when the quad's geometry changes, so drawing an
+// unchanged quad costs no tessellation and no buffer upload. A corner-pin patch
+// draws with the Renderer's shared index buffer (every patch has the same
+// triangles, TD-22); only a mesh warp of another tessellation size owns its indices.
+static_assert(sizeof(MeshVertex) == 5 * sizeof(float), "MeshVertex is uploaded as 5 packed floats");
+struct GpuQuad {
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLuint ownIndices = 0;  // 0 while the VAO uses the shared corner-patch indices
+    GLsizei indexCount = 0;
+    QuadGeometry builtFrom;  // the geometry the buffers hold
+    uint64_t lastPass = 0;
 
-    glBindVertexArray(0);
+    GpuQuad() {
+        glGenVertexArrays(1, &vao);
+        GlObjectStats::onVertexArrayCreated();
+        glGenBuffers(1, &vbo);
+        GlObjectStats::onVertexBufferCreated();
+
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)offsetof(MeshVertex, position));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)offsetof(MeshVertex, texCoord));
+        glBindVertexArray(0);
+    }
+    ~GpuQuad() {
+        glDeleteVertexArrays(1, &vao);
+        GlObjectStats::onVertexArrayDestroyed();
+        glDeleteBuffers(1, &vbo);
+        GlObjectStats::onVertexBufferDestroyed();
+        releaseOwnIndices();
+    }
+    GpuQuad(const GpuQuad&) = delete;
+    GpuQuad& operator=(const GpuQuad&) = delete;
+
+    // Upload the vertices and draw them with `indices`, or, when that is null, with
+    // the shared buffer `sharedIndices` holding `sharedCount` indices.
+    void upload(const std::vector<MeshVertex>& vertices, const std::vector<uint32_t>* indices,
+                GLuint sharedIndices, GLsizei sharedCount) {
+        glBindVertexArray(vao);  // the element-array binding is VAO state
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(MeshVertex)),
+                     vertices.data(), GL_DYNAMIC_DRAW);
+        if (indices) {
+            if (ownIndices == 0) {
+                glGenBuffers(1, &ownIndices);
+                GlObjectStats::onVertexBufferCreated();
+            }
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ownIndices);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices->size() * sizeof(uint32_t)),
+                         indices->data(), GL_DYNAMIC_DRAW);
+            indexCount = static_cast<GLsizei>(indices->size());
+        } else {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sharedIndices);
+            indexCount = sharedCount;
+        }
+        glBindVertexArray(0);
+        if (!indices) {
+            releaseOwnIndices();  // no longer bound to the VAO
+        }
+    }
+
+private:
+    void releaseOwnIndices() {
+        if (ownIndices != 0) {
+            glDeleteBuffers(1, &ownIndices);
+            GlObjectStats::onVertexBufferDestroyed();
+            ownIndices = 0;
+        }
+    }
+};
+
+namespace {
+
+// True when two geometries tessellate identically: compares every field
+// tessellate() reads (all of QuadGeometry's state).
+bool sameSurface(const QuadGeometry& a, const QuadGeometry& b) {
+    return a.getMeshMode() == b.getMeshMode() && a.getCorners() == b.getCorners() &&
+           a.isBezierEnabled() == b.isBezierEnabled() &&
+           a.getBezierOffsets() == b.getBezierOffsets() && a.getUCoords() == b.getUCoords() &&
+           a.getVCoords() == b.getVCoords() && a.getMeshVertices() == b.getMeshVertices() &&
+           a.getVertexTangents() == b.getVertexTangents();
+}
+
+}  // namespace
+
+const GpuQuad& Renderer::surfaceBuffersFor(const UUID& id, const QuadGeometry& geometry) {
+    std::unique_ptr<GpuQuad>& slot = quadCache_[id];
+    const bool fresh = !slot;
+    if (fresh) {
+        slot = std::make_unique<GpuQuad>();
+    }
+    if (fresh || !sameSurface(slot->builtFrom, geometry)) {
+        // An N×N tessellation draws with the shared index set.
+        const bool ownIndices = !tessellate(geometry);
+        slot->upload(vertices_, ownIndices ? &indices_ : nullptr, cornerIndexBuffer_,
+                     cornerIndexCount_);
+        slot->builtFrom = geometry;
+    }
+    slot->lastPass = meshPass_;
+    return *slot;
 }
 
 void Renderer::createOutlineBuffers() {
     glGenVertexArrays(1, &outlineVAO_);
+    GlObjectStats::onVertexArrayCreated();
     glGenBuffers(1, &outlineVBO_);
+    GlObjectStats::onVertexBufferCreated();
 
     glBindVertexArray(outlineVAO_);
 
@@ -146,60 +294,40 @@ void Renderer::createOutlineBuffers() {
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 
     glBindVertexArray(0);
+
+    // Line-list buffer for the mesh-grid wireframe and handle lines (reuses the
+    // outline shader); drawGridLines sizes it for each draw.
+    glGenVertexArrays(1, &gridVAO_);
+    GlObjectStats::onVertexArrayCreated();
+    glGenBuffers(1, &gridVBO_);
+    GlObjectStats::onVertexBufferCreated();
+    glBindVertexArray(gridVAO_);
+    glBindBuffer(GL_ARRAY_BUFFER, gridVBO_);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
 }
 
-void Renderer::updateQuadBuffers(const Quad& quad) {
-    const QuadGeometry& geometry = quad.getGeometry();
-    int resolution = geometry.getMeshResolution();
-    int vertexCount = (resolution + 1) * (resolution + 1);
+bool Renderer::tessellate(const QuadGeometry& geometry) {
+    // One surface for every mode (ADR-049): S sampled at a density independent of the
+    // control grid, with the base's projective texture coordinates.
+    const IVec2 cells = MeshSubdivision::generateMesh(geometry, vertices_, indices_);
+    return cells.x == kCornerPatchDivisions && cells.y == kCornerPatchDivisions;
+}
 
-    // Generate vertex data
-    vertices_.resize(vertexCount);
-    auto meshPositions = geometry.generateMeshPositions();
-
-    for (int row = 0; row <= resolution; ++row) {
-        for (int col = 0; col <= resolution; ++col) {
-            int index = row * (resolution + 1) + col;
-            float u = static_cast<float>(col) / resolution;
-            float v = static_cast<float>(row) / resolution;
-
-            vertices_[index].position[0] = meshPositions[index].x;
-            vertices_[index].position[1] = meshPositions[index].y;
-            vertices_[index].texCoord[0] = u;
-            vertices_[index].texCoord[1] = v;
-        }
-    }
-
-    // Generate index data (two triangles per quad cell)
-    int quadCount = resolution * resolution;
-    indices_.resize(quadCount * 6);
-
-    int indexOffset = 0;
-    for (int row = 0; row < resolution; ++row) {
-        for (int col = 0; col < resolution; ++col) {
-            uint32_t topLeft = row * (resolution + 1) + col;
-            uint32_t topRight = topLeft + 1;
-            uint32_t bottomLeft = (row + 1) * (resolution + 1) + col;
-            uint32_t bottomRight = bottomLeft + 1;
-
-            // First triangle (top-left, bottom-left, top-right)
-            indices_[indexOffset++] = topLeft;
-            indices_[indexOffset++] = bottomLeft;
-            indices_[indexOffset++] = topRight;
-
-            // Second triangle (top-right, bottom-left, bottom-right)
-            indices_[indexOffset++] = topRight;
-            indices_[indexOffset++] = bottomLeft;
-            indices_[indexOffset++] = bottomRight;
-        }
-    }
-
-    // Upload to GPU
-    glBindBuffer(GL_ARRAY_BUFFER, quadVBO_);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, vertices_.size() * sizeof(QuadVertex), vertices_.data());
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quadEBO_);
-    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, indices_.size() * sizeof(uint32_t), indices_.data());
+void Renderer::createCornerIndexBuffer() {
+    // The triangles of every N×N tessellation, as MeshSubdivision lays them out.
+    std::vector<uint32_t> indices;
+    MeshSubdivision::generateIndices(kCornerPatchDivisions, indices);
+    glGenBuffers(1, &cornerIndexBuffer_);
+    GlObjectStats::onVertexBufferCreated();
+    // With no VAO bound, so no VAO records this element-array binding.
+    glBindVertexArray(0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cornerIndexBuffer_);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices.size() * sizeof(uint32_t)),
+                 indices.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    cornerIndexCount_ = static_cast<int>(indices.size());
 }
 
 void Renderer::updateOutlineBuffers(const Quad& quad) {
@@ -232,46 +360,338 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture) {
     renderQuad(quad, texture, false);
 }
 
+void Renderer::renderSlice(const Slice& slice, uint32_t canvasTexture, IVec2 canvasSize,
+                           Rotation canvasRotation, IVec2 outputSize, const SliceFade* fade) {
+    if (!initialized_ || canvasTexture == 0 || canvasSize.x <= 0 || canvasSize.y <= 0 ||
+        slice.input.width <= 0.0f || slice.input.height <= 0.0f) {
+        return;
+    }
+    const GpuQuad& gpu = surfaceBuffersFor(slice.id, slice.warp);
+
+    // Texel for texel when nothing scales: an unwarped slice exactly the frame's size,
+    // starting on a pixel boundary.
+    const CanvasRect& in = slice.input;
+    const bool exact = isIdentityWarp(slice.warp) &&
+                       in.width == static_cast<float>(outputSize.x) &&
+                       in.height == static_cast<float>(outputSize.y) &&
+                       in.x == std::floor(in.x) && in.y == std::floor(in.y);
+
+    useSurfaceProgram(sliceShader_);
+    applyViewUniforms(sliceShader_);
+    sliceShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
+    sliceShader_.setInt("u_Canvas", 0);
+    sliceShader_.setVec2("u_CanvasSize", glm::vec2(canvasSize));
+    sliceShader_.setInt("u_CanvasRotation", static_cast<int>(canvasRotation) / 90);
+    sliceShader_.setVec4("u_Input", glm::vec4(in.x, in.y, in.width, in.height));
+    sliceShader_.setInt("u_Exact", exact ? 1 : 0);
+    const auto& b = slice.blend;
+    sliceShader_.setVec4("u_BlendWidth", glm::vec4(b[SLICE_EDGE_LEFT].width, b[SLICE_EDGE_RIGHT].width,
+                                                   b[SLICE_EDGE_TOP].width, b[SLICE_EDGE_BOTTOM].width));
+    sliceShader_.setVec4("u_BlendGamma", glm::vec4(b[SLICE_EDGE_LEFT].gamma, b[SLICE_EDGE_RIGHT].gamma,
+                                                   b[SLICE_EDGE_TOP].gamma, b[SLICE_EDGE_BOTTOM].gamma));
+    sliceShader_.setVec4("u_BlendCurve", glm::vec4(b[SLICE_EDGE_LEFT].curve, b[SLICE_EDGE_RIGHT].curve,
+                                                   b[SLICE_EDGE_TOP].curve, b[SLICE_EDGE_BOTTOM].curve));
+    sliceShader_.setFloat("u_BlackLevel", slice.blackLevel);
+
+    // Crossfade: each outgoing canvas is 0 none (transparent), 1 the texel under the
+    // pixel (the same size and turn as this canvas on the exact-copy path), 2 filtered.
+    const bool fading = fade != nullptr && fade->mix < 1.0f;
+    sliceShader_.setFloat("u_Mix", fading ? std::max(fade->mix, 0.0f) : 1.0f);
+    if (fading) {
+        auto bindFrom = [&](const SliceFadeCanvas& from, const char* sampler, const char* mode,
+                            const char* size, const char* rotation, int unit) {
+            const bool has = from.texture != 0 && from.size.x > 0 && from.size.y > 0;
+            const bool sameCanvas = from.size == canvasSize && from.rotation == canvasRotation;
+            sliceShader_.setInt(sampler, unit);
+            sliceShader_.setInt(mode, !has ? 0 : (exact && sameCanvas ? 1 : 2));
+            sliceShader_.setVec2(size, glm::vec2(from.size));
+            sliceShader_.setInt(rotation, static_cast<int>(from.rotation) / 90);
+            if (has) {
+                glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+                glBindTexture(GL_TEXTURE_2D, from.texture);
+            }
+        };
+        bindFrom(fade->from, "u_From", "u_FromMode", "u_FromSize", "u_FromRotation", 1);
+        const float nextWeight = std::clamp(fade->fromNextWeight, 0.0f, 1.0f);
+        sliceShader_.setFloat("u_FromNextWeight", nextWeight);
+        if (nextWeight > 0.0f) {
+            bindFrom(fade->fromNext, "u_FromNext", "u_FromNextMode", "u_FromNextSize",
+                     "u_FromNextRotation", 2);
+        }
+    }
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, canvasTexture);
+    glBindVertexArray(gpu.vao);
+    glDrawElements(GL_TRIANGLES, gpu.indexCount, GL_UNSIGNED_INT, nullptr);
+}
+
 void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selected) {
     if (!initialized_ || !quad.isVisible()) {
         return;
     }
 
-    // Update mesh buffers with quad geometry
-    updateQuadBuffers(quad);
+    const GpuQuad& gpu = surfaceBuffersFor(quad.getId(), quad.getGeometry());
 
-    // Bind shader
-    quadShader_.bind();
+    // Uniforms equal to the previous draw's are skipped (ShaderProgram), and the
+    // program, texture and VAO stay bound until the next draw or endFrame().
+    useSurfaceProgram(quadShader_);
+    applyViewUniforms(quadShader_);
+    quadShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
 
-    // Set uniforms
-    const TextureBinding& texBinding = quad.getTexture();
-    quadShader_.setFloat("u_Opacity", quad.getOpacity());
-    quadShader_.setVec2("u_UVOffset", texBinding.uvOffset);
-    quadShader_.setVec2("u_UVScale", texBinding.uvScale);
-    quadShader_.setFloat("u_UVRotation", texBinding.uvRotation);
-    quadShader_.setInt("u_FlipH", texBinding.flipH ? 1 : 0);
-    quadShader_.setInt("u_FlipV", texBinding.flipV ? 1 : 0);
-    quadShader_.setInt("u_Texture", 0);
+    applySurfaceUniforms(quadShader_, quad.getTexture(), quad.getOpacity(),
+                         quad.getColorCorrection(), quad.getSoftEdge(), texture);
 
-    // Bind texture
-    if (texture && texture->isValid()) {
-        texture->bind(0);
-    } else {
-        defaultTexture_.bind(0);
-    }
-
-    // Draw
-    glBindVertexArray(quadVAO_);
-    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices_.size()), GL_UNSIGNED_INT, nullptr);
-    glBindVertexArray(0);
-
-    Texture::unbind();
-    ShaderProgram::unbind();
+    glBindVertexArray(gpu.vao);
+    glDrawElements(GL_TRIANGLES, gpu.indexCount, GL_UNSIGNED_INT, nullptr);
 
     // Draw selection outline if selected
     if (selected) {
         renderQuadOutline(quad, glm::vec4(0.0f, 0.7f, 1.0f, 1.0f), 2.0f);
     }
+}
+
+void Renderer::applySurfaceUniforms(ShaderProgram& shader, const TextureBinding& binding,
+                                    float opacity, const ColorCorrection& color,
+                                    const SoftEdge& edge, const Texture* texture) {
+    shader.setFloat("u_Opacity", opacity);
+    shader.setVec2("u_UVOffset", binding.uvOffset);
+    shader.setVec2("u_UVScale", binding.uvScale);
+    shader.setFloat("u_UVRotation", binding.uvRotation);
+    shader.setInt("u_FlipH", binding.flipH ? 1 : 0);
+    shader.setInt("u_FlipV", binding.flipV ? 1 : 0);
+    shader.setInt("u_Texture", 0);
+
+    // Crop (ADR-040). Identity {0,0,1,1} is a render no-op.
+    const NormalizedRect& crop = binding.cropRect;
+    shader.setVec2("u_CropOffset", glm::vec2(crop.x, crop.y));
+    shader.setVec2("u_CropSize", glm::vec2(crop.width, crop.height));
+
+    // Color correction (ADR-036). Identity values are a render no-op.
+    shader.setVec3("u_ColorRGBGain", color.rgbGain);
+    shader.setFloat("u_ColorBrightness", color.brightness);
+    shader.setFloat("u_ColorContrast", color.contrast);
+    shader.setFloat("u_ColorGamma", color.gamma);
+
+    // Soft-edge blending (ADR-037). Identity widths (0) are a no-op.
+    shader.setFloat("u_EdgeLeft", edge.left);
+    shader.setFloat("u_EdgeRight", edge.right);
+    shader.setFloat("u_EdgeTop", edge.top);
+    shader.setFloat("u_EdgeBottom", edge.bottom);
+    shader.setFloat("u_EdgeGamma", edge.gamma);
+
+    // Colorspace uniform (ADR-044, A4): 1 = YCoCg decode for Hap Q, 0 = RGB passthrough.
+    // Sourced from the texture's colorSpace() so every draw path (canvas, per-output
+    // renderer, preview FBO) picks it up automatically through this single call site.
+    const bool valid = texture && texture->isValid();
+    shader.setInt("u_ColorSpace",
+                  (valid && texture->colorSpace() == TextureColorSpace::YCoCg) ? 1 : 0);
+
+    if (valid) {
+        texture->bind(0);
+    } else {
+        defaultTexture_.bind(0);
+    }
+}
+
+// A MeshObject's vertex data on the GPU (ADR-052): interleaved position + uv, and
+// indices, owned RAII. Built from one mesh revision (TD-15); the Renderer uploads
+// again when the object's revision differs, whether its mesh was replaced or edited
+// in place.
+struct GpuMesh {
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLuint ebo = 0;
+    GLsizei indexCount = 0;  // 0 = nothing drawable (empty or invalid indices)
+    Vec3 boundsMin{0.0f};    // model space
+    Vec3 boundsMax{0.0f};
+    uint64_t lastPass = 0;
+    uint64_t revision = 0;   // MeshObject::getMeshRevision() of the uploaded data
+
+    explicit GpuMesh(const MeshObject& object) : revision(object.getMeshRevision()) {
+        upload(object.getMesh());
+    }
+    ~GpuMesh() {
+        if (vao != 0) { glDeleteVertexArrays(1, &vao); GlObjectStats::onVertexArrayDestroyed(); }
+        if (vbo != 0) { glDeleteBuffers(1, &vbo); GlObjectStats::onVertexBufferDestroyed(); }
+        if (ebo != 0) { glDeleteBuffers(1, &ebo); GlObjectStats::onVertexBufferDestroyed(); }
+    }
+    GpuMesh(const GpuMesh&) = delete;
+    GpuMesh& operator=(const GpuMesh&) = delete;
+
+private:
+    // Runs on the render thread for every vertex of a mesh (a 2M-triangle mesh has
+    // about 1M), so the loops use plain pointers and scalar maths: container and glm
+    // calls are not inlined in Debug builds (TD-16a).
+    void upload(const MeshData& mesh) {
+        const size_t vertexCount = mesh.positions.size();
+        const size_t indexTotal = mesh.triangleCount() * 3;
+        const uint32_t* index = mesh.indices.data();
+        for (size_t i = 0; i < indexTotal; ++i) {
+            if (index[i] >= vertexCount) {
+                Logger::warning("Mesh index {} out of range ({} vertices); object not drawn",
+                                index[i], vertexCount);
+                return;
+            }
+        }
+        if (indexTotal == 0) return;
+
+        const Vec3* position = mesh.positions.data();
+        float lo[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                       std::numeric_limits<float>::max()};
+        float hi[3] = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                       std::numeric_limits<float>::lowest()};
+        for (size_t i = 0; i < vertexCount; ++i) {
+            const float p[3] = {position[i].x, position[i].y, position[i].z};
+            for (int a = 0; a < 3; ++a) {
+                if (p[a] < lo[a]) lo[a] = p[a];
+                if (p[a] > hi[a]) hi[a] = p[a];
+            }
+        }
+        boundsMin = Vec3(lo[0], lo[1], lo[2]);
+        boundsMax = Vec3(hi[0], hi[1], hi[2]);
+
+        // Without UVs, map the XY bounds onto the texture: +X right, +Y up, so the
+        // image stands upright seen from the front (v = 0 is the image's top row).
+        const bool hasUvs = mesh.uvs.size() == vertexCount;
+        const Vec2* uv = mesh.uvs.data();
+        const float extentX = std::max(hi[0] - lo[0], 1e-6f);
+        const float extentY = std::max(hi[1] - lo[1], 1e-6f);
+        std::vector<float> interleaved(vertexCount * 5);
+        float* out = interleaved.data();
+        for (size_t i = 0; i < vertexCount; ++i, out += 5) {
+            out[0] = position[i].x;
+            out[1] = position[i].y;
+            out[2] = position[i].z;
+            out[3] = hasUvs ? uv[i].x : (position[i].x - lo[0]) / extentX;
+            out[4] = hasUvs ? uv[i].y : (hi[1] - position[i].y) / extentY;
+        }
+
+        glGenVertexArrays(1, &vao);
+        GlObjectStats::onVertexArrayCreated();
+        glGenBuffers(1, &vbo);
+        GlObjectStats::onVertexBufferCreated();
+        glGenBuffers(1, &ebo);
+        GlObjectStats::onVertexBufferCreated();
+
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
+                     interleaved.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indexTotal * sizeof(uint32_t)),
+                     mesh.indices.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glBindVertexArray(0);  // before any other EBO bind, which would rebind ours
+
+        indexCount = static_cast<GLsizei>(indexTotal);
+    }
+};
+
+const GpuMesh* Renderer::meshBuffersFor(const MeshObject& object) {
+    const MeshData& mesh = object.getMesh();
+    if (mesh.empty()) {
+        meshCache_.erase(object.getId());
+        return nullptr;
+    }
+    std::unique_ptr<GpuMesh>& slot = meshCache_[object.getId()];
+    if (!slot || slot->revision != object.getMeshRevision()) {
+        slot.reset();  // free the old buffers before allocating the new ones
+        slot = std::make_unique<GpuMesh>(object);
+    }
+    slot->lastPass = meshPass_;
+    return slot->indexCount > 0 ? slot.get() : nullptr;
+}
+
+void Renderer::renderMeshObject(const MeshObject& object, const ProjectorCamera& camera,
+                                const Texture* texture, float nearZ, float farZ) {
+    if (!initialized_ || !object.isVisible() || !(nearZ > 0.0f) || !(farZ > nearZ)) {
+        return;
+    }
+    const GpuMesh* gpu = meshBuffersFor(object);
+    if (!gpu) {
+        return;
+    }
+
+    const glm::mat4 mvp =
+        camera.projectionMatrix(nearZ, farZ) * camera.viewMatrix() * object.getTransform();
+
+    useSurfaceProgram(mesh3dShader_);
+    mesh3dShader_.setMat4("u_MVP", mvp);
+    applyViewUniforms(mesh3dShader_);
+    mesh3dShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
+    // Objects carry no colour correction or soft edge of their own: identity.
+    applySurfaceUniforms(mesh3dShader_, object.getTexture(), object.getOpacity(),
+                         ColorCorrection{}, SoftEdge{}, texture);
+
+    // Left bound, as by renderQuad, until the next draw or endFrame().
+    glBindVertexArray(gpu->vao);
+    glDrawElements(GL_TRIANGLES, gpu->indexCount, GL_UNSIGNED_INT, nullptr);
+}
+
+void Renderer::renderMeshObjects(const std::vector<std::unique_ptr<MeshObject>>& objects,
+                                 const ProjectorCamera& camera,
+                                 const std::unordered_map<UUID, Texture*>& textures) {
+    if (!initialized_) {
+        return;
+    }
+    // Every scene render path starts here, so this is where both GPU caches drop the
+    // entries of objects and quads that stopped being drawn.
+    ++meshPass_;
+    auto pruneIdle = [this](auto& cache) {
+        for (auto it = cache.begin(); it != cache.end();) {
+            if (meshPass_ - it->second->lastPass > kCacheIdlePasses) {
+                it = cache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    };
+    pruneIdle(meshCache_);
+    pruneIdle(quadCache_);
+
+    // One depth range for the whole pass, spanning every object's bounding box in
+    // the projector's eye space, so depth compares correctly between objects.
+    const glm::mat4 view = camera.viewMatrix();
+    float nearest = std::numeric_limits<float>::max();
+    float farthest = 0.0f;
+    for (const auto& object : objects) {
+        if (!object || !object->isVisible()) continue;
+        const GpuMesh* gpu = meshBuffersFor(*object);
+        if (!gpu) continue;
+        const glm::mat4 modelView = view * object->getTransform();
+        for (int corner = 0; corner < 8; ++corner) {
+            const Vec3 p((corner & 1) ? gpu->boundsMax.x : gpu->boundsMin.x,
+                         (corner & 2) ? gpu->boundsMax.y : gpu->boundsMin.y,
+                         (corner & 4) ? gpu->boundsMax.z : gpu->boundsMin.z);
+            const float depth = -(modelView * glm::vec4(p, 1.0f)).z;  // GL eye looks down -z
+            nearest = std::min(nearest, depth);
+            farthest = std::max(farthest, depth);
+        }
+    }
+    if (farthest <= 0.0f) {
+        return;  // nothing in front of the projector
+    }
+    const float farZ = farthest * 1.01f;
+    const float nearZ = std::max(nearest * 0.99f, farZ * 1e-4f);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_CULL_FACE);
+    for (const auto& object : objects) {
+        if (!object || !object->isVisible()) continue;
+        const Texture* texture = nullptr;
+        auto it = textures.find(object->getId());
+        if (it != textures.end()) {
+            texture = it->second;
+        }
+        renderMeshObject(*object, camera, texture, nearZ, farZ);
+    }
+    glDisable(GL_DEPTH_TEST);
 }
 
 void Renderer::renderQuads(const QuadManager& quadManager,
@@ -308,6 +728,7 @@ void Renderer::renderQuadOutline(const Quad& quad, const glm::vec4& color, float
     updateOutlineBuffers(quad);
 
     outlineShader_.bind();
+    applyViewUniforms(outlineShader_);
     outlineShader_.setVec4("u_OutlineColor", color);
 
     glLineWidth(lineWidth);
@@ -315,7 +736,82 @@ void Renderer::renderQuadOutline(const Quad& quad, const glm::vec4& color, float
     glDrawArrays(GL_LINE_STRIP, 0, 5);
     glBindVertexArray(0);
 
-    ShaderProgram::unbind();
+    unbindProgram();
+    glLineWidth(1.0f);
+}
+
+void Renderer::renderMeshGrid(const Quad& quad, const glm::vec4& color, float lineWidth) {
+    if (!initialized_) {
+        return;
+    }
+
+    // Each division line as a polyline along the surface, sampled at the render
+    // tessellation's parameters so it lies on the drawn image.
+    const QuadGeometry& geometry = quad.getGeometry();
+    const std::vector<float>& uLines = geometry.getUCoords();
+    const std::vector<float>& vLines = geometry.getVCoords();
+    const std::vector<float> uSteps = geometry.tessellationU();
+    const std::vector<float> vSteps = geometry.tessellationV();
+    const auto columns = geometry.sampleSurface(uLines, vSteps);  // vertical lines
+    const auto rows = geometry.sampleSurface(uSteps, vLines);     // horizontal lines
+
+    gridVertices_.clear();
+    auto pushSeg = [&](const Vec2& a, const Vec2& b) {
+        gridVertices_.push_back(a.x); gridVertices_.push_back(a.y);
+        gridVertices_.push_back(b.x); gridVertices_.push_back(b.y);
+    };
+    for (size_t c = 0; c < uLines.size(); ++c)
+        for (size_t s = 0; s + 1 < vSteps.size(); ++s)
+            pushSeg(columns[s * uLines.size() + c].position,
+                    columns[(s + 1) * uLines.size() + c].position);
+    for (size_t r = 0; r < vLines.size(); ++r)
+        for (size_t s = 0; s + 1 < uSteps.size(); ++s)
+            pushSeg(rows[r * uSteps.size() + s].position, rows[r * uSteps.size() + s + 1].position);
+    drawGridLines(color, lineWidth);
+}
+
+void Renderer::drawGridLines(const glm::vec4& color, float lineWidth) {
+    if (gridVertices_.empty()) {
+        return;
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, gridVBO_);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(gridVertices_.size() * sizeof(float)),
+                 gridVertices_.data(), GL_DYNAMIC_DRAW);
+
+    outlineShader_.bind();
+    applyViewUniforms(outlineShader_);
+    outlineShader_.setVec4("u_OutlineColor", color);
+    glLineWidth(lineWidth);
+    glBindVertexArray(gridVAO_);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridVertices_.size() / 2));
+    glBindVertexArray(0);
+    unbindProgram();
+    glLineWidth(1.0f);
+}
+
+void Renderer::renderCanvasBorder(const glm::vec4& color, float lineWidth) {
+    if (!initialized_) {
+        return;
+    }
+
+    // Reuse the outline buffer (5 floats-pairs capacity): the [0,1] canvas frame as
+    // a closed line loop. The active view transform places it at the projector-frame
+    // bounds so the user can see the edges of the output even past the content.
+    outlineVertices_.resize(10);
+    const float pts[10] = {0.f, 0.f,  1.f, 0.f,  1.f, 1.f,  0.f, 1.f,  0.f, 0.f};
+    for (int i = 0; i < 10; ++i) outlineVertices_[i] = pts[i];
+
+    glBindBuffer(GL_ARRAY_BUFFER, outlineVBO_);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, outlineVertices_.size() * sizeof(float), outlineVertices_.data());
+
+    outlineShader_.bind();
+    applyViewUniforms(outlineShader_);
+    outlineShader_.setVec4("u_OutlineColor", color);
+    glLineWidth(lineWidth);
+    glBindVertexArray(outlineVAO_);
+    glDrawArrays(GL_LINE_STRIP, 0, 5);
+    glBindVertexArray(0);
+    unbindProgram();
     glLineWidth(1.0f);
 }
 
@@ -338,7 +834,9 @@ void Renderer::createHandleBuffers() {
     }
 
     glGenVertexArrays(1, &handleVAO_);
+    GlObjectStats::onVertexArrayCreated();
     glGenBuffers(1, &handleVBO_);
+    GlObjectStats::onVertexBufferCreated();
 
     glBindVertexArray(handleVAO_);
 
@@ -352,6 +850,23 @@ void Renderer::createHandleBuffers() {
     glBindVertexArray(0);
 }
 
+namespace {
+// Set the handle shader's aspect uniform so the unit-circle handles render round.
+// With a canvas view transform (ADR-041) the handles live in canvas space, so the
+// canvas pixel aspect keeps them round; without one, fall back to the GL viewport.
+void setHandleAspect(ShaderProgram& shader, float canvasAspect) {
+    float aspect;
+    if (canvasAspect > 0.0f) {
+        aspect = canvasAspect;
+    } else {
+        GLint vp[4] = {0, 0, 1, 1};
+        glGetIntegerv(GL_VIEWPORT, vp);
+        aspect = (vp[3] > 0) ? static_cast<float>(vp[2]) / vp[3] : 1.0f;
+    }
+    shader.setFloat("u_Aspect", aspect);
+}
+}  // namespace
+
 void Renderer::renderCornerHandles(const Quad& quad, int hoveredIndex, int draggedIndex, int selectedIndex) {
     if (!initialized_) {
         return;
@@ -361,10 +876,13 @@ void Renderer::renderCornerHandles(const Quad& quad, int hoveredIndex, int dragg
     const auto& corners = geometry.getCorners();  // TL, TR, BR, BL
 
     // Handle sizes - corners are slightly larger than mesh handles
-    constexpr float HANDLE_SIZE = 0.010f;
-    constexpr float SELECTED_HANDLE_SIZE = 0.013f;
+    constexpr float HANDLE_SIZE = 0.009f;
+    constexpr float SELECTED_HANDLE_SIZE = 0.012f;
 
     handleShader_.bind();
+
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
 
     // Draw each corner handle
     constexpr int SEGMENTS = 16;
@@ -401,7 +919,7 @@ void Renderer::renderCornerHandles(const Quad& quad, int hoveredIndex, int dragg
     }
 
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
 }
 
 void Renderer::renderMeshHandles(const Quad& quad, int hoveredIndex, int draggedIndex, int selectedIndex) {
@@ -419,11 +937,15 @@ void Renderer::renderMeshHandles(const Quad& quad, int hoveredIndex, int dragged
     // Get mesh positions (with offsets applied)
     auto positions = geometry.generateMeshPositions();
 
-    // Handle size in normalized coordinates (approx 10 pixels for a 1920 wide window)
-    constexpr float HANDLE_SIZE = 0.008f;
-    constexpr float SELECTED_HANDLE_SIZE = 0.010f;  // Slightly larger for selected
+    // Mesh handles are small so a dense control grid stays readable (not a blob
+    // field). Sizes are radii in normalized-Y units; the shader keeps them round.
+    constexpr float HANDLE_SIZE = 0.005f;
+    constexpr float SELECTED_HANDLE_SIZE = 0.008f;  // Slightly larger for selected
 
     handleShader_.bind();
+
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
 
     // Draw each handle
     constexpr int SEGMENTS = 16;
@@ -462,7 +984,7 @@ void Renderer::renderMeshHandles(const Quad& quad, int hoveredIndex, int dragged
     }
 
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
 }
 
 void Renderer::renderSnapIndicator(const Vec2& position) {
@@ -471,10 +993,13 @@ void Renderer::renderSnapIndicator(const Vec2& position) {
     }
 
     // Snap indicator: magenta pulsing circle, larger than normal handles
-    constexpr float SNAP_INDICATOR_SIZE = 0.018f;
+    constexpr float SNAP_INDICATOR_SIZE = 0.014f;
     constexpr int SEGMENTS = 16;
 
     handleShader_.bind();
+
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
 
     // Set handle center
     handleShader_.setVec2("u_HandleCenter", position);
@@ -489,7 +1014,103 @@ void Renderer::renderSnapIndicator(const Vec2& position) {
     glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
 
     glBindVertexArray(0);
-    ShaderProgram::unbind();
+    unbindProgram();
+}
+
+void Renderer::renderBezierHandles(const Quad& quad, int hovered, int dragged) {
+    if (!initialized_) {
+        return;
+    }
+    const QuadGeometry& g = quad.getGeometry();
+    if (!g.isBezierEnabled()) {
+        return;
+    }
+    const auto& corners = g.getCorners();
+
+    // Tangent lines (corner -> its control point), drawn via the grid-line buffer.
+    gridVertices_.clear();
+    auto seg = [&](const Vec2& a, const Vec2& b) {
+        gridVertices_.push_back(a.x); gridVertices_.push_back(a.y);
+        gridVertices_.push_back(b.x); gridVertices_.push_back(b.y);
+    };
+    for (int e = 0; e < 4; ++e) {
+        seg(corners[e], g.getBezierControl(e, 0));
+        seg(corners[(e + 1) % 4], g.getBezierControl(e, 1));
+    }
+    drawGridLines(glm::vec4(0.7f, 0.6f, 0.2f, 0.7f), 1.0f);
+
+    // Control points as round amber handles.
+    handleShader_.bind();
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
+    constexpr int SEGMENTS = 16;
+    for (int i = 0; i < 8; ++i) {
+        Vec2 cp = g.getBezierControl(i / 2, i % 2);
+        handleShader_.setVec2("u_HandleCenter", cp);
+        glm::vec4 color = (i == dragged) ? glm::vec4(1.0f, 1.0f, 0.0f, 1.0f)
+                        : (i == hovered) ? glm::vec4(0.0f, 1.0f, 1.0f, 1.0f)
+                        :                  glm::vec4(1.0f, 0.8f, 0.2f, 0.95f);
+        float size = (i == dragged || i == hovered) ? 0.011f : 0.008f;
+        handleShader_.setFloat("u_HandleSize", size);
+        handleShader_.setVec4("u_HandleColor", color);
+        glBindVertexArray(handleVAO_);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
+    }
+    glBindVertexArray(0);
+    unbindProgram();
+}
+
+void Renderer::renderGridHandles(const Quad& quad, int vertex, int selectedHandle,
+                                 int hoveredHandle, int draggedHandle) {
+    if (!initialized_) {
+        return;
+    }
+    const QuadGeometry& g = quad.getGeometry();
+    const unsigned available = g.availableHandles(vertex);
+    if (available == 0) {
+        return;
+    }
+    const Vec2 origin = g.generateMeshPositions()[static_cast<size_t>(vertex)];
+    std::array<Vec2, GRID_HANDLE_COUNT> handles{};
+    gridVertices_.clear();
+    for (int h = 0; h < GRID_HANDLE_COUNT; ++h) {
+        if (!(available & (1u << h))) continue;
+        handles[static_cast<size_t>(h)] = g.gridHandlePosition(vertex, h);
+        gridVertices_.push_back(origin.x); gridVertices_.push_back(origin.y);
+        gridVertices_.push_back(handles[static_cast<size_t>(h)].x);
+        gridVertices_.push_back(handles[static_cast<size_t>(h)].y);
+    }
+    drawGridLines(glm::vec4(0.7f, 0.6f, 0.2f, 0.7f), 1.0f);
+
+    // Handles in the bezier-handle style: amber once set, dimmer while automatic;
+    // the keyboard-selected one green, as a selected vertex is.
+    const VertexTangents tangents = g.getVertexTangent(vertex);
+    handleShader_.bind();
+    setHandleAspect(handleShader_, canvasAspect_);
+    applyViewUniforms(handleShader_);
+    constexpr int SEGMENTS = 16;
+    for (int h = 0; h < GRID_HANDLE_COUNT; ++h) {
+        if (!(available & (1u << h))) continue;
+        handleShader_.setVec2("u_HandleCenter", handles[static_cast<size_t>(h)]);
+        glm::vec4 color = tangents.isExplicit(h) ? glm::vec4(1.0f, 0.8f, 0.2f, 0.95f)
+                                                 : glm::vec4(1.0f, 0.8f, 0.2f, 0.5f);
+        float size = 0.006f;
+        if (h == draggedHandle) {
+            color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
+            size = 0.009f;
+        } else if (h == hoveredHandle) {
+            color = glm::vec4(0.0f, 1.0f, 1.0f, 1.0f);
+        } else if (h == selectedHandle) {
+            color = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
+            size = 0.009f;
+        }
+        handleShader_.setFloat("u_HandleSize", size);
+        handleShader_.setVec4("u_HandleColor", color);
+        glBindVertexArray(handleVAO_);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
+    }
+    glBindVertexArray(0);
+    unbindProgram();
 }
 
 } // namespace quadmapper

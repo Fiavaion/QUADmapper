@@ -1,9 +1,12 @@
 #pragma once
 
+#include "UUID.hpp"
+
 #include <memory>
 #include <vector>
 #include <string>
 #include <functional>
+#include <unordered_set>
 
 namespace quadmapper {
 
@@ -15,11 +18,12 @@ class Command {
 public:
     virtual ~Command() = default;
 
-    // Execute the command
-    virtual void execute() = 0;
+    // Execute the command. Returns false when it could not be applied (e.g. its
+    // target quad no longer exists); a failed command must leave state untouched.
+    virtual bool execute() = 0;
 
-    // Undo the command
-    virtual void undo() = 0;
+    // Undo the command. Same failure contract as execute().
+    virtual bool undo() = 0;
 
     // Get a description of this command (for UI display)
     virtual std::string getDescription() const = 0;
@@ -31,6 +35,14 @@ public:
     // Merge another command into this one
     // Only called if canMergeWith returns true
     virtual void mergeWith(const Command& other) { (void)other; }
+
+    // Media source ids this command can put back onto a quad (e.g. the snapshot of a
+    // deleted quad). They must stay loaded while the command is in the history.
+    virtual void collectMediaIds(std::unordered_set<UUID>& out) const { (void)out; }
+
+    // A media source was replaced by another (a missing file relocated): what this
+    // command would put back must use the new id.
+    virtual void remapMediaId(const UUID& from, const UUID& to) { (void)from; (void)to; }
 
 protected:
     Command() = default;
@@ -51,13 +63,14 @@ public:
     CommandHistory(CommandHistory&&) = default;
     CommandHistory& operator=(CommandHistory&&) = default;
 
-    // Execute a command and add it to history
+    // Execute a command and add it to history. A command that fails on its first
+    // execution is not recorded.
     void execute(std::unique_ptr<Command> command);
 
-    // Undo the last command
+    // Undo / redo one step. Returns false when there is nothing to undo/redo or the
+    // command could not be applied (its target is gone); a failed step is still
+    // consumed so the stack never wedges on a stale entry.
     bool undo();
-
-    // Redo the last undone command
     bool redo();
 
     // Check if undo/redo is available
@@ -68,12 +81,24 @@ public:
     std::string getUndoDescription() const;
     std::string getRedoDescription() const;
 
+    // The step undo() / redo() would take next, or nullptr. For callers that decide
+    // whether to take it (calibration takes only its own steps, TD-17).
+    const Command* peekUndo() const { return canUndo() ? commands_[undoIndex_ - 1].get() : nullptr; }
+    const Command* peekRedo() const { return canRedo() ? commands_[undoIndex_].get() : nullptr; }
+
     // Clear all history
     void clear();
 
     // Get/set max history size
     size_t getMaxHistory() const { return maxHistory_; }
     void setMaxHistory(size_t max);
+
+    // Every media source id an undo or redo step could restore (see
+    // Command::collectMediaIds), including an open compound group.
+    void collectMediaIds(std::unordered_set<UUID>& out) const;
+
+    // Command::remapMediaId on every step, including an open compound group.
+    void remapMediaId(const UUID& from, const UUID& to);
 
     // Get current stack sizes
     size_t getUndoCount() const { return undoIndex_; }
@@ -111,12 +136,15 @@ class CommandHistory::CompoundCommand : public Command {
 public:
     explicit CompoundCommand(const std::string& description);
 
-    void execute() override;
-    void undo() override;
+    bool execute() override;
+    bool undo() override;
     std::string getDescription() const override { return description_; }
 
+    // Executes the command immediately; it is kept only if that succeeds.
     void addCommand(std::unique_ptr<Command> command);
     bool isEmpty() const { return commands_.empty(); }
+    void collectMediaIds(std::unordered_set<UUID>& out) const override;
+    void remapMediaId(const UUID& from, const UUID& to) override;
 
 private:
     std::string description_;

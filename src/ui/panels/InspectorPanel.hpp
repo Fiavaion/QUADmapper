@@ -1,8 +1,18 @@
 #pragma once
 
+#include "SliceEditor.hpp"
+#include "core/Types.hpp"
+#include "core/UUID.hpp"
+
+#include <glm/glm.hpp>
+
+#include <string>
+
 namespace quadmapper {
 
 struct EditorContext;
+struct TextureBinding;
+class Quad;
 
 // Renders the context-sensitive "Properties" dockable window.
 // When ctx.es.showProperties is false, render() returns immediately.
@@ -24,12 +34,33 @@ public:
 
 private:
     void renderQuadProperties(EditorContext& ctx);
+    void renderSimpleQuadProperties(EditorContext& ctx, Quad& quad);  // ADR-042 simple mode
+    void renderCropControls(EditorContext& ctx, TextureBinding& texBinding);
     void renderOutputProperties(EditorContext& ctx);
     void renderMediaProperties(EditorContext& ctx);
+    void renderObjectProperties(EditorContext& ctx);  // 3D objects (ADR-052)
+
+    SliceEditor sliceEditor_;  // the selected output's slices (ADR-047)
 
     char quadName_[128]   = "";
     char outputName_[128] = "";
     char mediaName_[128]  = "";
+    char objectName_[128] = "";
+
+    // The selected object's transform as edited: position, rotation (degrees) and
+    // uniform scale, re-read from the matrix only when transformShown_ goes stale.
+    UUID transformObjectId_;
+    glm::mat4 transformShown_{1.0f};
+    Vec3 objectPosition_{0.0f};
+    Vec3 objectRotationDeg_{0.0f};
+    float objectScale_ = 1.0f;
+
+    // Normalized position (0..1) for inserting a grid division (ADR-038 Tier 1).
+    float gridInsertPos_ = 0.5f;
+
+    // The quad and media path the texture Path field last showed (followTexturePath).
+    UUID pathFieldQuad_;
+    std::string pathFieldPath_;
 };
 
 }  // namespace quadmapper

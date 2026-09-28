@@ -1,0 +1,100 @@
+# ADR-055: Video pipeline v2 — hardware decode, NV12 on the GPU, asynchronous uploads
+
+**Date:** 2026-09-26
+**Status:** Accepted (owner: "get this development done", 2026-09-26). This is the rest of the "media pipeline v2" the foundation audit reserved under ADR-050; the playback clock and audio parts shipped as ADR-050.
+**Deciders:** Jones
+
+## Context
+
+The PRD asks for 16 simultaneous videos. QM-107 measured 16 × 1080p H.264 at about 2.5 fps (Release).
+- **Decoding is in software.** A 20 Mbit/s 1080p25 clip takes 35–60 ms per frame on one thread, and two threads are all 16 streams can share.
+- **Frames are converted to RGB24** with swscale and copied twice (decoder → player → source).
+- **Uploads block the main thread,** about 4.7 ms per 1080p frame.
+
+HAP, which the GPU decompresses, already reaches about 98% of frames at 16 streams. The FFmpeg in vcpkg ships the D3D11VA hardware-context headers. Whether the build enables the D3D11VA hardware accelerator must be confirmed at runtime.
+
+## Decision
+
+1. **Hardware decode where available.**
+   - H.264, HEVC, VP9 and AV1 decode through D3D11VA (`av_hwdevice_ctx_create`, `get_format`). The decoded surface is copied to system memory as NV12 with `av_hwframe_transfer_data`.
+   - Software decode stays as the fallback, used automatically and per stream when the GPU refuses (profile, resolution, too many sessions). The Video Player shows "hardware" or "software" for each clip.
+   - If the installed FFmpeg lacks D3D11VA, the implementer stops and reports. Changing `vcpkg.json` features needs the owner's approval, because it rebuilds FFmpeg.
+2. **Keep NV12 (and YUV420P from software decode) all the way to the GPU.**
+   - Upload the planes as R8 and RG8 textures (1.5 bytes per pixel instead of 3). Convert to the source's RGBA texture in a small GPU pass, using the stream's colour matrix (BT.601 or BT.709) and range (limited or full).
+   - Every consumer — quads, 3D objects, previews, thumbnails — still samples one RGBA texture, so `quad.frag` and the mesh shader are unchanged.
+   - swscale remains only for formats the GPU pass doesn't handle.
+3. **Asynchronous uploads.**
+   - Pixel buffer objects (a small ring per source) so `glTexSubImage2D` returns at once.
+   - The decode thread writes into a mapped PBO where that is safe; otherwise one copy into it.
+   - Frames move by handle, with no player → source copy.
+4. **Frame timing is unchanged:** the PlaybackClock (ADR-050) still picks which frame is shown. Seek, Ping-Pong reverse decode and the EOF drain keep their tests.
+5. **Gates.**
+   - Colour is correct: a test clip with known colour bars, in BT.601/709 and limited/full range, matches reference RGB within ±2 per channel.
+   - Measured with `--bench` (Release) on this machine: 16 × 1080p H.264 presents ≥ 95% of expected frames at ≥ 55 fps. The main-thread upload time per frame is reported before and after.
+   - All existing playback tests pass. The stress harness shows no leaks, including the D3D11 device and the hardware frame pool.
+
+## Consequences
+- ✅ H.264 and HEVC shows can run many streams; the CPU mostly waits.
+- ✅ Half the upload bandwidth, and no RGB conversion on the CPU.
+- ❌ More moving parts: a hardware device per app, a frame pool per stream, and a fallback path to keep tested.
+- ❌ Zero-copy D3D11 → GL interop (`WGL_NV_DX_interop2`) is not attempted. The copy to system memory stays; it can be a later step.
+
+## Alternatives considered
+1. **Recommend HAP only.** Rejected: most show media arrives as H.264 or HEVC.
+2. **Zero-copy interop now.** Rejected for v2: it is vendor-specific and adds risk. The measured gain first comes from hardware decode plus NV12 plus PBOs.
+
+## Amendment (implementation, 2026-09-26)
+- **D3D11VA is in the vcpkg FFmpeg** (7.1: `h264/hevc/vp9/av1_d3d11va` hwaccels). No `vcpkg.json` change was needed. On the dev machine the device lands on the RTX 3080 Laptop GPU, the same GPU as the GL context.
+- **One device, kept until exit.** Creating and destroying a D3D11 device per clip leaked about 1.5 MB of driver memory each time: 40 stress cycles re-creating a clip grew the working set by 65 MB, against 25 MB with one device. The device is created at the first hardware decode and never released. Releasing it at exit would race the driver's own unload, and the OS reclaims it anyway. Giving each stream its own device was also tried; it kept 8 cores busy and was slower.
+- **Readback.** `av_hwframe_transfer_data` holds the shared device's lock while it waits for the GPU copy and while it copies the pixels. With 16 streams, each stream queued behind the others: about 20 ms per frame, and 85–93% of frames presented. Instead, each stream copies its surface to its own staging texture and polls `Map` with `DO_NOT_WAIT`, holding the lock only for the D3D11 calls. That raised presented frames to 99–102%. The frames land in a per-stream buffer pool (NV12, or P010 for 10-bit).
+- **Fallback.** The first frame decodes at open, so a stream the GPU refuses (profile, size, sessions) starts in software. There are two triggers later: `get_format` falling back to a software format, or a failed readback. Either one reopens the codec with two-thread software decoding. Decoding restarts from the keyframe before the same frame, so no frame is skipped or repeated. The test hook is `DecodeOptions::failHardwareAfterFrames`.
+- **§3 uploads, as built.** The decode thread does not write into PBOs. It would need about 400 MB of mapped buffers kept supplied to 16 decoders, with a back-pressure deadlock risk. Instead:
+  - The main thread maps a PBO, and a copier thread in the renderer fills it. A mapped buffer's memory is ordinary memory, so map, unmap and GL still happen only on the main thread.
+  - After each upload, the frame queued next is staged. In steady playback the main thread then only maps, unmaps and issues `glTexSubImage2D`.
+  - At 16 × 30 fps, 85% of prefetches hit. A mismatch, from a seek or a dropped frame, copies anew on the same path.
+  - Main-thread cost is 0.3–0.8 ms per 1080p frame, depending on machine load. It was 4.3–12.8 ms with RGB24.
+- **Fixed GL objects per video source.** Each source gets three plane textures and two PBOs, named when it registers. Storage is sized at the first frame. The stress harness compares GL object counts every cycle.
+- **Colour.** Untagged video counts as BT.709 when HD and BT.601 when SD. JPEG-derived pictures are always BT.601. The old swscale path always used BT.601 limited range, so tagged or HD BT.709 clips now show their correct, slightly different colours. MPEG-2 cannot signal full range. Thumbnails and cameras keep swscale's defaults.
+- **Gate results.** Measured with `--bench`, Release, 2 × 1080p outputs, uncapped, while other agents were using the same machine:
+
+  | Clip | Before (fps, presented) | After (fps, presented) |
+  |---|---|---|
+  | greenCrystals, 16 × H.264, 25 fps, 20 Mbit/s | 1.8–2.7 fps, 6–11% | 70–101 fps, 95.6–100.9% |
+  | 5sec.mp4, 16 × H.264, 30 fps | 3.2–3.6 fps, 11–12% | 42–70 fps, 82–97% |
+  | 16 × HEVC (x265, 25 fps) | 2.4 fps, 5% | 37–57 fps, 80–88% |
+
+  - The gate holds for the reference clip.
+  - 30 fps clips and HEVC meet it only on a quiet machine. The remainder is tracked in TD-19.
+  - `WGL_NV_DX_interop2` zero-copy is still not attempted. It is the next lever and needs its own ADR.
+
+## Amendment 2 (10-bit investigation, 2026-09-26)
+The gate misses only for 10-bit HEVC: 16 × 1080p25 P010 runs at 30–32 fps with 95–96% of frames presented. Measured on the quiet machine (Release, 2 × 1080p outputs, RTX 3080 Laptop at PCIe 3.0 x8, resizable BAR on).
+
+- **Where the time goes: the plane upload.**
+  - GL timer queries around each conversion: the upload takes 2.1–2.2 ms of GPU per P010 frame, the pass 0.04 ms, the mipmaps 0.13 ms.
+  - Nsight Systems (OpenGL + WDDM + GPU metrics) shows the same 2–3 ms spans back to back through the frame, charged to the next GL call after the upload, whichever it is (the mipmap, or a `glClear` once the passes were batched). The graphics engine is active only about a third of the time (GR Active 34%) and the async copy engine 33–45%: the GPU mostly waits on the transfers.
+  - Skipping only `glTexSubImage2D` gives 136 fps. Uploading only P010's high bytes (NV12-sized, SSE2 extraction on the copier) gives 65–68 fps with 100% of frames presented.
+- **Not the cause.**
+  - The 16-bit formats: byte-pair RG8/RGBA8 textures upload just as slowly.
+  - The D3D11 readback: skipping the GL side entirely gives 161 fps and 100% of frames.
+  - The conversion pass and the mipmaps.
+  - The unpack alignment, the buffer usage hint (DYNAMIC, STREAM_COPY, STATIC), and the size or count of the pixel buffers (≤ 2 MB bands of rows).
+- **Tried, none reaches the gate.**
+  - All uploads of a frame first, then all passes: 23 fps.
+  - Uploading the next frame ahead into a second set of plane textures: 26 fps. At that frame rate there is no spare frame to upload in.
+  - A linear copy into a device-local buffer before the upload: 20 fps.
+  - Reusing each pixel buffer in place once a fence says the GPU has read it, instead of orphaning it every frame. Paging operations fall 3× and 10-bit rises to 35–37 fps with 100% of frames. But H.264 drops 25–40%, because unsynchronised maps stall NVIDIA's driver thread. Not kept.
+- **Why a lossless fix cannot reach the gate on this path.** 10-bit 4:2:0 needs at least 3.9 MB a frame, 25% more than NV12. Adding an upload of that residual size to the high-byte path drops it from 68 to 43 fps.
+- **The way out is one of:**
+  - (a) Zero-copy D3D11→GL through `WGL_NV_DX_interop2`. It removes the readback and the upload, and needs its own ADR: it moves work across the decode/render thread boundary.
+  - (b) Uploading 10-bit sources as 8-bit, optionally dithered. That is an image-quality decision for the owner.
+
+  TD-19 tracks the choice.
+
+## Amendment 3 (Loop without a codec restart, TD-30, 2026-09-27)
+16 × `5sec.mp4` (1080p30, 5 s) lost frames at every loop: decode lag p99 228 ms on the quiet machine, 0.3–0.6 s under load.
+
+- **Cause.** At the end of each Loop pass the decoder drained, then `avcodec_flush_buffers` and a seek to 0. The flush makes FFmpeg's H.264 and HEVC decoders set up again at the next keyframe (`get_format` is called again). With D3D11VA that means a new GPU decoder and surface pool, created one stream at a time on the shared device, ~50 ms each. Instrumented: every stream reached the end with 7 frames queued, then waited 0.8 s (under load) for its next frame, and all 16 got it within 2 ms of each other. The demuxer seek took 1–30 ms.
+- **Change.** In Loop, when the demuxer reaches the end, it goes back to the clip's first frame (by time, or by byte where a time seek lands late, as MPEG-TS does). That packet is sent straight after the last one, as a stream with a keyframe there, if it is a clean entry point: a keyframe, and for H.264/HEVC an IDR or BLA picture (other keyframes may be followed by pictures that refer back across them). The frames held for reordering come out first; the first frame whose time goes back starts the next leg. Otherwise the old drain-and-restart runs.
+- **Unchanged.** The PlaybackClock and every frame's due time (ADR-050); Ping-Pong, which still restarts at each reflection and seeks per group on the reverse leg; seeks; the readback, zero-copy and software paths all take frames as before.
+- **Evidence.** `get_format` runs only at open. `VideoDecoderLoopSeam.*` and `HardwareLoopSeam.*` (readback and zero-copy) check that the next pass is queued before the seam with contiguous due times and no restart (`VideoDecoder::decoderRestarts`). Release A/B under load: decode lag p99 323–581 → 33 ms, worst stream 95.3–99.0% → 99.6–99.9%; greenCrystals and 10-bit HEVC unchanged. Numbers are in TD-30 (resolved).

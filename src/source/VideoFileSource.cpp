@@ -1,11 +1,13 @@
 #include "VideoFileSource.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 
 namespace quadmapper {
 
-VideoFileSource::VideoFileSource(const std::filesystem::path& path)
-    : path_(path)
-    , name_(path.filename().string())
+VideoFileSource::VideoFileSource(const std::filesystem::path& path, const DecodeOptions& options)
+    : name_(utf8FromPath(path.filename()))
+    , path_(path)
+    , options_(options)
     , player_(std::make_unique<VideoPlayer>())
 {
 }
@@ -19,18 +21,16 @@ bool VideoFileSource::initialize() {
         return true;
     }
 
-    if (!player_->load(path_)) {
-        Logger::error("VideoFileSource: Failed to load '{}'", path_.string());
+    if (!player_->load(path_, options_)) {
+        Logger::error("VideoFileSource: Failed to load '{}'", utf8FromPath(path_));
         return false;
     }
 
-    // Pre-allocate frame buffer based on video dimensions
     const VideoInfo& info = player_->getVideoInfo();
-    frame_.allocate(info.width, info.height, 3);  // RGB24
-
     ready_ = true;
 
-    Logger::debug("VideoFileSource: Loaded '{}' ({}x{}, {:.2f}s, {:.1f}fps)",
+    // The logger substitutes plain {} only (no format specs).
+    Logger::debug("VideoFileSource: Loaded '{}' ({}x{}, {} s, {} fps)",
                   name_, info.width, info.height, info.duration, info.frameRate);
 
     return true;
@@ -50,7 +50,7 @@ bool VideoFileSource::update(double deltaTime) {
         return false;
     }
 
-    // Update the video player (advances playback)
+    // Takes the frames due on the player's clock (deltaTime is not used for timing)
     bool newFrame = player_->update(deltaTime);
 
     if (newFrame && player_->hasNewFrame()) {
@@ -194,6 +194,54 @@ LoopMode VideoFileSource::getLoopMode() const {
     return LoopMode::ONCE;
 }
 
+std::string VideoFileSource::getLoopModeNotice() const {
+    return player_ ? player_->getLoopModeNotice() : std::string();
+}
+
+void VideoFileSource::setTimelineLocked(bool locked, const PlaybackClock& master) {
+    if (player_) player_->setTimelineLocked(locked, master);
+}
+
+bool VideoFileSource::isTimelineLocked() const {
+    return player_ && player_->isTimelineLocked();
+}
+
+void VideoFileSource::followTimeline(const PlaybackClock& master) {
+    if (player_) player_->followTimeline(master);
+}
+
+const PlaybackClock& VideoFileSource::getClock() const {
+    return player_->getClock();
+}
+
+PlaybackTimePoint VideoFileSource::getClockNow() const {
+    return player_->now();
+}
+
+std::string VideoFileSource::getErrorMessage() const {
+    return player_ ? player_->getErrorMessage() : std::string();
+}
+
+bool VideoFileSource::isHardwareDecoding() const {
+    return player_ && player_->isHardwareDecoding();
+}
+
+std::string VideoFileSource::getDecodeNote() const {
+    return player_ ? player_->getDecodeNote() : std::string();
+}
+
+bool VideoFileSource::isZeroCopy() const {
+    return player_ && player_->isZeroCopy();
+}
+
+void VideoFileSource::stopZeroCopy(const std::string& reason) {
+    if (player_) player_->stopZeroCopy(reason);
+}
+
+std::string VideoFileSource::getZeroCopyNote() const {
+    return player_ ? player_->getZeroCopyNote() : std::string();
+}
+
 const VideoInfo& VideoFileSource::getVideoInfo() const {
     static VideoInfo empty;
     if (player_ && player_->isLoaded()) {
@@ -203,9 +251,25 @@ const VideoInfo& VideoFileSource::getVideoInfo() const {
 }
 
 void VideoFileSource::convertVideoFrame(const VideoFrame& videoFrame) {
-    // Ensure frame buffer is correct size
-    if (frame_.width != videoFrame.width ||
-        frame_.height != videoFrame.height) {
+    frame_.timestamp = static_cast<uint64_t>(videoFrame.pts * 1000000.0);  // Convert to microseconds
+    frame_.frameNumber = static_cast<uint64_t>(videoFrame.frameNumber);
+
+    if (videoFrame.yuv.isValid()) {
+        // Share the decoder's planes: the frame moves by handle, not by copy (ADR-055).
+        if (!frame_.pixels.empty()) std::vector<uint8_t>().swap(frame_.pixels);
+        frame_.yuv = videoFrame.yuv;
+        frame_.nextYuv = player_->peekNextPicture();
+        frame_.width = videoFrame.width;
+        frame_.height = videoFrame.height;
+        frame_.channels = 4;  // uploaded into an RGBA texture
+        return;
+    }
+    frame_.yuv = YuvPicture{};
+    frame_.nextYuv = YuvPicture{};
+
+    // RGB24 (formats the GPU conversion does not handle): copy into the frame buffer
+    if (frame_.width != videoFrame.width || frame_.height != videoFrame.height ||
+        frame_.channels != 3 || frame_.pixels.empty()) {
         frame_.allocate(videoFrame.width, videoFrame.height, 3);
     }
 
@@ -214,9 +278,6 @@ void VideoFileSource::convertVideoFrame(const VideoFrame& videoFrame) {
     if (videoFrame.data.size() >= dataSize) {
         std::memcpy(frame_.pixels.data(), videoFrame.data.data(), dataSize);
     }
-
-    frame_.timestamp = static_cast<uint64_t>(videoFrame.pts * 1000000.0);  // Convert to microseconds
-    frame_.frameNumber = static_cast<uint64_t>(videoFrame.frameNumber);
 }
 
 } // namespace quadmapper

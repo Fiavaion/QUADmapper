@@ -27,6 +27,9 @@ target_link_libraries(quadmapper_media
     PRIVATE
         stb
         glad
+        # Windows Imaging Component for TIFF decoding (OS libraries, no new dependency)
+        windowscodecs
+        ole32
 )
 
 set_target_properties(quadmapper_media PROPERTIES

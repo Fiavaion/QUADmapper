@@ -3,6 +3,7 @@
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include "FrameData.hpp"
+#include "video/PlaybackClock.hpp"
 #include <string>
 #include <cstdint>
 
@@ -207,8 +208,50 @@ public:
 
     // --- Loop ---
 
+    // ONCE, LOOP or PING_PONG (ADR-050). getLoopMode() returns what was asked for; a
+    // file that cannot play backwards within the reverse cache plays PING_PONG as LOOP
+    // and getLoopModeNotice() says why (empty otherwise).
     virtual void setLoopMode(LoopMode mode) = 0;
     virtual LoopMode getLoopMode() const = 0;
+    virtual std::string getLoopModeNotice() const = 0;
+
+    // --- Timeline lock (ADR-050 §3) ---
+
+    // A locked source's position is the master timeline mapped onto its clip (modulo
+    // its duration, reflected for Ping-Pong); its own seek, stop and speed are ignored.
+    virtual void setTimelineLocked(bool locked, const PlaybackClock& master) = 0;
+    virtual bool isTimelineLocked() const = 0;
+    // Pick up the master's pause, resume or restart; SourceManager calls it every
+    // update for locked sources.
+    virtual void followTimeline(const PlaybackClock& master) = 0;
+
+    // --- Clock ---
+
+    // The source's playback clock, sampled at getClockNow() (std::chrono::steady_clock
+    // unless a test injected time). Position, direction, running state, speed and the
+    // discontinuity count (seeks, wraps, reflections) for anything slaved to playback.
+    virtual const PlaybackClock& getClock() const = 0;
+    virtual PlaybackTimePoint getClockNow() const = 0;
+
+    // --- Health ---
+
+    // Why playback is failing (decode errors), or empty while it is healthy.
+    virtual std::string getErrorMessage() const { return {}; }
+
+    // --- Audio (ADR-050 §2) ---
+
+    // Volume (0-1) and mute of the source's sound. Plain values the app's audio engine
+    // applies every frame; saved with the transport. A source without audio keeps them.
+    void setAudioVolume(float volume) {
+        audioVolume_ = (volume >= 0.0f) ? (volume <= 1.0f ? volume : 1.0f) : 0.0f;  // NaN -> 0
+    }
+    float getAudioVolume() const { return audioVolume_; }
+    void setAudioMuted(bool muted) { audioMuted_ = muted; }
+    bool isAudioMuted() const { return audioMuted_; }
+
+private:
+    float audioVolume_ = 1.0f;
+    bool audioMuted_ = false;
 };
 
 } // namespace quadmapper

@@ -1,7 +1,10 @@
 #include "ShaderProgram.hpp"
+#include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
 #include <glad/glad.h>
 #include <glm/gtc/type_ptr.hpp>
+
+#include <cstring>
 
 namespace quadmapper {
 
@@ -11,21 +14,34 @@ ShaderProgram::~ShaderProgram() {
     destroy();
 }
 
+// Moving a deque keeps its elements in place, so the moved map's keys and values
+// stay valid.
 ShaderProgram::ShaderProgram(ShaderProgram&& other) noexcept
-    : programId_(other.programId_) {
+    : programId_(other.programId_)
+    , uniforms_(std::move(other.uniforms_))
+    , uniformsByName_(std::move(other.uniformsByName_)) {
     other.programId_ = 0;
+    other.uniformsByName_.clear();
+    other.uniforms_.clear();
 }
 
 ShaderProgram& ShaderProgram::operator=(ShaderProgram&& other) noexcept {
     if (this != &other) {
         destroy();
         programId_ = other.programId_;
+        uniforms_ = std::move(other.uniforms_);
+        uniformsByName_ = std::move(other.uniformsByName_);
         other.programId_ = 0;
+        other.uniformsByName_.clear();
+        other.uniforms_.clear();
     }
     return *this;
 }
 
 bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource) {
+    uniformsByName_.clear();  // locations and values belong to the program being replaced
+    uniforms_.clear();
+
     // Compile shaders
     uint32_t vertexShader = compileShader(GL_VERTEX_SHADER, vertexSource);
     if (vertexShader == 0) {
@@ -40,6 +56,7 @@ bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource)
 
     // Create and link program
     programId_ = glCreateProgram();
+    GlObjectStats::onShaderProgramCreated();
     glAttachShader(programId_, vertexShader);
     glAttachShader(programId_, fragmentShader);
     glLinkProgram(programId_);
@@ -47,6 +64,7 @@ bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource)
     // Check for link errors
     if (!checkProgramLinkError(programId_)) {
         glDeleteProgram(programId_);
+        GlObjectStats::onShaderProgramDestroyed();
         programId_ = 0;
         glDeleteShader(vertexShader);
         glDeleteShader(fragmentShader);
@@ -62,8 +80,11 @@ bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource)
 }
 
 void ShaderProgram::destroy() {
+    uniformsByName_.clear();
+    uniforms_.clear();
     if (programId_ != 0) {
         glDeleteProgram(programId_);
+        GlObjectStats::onShaderProgramDestroyed();
         programId_ = 0;
     }
 }
@@ -76,32 +97,84 @@ void ShaderProgram::unbind() {
     glUseProgram(0);
 }
 
-int ShaderProgram::getUniformLocation(const char* name) const {
-    return glGetUniformLocation(programId_, name);
+ShaderProgram::Uniform& ShaderProgram::uniform(const char* name) const {
+    // A program's uniform locations are fixed once it is linked, and every draw sets
+    // a couple of dozen of them, so ask GL only the first time. Draws set them in
+    // the same order each time, so the uniform after the last one asked for is
+    // tried before the map (one string compare instead of a hash lookup).
+    const size_t next = lastUniform_ + 1;
+    if (next < uniforms_.size() && uniforms_[next].name == name) {
+        lastUniform_ = next;
+        return uniforms_[next];
+    }
+    const auto found = uniformsByName_.find(std::string_view(name));
+    if (found != uniformsByName_.end()) {
+        lastUniform_ = found->second;
+        return uniforms_[found->second];
+    }
+    Uniform& u = uniforms_.emplace_back();
+    u.name = name;
+    u.location = glGetUniformLocation(programId_, name);
+    lastUniform_ = uniforms_.size() - 1;
+    uniformsByName_.emplace(u.name, lastUniform_);
+    return u;
+}
+
+bool ShaderProgram::changes(Uniform& u, const void* data, size_t size) {
+    if (u.location < 0) {
+        return false;
+    }
+    if (u.size == size && std::memcmp(u.value, data, size) == 0) {
+        return false;
+    }
+    std::memcpy(u.value, data, size);
+    u.size = size;
+    return true;
 }
 
 void ShaderProgram::setInt(const char* name, int value) const {
-    glUniform1i(getUniformLocation(name), value);
+    Uniform& u = uniform(name);
+    if (changes(u, &value, sizeof(value))) glUniform1i(u.location, value);
 }
 
 void ShaderProgram::setFloat(const char* name, float value) const {
-    glUniform1f(getUniformLocation(name), value);
+    Uniform& u = uniform(name);
+    if (changes(u, &value, sizeof(value))) glUniform1f(u.location, value);
 }
 
 void ShaderProgram::setVec2(const char* name, const glm::vec2& value) const {
-    glUniform2fv(getUniformLocation(name), 1, glm::value_ptr(value));
+    Uniform& u = uniform(name);
+    if (changes(u, glm::value_ptr(value), sizeof(value))) {
+        glUniform2fv(u.location, 1, glm::value_ptr(value));
+    }
 }
 
 void ShaderProgram::setVec3(const char* name, const glm::vec3& value) const {
-    glUniform3fv(getUniformLocation(name), 1, glm::value_ptr(value));
+    Uniform& u = uniform(name);
+    if (changes(u, glm::value_ptr(value), sizeof(value))) {
+        glUniform3fv(u.location, 1, glm::value_ptr(value));
+    }
 }
 
 void ShaderProgram::setVec4(const char* name, const glm::vec4& value) const {
-    glUniform4fv(getUniformLocation(name), 1, glm::value_ptr(value));
+    Uniform& u = uniform(name);
+    if (changes(u, glm::value_ptr(value), sizeof(value))) {
+        glUniform4fv(u.location, 1, glm::value_ptr(value));
+    }
+}
+
+void ShaderProgram::setMat3(const char* name, const glm::mat3& value) const {
+    Uniform& u = uniform(name);
+    if (changes(u, glm::value_ptr(value), sizeof(value))) {
+        glUniformMatrix3fv(u.location, 1, GL_FALSE, glm::value_ptr(value));
+    }
 }
 
 void ShaderProgram::setMat4(const char* name, const glm::mat4& value) const {
-    glUniformMatrix4fv(getUniformLocation(name), 1, GL_FALSE, glm::value_ptr(value));
+    Uniform& u = uniform(name);
+    if (changes(u, glm::value_ptr(value), sizeof(value))) {
+        glUniformMatrix4fv(u.location, 1, GL_FALSE, glm::value_ptr(value));
+    }
 }
 
 uint32_t ShaderProgram::compileShader(uint32_t type, const char* source) {

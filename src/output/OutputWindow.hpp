@@ -3,15 +3,20 @@
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include "core/Result.hpp"
+#include "scene/ProjectorCamera.hpp"
+#include "scene/Slice.hpp"
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
-#include <functional>
 
 // Forward declare GLFW types
 struct GLFWwindow;
 struct GLFWmonitor;
 
 namespace quadmapper {
+
+class FrameCopy;
 
 /**
  * Common resolution presets for output windows.
@@ -38,6 +43,18 @@ inline const ResolutionPreset RESOLUTION_PRESETS[] = {
 inline constexpr size_t RESOLUTION_PRESET_COUNT = sizeof(RESOLUTION_PRESETS) / sizeof(ResolutionPreset);
 
 /**
+ * The display an output WANTS (QM-090): what the .qmap saved or the user last
+ * chose. It is kept apart from the monitor the output currently resolves to, so
+ * an automatic fallback never overwrites the projector's identity. An empty name
+ * with savedIndex -1 means no display was chosen (pick one automatically).
+ */
+struct MonitorIdentity {
+    std::string name;               // GLFW monitor name; empty = unknown
+    IVec2 position = IVec2(0, 0);   // origin on the virtual desktop (valid with a name)
+    int savedIndex = -1;            // monitor index when chosen; -1 = none
+};
+
+/**
  * OutputWindow represents a single output window for projection mapping.
  * Each output window has its own GLFW window with a shared OpenGL context
  * for efficient texture sharing with the main application window.
@@ -47,11 +64,12 @@ public:
     OutputWindow();
     ~OutputWindow();
 
-    // Non-copyable, movable
+    // Neither copyable nor movable: the GLFW window's user pointer is this object's
+    // address (the key callback finds it there). Hold outputs by unique_ptr.
     OutputWindow(const OutputWindow&) = delete;
     OutputWindow& operator=(const OutputWindow&) = delete;
-    OutputWindow(OutputWindow&& other) noexcept;
-    OutputWindow& operator=(OutputWindow&& other) noexcept;
+    OutputWindow(OutputWindow&&) = delete;
+    OutputWindow& operator=(OutputWindow&&) = delete;
 
     // Identity
     const UUID& getId() const { return id_; }
@@ -63,8 +81,16 @@ public:
     void setResolution(IVec2 r) { resolution_ = r; }
     Rotation getRotation() const { return rotation_; }
     void setRotation(Rotation r) { rotation_ = r; }
+    // The connected monitor this output resolved to (-1 = none connected).
+    // OutputManager sets it; a user's choice goes through OutputManager::assignMonitor.
     int getMonitor() const { return monitor_; }
     void setMonitor(int m) { monitor_ = m; }
+    const MonitorIdentity& getDesiredMonitor() const { return desiredMonitor_; }
+    void setDesiredMonitor(const MonitorIdentity& identity) { desiredMonitor_ = identity; }
+    // No display was chosen: the output takes the first one that is not the editor's.
+    bool isMonitorAutomatic() const {
+        return desiredMonitor_.name.empty() && desiredMonitor_.savedIndex < 0;
+    }
 
     /**
      * Get the effective resolution accounting for rotation.
@@ -94,12 +120,21 @@ public:
     bool isEnabled() const { return enabled_; }
     void setEnabled(bool e) { enabled_ = e; }
 
-    // Scene assignments - which scenes are rendered to this output
-    const std::vector<UUID>& getAssignedScenes() const { return assignedScenes_; }
-    void assignScene(const UUID& sceneId);
-    void removeScene(const UUID& sceneId);
-    bool hasScene(const UUID& sceneId) const;
-    void clearScenes() { assignedScenes_.clear(); }
+    // Routing (ADR-047 §2): the one scene this output shows (null = none, black).
+    // Several outputs may show the same scene. An id no scene has counts as none.
+    const UUID& getSceneId() const { return sceneId_; }
+    void setSceneId(const UUID& sceneId) { sceneId_ = sceneId; }
+
+    // The slices of the scene's canvas this output shows, drawn in order. An output
+    // starts with none; whoever routes a scene to it gives it one (makeFullCanvasSlice).
+    std::vector<Slice>& getSlices() { return slices_; }
+    const std::vector<Slice>& getSlices() const { return slices_; }
+
+    // The canvas size the slices' pixel rectangles were made for (0 x 0 = unknown).
+    // It outlives the routing, so a slice kept through "no scene" or a deleted scene
+    // is rescaled from the right size when the next scene is routed (showScene).
+    IVec2 getSlicesCanvas() const { return slicesCanvas_; }
+    void setSlicesCanvas(IVec2 size) { slicesCanvas_ = size; }
 
     // GLFW window management
     /**
@@ -135,6 +170,12 @@ public:
      */
     void swapBuffers();
 
+    /**
+     * Set this window's swap interval (0 = don't wait for vblank, 1 = vsync).
+     * Call with this window's context current; a no-op when unchanged.
+     */
+    void setSwapInterval(int interval);
+
     // Fullscreen control
     /**
      * Switch to fullscreen mode on the specified monitor.
@@ -169,12 +210,19 @@ public:
     // Get the underlying GLFW window (for advanced use)
     GLFWwindow* getGLFWwindow() const { return window_; }
 
+    // Copies the output's frame onto this window (ADR-054). Framebuffer objects are
+    // not shared between contexts, so the window owns its copier: made on first use
+    // (call with this window's context current), freed by destroy() in this context,
+    // so a window created again never reuses a dead context's object.
+    FrameCopy& frameCopy();
+
     // Keyboard callback support for perform mode
     using KeyCallback = std::function<void(int key, int scancode, int action, int mods)>;
 
     /**
      * Set a callback for key events on this output window.
-     * Used primarily for perform mode escape handling.
+     * Used primarily for perform mode escape handling. The callback may replace or
+     * clear itself while it runs: the window invokes a copy.
      */
     void setKeyCallback(KeyCallback callback);
 
@@ -183,6 +231,13 @@ public:
      */
     const KeyCallback& getKeyCallback() const { return keyCallback_; }
 
+    // The physical projector behind this output, modelled as a camera (ADR-052): its
+    // lens and pose place 3D objects, and the point pairs it was calibrated from.
+    ProjectorCamera& getProjector() { return projector_; }
+    const ProjectorCamera& getProjector() const { return projector_; }
+    std::vector<CalibrationPoint>& getCalibrationPoints() { return calibrationPoints_; }
+    const std::vector<CalibrationPoint>& getCalibrationPoints() const { return calibrationPoints_; }
+
 private:
     // Static GLFW key callback handler
     static void glfwKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
@@ -190,10 +245,15 @@ private:
     UUID id_;
     std::string name_;
 
+    // Projector model for 3D objects (ADR-052)
+    ProjectorCamera projector_;
+    std::vector<CalibrationPoint> calibrationPoints_;
+
     // Display settings
     IVec2 resolution_ = IVec2(1920, 1080);
     Rotation rotation_ = Rotation::R0;
     int monitor_ = -1;
+    MonitorIdentity desiredMonitor_;
 
     // State flags
     bool fullscreen_ = false;
@@ -201,11 +261,15 @@ private:
     bool enabled_ = true;
 
     // Scene assignments
-    std::vector<UUID> assignedScenes_;
+    UUID sceneId_;
+    std::vector<Slice> slices_;
+    IVec2 slicesCanvas_ = IVec2(0, 0);
 
     // GLFW window
     GLFWwindow* window_ = nullptr;
     GLFWwindow* shareContext_ = nullptr;
+    int swapInterval_ = -1;  // -1 = never set (driver default)
+    std::unique_ptr<FrameCopy> frameCopy_;  // lives in window_'s context
 
     // Window position (saved for fullscreen toggle)
     IVec2 position_ = IVec2(100, 100);

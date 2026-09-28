@@ -4,176 +4,108 @@
 #include "AudioDevice.hpp"
 #include "core/UUID.hpp"
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace quadmapper {
 
 /**
- * @brief Audio mixer callback function type
+ * @brief Tap on the mixed output (level meters, tests)
  *
- * Called when audio is mixed and ready to be analyzed (e.g., for level meters).
- * @param samples Interleaved stereo samples
+ * Runs on the real-time audio thread after the mix: it must not lock, allocate or block.
+ * @param samples    Interleaved stereo samples
  * @param frameCount Number of stereo frames
- * @param channels Number of channels (always 2 for stereo)
+ * @param wallNs     std::chrono::steady_clock time of the callback, in ns
  */
-using AudioMixerCallback = std::function<void(const float* samples, size_t frameCount, int channels)>;
+using AudioMixerCallback = std::function<void(const float* samples, size_t frameCount, int64_t wallNs)>;
 
 /**
- * @brief Audio mixer with miniaudio backend
+ * @brief Mixes AudioSources to one playback device (miniaudio), with master volume
  *
- * Mixes multiple AudioSources together with master volume control.
- * Uses miniaudio for low-latency audio output.
+ * Output is always 48 kHz float stereo; miniaudio converts to the device's own format.
+ *
+ * Threading: the control thread adds and removes sources and sets volumes; the device
+ * callback mixes. The callback reads a published array of raw source pointers, so it
+ * takes no lock, touches no reference count and frees nothing. removeSource() and
+ * clearSources() publish the new array and then wait until the callback is not inside
+ * a mix that could still hold the old one (one callback at most), so once they return
+ * the callback can no longer reach the removed source and its owner may destroy it.
  */
 class AudioMixer {
 public:
+    static constexpr int SAMPLE_RATE = 48000;
+    static constexpr int CHANNELS = 2;
+
     AudioMixer();
     ~AudioMixer();
 
-    // Non-copyable, movable
+    // The device callback holds a pointer to this mixer: neither copyable nor movable.
     AudioMixer(const AudioMixer&) = delete;
     AudioMixer& operator=(const AudioMixer&) = delete;
-    AudioMixer(AudioMixer&&) noexcept;
-    AudioMixer& operator=(AudioMixer&&) noexcept;
 
     /**
-     * @brief Initialize the audio mixer
-     * @param device Optional audio device to use (nullptr for default)
-     * @return true if successful
+     * @brief Open the playback device (not yet started)
+     * @param device   Enumeration to open from (nullptr: miniaudio's default context)
+     * @param deviceId One of device->enumerateDevices() ids; empty = the system default,
+     *                 followed when Windows changes it
+     * @return false if the device could not be opened (the mixer then stays closed)
      */
-    bool initialize(AudioDevice* device = nullptr);
+    bool initialize(AudioDevice* device = nullptr, const std::string& deviceId = {});
 
-    /**
-     * @brief Shutdown the audio mixer
-     */
+    /** Stop and close the device. Sources stay registered. */
     void shutdown();
 
-    /**
-     * @brief Check if mixer is initialized and running
-     */
     bool isInitialized() const;
-
-    /**
-     * @brief Start audio playback
-     * @return true if successful
-     */
     bool start();
-
-    /**
-     * @brief Stop audio playback
-     */
     void stop();
-
-    /**
-     * @brief Check if mixer is currently playing
-     */
     bool isPlaying() const;
 
-    // --- Master Volume Control (QM-029) ---
+    /** True once the device stopped without stop() being called (unplugged, driver reset). */
+    bool isDeviceLost() const;
 
-    /**
-     * @brief Get the master volume (0.0 to 1.0)
-     */
+    /** Name of the open device, or empty. */
+    std::string getDeviceName() const;
+
+    /** Estimated seconds from a callback until its first frame is heard (0 when closed). */
+    double getOutputLatency() const;
+
+    // --- Master volume (any thread) ---
+
     float getMasterVolume() const { return masterVolume_.load(); }
-
-    /**
-     * @brief Set the master volume (0.0 to 1.0)
-     */
     void setMasterVolume(float volume);
-
-    /**
-     * @brief Get the master volume in decibels
-     */
     float getMasterVolumeDb() const;
-
-    /**
-     * @brief Set the master volume from decibels
-     */
     void setMasterVolumeDb(float db);
-
-    /**
-     * @brief Check if master is muted
-     */
     bool isMasterMuted() const { return masterMuted_.load(); }
-
-    /**
-     * @brief Set master mute state
-     */
     void setMasterMuted(bool muted) { masterMuted_ = muted; }
-
-    /**
-     * @brief Toggle master mute
-     * @return New mute state
-     */
     bool toggleMasterMute();
 
-    // --- Source Management (QM-029) ---
+    // --- Sources (control thread) ---
 
-    /**
-     * @brief Add a source to the mixer
-     * @param source Shared pointer to audio source
-     */
     void addSource(std::shared_ptr<AudioSource> source);
-
-    /**
-     * @brief Remove a source from the mixer
-     * @param sourceId ID of source to remove
-     * @return true if source was found and removed
-     */
+    /** Returns once the callback can no longer reach the source; true if it was registered. */
     bool removeSource(const UUID& sourceId);
-
-    /**
-     * @brief Get a source by ID
-     * @param sourceId ID of source to find
-     * @return Shared pointer to source, or nullptr if not found
-     */
     std::shared_ptr<AudioSource> getSource(const UUID& sourceId);
-
-    /**
-     * @brief Get all sources
-     * @return Vector of source pointers
-     */
     std::vector<std::shared_ptr<AudioSource>> getSources() const;
-
-    /**
-     * @brief Get the number of active sources
-     */
     size_t getSourceCount() const;
-
-    /**
-     * @brief Remove all sources from the mixer
-     */
     void clearSources();
 
-    // --- Audio Parameters ---
-
-    /**
-     * @brief Get the sample rate
-     */
-    int getSampleRate() const;
-
-    /**
-     * @brief Get the channel count (always 2 for stereo output)
-     */
-    int getChannels() const;
-
-    /**
-     * @brief Get the buffer size in frames
-     */
+    int getSampleRate() const { return SAMPLE_RATE; }
+    int getChannels() const { return CHANNELS; }
     uint32_t getBufferSizeFrames() const;
 
-    // --- Callbacks ---
-
-    /**
-     * @brief Set a callback for mixed audio output
-     *
-     * This callback is called from the audio thread, so it must be
-     * fast and thread-safe. Useful for level meters and visualization.
-     */
+    /** Set (or clear, with an empty function) the output tap. */
     void setMixCallback(AudioMixerCallback callback);
 
-    // Constants
+    /**
+     * @brief Mix one buffer on the calling thread, without a device
+     *
+     * For offline tests and benchmarks; never while a device is playing.
+     */
+    void renderOffline(float* output, size_t frameCount, int64_t wallNs);
+
     static constexpr float MIN_VOLUME = 0.0f;
     static constexpr float MAX_VOLUME = 1.0f;
     static constexpr float MIN_VOLUME_DB = -60.0f;

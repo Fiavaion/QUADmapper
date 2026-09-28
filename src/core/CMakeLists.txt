@@ -17,6 +17,8 @@ add_library(quadmapper_core STATIC
     PerformanceMonitor.cpp
     ErrorNotification.hpp
     ErrorNotification.cpp
+    GlObjectStats.hpp
+    GlObjectStats.cpp
 )
 
 target_include_directories(quadmapper_core

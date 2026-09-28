@@ -2,11 +2,17 @@
 
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
+#include "app/MediaAssign.hpp"
+#include "app/QuadSelection.hpp"
+#include "app/MeshLoads.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGroup.hpp"
+#include "scene/Commands.hpp"
 #include "scene/Scene.hpp"
-#include "renderer/Texture.hpp"
+#include "scene/MeshObject.hpp"
+#include "media/MediaLibrary.hpp"
+#include "media/MediaItem.hpp"
 #include "core/UUID.hpp"
 #include "project/Project.hpp"
 
@@ -14,6 +20,9 @@
 #include <unordered_set>
 #include <string>
 #include <memory>
+#include <cstring>
+#include <cfloat>
+#include <cstdio>
 
 namespace quadmapper {
 
@@ -26,61 +35,42 @@ void QuadListPanel::render(EditorContext& ctx) {
 
     ImGuiIO& io = ImGui::GetIO();
 
-    auto& quadManager         = es.quadManager;
-    auto& scene               = es.scene;
-    auto& quadTextures        = es.quadTextures;
+    auto& quadManager         = es.quadManager();
+    auto& scene               = es.activeScene();
     auto& quadTexturePaths    = es.quadTexturePaths;
-    auto& currentTexturePath  = es.currentTexturePath;
     auto& dragDropQuadId      = es.dragDropQuadId;
-    auto& currentSelectionType = es.currentSelectionType;
 
     // Add Quad button
     if (ImGui::Button("+ Add Quad")) {
         Quad* newQuad = quadManager.createQuad();
         quadManager.selectQuad(newQuad->getId());
-        currentTexturePath[0] = '\0';
-        ctx.project->setModified(true);
         // Switch to Quad properties and clear other panel selections (deliberate
         // cross-panel coordination via EditorState — see ADR-0034 / TD-02 contract).
-        currentSelectionType = EditorState::SelectionType::Quad;
-        es.mediaBinPanel.clearSelection();
-        es.outputPanel.clearSelection();
+        showQuadProperties(es);
     }
 
     ImGui::SameLine();
 
     // Delete button
     if (ImGui::Button("Delete") && quadManager.hasSelection()) {
-        for (const UUID& id : quadManager.getSelectedIds()) {
-            quadTextures.erase(id);
-            quadTexturePaths.erase(id);
-        }
-        quadManager.deleteSelectedQuads();
-        currentTexturePath[0] = '\0';
-        ctx.project->setModified(true);
+        es.deleteSelectedQuads();
     }
 
     ImGui::SameLine();
 
     // Duplicate button
+    // The duplicate carries the source's TextureBinding (mediaId), so it shows the
+    // same media; the saved media path is copied so the .qmap keeps it too.
     if (ImGui::Button("Duplicate") && quadManager.getPrimarySelectedQuad()) {
-        auto primaryId = quadManager.getPrimarySelectedId();
-        if (primaryId.has_value()) {
-            Quad* newQuad = quadManager.duplicateQuad(*primaryId);
-            if (newQuad) {
-                // Duplicate texture too
-                auto texIt = quadTextures.find(*primaryId);
-                if (texIt != quadTextures.end()) {
-                    auto pathIt = quadTexturePaths.find(*primaryId);
-                    if (pathIt != quadTexturePaths.end()) {
-                        quadTexturePaths[newQuad->getId()] = pathIt->second;
-                        auto newTex = std::make_unique<Texture>();
-                        if (newTex->loadFromFile(pathIt->second)) {
-                            quadTextures[newQuad->getId()] = std::move(newTex);
-                        }
-                    }
-                }
-                ctx.project->setModified(true);
+        const Quad& source = *quadManager.getPrimarySelectedQuad();
+        const UUID sourceId = source.getId();
+        auto cmd = std::make_unique<DuplicateQuadCommand>(es.quadRef(source));
+        const UUID dupId = cmd->getDuplicateId();
+        es.commandHistory.execute(std::move(cmd));
+        if (quadManager.getQuad(dupId)) {
+            auto pathIt = quadTexturePaths.find(sourceId);
+            if (pathIt != quadTexturePaths.end()) {
+                quadTexturePaths[dupId] = pathIt->second;
             }
         }
     }
@@ -89,10 +79,7 @@ void QuadListPanel::render(EditorContext& ctx) {
     if (quadManager.getSelectionCount() >= 2) {
         ImGui::SameLine();
         if (ImGui::Button("Group")) {
-            QuadGroup* newGroup = scene.createGroupFromSelection();
-            if (newGroup) {
-                ctx.project->setModified(true);
-            }
+            scene.createGroupFromSelection();
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Create group from selected quads (Ctrl+G)");
@@ -127,7 +114,6 @@ void QuadListPanel::render(EditorContext& ctx) {
         ImGui::BeginDisabled(isFirst);
         if (ImGui::SmallButton("^")) {
             quadManager.moveQuadDown(quad->getId());
-            ctx.project->setModified(true);
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -138,7 +124,6 @@ void QuadListPanel::render(EditorContext& ctx) {
         ImGui::BeginDisabled(isLast);
         if (ImGui::SmallButton("v")) {
             quadManager.moveQuadUp(quad->getId());
-            ctx.project->setModified(true);
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -152,7 +137,6 @@ void QuadListPanel::render(EditorContext& ctx) {
             Quad* mutableQuad = quadManager.getQuad(quad->getId());
             if (mutableQuad) {
                 mutableQuad->setVisible(visible);
-                ctx.project->setModified(true);
             }
         }
         if (ImGui::IsItemHovered()) {
@@ -166,7 +150,6 @@ void QuadListPanel::render(EditorContext& ctx) {
             Quad* mutableQuad = quadManager.getQuad(quad->getId());
             if (mutableQuad) {
                 mutableQuad->setLocked(locked);
-                ctx.project->setModified(true);
             }
         }
         if (ImGui::IsItemHovered()) {
@@ -174,19 +157,72 @@ void QuadListPanel::render(EditorContext& ctx) {
         }
         ImGui::SameLine();
 
-        // Selectable quad name
+        // Quad name — inline editable when renaming this quad, else a selectable.
+        const bool renamingThis = quadRenaming_ && quadRenameId_ == quad->getId();
+        if (renamingThis) {
+            ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText("##quadrename", quadNameBuf_, sizeof(quadNameBuf_),
+                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
+                es.commandHistory.execute(
+                    std::make_unique<RenameQuadCommand>(es.quadRef(*quad), quadNameBuf_));
+                quadRenaming_ = false;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) quadRenaming_ = false;
+        } else {
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if (isSelected) {
             flags |= ImGuiTreeNodeFlags_Selected;
         }
         ImGui::TreeNodeEx(quad->getName().c_str(), flags);
 
-        // Drag source for moving quads between groups
+        // Double-click the name to rename inline.
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            quadRenaming_ = true;
+            quadRenameId_ = quad->getId();
+            std::strncpy(quadNameBuf_, quad->getName().c_str(), sizeof(quadNameBuf_) - 1);
+            quadNameBuf_[sizeof(quadNameBuf_) - 1] = '\0';
+        }
+        }
+
+        // Row interaction (drag/drop/select) — skipped while inline-renaming so it
+        // doesn't bind to the rename InputText.
+        if (!renamingThis) {
+        // Drag source for moving quads between groups / reordering layers
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
             dragDropQuadId = quad->getId();
             ImGui::SetDragDropPayload("QUAD_DND", &dragDropQuadId, sizeof(UUID));
             ImGui::Text("Move: %s", quad->getName().c_str());
             ImGui::EndDragDropSource();
+        }
+
+        // Drop target on this row: media from the bin -> assign to THIS quad (ADR-042
+        // P4); another quad -> reorder layer order to this quad's slot (ADR-042 P5).
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* mp = ImGui::AcceptDragDropPayload("MEDIA_ITEM_ID")) {
+                UUID mid = *(const UUID*)mp->Data;
+                Quad* mutableQuad = quadManager.getQuad(quad->getId());
+                MediaItem* item = ctx.mediaLibrary ? ctx.mediaLibrary->getItem(mid) : nullptr;
+                if (mutableQuad && item) {
+                    assignMediaToQuad(es, ctx.sourceManager, *mutableQuad, *item);
+                }
+            }
+            if (const ImGuiPayload* qp = ImGui::AcceptDragDropPayload("QUAD_DND")) {
+                UUID draggedId = *(const UUID*)qp->Data;
+                Quad* dragged = quadManager.getQuad(draggedId);
+                if (dragged && draggedId != quad->getId()) {
+                    // Step the dragged quad's z-order to the target's slot. (moveQuadDown
+                    // raises z toward the front; moveQuadUp lowers it — see the ^/v buttons.)
+                    const int target = quad->getZOrder();
+                    int guard = static_cast<int>(quadManager.getQuadCount()) + 1;
+                    while (dragged->getZOrder() < target && guard-- > 0)
+                        quadManager.moveQuadDown(draggedId);
+                    guard = static_cast<int>(quadManager.getQuadCount()) + 1;
+                    while (dragged->getZOrder() > target && guard-- > 0)
+                        quadManager.moveQuadUp(draggedId);
+                }
+            }
+            ImGui::EndDragDropTarget();
         }
 
         if (ImGui::IsItemClicked()) {
@@ -198,37 +234,30 @@ void QuadListPanel::render(EditorContext& ctx) {
                 quadManager.selectQuad(quad->getId());
             }
 
-            // Switch to Quad properties and clear other selections
-            currentSelectionType = EditorState::SelectionType::Quad;
-            es.mediaBinPanel.clearSelection();
-            es.outputPanel.clearSelection();
-
-            auto pathIt = quadTexturePaths.find(quad->getId());
-            if (pathIt != quadTexturePaths.end()) {
-                strncpy(currentTexturePath, pathIt->second.c_str(), sizeof(currentTexturePath) - 1);
-                currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
-            } else {
-                currentTexturePath[0] = '\0';
-            }
+            showQuadProperties(es);  // and clear the other panels' selections
         }
+        }  // end if (!renamingThis)
 
         // Context menu for z-order and groups
         if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Rename")) {
+                quadRenaming_ = true;
+                quadRenameId_ = quad->getId();
+                std::strncpy(quadNameBuf_, quad->getName().c_str(), sizeof(quadNameBuf_) - 1);
+                quadNameBuf_[sizeof(quadNameBuf_) - 1] = '\0';
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Bring to Front", "Ctrl+Shift+]")) {
                 quadManager.moveQuadToBottom(quad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::MenuItem("Bring Forward", "Ctrl+]")) {
                 quadManager.moveQuadDown(quad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::MenuItem("Send Backward", "Ctrl+[")) {
                 quadManager.moveQuadUp(quad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::MenuItem("Send to Back", "Ctrl+Shift+[")) {
                 quadManager.moveQuadToTop(quad->getId());
-                ctx.project->setModified(true);
             }
 
             // Group submenu
@@ -244,7 +273,6 @@ void QuadListPanel::render(EditorContext& ctx) {
                             } else {
                                 scene.addQuadToGroup(grp->getId(), quad->getId());
                             }
-                            ctx.project->setModified(true);
                         }
                     }
                     ImGui::EndMenu();
@@ -273,7 +301,6 @@ void QuadListPanel::render(EditorContext& ctx) {
         bool groupVisible = group->isVisible();
         if (ImGui::Checkbox("##grpVisible", &groupVisible)) {
             scene.applyGroupVisibility(group->getId(), groupVisible);
-            ctx.project->setModified(true);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Toggle group visibility");
@@ -284,7 +311,6 @@ void QuadListPanel::render(EditorContext& ctx) {
         bool groupLocked = group->isLocked();
         if (ImGui::Checkbox("##grpLocked", &groupLocked)) {
             scene.applyGroupLock(group->getId(), groupLocked);
-            ctx.project->setModified(true);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Toggle group lock");
@@ -310,7 +336,6 @@ void QuadListPanel::render(EditorContext& ctx) {
 
             if (ImGui::InputText("Rename", groupNameBuf_, sizeof(groupNameBuf_), ImGuiInputTextFlags_EnterReturnsTrue)) {
                 group->setName(groupNameBuf_);
-                ctx.project->setModified(true);
                 ImGui::CloseCurrentPopup();
             }
 
@@ -318,7 +343,6 @@ void QuadListPanel::render(EditorContext& ctx) {
 
             if (ImGui::MenuItem("Delete Group")) {
                 scene.deleteGroup(group->getId());
-                ctx.project->setModified(true);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
@@ -333,7 +357,6 @@ void QuadListPanel::render(EditorContext& ctx) {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("QUAD_DND")) {
                 UUID droppedQuadId = *(const UUID*)payload->Data;
                 scene.addQuadToGroup(group->getId(), droppedQuadId);
-                ctx.project->setModified(true);
             }
             ImGui::EndDragDropTarget();
         }
@@ -391,13 +414,95 @@ void QuadListPanel::render(EditorContext& ctx) {
                 for (auto& grp : scene.getGroups()) {
                     grp->removeMember(droppedQuadId);
                 }
-                ctx.project->setModified(true);
             }
             ImGui::EndDragDropTarget();
         }
     }
 
+    renderObjects(ctx);
+
     ImGui::End();
+}
+
+// The active scene's 3D objects (ADR-052): select, rename, show/hide and delete, each
+// an undo step (TD-16).
+void QuadListPanel::renderObjects(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    Scene& scene = es.activeScene();
+
+    ImGui::Separator();
+    ImGui::Text("Objects: %zu", scene.getObjects().size());
+    if (scene.getObjects().empty()) {
+        ImGui::TextDisabled("File > Import 3D Object (OBJ)... adds one");
+    }
+
+    UUID deleteId;
+    for (const auto& objectPtr : scene.getObjects()) {
+        MeshObject& object = *objectPtr;
+        ImGui::PushID(object.getId().toString().c_str());
+
+        bool visible = object.isVisible();
+        if (ImGui::Checkbox("##objVisible", &visible)) {
+            es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(object), visible));
+        }
+        ImGui::SetItemTooltip("Visible");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) deleteId = object.getId();
+        ImGui::SetItemTooltip("Delete object");
+        ImGui::SameLine();
+
+        auto beginRename = [&]() {
+            objectRenaming_ = true;
+            objectRenameId_ = object.getId();
+            std::snprintf(objectNameBuf_, sizeof(objectNameBuf_), "%s", object.getName().c_str());
+        };
+
+        if (objectRenaming_ && objectRenameId_ == object.getId()) {
+            ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText("##objrename", objectNameBuf_, sizeof(objectNameBuf_),
+                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
+                if (object.getName() != objectNameBuf_) {
+                    es.commandHistory.execute(makeRenameObjectCommand(es.objectRef(object), objectNameBuf_));
+                }
+                objectRenaming_ = false;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) objectRenaming_ = false;
+        } else {
+            const bool selected = es.currentSelectionType == EditorState::SelectionType::Object &&
+                                  es.selectedObjectId == object.getId();
+            const char* state = isMeshLoading(es, object)          ? " (loading...)"
+                                : object.getMesh().empty()           ? " (mesh missing)"
+                                                                     : "";
+            const std::string label = object.getName() + state;
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                es.selectedObjectId = object.getId();
+                es.currentSelectionType = EditorState::SelectionType::Object;
+                // A quad left selected behind the object's properties would still take
+                // Delete and the arrow keys.
+                scene.getQuadManager().deselectAll();
+                es.mediaBinPanel.clearSelection();
+                es.outputPanel.clearSelection();
+            }
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                beginRename();
+            }
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Rename")) beginRename();
+                if (ImGui::MenuItem("Delete")) deleteId = object.getId();
+                ImGui::EndPopup();
+            }
+        }
+        ImGui::PopID();
+    }
+
+    // Undoable like a quad delete, so no confirmation.
+    if (!deleteId.isNull()) {
+        es.commandHistory.execute(
+            std::make_unique<DeleteObjectCommand>(ObjectRef{&es.quadResolver, scene.getId(), deleteId}));
+        if (es.selectedObjectId == deleteId) es.selectedObjectId = UUID();
+        if (objectRenameId_ == deleteId) objectRenaming_ = false;
+    }
 }
 
 }  // namespace quadmapper

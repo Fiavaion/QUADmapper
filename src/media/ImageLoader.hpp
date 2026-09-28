@@ -29,10 +29,12 @@ struct ImageData {
  * @brief Static utility class for loading images from disk
  *
  * Uses stb_image internally to support common image formats:
- * PNG, JPEG, BMP, GIF, TGA, PSD, HDR, PIC, PPM, PGM
+ * PNG, JPEG, BMP, GIF, TGA, PSD, HDR, PIC, PPM, PGM.
+ * TIF/TIFF decode through the Windows Imaging Component instead: first frame
+ * only, always converted to RGBA (4 channels unless others are requested).
  *
- * Images are automatically flipped vertically to match OpenGL's
- * bottom-left origin convention.
+ * Pixels are returned top row first (both decode paths), the same order as
+ * video, camera and procedural frames: texture v = 0 is the image's top.
  */
 class ImageLoader {
 public:

@@ -1,0 +1,48 @@
+{
+  "$schema": "quadmapper/project/1.0",
+  "version": "1.2.0",
+  "name": "Flat v1.2",
+  "quads": [
+    {
+      "id": "1a1b2c3d-0000-4000-8000-000000000001",
+      "name": "Warped",
+      "zOrder": 0,
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "geometry": {
+        "corners": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+        "meshResolution": 2,
+        "meshMode": 1,
+        "uCoords": [0.0, 0.3, 1.0],
+        "vCoords": [0.0, 0.5, 1.0],
+        "meshOffsets": [
+          [0.0, 0.0], [0.01, 0.0], [0.0, 0.0],
+          [0.0, 0.02], [0.0, 0.0], [0.0, 0.0],
+          [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]
+        ]
+      },
+      "textureBinding": {
+        "uvOffset": [0.0, 0.0],
+        "uvScale": [1.0, 1.0],
+        "uvRotation": 0.0,
+        "flipH": false,
+        "flipV": false
+      },
+      "colorCorrection": {
+        "brightness": 0.1,
+        "contrast": 1.2,
+        "gamma": 1.0,
+        "rgbGain": [1.0, 0.9, 0.8]
+      },
+      "softEdge": {
+        "left": 0.1,
+        "right": 0.0,
+        "top": 0.0,
+        "bottom": 0.0,
+        "gamma": 2.2
+      },
+      "texturePath": "C:/Shows/media/loop.mp4"
+    }
+  ]
+}

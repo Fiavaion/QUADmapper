@@ -1,5 +1,6 @@
 #include "OutputWindow.hpp"
 #include "core/Logger.hpp"
+#include "renderer/Framebuffer.hpp"  // glad, before GLFW
 #include <GLFW/glfw3.h>
 #include <algorithm>
 
@@ -15,75 +16,6 @@ OutputWindow::~OutputWindow() {
     destroy();
 }
 
-OutputWindow::OutputWindow(OutputWindow&& other) noexcept
-    : id_(std::move(other.id_))
-    , name_(std::move(other.name_))
-    , resolution_(other.resolution_)
-    , rotation_(other.rotation_)
-    , monitor_(other.monitor_)
-    , fullscreen_(other.fullscreen_)
-    , borderless_(other.borderless_)
-    , enabled_(other.enabled_)
-    , assignedScenes_(std::move(other.assignedScenes_))
-    , window_(other.window_)
-    , shareContext_(other.shareContext_)
-    , position_(other.position_)
-    , savedWindowedPos_(other.savedWindowedPos_)
-    , savedWindowedSize_(other.savedWindowedSize_)
-    , keyCallback_(std::move(other.keyCallback_))
-{
-    // Clear the other's window pointer to prevent double-destroy
-    other.window_ = nullptr;
-    other.shareContext_ = nullptr;
-}
-
-OutputWindow& OutputWindow::operator=(OutputWindow&& other) noexcept {
-    if (this != &other) {
-        // Destroy our current window first
-        destroy();
-
-        id_ = std::move(other.id_);
-        name_ = std::move(other.name_);
-        resolution_ = other.resolution_;
-        rotation_ = other.rotation_;
-        monitor_ = other.monitor_;
-        fullscreen_ = other.fullscreen_;
-        borderless_ = other.borderless_;
-        enabled_ = other.enabled_;
-        assignedScenes_ = std::move(other.assignedScenes_);
-        window_ = other.window_;
-        shareContext_ = other.shareContext_;
-        position_ = other.position_;
-        savedWindowedPos_ = other.savedWindowedPos_;
-        savedWindowedSize_ = other.savedWindowedSize_;
-        keyCallback_ = std::move(other.keyCallback_);
-
-        // Clear the other's window pointer to prevent double-destroy
-        other.window_ = nullptr;
-        other.shareContext_ = nullptr;
-    }
-    return *this;
-}
-
-void OutputWindow::assignScene(const UUID& sceneId) {
-    if (!hasScene(sceneId)) {
-        assignedScenes_.push_back(sceneId);
-        LOG_DEBUG("OutputWindow '{}': assigned scene {}", name_, sceneId.toString());
-    }
-}
-
-void OutputWindow::removeScene(const UUID& sceneId) {
-    auto it = std::find(assignedScenes_.begin(), assignedScenes_.end(), sceneId);
-    if (it != assignedScenes_.end()) {
-        assignedScenes_.erase(it);
-        LOG_DEBUG("OutputWindow '{}': removed scene {}", name_, sceneId.toString());
-    }
-}
-
-bool OutputWindow::hasScene(const UUID& sceneId) const {
-    return std::find(assignedScenes_.begin(), assignedScenes_.end(), sceneId) != assignedScenes_.end();
-}
-
 Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
     if (window_ != nullptr) {
         return Err("OutputWindow already created");
@@ -96,12 +28,18 @@ Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
     glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);  // Window decorations
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);  // Allow resize
     glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);   // Don't steal focus on creation
+    // Keyboard focus stays with the editor in perform mode (vertex nudging), so
+    // showing the output must not activate it, and a fullscreen output must not
+    // iconify when it loses focus back to the editor.
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
 
-    // OpenGL context hints (should match main window)
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    // OpenGL context hints (must match the main window: GL 3.3 core)
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+    glfwWindowHint(GLFW_DEPTH_BITS, 24);  // 3D objects depth-test (ADR-052); GLFW's default, made explicit
 
     // Create the window with shared context
     window_ = glfwCreateWindow(
@@ -111,6 +49,11 @@ Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
         nullptr,       // No monitor (windowed mode)
         shareContext   // Share context for texture sharing
     );
+
+    // The window hints above are global GLFW state; restore the ones that would
+    // otherwise leak into windows created later (e.g. by ImGui).
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_TRUE);
+    glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_TRUE);
 
     if (!window_) {
         LOG_ERROR("Failed to create GLFW window for OutputWindow '{}'", name_);
@@ -133,10 +76,25 @@ Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
 void OutputWindow::destroy() {
     if (window_ != nullptr) {
         LOG_DEBUG("Destroying OutputWindow '{}'", name_);
+        if (frameCopy_) {
+            // Its framebuffer object belongs to this context: free it there, first.
+            GLFWwindow* previous = glfwGetCurrentContext();
+            glfwMakeContextCurrent(window_);
+            frameCopy_.reset();
+            glfwMakeContextCurrent(previous != window_ ? previous : nullptr);
+        }
         glfwDestroyWindow(window_);
         window_ = nullptr;
         shareContext_ = nullptr;
+        swapInterval_ = -1;
     }
+}
+
+FrameCopy& OutputWindow::frameCopy() {
+    if (!frameCopy_) {
+        frameCopy_ = std::make_unique<FrameCopy>();
+    }
+    return *frameCopy_;
 }
 
 void OutputWindow::show() {
@@ -172,6 +130,13 @@ void OutputWindow::swapBuffers() {
     }
 }
 
+void OutputWindow::setSwapInterval(int interval) {
+    if (window_ != nullptr && interval != swapInterval_) {
+        glfwSwapInterval(interval);
+        swapInterval_ = interval;
+    }
+}
+
 void OutputWindow::setPosition(IVec2 pos) {
     position_ = pos;
     if (window_ != nullptr && !fullscreen_) {
@@ -195,10 +160,9 @@ Result<void, Error> OutputWindow::goFullscreen(int monitorIndex) {
         return Err("No monitors available");
     }
 
-    // Validate monitor index
+    // Never guess: monitor 0 is usually the operator's own screen (QM-090).
     if (targetMonitor < 0 || targetMonitor >= monitorCount) {
-        // Default to primary monitor
-        targetMonitor = 0;
+        return Err("Monitor " + std::to_string(targetMonitor) + " is not connected");
     }
 
     GLFWmonitor* monitor = monitors[targetMonitor];
@@ -290,10 +254,9 @@ Result<void, Error> OutputWindow::goBorderlessFullscreen(int monitorIndex) {
         return Err("No monitors available");
     }
 
-    // Validate monitor index
+    // Never guess: monitor 0 is usually the operator's own screen (QM-090).
     if (targetMonitor < 0 || targetMonitor >= monitorCount) {
-        // Default to primary monitor
-        targetMonitor = 0;
+        return Err("Monitor " + std::to_string(targetMonitor) + " is not connected");
     }
 
     GLFWmonitor* monitor = monitors[targetMonitor];
@@ -402,7 +365,10 @@ void OutputWindow::setKeyCallback(KeyCallback callback) {
 void OutputWindow::glfwKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     OutputWindow* self = static_cast<OutputWindow*>(glfwGetWindowUserPointer(window));
     if (self && self->keyCallback_) {
-        self->keyCallback_(key, scancode, action, mods);
+        // Call a copy: the callback may clear or replace keyCallback_, which must not
+        // destroy the function object while it is running.
+        const KeyCallback callback = self->keyCallback_;
+        callback(key, scancode, action, mods);
     }
 }
 

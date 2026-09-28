@@ -1,10 +1,63 @@
 #include "Texture.hpp"
+#include "core/FileSystem.hpp"
+#include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
 #include <glad/glad.h>
 
 #include <stb_image.h>
 
+#include <limits>
+
+// BCn internal-format tokens (ADR-044). Not present in our pinned GLAD 3.3
+// loader header (they are extension tokens), so define the stable constants
+// here. Values are fixed by GL_EXT_texture_compression_s3tc / _bptc.
+#ifndef GL_COMPRESSED_RGB_S3TC_DXT1_EXT
+#define GL_COMPRESSED_RGB_S3TC_DXT1_EXT  0x83F0
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
+#endif
+#ifndef GL_COMPRESSED_RGBA_BPTC_UNORM
+#define GL_COMPRESSED_RGBA_BPTC_UNORM    0x8E8C
+#endif
+
 namespace quadmapper {
+
+namespace {
+
+// Map our format enum to the GL internal format used by glCompressedTexImage2D.
+// BC3_RGBA and BC3_YCoCg both upload as DXT5 — only the sampling colorspace
+// differs (handled by colorSpace_ / A4's shader).
+GLenum glCompressedInternalFormat(GpuCompressedFormat fmt) {
+    switch (fmt) {
+        case GpuCompressedFormat::BC1_RGB:   return GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
+        case GpuCompressedFormat::BC3_RGBA:  return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+        case GpuCompressedFormat::BC3_YCoCg: return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+        case GpuCompressedFormat::BC7_RGBA:  return GL_COMPRESSED_RGBA_BPTC_UNORM;
+        case GpuCompressedFormat::None:
+        default:                             return 0;
+    }
+}
+
+// CPU pixel rows are tightly packed (e.g. RGB24 at any width). GL's default unpack
+// alignment of 4 would read every row of a width not divisible by 4 at the wrong
+// offset (sheared image, reads past the buffer), so uploads use alignment 1 and
+// restore the caller's setting.
+class ScopedTightUnpack {
+public:
+    ScopedTightUnpack() {
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &previous_);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    }
+    ~ScopedTightUnpack() { glPixelStorei(GL_UNPACK_ALIGNMENT, previous_); }
+    ScopedTightUnpack(const ScopedTightUnpack&) = delete;
+    ScopedTightUnpack& operator=(const ScopedTightUnpack&) = delete;
+
+private:
+    GLint previous_ = 4;
+};
+
+} // namespace
 
 Texture::Texture() = default;
 
@@ -17,12 +70,16 @@ Texture::Texture(Texture&& other) noexcept
     , width_(other.width_)
     , height_(other.height_)
     , channels_(other.channels_)
-    , ownsTexture_(other.ownsTexture_) {
+    , ownsTexture_(other.ownsTexture_)
+    , compressedFormat_(other.compressedFormat_)
+    , colorSpace_(other.colorSpace_) {
     other.textureId_ = 0;
     other.width_ = 0;
     other.height_ = 0;
     other.channels_ = 0;
     other.ownsTexture_ = true;
+    other.compressedFormat_ = GpuCompressedFormat::None;
+    other.colorSpace_ = TextureColorSpace::RGB;
 }
 
 Texture& Texture::operator=(Texture&& other) noexcept {
@@ -33,25 +90,40 @@ Texture& Texture::operator=(Texture&& other) noexcept {
         height_ = other.height_;
         channels_ = other.channels_;
         ownsTexture_ = other.ownsTexture_;
+        compressedFormat_ = other.compressedFormat_;
+        colorSpace_ = other.colorSpace_;
         other.textureId_ = 0;
         other.width_ = 0;
         other.height_ = 0;
         other.channels_ = 0;
         other.ownsTexture_ = true;
+        other.compressedFormat_ = GpuCompressedFormat::None;
+        other.colorSpace_ = TextureColorSpace::RGB;
     }
     return *this;
 }
 
 bool Texture::loadFromFile(const std::filesystem::path& path) {
-    // Set stb_image to flip vertically (OpenGL expects bottom-left origin)
-    stbi_set_flip_vertically_on_load(true);
+    // Top row first: quads sample v = 0 at their top edge, so the image shows upright.
+    stbi_set_flip_vertically_on_load_thread(false);
 
-    // Load image data
+    // Read through the wide path: stbi_load() opens its filename in the ANSI code page,
+    // so an install folder with non-ASCII characters would fail.
+    auto bytes = FileSystem::readBinaryFile(path);
+    if (!bytes || bytes.value().empty() ||
+        bytes.value().size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        Logger::error("Failed to load texture: {} - cannot read file", utf8FromPath(path));
+        return false;
+    }
     int width, height, channels;
-    unsigned char* data = stbi_load(path.string().c_str(), &width, &height, &channels, 0);
+    unsigned char* data =
+        stbi_load_from_memory(bytes.value().data(), static_cast<int>(bytes.value().size()),
+                              &width, &height, &channels, 0);
 
     if (!data) {
-        Logger::error("Failed to load texture: {} - {}", path.string(), stbi_failure_reason());
+        const char* reason = stbi_failure_reason();
+        Logger::error("Failed to load texture: {} - {}", utf8FromPath(path),
+                      reason ? reason : "unknown");
         return false;
     }
 
@@ -60,7 +132,7 @@ bool Texture::loadFromFile(const std::filesystem::path& path) {
 
     if (result) {
         Logger::debug("Texture loaded: {} ({}x{}, {} channels)",
-                     path.filename().string(), width, height, channels);
+                     utf8FromPath(path.filename()), width, height, channels);
     }
 
     return result;
@@ -100,10 +172,14 @@ bool Texture::create(int width, int height, int channels, const unsigned char* d
 
     // Create texture
     glGenTextures(1, &textureId_);
+    GlObjectStats::onTextureCreated();
     glBindTexture(GL_TEXTURE_2D, textureId_);
 
     // Upload data
-    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+    {
+        ScopedTightUnpack tight;
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+    }
 
     // Generate mipmaps
     glGenerateMipmap(GL_TEXTURE_2D);
@@ -123,6 +199,68 @@ bool Texture::createEmpty(int width, int height, int channels) {
     return create(width, height, channels, nullptr);
 }
 
+bool Texture::createCompressed(int width, int height, GpuCompressedFormat fmt,
+                               const unsigned char* data, size_t size) {
+    GLenum internalFormat = glCompressedInternalFormat(fmt);
+    if (internalFormat == 0 || width <= 0 || height <= 0) {
+        Logger::error("Texture::createCompressed: invalid format/dimensions ({}x{})", width, height);
+        return false;
+    }
+
+    destroy();
+
+    width_ = width;
+    height_ = height;
+    // No per-pixel channel concept for BCn; use 4 as a sentinel so isValid()
+    // and any RGBA-assuming caller stay sane. The compressed path never reads
+    // channels_ for an upload format.
+    channels_ = 4;
+    ownsTexture_ = true;  // We own textures we create
+    compressedFormat_ = fmt;
+    colorSpace_ = (fmt == GpuCompressedFormat::BC3_YCoCg)
+                      ? TextureColorSpace::YCoCg
+                      : TextureColorSpace::RGB;
+
+    glGenTextures(1, &textureId_);
+    GlObjectStats::onTextureCreated();
+    glBindTexture(GL_TEXTURE_2D, textureId_);
+
+    // Allocate (and upload, if data given) the single compressed level. BCn
+    // textures cannot be glGenerateMipmap'd, so we use a non-mipmap min filter.
+    glCompressedTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0,
+                           static_cast<GLsizei>(size),
+                           (data && size) ? data : nullptr);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    return true;
+}
+
+bool Texture::updateCompressed(const unsigned char* data, size_t size) {
+    // With a pixel unpack buffer bound, data is an offset into it and may be null.
+    if (!isValid() || !isCompressed() || size == 0) {
+        return false;
+    }
+
+    GLenum internalFormat = glCompressedInternalFormat(compressedFormat_);
+    if (internalFormat == 0) {
+        return false;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, textureId_);
+    // Compressed levels are re-specified whole; a full-image SubImage matches
+    // the level allocated by createCompressed().
+    glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_,
+                              internalFormat, static_cast<GLsizei>(size), data);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return true;
+}
+
 void Texture::update(const unsigned char* data) {
     if (!isValid()) return;
 
@@ -135,7 +273,14 @@ void Texture::update(const unsigned char* data) {
     }
 
     glBindTexture(GL_TEXTURE_2D, textureId_);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, format, GL_UNSIGNED_BYTE, data);
+    {
+        ScopedTightUnpack tight;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, format, GL_UNSIGNED_BYTE, data);
+    }
+    // create() built the texture with a mipmap min-filter; a full-texture update
+    // must refresh the mip chain, else minified sampling reads the stale (empty)
+    // levels and the quad renders black.
+    glGenerateMipmap(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -151,7 +296,10 @@ void Texture::update(int x, int y, int width, int height, const unsigned char* d
     }
 
     glBindTexture(GL_TEXTURE_2D, textureId_);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, format, GL_UNSIGNED_BYTE, data);
+    {
+        ScopedTightUnpack tight;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, format, GL_UNSIGNED_BYTE, data);
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -159,12 +307,15 @@ void Texture::destroy() {
     if (textureId_ != 0) {
         if (ownsTexture_) {
             glDeleteTextures(1, &textureId_);
+            GlObjectStats::onTextureDestroyed();
         }
         textureId_ = 0;
         width_ = 0;
         height_ = 0;
         channels_ = 0;
         ownsTexture_ = true;
+        compressedFormat_ = GpuCompressedFormat::None;
+        colorSpace_ = TextureColorSpace::RGB;
     }
 }
 
@@ -175,6 +326,8 @@ void Texture::setGLTextureId(uint32_t id, int width, int height, int channels) {
     height_ = height;
     channels_ = channels;
     ownsTexture_ = false;  // We don't own this texture, don't delete it
+    compressedFormat_ = GpuCompressedFormat::None;
+    colorSpace_ = TextureColorSpace::RGB;
 }
 
 void Texture::bind(uint32_t slot) const {

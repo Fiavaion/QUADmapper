@@ -1,5 +1,6 @@
 #include "FolderWatcher.hpp"
 #include "MediaLibrary.hpp"
+#include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 #include <chrono>
 
@@ -17,7 +18,7 @@ void FolderWatcher::watch(const std::filesystem::path& folder, bool recursive) {
 
     std::error_code ec;
     if (!std::filesystem::exists(folder, ec) || !std::filesystem::is_directory(folder, ec)) {
-        Logger::warning("FolderWatcher: Cannot watch '{}' - not a valid directory", folder.string());
+        Logger::warning("FolderWatcher: Cannot watch '{}' - not a valid directory", utf8FromPath(folder));
         return;
     }
 
@@ -33,7 +34,7 @@ void FolderWatcher::watch(const std::filesystem::path& folder, bool recursive) {
     watchThread_ = std::thread(&FolderWatcher::watchThread, this);
 
     Logger::info("FolderWatcher: Started watching '{}' (recursive: {})",
-                 folder.string(), recursive ? "yes" : "no");
+                 utf8FromPath(folder), recursive ? "yes" : "no");
 }
 
 void FolderWatcher::stop() {
@@ -70,14 +71,14 @@ void FolderWatcher::buildInitialCache() {
         }
 
         // Only cache supported media files
-        std::string ext = entry.path().extension().string();
+        std::string ext = utf8FromPath(entry.path().extension());
         if (!MediaLibrary::isExtensionSupported(ext)) {
             return;
         }
 
         auto modTime = std::filesystem::last_write_time(entry.path(), ec);
         if (!ec) {
-            fileCache_[entry.path().string()] = modTime;
+            fileCache_[utf8FromPath(entry.path())] = modTime;
         }
     };
 
@@ -120,12 +121,12 @@ void FolderWatcher::watchThread() {
             }
 
             // Only watch supported media files
-            std::string ext = entry.path().extension().string();
+            std::string ext = utf8FromPath(entry.path().extension());
             if (!MediaLibrary::isExtensionSupported(ext)) {
                 return;
             }
 
-            std::string pathStr = entry.path().string();
+            std::string pathStr = utf8FromPath(entry.path());
             auto modTime = std::filesystem::last_write_time(entry.path(), ec);
             if (ec) {
                 return;

@@ -8,6 +8,11 @@ Scene::Scene() : id_(UUID::generate()), name_("New Scene") {}
 
 Scene::Scene(const UUID& id) : id_(id), name_("New Scene") {}
 
+void Scene::setCanvasSize(IVec2 size) {
+    canvasSize_ = IVec2(std::clamp(size.x, 1, MAX_CANVAS_DIMENSION),
+                        std::clamp(size.y, 1, MAX_CANVAS_DIMENSION));
+}
+
 void Scene::resetView() {
     viewState_ = SceneViewState();
 }
@@ -180,6 +185,192 @@ std::string Scene::generateUniqueGroupName() const {
     std::ostringstream oss;
     oss << baseName << number;
     return oss.str();
+}
+
+MeshObject* Scene::createObject(const std::string& name) {
+    auto object = std::make_unique<MeshObject>();
+    object->setName(name);
+    return adoptObject(std::move(object));
+}
+
+MeshObject* Scene::adoptObject(std::unique_ptr<MeshObject> object) {
+    if (!object) return nullptr;
+    objects_.push_back(std::move(object));
+    return objects_.back().get();
+}
+
+void Scene::deleteObject(const UUID& id) {
+    objects_.erase(std::remove_if(objects_.begin(), objects_.end(),
+                                  [&](const auto& o) { return o->getId() == id; }),
+                   objects_.end());
+}
+
+std::unique_ptr<MeshObject> Scene::takeObject(const UUID& id, size_t* index) {
+    for (size_t i = 0; i < objects_.size(); ++i) {
+        if (objects_[i]->getId() != id) continue;
+        std::unique_ptr<MeshObject> object = std::move(objects_[i]);
+        objects_.erase(objects_.begin() + static_cast<std::ptrdiff_t>(i));
+        if (index) *index = i;
+        return object;
+    }
+    return nullptr;
+}
+
+MeshObject* Scene::insertObject(std::unique_ptr<MeshObject> object, size_t index) {
+    if (!object || getObject(object->getId())) return nullptr;
+    const size_t at = std::min(index, objects_.size());
+    objects_.insert(objects_.begin() + static_cast<std::ptrdiff_t>(at), std::move(object));
+    return objects_[at].get();
+}
+
+MeshObject* Scene::getObject(const UUID& id) {
+    for (const auto& object : objects_) {
+        if (object->getId() == id) return object.get();
+    }
+    return nullptr;
+}
+
+bool Scene::visibleObjectBounds(Vec3& min, Vec3& max) const {
+    bool any = false;
+    for (const auto& object : objects_) {
+        if (!object->isVisible() || object->getMesh().empty()) continue;
+        Vec3 lo, hi;
+        object->worldBounds(lo, hi);
+        min = any ? glm::min(min, lo) : lo;
+        max = any ? glm::max(max, hi) : hi;
+        any = true;
+    }
+    return any;
+}
+
+std::unique_ptr<Scene> Scene::duplicate(std::unordered_map<UUID, UUID>* quadIdMap) const {
+    auto copy = std::make_unique<Scene>();
+    copy->name_ = name_;
+    copy->viewState_ = viewState_;
+    copy->canvasSize_ = canvasSize_;
+    copy->canvasLocked_ = canvasLocked_;
+    copy->nextGroupNumber_ = nextGroupNumber_;
+
+    std::unordered_map<UUID, UUID> quadIds;
+    for (const auto& quad : quadManager_.getQuads()) {
+        const UUID newId = UUID::generate();
+        quadIds[quad->getId()] = newId;
+        copy->quadManager_.insertQuad(std::make_unique<Quad>(quad->cloneWithId(newId)),
+                                      copy->quadManager_.getQuadCount());
+    }
+
+    std::unordered_map<UUID, UUID> groupIds;
+    for (const auto& group : groups_) groupIds[group->getId()] = UUID::generate();
+    auto remapGroup = [&](const std::optional<UUID>& id) -> std::optional<UUID> {
+        if (!id) return std::nullopt;
+        auto it = groupIds.find(*id);
+        return it != groupIds.end() ? std::optional<UUID>(it->second) : std::nullopt;
+    };
+
+    for (const auto& quad : quadManager_.getQuads()) {
+        Quad* dup = copy->quadManager_.getQuad(quadIds[quad->getId()]);
+        dup->setZOrder(quad->getZOrder());
+        dup->setParentGroup(remapGroup(quad->getParentGroup()));
+    }
+
+    for (const auto& group : groups_) {
+        auto dup = std::make_unique<QuadGroup>(groupIds[group->getId()]);
+        dup->setName(group->getName());
+        dup->setParentGroup(remapGroup(group->getParentGroup()));
+        dup->setCollapsed(group->isCollapsed());
+        dup->setVisible(group->isVisible());
+        dup->setLocked(group->isLocked());
+        for (const UUID& member : group->getMemberQuadIds()) {
+            auto it = quadIds.find(member);
+            if (it != quadIds.end()) dup->addMember(it->second);
+        }
+        copy->groups_.push_back(std::move(dup));
+    }
+
+    for (const auto& object : objects_) {
+        copy->objects_.push_back(
+            std::make_unique<MeshObject>(object->cloneWithId(UUID::generate())));
+    }
+
+    // The same quads selected, the primary one last so it stays primary.
+    const std::optional<UUID> primary = quadManager_.getPrimarySelectedId();
+    for (const UUID& id : quadManager_.getSelectedIds()) {
+        if (!primary || id != *primary) copy->quadManager_.addToSelection(quadIds[id]);
+    }
+    if (primary && quadIds.count(*primary)) copy->quadManager_.addToSelection(quadIds[*primary]);
+
+    if (quadIdMap) *quadIdMap = std::move(quadIds);
+    return copy;
+}
+
+int findSceneIndex(const SceneList& scenes, const UUID& sceneId) {
+    for (size_t i = 0; i < scenes.size(); ++i) {
+        if (scenes[i] && scenes[i]->getId() == sceneId) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+std::string uniqueSceneCopyName(const SceneList& scenes, const std::string& baseName) {
+    auto taken = [&](const std::string& name) {
+        return std::any_of(scenes.begin(), scenes.end(),
+                           [&](const auto& s) { return s && s->getName() == name; });
+    };
+    const std::string first = baseName + " copy";
+    if (!taken(first)) return first;
+    for (int n = 2; ; ++n) {
+        std::string candidate = first + " " + std::to_string(n);
+        if (!taken(candidate)) return candidate;
+    }
+}
+
+bool moveScene(SceneList& scenes, size_t from, size_t to) {
+    if (from >= scenes.size() || to >= scenes.size() || from == to) return false;
+    auto moved = std::move(scenes[from]);
+    scenes.erase(scenes.begin() + static_cast<std::ptrdiff_t>(from));
+    scenes.insert(scenes.begin() + static_cast<std::ptrdiff_t>(to), std::move(moved));
+    return true;
+}
+
+SceneTake planSceneTake(const SceneList& scenes, const UUID& activeSceneId, int number,
+                        const std::vector<SceneTakeOutput>& outputs) {
+    SceneTake take;
+    if (number < 1 || number > static_cast<int>(scenes.size())) return take;
+    const Scene* target = scenes[static_cast<size_t>(number - 1)].get();
+    if (!target) return take;
+
+    take.sceneId = target->getId();
+    const bool targetIsActive = take.sceneId == activeSceneId;
+
+    auto shows = [](const SceneTakeOutput& o, const UUID& sceneId) {
+        return !o.id.isNull() && !sceneId.isNull() && o.sceneId == sceneId;
+    };
+    const bool targetShown = std::any_of(outputs.begin(), outputs.end(),
+                                         [&](const SceneTakeOutput& o) { return shows(o, take.sceneId); });
+    if (!targetShown) {
+        for (const SceneTakeOutput& o : outputs) {
+            if (shows(o, activeSceneId)) take.outputIds.push_back(o.id);
+        }
+        if (take.outputIds.empty()) {
+            // No output shows the active scene (it was just added, or clicked in the
+            // Scenes panel): the first enabled output, with every output showing what
+            // it shows, so a blended group still changes together.
+            const auto first = std::find_if(outputs.begin(), outputs.end(), [](const SceneTakeOutput& o) {
+                return o.enabled && !o.id.isNull();
+            });
+            if (first != outputs.end()) {
+                for (const SceneTakeOutput& o : outputs) {
+                    if (o.id == first->id || shows(o, first->sceneId)) take.outputIds.push_back(o.id);
+                }
+            }
+        }
+    }
+
+    if (!take.outputIds.empty()) {
+        take.kind = SceneTake::Kind::Route;
+    } else if (!targetIsActive) {
+        take.kind = SceneTake::Kind::Activate;
+    }
+    return take;
 }
 
 } // namespace quadmapper

@@ -1,26 +1,26 @@
 #pragma once
 
 #include "core/Types.hpp"
-#include <chrono>
+
+#include <cstdint>
 
 namespace quadmapper {
 
 /**
- * @brief Complete playback state for a video player
+ * @brief Snapshot of a video player's playback, refreshed on every update
+ *
+ * The playback clock (PlaybackTransport) is the source of truth; this is what the
+ * UI and the source wrapper read.
  */
 struct VideoPlaybackState {
     PlaybackState state = PlaybackState::STOPPED;
     double position = 0.0;          // Current position in seconds
     double duration = 0.0;          // Total duration in seconds
     float speed = 1.0f;             // Playback speed (0.1 - 4.0)
-    LoopMode loopMode = LoopMode::LOOP;
-    bool isLooping = false;         // Currently in a loop iteration
+    LoopMode loopMode = LoopMode::LOOP;  // as requested (see VideoPlayer::getLoopModeNotice)
+    int direction = 1;              // -1 on a Ping-Pong reverse leg
     int64_t currentFrame = 0;
     int64_t totalFrames = 0;
-
-    // Timing
-    std::chrono::steady_clock::time_point lastUpdateTime;
-    double accumulatedTime = 0.0;   // Time since last frame
 
     // Helper methods
     bool isPlaying() const { return state == PlaybackState::PLAYING; }
@@ -36,9 +36,8 @@ struct VideoPlaybackState {
     void reset() {
         state = PlaybackState::STOPPED;
         position = 0.0;
+        direction = 1;
         currentFrame = 0;
-        accumulatedTime = 0.0;
-        isLooping = false;
     }
 };
 

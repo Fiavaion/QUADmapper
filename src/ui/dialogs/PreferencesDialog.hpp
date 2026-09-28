@@ -1,65 +1,66 @@
 #pragma once
 
 #include "core/Result.hpp"
-#include "input/KeyboardShortcuts.hpp"
+#include "ui/AsyncFileDialog.hpp"
+#include "ui/panels/ControlPanel.hpp"
+
+#include <filesystem>
 #include <string>
 #include <vector>
-#include <memory>
 
 namespace quadmapper {
 
+struct EditorContext;
+class AudioEngine;
+namespace control { class ExternalControl; }
+
 /**
- * General application preferences.
+ * General application preferences. Every field is honoured by the app.
  */
 struct GeneralPreferences {
-    // Project defaults
-    std::string defaultProjectPath;
-    int defaultMeshResolution = 8;
-    bool openLastProjectOnStartup = true;
-    int recentProjectsMaxCount = 10;
+    // Media library, read at startup
+    std::string defaultMediaFolder;       // scanned at startup and watched for new files
+    bool autoLoadMediaOnStartup = true;   // import the folder's media at startup
+    bool recursiveFolderScan = false;     // include subdirectories (scan and watch)
 
-    // Media Library settings
-    std::string defaultMediaFolder;           // Default folder to scan for media
-    bool autoLoadMediaOnStartup = true;       // Auto-load media from default folder
-    bool recursiveFolderScan = false;         // Scan subdirectories
-    std::vector<std::string> mediaFolderBookmarks;  // Saved folder paths for quick access
-
-    // Auto-save settings
+    // Auto-save (ADR-046 §4), applied at once
     bool autoSaveEnabled = true;
-    int autoSaveIntervalMinutes = 5;
-    bool createBackupOnSave = true;
+    int autoSaveIntervalMinutes = 1;      // ADR-046: a crash costs at most ~1 minute
 
-    // UI preferences
-    bool showWelcomeDialog = true;
-    bool confirmOnExit = true;
-    bool rememberWindowLayout = true;
+    // UI complexity mode (ADR-042): 0 = Simple, 1 = Advanced. The last mode used.
+    int uiMode = 0;
 
-    // Theme
-    int themeIndex = 0;  // 0 = Dark, 1 = Light
+    // Crossfade of a scene take from the 1-9 keys, MIDI and a one-argument OSC take
+    // (ADR-047 §5), in seconds, 0 to MAX_SCENE_FADE_SECONDS; 0 = a cut.
+    float sceneFadeSeconds = 0.0f;
+};
+
+// Limits the dialog offers and loading enforces.
+constexpr int MIN_AUTOSAVE_MINUTES = 1;
+constexpr int MAX_AUTOSAVE_MINUTES = 30;
+
+/**
+ * Machine audio setup. Stored under "performance" in the file, the section it has
+ * always been saved in.
+ */
+struct PerformancePreferences {
+    std::string audioDevice;    // output device name; empty = the system default (ADR-050)
 };
 
 /**
- * Performance-related preferences.
+ * External control (ADR-048): which MIDI inputs to open and how OSC listens. Machine
+ * setup, not show content, so it lives here rather than in the project.
  */
-struct PerformancePreferences {
-    // Video decoding
-    int videoBufferFrames = 30;
-    int videoDecodeThreads = 2;
-    bool enableHardwareDecoding = true;
-
-    // Rendering
-    bool enableVSync = true;
-    int targetFrameRate = 60;
-    int textureQuality = 2;  // 0 = Low, 1 = Medium, 2 = High
-    bool enableMipmaps = true;
-
-    // Audio
-    int audioBufferSize = 512;  // samples
-    int audioSampleRate = 48000;
-
-    // Output
-    int outputBufferCount = 2;  // double or triple buffering
-    bool enableAdaptiveSync = false;
+struct ControlPreferences {
+    bool oscEnabled = false;                 // off by default: enabling opens a UDP port
+    int oscPort = 8000;
+    std::string oscBindAddress = "0.0.0.0";  // every interface
+    std::vector<std::string> midiDevices;    // input devices opened by name when present
+    // OSC feedback: current values sent back to the controller (off by default).
+    bool oscFeedbackEnabled = false;
+    std::string oscFeedbackHost;             // dotted IPv4; empty = reply to the sender
+    int oscFeedbackPort = 9000;              // 0 = the sender's own port (reply mode only)
+    bool oscFeedbackUseIds = false;          // address entities by UUID, not unique name
 };
 
 /**
@@ -68,114 +69,68 @@ struct PerformancePreferences {
 struct AppPreferences {
     GeneralPreferences general;
     PerformancePreferences performance;
-    // Keyboard shortcuts are managed separately
+    ControlPreferences control;
 
-    static std::string getDefaultConfigPath();
+    // <Roaming AppData>/QUADmapper/preferences.json (XDG config elsewhere), built as a
+    // wide path so a user name outside the ANSI code page works. Creates the folder.
+    static std::filesystem::path getDefaultConfigPath();
 };
 
 /**
- * Preferences dialog for QUADmapper.
- * Provides tabs for General, Keyboard Shortcuts, and Performance settings.
+ * The application's preferences (the one copy the app reads) and the Edit >
+ * Preferences window that edits them.
+ *
+ * Every change in the window is applied at once and saved (a slider once, on
+ * release, not on every frame of the drag); the media-library
+ * settings are read at startup, which the window says. The Control tab edits the
+ * same ControlPreferences as the Control window, and the Audio tab switches the same
+ * engine as the menu bar's device list, so all of them always agree.
  */
 class PreferencesDialog {
 public:
-    PreferencesDialog();
-    ~PreferencesDialog() = default;
+    PreferencesDialog() = default;
 
     /**
-     * Show the preferences dialog.
+     * Render the window while ctx.es.showPreferences is set. `control` may be null
+     * (no external control in the stress and bench harnesses), as may ctx.audio.
      */
-    void show();
+    void render(EditorContext& ctx, control::ExternalControl* control);
 
-    /**
-     * Hide the preferences dialog.
-     */
-    void hide();
-
-    /**
-     * Check if dialog is visible.
-     */
-    bool isVisible() const { return visible_; }
-
-    /**
-     * Render the dialog. Call each frame.
-     */
-    void render();
-
-    /**
-     * Set the keyboard shortcuts manager to use for shortcut editing.
-     */
-    void setKeyboardShortcuts(KeyboardShortcuts* shortcuts);
-
-    /**
-     * Get current preferences.
-     */
     const AppPreferences& getPreferences() const { return preferences_; }
-
-    /**
-     * Get mutable preferences.
-     */
     AppPreferences& getPreferences() { return preferences_; }
 
-    /**
-     * Load preferences from the default config file.
-     */
+    /** Load from / save to the config file (the default one unless setConfigPath). */
     Result<void, Error> loadPreferences();
-
-    /**
-     * Save preferences to the default config file.
-     */
     Result<void, Error> savePreferences();
 
-    /**
-     * Load preferences from a specific file.
-     */
-    Result<void, Error> loadFromFile(const std::string& path);
+    /** Use another config file than AppPreferences::getDefaultConfigPath() (tests). */
+    void setConfigPath(std::filesystem::path path) { configPath_ = std::move(path); }
 
     /**
-     * Save preferences to a specific file.
+     * Load from a specific file. Values of the wrong type or out of range are skipped
+     * (the current value stays), as are keys this version no longer has.
      */
-    Result<void, Error> saveToFile(const std::string& path) const;
+    Result<void, Error> loadFromFile(const std::filesystem::path& path);
 
-    /**
-     * Reset all preferences to defaults.
-     */
-    void resetToDefaults();
-
-    /**
-     * Check if preferences have been modified since last save.
-     */
-    bool isModified() const { return modified_; }
+    /** Save to a specific file. */
+    Result<void, Error> saveToFile(const std::filesystem::path& path) const;
 
 private:
-    void renderGeneralTab();
-    void renderKeyboardShortcutsTab();
-    void renderPerformanceTab();
-
-    // Shortcut editing helpers
-    void renderShortcutEntry(ShortcutInfo& info);
-    void startShortcutCapture(ShortcutAction action);
-    void stopShortcutCapture();
-    void handleShortcutCapture();
-
-    bool visible_ = false;
-    bool modified_ = false;
-    int currentTab_ = 0;
+    // Each returns true when a preference changed (then saved).
+    bool renderGeneralTab(EditorContext& ctx);
+    bool renderAudioTab(AudioEngine* audio);
+    bool renderControlTab(control::ExternalControl* control);
+    void save();
+    std::filesystem::path configPath() const;
 
     AppPreferences preferences_;
-    AppPreferences savedPreferences_;  // For detecting changes
+    std::filesystem::path configPath_;          // empty = the default config file
 
-    KeyboardShortcuts* shortcuts_ = nullptr;
-
-    // Shortcut capture state
-    bool capturingShortcut_ = false;
-    ShortcutAction captureAction_ = ShortcutAction::COUNT;
-    std::string captureCategory_;
-    float captureTimeRemaining_ = 0.0f;
-
-    // Category filter for shortcuts tab
-    std::string shortcutFilterCategory_;
-    std::string shortcutSearchFilter_;
+    AsyncFileDialog folderDialog_;              // media folder Browse, off the render thread
+    ControlSettingsEditor controlSettings_;     // OSC / MIDI settings, as in the Control window
+    std::vector<std::string> audioDevices_;     // enumerated when the Audio tab opens
+    bool audioTabOpen_ = false;
+    std::string saveError_;                     // shown while the last save failed
 };
 
 } // namespace quadmapper

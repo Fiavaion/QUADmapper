@@ -1,4 +1,5 @@
 #pragma once
+#include "core/FileSystem.hpp"
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include <string>
@@ -26,7 +27,7 @@ public:
 
     // --- File Path (for file-based items) ---
     const std::filesystem::path& getPath() const { return path_; }
-    void setPath(const std::filesystem::path& p) { path_ = p; name_ = p.filename().string(); }
+    void setPath(const std::filesystem::path& p) { path_ = p; name_ = utf8FromPath(p.filename()); }
     bool hasPath() const { return !path_.empty(); }
 
     // --- Media Type ---

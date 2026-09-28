@@ -1,29 +1,15 @@
-# Input library - Keyboard shortcuts and mouse handling
+# Input library - vertex keyboard maths (VertexKeyboard.hpp, header-only)
 
-add_library(quadmapper_input STATIC
-    InputManager.hpp
-    InputManager.cpp
-    KeyboardShortcuts.hpp
-    KeyboardShortcuts.cpp
-    MouseHandler.hpp
-    MouseHandler.cpp
-)
+add_library(quadmapper_input INTERFACE)
 
 target_include_directories(quadmapper_input
-    PUBLIC
+    INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
 )
 
 target_link_libraries(quadmapper_input
-    PUBLIC
+    INTERFACE
         quadmapper_core
-    PRIVATE
-        glfw
-        nlohmann_json::nlohmann_json
         imgui
-)
-
-set_target_properties(quadmapper_input PROPERTIES
-    FOLDER "Libraries"
 )

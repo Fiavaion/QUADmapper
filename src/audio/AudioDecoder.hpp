@@ -2,100 +2,70 @@
 
 #include <filesystem>
 #include <memory>
-#include <atomic>
-#include <thread>
 
 namespace quadmapper {
 
-// Forward declarations
 struct AudioFrame;
 struct AudioInfo;
-class AudioBuffer;
 
 /**
- * @brief FFmpeg-based audio decoder with background decoding thread
+ * @brief Decodes the audio stream of a media file with FFmpeg
  *
- * Decodes audio streams from video files using FFmpeg.
- * Uses the pimpl pattern to isolate FFmpeg headers from the public interface.
+ * Output is interleaved float. open() can resample and remix to a fixed format (the
+ * mixer's 48 kHz stereo); multichannel sources are downmixed by swresample with the
+ * standard matrix (centre and surrounds at -3 dB, LFE left out).
+ *
+ * Timestamps are clip seconds on the same scale as the file's video: 0 is the first
+ * video stream's start time (the audio stream's own start for audio-only files), so
+ * frame.pts == 2.0 is the sound that belongs to the video frame at 2.0 s.
+ *
+ * Not thread-safe: one thread uses a decoder at a time. The FFmpeg headers stay behind
+ * the pimpl.
  */
 class AudioDecoder {
 public:
     AudioDecoder();
     ~AudioDecoder();
 
-    // Non-copyable, movable
     AudioDecoder(const AudioDecoder&) = delete;
     AudioDecoder& operator=(const AudioDecoder&) = delete;
     AudioDecoder(AudioDecoder&&) noexcept;
     AudioDecoder& operator=(AudioDecoder&&) noexcept;
 
     /**
-     * @brief Open an audio stream from a video/audio file
-     * @param path Path to media file
-     * @return true if audio stream found and opened successfully
+     * @brief Open the first audio stream of a file
+     * @param outSampleRate Resample to this rate (0 = keep the stream's)
+     * @param outChannels   Remix to this many channels, 1 or 2 (0 = keep the stream's)
+     * @return false if the file cannot be opened or has no decodable audio stream
      */
-    bool open(const std::filesystem::path& path);
+    bool open(const std::filesystem::path& path, int outSampleRate = 0, int outChannels = 0);
 
-    /**
-     * @brief Close the decoder and release resources
-     */
     void close();
-
-    /**
-     * @brief Check if a file is open
-     */
     bool isOpen() const;
 
-    /**
-     * @brief Get audio stream metadata
-     */
+    /** The stream as stored (channels, rate, codec, duration). */
     const AudioInfo& getInfo() const;
 
+    int getOutputSampleRate() const;
+    int getOutputChannels() const;
+
     /**
-     * @brief Seek to a specific time
-     * @param timeSeconds Target time in seconds
-     * @return true if successful
+     * @brief Continue decoding from `timeSeconds` (clip time)
+     *
+     * Lands about 0.1 s before the target (codec pre-roll: the first packet after a
+     * seek decodes wrongly), so the next frames start early; callers that need the
+     * exact sample trim by frame.pts.
      */
     bool seek(double timeSeconds);
 
-    /**
-     * @brief Decode the next audio frame
-     * @return Decoded frame, or invalid frame if EOF/error
-     *
-     * The returned frame contains interleaved float samples.
-     */
+    /** The next decoded frame, or an invalid frame at the end of the stream or on error. */
     AudioFrame decodeNextFrame();
 
-    /**
-     * @brief Get current playback position in seconds
-     */
+    /** Clip time of the last decoded frame (or the last seek target). */
     double getCurrentTime() const;
 
-    /**
-     * @brief Check if at end of stream
-     */
+    /** True after the last frame of the stream was returned. */
     bool isAtEnd() const;
-
-    // --- Background decoding ---
-
-    /**
-     * @brief Start background decoding thread
-     * @param buffer Audio buffer to push decoded samples into
-     *
-     * The decoder will continuously decode frames and push samples
-     * to the provided buffer until stopped or end of stream.
-     */
-    void startBackgroundDecoding(AudioBuffer* buffer);
-
-    /**
-     * @brief Stop background decoding thread
-     */
-    void stopBackgroundDecoding();
-
-    /**
-     * @brief Check if background decoding is running
-     */
-    bool isBackgroundDecodingActive() const;
 
 private:
     class Impl;
