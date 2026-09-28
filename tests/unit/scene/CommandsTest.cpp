@@ -4,7 +4,6 @@
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGroup.hpp"
 #include "scene/Scene.hpp"
-#include "editor/GridUndo.hpp"
 #include "core/CommandHistory.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <map>
@@ -621,29 +620,6 @@ TEST_F(SceneCommandsTest, MoveGridHandleMergesPerHandleAndIsSafeAfterDelete) {
     ASSERT_TRUE(history_->redo());
     manager().deleteQuad(quad->getId());
     EXPECT_FALSE(history_->redo());
-    EXPECT_FALSE(history_->undo());
-}
-
-// Grid undo (editor/GridUndo.hpp) through the id-based command
-TEST_F(SceneCommandsTest, GridChangeUndoRestoresGridAndIsSafeAfterDelete) {
-    Quad* quad = manager().createQuad();
-    QuadGeometry& geo = quad->getGeometry();
-    geo.setGridHandlePosition(1, GRID_HANDLE_V_AFTER, Vec2(0.75f, 0.4f));  // a grid-line handle
-    GridSnapshot before = captureGrid(geo);
-    geo.insertUDivision(0.3f);
-    pushGridChange(*history_, ref(quad), "Add Column", before, captureGrid(geo));
-    const int columnsAfter = geo.getColumns();
-
-    history_->undo();
-    EXPECT_EQ(geo.getUCoords(), before.u);
-    EXPECT_EQ(geo.getMeshVertices(), before.offsets);
-    EXPECT_EQ(geo.getVertexTangents(), before.tangents);
-    EXPECT_TRUE(geo.getVertexTangent(1).isExplicit(GRID_HANDLE_V_AFTER));
-
-    history_->redo();
-    EXPECT_EQ(geo.getColumns(), columnsAfter);
-
-    manager().deleteQuad(quad->getId());
     EXPECT_FALSE(history_->undo());
 }
 

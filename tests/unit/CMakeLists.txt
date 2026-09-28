@@ -65,7 +65,7 @@ add_quadmapper_test(test_audio
 target_link_libraries(test_audio PRIVATE quadmapper_audio quadmapper_core)
 
 # Audio from video kept on the playback clock (ADR-050 §2): real decode, real mixer path,
-# the app's clock mapping (app/SourceAudio.hpp). Media tests skip without D:	esting Videos.
+# the app's clock mapping (editor/SourceAudio.hpp). Media tests skip without D:	esting Videos.
 add_quadmapper_test(test_audio_sync
     audio/AudioSyncTest.cpp
 )
@@ -188,22 +188,38 @@ add_quadmapper_test(test_control
 )
 target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws2_32)
 
-# The application's control targets (app/ControlBindings.hpp) on real scenes, quads and
-# sources, plus the control preferences, the missing-media relocation logic
-# (app/MissingMedia.hpp), the mesh-edit keyboard workflow (app/MeshEditKeys.hpp) and
-# the project session (app/ProjectSession.cpp and the live<->DTO mapping it uses,
-# compiled in here because the app is an executable, TD-14). No GL context needed.
-add_quadmapper_test(test_control_app
+# The editor library (ADR-051 E4), linked alone: no panel, no app code, no GL context.
+# The control targets (editor/ControlBindings.hpp) on real scenes, quads and sources, the
+# preferences file, missing media and relocation, replace in show, the mesh-edit
+# keyboard workflow, scene takes and slice editing, grid undo, and the live<->DTO
+# mapping (editor/ProjectMapping.cpp).
+add_quadmapper_test(test_editor
     editor/ControlBindingsTest.cpp
+    editor/PreferencesTest.cpp
     editor/MissingMediaTest.cpp
     editor/ReplaceMediaTest.cpp
     editor/MeshEditKeysTest.cpp
     editor/SceneTakeRoutingTest.cpp
+    editor/GridUndoTest.cpp
+    editor/ProjectMappingTest.cpp
+)
+target_link_libraries(test_editor PRIVATE quadmapper_editor)
+
+# The ui library: the Preferences window against headless ImGui, and the calibration
+# view on the canvas (ViewportEditor in a hidden GL window; skips without GL).
+add_quadmapper_test(test_ui
+    ui/PreferencesWindowTest.cpp
+    ui/CalibrationViewEditorTest.cpp
+)
+target_link_libraries(test_ui PRIVATE quadmapper_ui glfw)
+
+# The project session (app/ProjectSession.cpp, compiled in here because the app is an
+# executable, TD-14). It opens files through ui/AsyncFileDialog. No GL context needed.
+add_quadmapper_test(test_app
     app/ProjectSessionTest.cpp
     ${CMAKE_SOURCE_DIR}/src/app/ProjectSession.cpp
 )
-target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_editor quadmapper_control
-    quadmapper_project quadmapper_scene quadmapper_source quadmapper_core)
+target_link_libraries(test_app PRIVATE quadmapper_ui quadmapper_editor)
 
 # The AI assist's status paths (app/AiAssist.cpp, compiled in here because the app is an
 # executable, TD-14) without a sidecar, camera or GL context.
@@ -211,5 +227,4 @@ add_quadmapper_test(test_ai_assist
     app/AiAssistTest.cpp
     ${CMAKE_SOURCE_DIR}/src/app/AiAssist.cpp
 )
-target_link_libraries(test_ai_assist PRIVATE quadmapper_ui quadmapper_ai quadmapper_output
-    quadmapper_renderer quadmapper_scene quadmapper_source quadmapper_core)
+target_link_libraries(test_ai_assist PRIVATE quadmapper_editor quadmapper_ai)
