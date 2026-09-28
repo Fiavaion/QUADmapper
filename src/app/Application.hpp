@@ -6,7 +6,6 @@
 #include "StressHarness.hpp"
 #include "UnsavedIndicator.hpp"
 
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -28,13 +27,11 @@ class FolderWatcher;
 class ThumbnailCache;
 class SourceManager;
 class AudioEngine;
-class Quad;
-class Texture;
 class AsyncFileDialog;
 struct EditorState;
 struct MissingMediaItem;
 class PreferencesDialog;
-namespace ai { class SidecarClient; enum class SidecarState; }
+class AiAssist;
 namespace control { class ExternalControl; }
 
 class Application {
@@ -89,15 +86,14 @@ private:
     // One iteration of the interactive loop, in two halves so the headless bench can
     // act between them exactly where OS input lands. pollFrame: delta time, events,
     // frame-boundary tasks; false once a confirmed Exit closed the window.
-    // presentFrame: update, render, editor swap, projector outputs; `marks`,
+    // presentFrame: render, editor swap, projector outputs; `marks`,
     // when given, receives the time each stage finished.
     struct FrameMarks {
         std::chrono::steady_clock::time_point rendered, editorSwapped, outputsPresented;
     };
     bool pollFrame(float& deltaTime);
-    void presentFrame(float deltaTime, FrameMarks* marks = nullptr);
+    void presentFrame(FrameMarks* marks = nullptr);
 
-    void update(float deltaTime);
     void render();
 
     // Project lifecycle requests from Ctrl+S and the Resources>Project tab. They only
@@ -171,39 +167,6 @@ private:
     // for the worker to notice.
     void cancelMissingMediaSearch();
 
-    // AI pre-show "Detect Surface" (QM-058): capture a frame (live camera, or the
-    // QM_AI_TEST_IMAGE override) -> sidecar /surface -> apply the proposed quad to
-    // the selected quad when confident, else prompt "tap the surface". Geometry
-    // only (no .qmap change); the applied corners are an ordinary warp the user
-    // refines with the existing Tab-cycle + arrow-nudge UX.
-    void aiDetectSurface();
-
-    // One-shot headless driver for aiDetectSurface(), gated by m_aiSelfTestPending
-    // (set from the QM_AI_SELFTEST env var). Verification only; no production path.
-    void runAiSelfTest();
-
-    // One-Flash capture flow (QM-059): flash a known ChArUco pattern fullscreen on
-    // the chosen projector output, then capture a single photo (surface + pattern)
-    // to disk for the sidecar's homography solve (QM-060).
-    void oneFlashEmitPattern();
-    void oneFlashCapturePhoto();
-    void oneFlashClearPattern();
-    // Capture a photo of the projected pattern, solve via POST /oneflash, and
-    // apply the resulting corners to the selected quad. Geometry only.
-    //   oneFlashSolveAndApply (QM-060): target = the detected surface.
-    //   oneFlashAnamorphic   (QM-062): target = a centered audience rectangle ->
-    //     content looks frontal from the captured viewpoint (anamorphosis).
-    void oneFlashSolveAndApply();
-    void oneFlashAnamorphic();
-    // Shared core: solve One-Flash with an optional audience target and apply.
-    void runOneFlash(const std::array<std::array<float, 2>, 4>* audienceTarget,
-                     const char* label);
-
-    // Open the first camera, grab one frame, and write it to pngPath. Returns
-    // false with a human-readable reason in `error`. Shared by aiDetectSurface()
-    // and the One-Flash capture.
-    bool captureCameraFrameToPng(const std::string& pngPath, std::string& error);
-
     // Draw every output's frame (its routed scene, or the armed One-Flash pattern)
     // into the OutputManager's render targets (ADR-054). Called from render() after
     // every edit of the frame (canvas, shortcuts, scene takes, panels), just before
@@ -239,15 +202,8 @@ private:
     std::unique_ptr<ThumbnailCache> m_thumbnailCache;
     std::unique_ptr<SourceManager> m_sourceManager;
 
-    // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed but NOT
-    // started: launched on demand from the AI menu, torn down at shutdown. The
-    // app is fully usable when it is absent.
-    std::unique_ptr<ai::SidecarClient> m_sidecarClient;
-
-    // TD-10: last observed sidecar state, so the run loop can post a one-shot
-    // status message when an async startAsync() connect resolves off-thread.
-    // Initialized to Stopped in the constructor (enum defn lives in the .cpp).
-    ai::SidecarState m_lastSidecarState;
+    // Optional AI pre-show assist (ADR-035, ADR-051 §1): the sidecar and One-Flash.
+    std::unique_ptr<AiAssist> m_aiAssist;
 
     // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
     std::unique_ptr<EditorState> m_editorState;
@@ -296,22 +252,11 @@ private:
     std::string m_mediaSearchFolder;
     std::future<relocate::FolderIndex> m_mediaSearch;
 
-    // QM-058 self-test hook (QM_AI_SELFTEST). Off in normal runs.
-    bool m_aiSelfTestPending = false;
-    int m_frameCount = 0;
-
     // Perform-mode stress harness config (QM-081 H2). Set by --stress CLI flags;
     // absent in normal (interactive) runs.
     std::optional<StressConfig> m_stressConfig;
     // Benchmark config (--bench flags); absent in normal runs.
     std::optional<BenchConfig> m_benchConfig;
-
-    // One-Flash calibration pattern state (QM-059). When m_emitPattern is set,
-    // the projector outputs show m_calibQuad (identity, fullscreen) instead of the
-    // scene. Lazily built on first emit.
-    bool m_emitPattern = false;
-    std::unique_ptr<Quad> m_calibQuad;
-    std::unique_ptr<Texture> m_calibTexture;
 
     // Singleton
     static Application* s_instance;

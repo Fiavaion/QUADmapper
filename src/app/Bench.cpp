@@ -306,7 +306,7 @@ BenchRunner::Frame BenchRunner::step(const std::function<void()>& afterPoll) {
     f.polled = Clock::now();
     if (afterPoll) afterPoll();  // where OS input / a UI click lands in a real frame
     Application::FrameMarks marks;
-    app_.presentFrame(dt, &marks);
+    app_.presentFrame(&marks);
     f.rendered = marks.rendered;
     f.editorSwapped = marks.editorSwapped;
     f.presented = marks.outputsPresented;

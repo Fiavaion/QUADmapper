@@ -201,3 +201,12 @@ add_quadmapper_test(test_control_app
 )
 target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_control
     quadmapper_project quadmapper_scene quadmapper_source quadmapper_core)
+
+# The AI assist's status paths (app/AiAssist.cpp, compiled in here because the app is an
+# executable, TD-14) without a sidecar, camera or GL context.
+add_quadmapper_test(test_ai_assist
+    app/AiAssistTest.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/AiAssist.cpp
+)
+target_link_libraries(test_ai_assist PRIVATE quadmapper_ui quadmapper_ai quadmapper_output
+    quadmapper_renderer quadmapper_scene quadmapper_source quadmapper_core)

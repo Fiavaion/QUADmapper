@@ -11,6 +11,7 @@
 #include "SliceEditing.hpp"
 #include "OutputPersistence.hpp"
 #include "ControlBindings.hpp"
+#include "AiAssist.hpp"
 #include "../control/ExternalControl.hpp"
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
@@ -31,7 +32,6 @@
 #include "../source/SourceManager.hpp"
 #include "../source/procedural/ProceduralSource.hpp"
 #include "../source/CameraSource.hpp"
-#include "../source/CameraDevices.hpp"
 #include "../source/HapFileSource.hpp"
 #include "../source/StaticImageSource.hpp"
 #include "../source/VideoFileSource.hpp"
@@ -60,12 +60,9 @@
 #include <imgui.h>
 #include <filesystem>
 #include <algorithm>
-#include <array>
 #include <chrono>
-#include <cstdlib>
 #include <cstring>
 #include <optional>
-#include <thread>
 #include <unordered_set>
 #include <imgui_internal.h>  // For DockBuilder API
 #include <imgui_impl_glfw.h>
@@ -580,7 +577,6 @@ static void dropCallback(GLFWwindow* /*window*/, int count, const char** paths) 
 
 Application::Application() {
     s_instance = this;
-    m_lastSidecarState = ai::SidecarState::Stopped;  // TD-10 watcher seed
 }
 
 Application::~Application() {
@@ -606,8 +602,6 @@ bool Application::initialize(int argc, char* argv[]) {
     }
 
     Logger::info("Initializing QUADmapper...");
-
-    m_aiSelfTestPending = (std::getenv("QM_AI_SELFTEST") != nullptr);
 
     if (!initializeGLFW()) {
         Logger::error("Failed to initialize GLFW");
@@ -812,26 +806,9 @@ bool Application::initializeComponents() {
     }
 
     // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed here but not
-    // started — the user enables it on demand from the AI menu. We resolve the
-    // sidecar script next to the working dir or the repo root; if it is missing,
-    // scriptPath stays empty and start() fails cleanly (AI menu shows disabled).
-    {
-        ai::SidecarConfig sidecarCfg;
-        const std::filesystem::path rel("tools/ai-sidecar/sidecar.py");
-        for (const std::filesystem::path& base :
-             {std::filesystem::current_path(),
-              std::filesystem::current_path() / ".." / "..",
-              std::filesystem::current_path() / ".." / ".." / ".."}) {
-            std::error_code ec;
-            std::filesystem::path candidate = base / rel;
-            if (std::filesystem::exists(candidate, ec)) {
-                sidecarCfg.scriptPath =
-                    utf8FromPath(std::filesystem::weakly_canonical(candidate, ec));
-                break;
-            }
-        }
-        m_sidecarClient = std::make_unique<ai::SidecarClient>(sidecarCfg);
-    }
+    // started: the user enables it on demand from the AI menu.
+    m_aiAssist = std::make_unique<AiAssist>(
+        *m_editorState, std::make_unique<ai::SidecarClient>(AiAssist::locateSidecar()));
 
     // Auto-load media from default folder if configured
     {
@@ -942,37 +919,10 @@ int Application::run() {
     while (!glfwWindowShouldClose(m_window) && m_running) {
         float deltaTime = 0.0f;
         if (!pollFrame(deltaTime)) break;  // a confirmed Exit
-        presentFrame(deltaTime);
+        presentFrame();
 
-        // TD-10: report the outcome of an async sidecar connect (startAsync runs
-        // off the UI thread). When the cached state leaves Starting, post a
-        // one-shot status so the user sees connected/failed without a freeze.
-        if (m_sidecarClient) {
-            const ai::SidecarState s = m_sidecarClient->state();
-            if (s != m_lastSidecarState) {
-                if (m_lastSidecarState == ai::SidecarState::Starting) {
-                    EditorState& es = *m_editorState;
-                    const bool ok = (s == ai::SidecarState::Attached ||
-                                     s == ai::SidecarState::Launched);
-                    snprintf(es.statusMessage, sizeof(es.statusMessage), "%s",
-                             ok ? "AI assist enabled (sidecar connected)"
-                                : "AI assist unavailable - sidecar could not start");
-                    es.statusTimer = 5.0f;
-                    if (ok) Logger::info(es.statusMessage);
-                    else    Logger::warning(es.statusMessage);
-                }
-                m_lastSidecarState = s;
-            }
-        }
-
-        // QM-058 verification hook (off unless QM_AI_SELFTEST is set): once the
-        // first frames have built the default scene, enable the sidecar, select a
-        // quad, and run one "Detect Surface" headlessly so the full chain can be
-        // asserted from the log without driving ImGui menus. No-op in production.
-        if (m_aiSelfTestPending && ++m_frameCount >= 3) {
-            m_aiSelfTestPending = false;
-            runAiSelfTest();
-        }
+        // AI assist: report an async sidecar connect; the QM_AI_SELFTEST hook.
+        m_aiAssist->tick(m_outputManager.get());
     }
 
     Logger::info("Main loop ended");
@@ -997,7 +947,7 @@ bool Application::pollFrame(float& deltaTime) {
     return !glfwWindowShouldClose(m_window);
 }
 
-void Application::presentFrame(float deltaTime, FrameMarks* marks) {
+void Application::presentFrame(FrameMarks* marks) {
     using Clock = std::chrono::steady_clock;
 
     // The frame clock scene crossfades run on (ADR-047 §5): wall time, sampled once,
@@ -1007,9 +957,6 @@ void Application::presentFrame(float deltaTime, FrameMarks* marks) {
             std::chrono::duration<double>(Clock::now().time_since_epoch()).count());
         m_outputManager->retireSceneFades(m_editorState->scenes);
     }
-
-    // Update
-    update(deltaTime);
 
     // Render
     render();
@@ -1023,43 +970,6 @@ void Application::presentFrame(float deltaTime, FrameMarks* marks) {
     // is committed so we never run inside an ImGui frame).
     if (m_outputManager) m_outputManager->presentOutputs();
     if (marks) marks->outputsPresented = Clock::now();
-}
-
-void Application::runAiSelfTest() {
-    EditorState& es = *m_editorState;
-    if (!es.quadManager().getPrimarySelectedQuad() && !es.quadManager().getQuads().empty()) {
-        es.quadManager().selectQuad(es.quadManager().getQuads().front()->getId());
-    }
-    if (m_sidecarClient) {
-        m_sidecarClient->start();
-    }
-
-    const char* modeEnv = std::getenv("QM_AI_SELFTEST");
-    const std::string mode = modeEnv ? modeEnv : "";
-    if (mode == "oneflash") {
-        // QM-059: arm the pattern, flash it on the projector, capture a photo.
-        oneFlashEmitPattern();
-        m_outputManager->handleF11Key();   // enter perform mode -> pattern shows
-        oneFlashCapturePhoto();
-    } else if (mode == "solve") {
-        // QM-060: solve the projector->surface homography and apply the warp.
-        oneFlashSolveAndApply();
-    } else if (mode == "anamorphic") {
-        // QM-062: audience-perspective (frontal-from-viewpoint) warp.
-        oneFlashAnamorphic();
-    } else {
-        aiDetectSurface();
-    }
-}
-
-void Application::update(float deltaTime) {
-    // Update output manager
-    if (m_outputManager) {
-        // m_outputManager->update(deltaTime);
-    }
-
-    (void)deltaTime; // Suppress unused warning for now
-    // Note: Video player update is done in render() for now since we need access to static state
 }
 
 void Application::render() {
@@ -1134,30 +1044,15 @@ void Application::render() {
     // Initialize Main Menu Bar callbacks (set once; lambdas capture this). File items
     // queue es.pendingFileAction directly (ADR-046), so they need no callbacks.
     if (!es.mainMenuBarInitialized) {
-        // AI pre-show assist (QM-056 skeleton). Active state reads cached client
-        // state (no per-frame I/O). Enable launches the sidecar on demand; Detect
-        // runs the stub /surface round-trip. Both no-op gracefully if absent.
-        es.mainMenuBar.setAiActiveQuery([this]() {
-            return m_sidecarClient &&
-                   (m_sidecarClient->state() == ai::SidecarState::Attached ||
-                    m_sidecarClient->state() == ai::SidecarState::Launched);
-        });
-        es.mainMenuBar.setOnEnableAi([this]() {
-            if (!m_sidecarClient) return;
-            // TD-10: connect off the UI thread so the menu never freezes 1-3s.
-            // The run loop watches state() and reports the outcome.
-            m_sidecarClient->startAsync();
-            EditorState& est = *m_editorState;
-            snprintf(est.statusMessage, sizeof(est.statusMessage), "%s",
-                     "AI: connecting to sidecar...");
-            est.statusTimer = 5.0f;
-        });
-        es.mainMenuBar.setOnDetectSurface([this]() { aiDetectSurface(); });
-        es.mainMenuBar.setOnEmitPattern([this]()  { oneFlashEmitPattern();  });
-        es.mainMenuBar.setOnCapturePhoto([this]() { oneFlashCapturePhoto(); });
-        es.mainMenuBar.setOnClearPattern([this]() { oneFlashClearPattern(); });
-        es.mainMenuBar.setOnSolveApply([this]()   { oneFlashSolveAndApply(); });
-        es.mainMenuBar.setOnAnamorphic([this]()   { oneFlashAnamorphic(); });
+        // AI pre-show assist (ADR-035): every item no-ops gracefully without a sidecar.
+        es.mainMenuBar.setAiActiveQuery([this]() { return m_aiAssist->isActive(); });
+        es.mainMenuBar.setOnEnableAi([this]()     { m_aiAssist->enable(); });
+        es.mainMenuBar.setOnDetectSurface([this]() { m_aiAssist->detectSurface(); });
+        es.mainMenuBar.setOnEmitPattern([this]()  { m_aiAssist->emitPattern(*m_outputManager); });
+        es.mainMenuBar.setOnCapturePhoto([this]() { m_aiAssist->capturePhoto(m_outputManager.get()); });
+        es.mainMenuBar.setOnClearPattern([this]() { m_aiAssist->clearPattern(); });
+        es.mainMenuBar.setOnSolveApply([this]()   { m_aiAssist->solveAndApply(m_outputManager.get()); });
+        es.mainMenuBar.setOnAnamorphic([this]()   { m_aiAssist->anamorphic(m_outputManager.get()); });
         es.mainMenuBarInitialized = true;
     }
 
@@ -1688,12 +1583,6 @@ void Application::render() {
 
     if (m_outputManager && m_outputManager->isBlackout()) drawBlackoutBanner();
     if (m_outputManager && m_outputManager->isBlendTestPattern()) drawBlendTestPatternBanner();
-
-    // Demo window for testing ImGui (can be removed later)
-    static bool showDemo = false;
-    if (showDemo) {
-        ImGui::ShowDemoWindow(&showDemo);
-    }
 
     renderMissingMediaDialog();
     es.mediaBinPanel.renderConversions();  // Convert to HAP progress (QM-082)
@@ -2679,269 +2568,6 @@ void Application::emergencySave() noexcept {
     }
 }
 
-void Application::aiDetectSurface() {
-    EditorState& es = *m_editorState;
-    auto setStatus = [&](const std::string& msg, float secs = 5.0f) {
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
-        es.statusTimer = secs;
-        Logger::info(msg);
-    };
-
-    // Preconditions: a running sidecar and a target quad to warp.
-    if (!m_sidecarClient ||
-        (m_sidecarClient->state() != ai::SidecarState::Attached &&
-         m_sidecarClient->state() != ai::SidecarState::Launched)) {
-        setStatus("AI: enable the sidecar first (AI > Enable AI Assist)");
-        return;
-    }
-    Quad* quad = es.quadManager().getPrimarySelectedQuad();
-    if (!quad) {
-        setStatus("AI: select a quad to warp first");
-        return;
-    }
-
-    // Resolve the input image. QM_AI_TEST_IMAGE feeds a fixed photo (verification,
-    // and the "detect from a phone photo on disk" path); otherwise capture a live
-    // frame off the first camera (the QM-055 rail). NOTE: this blocks the UI for
-    // ~1-3s (camera open + capture + inference) — acceptable pre-show; async is
-    // tracked as TD-10.
-    std::filesystem::path imgPath;
-    if (const char* testImg = std::getenv("QM_AI_TEST_IMAGE")) {
-        imgPath = testImg;
-        if (!std::filesystem::exists(imgPath)) {
-            setStatus("AI: QM_AI_TEST_IMAGE not found");
-            return;
-        }
-    } else {
-        imgPath = std::filesystem::temp_directory_path() / "quadmapper_ai_capture.png";
-        std::string err;
-        if (!captureCameraFrameToPng(utf8FromPath(imgPath), err)) {
-            setStatus("AI: " + err);
-            return;
-        }
-    }
-
-    auto surface = m_sidecarClient->requestSurface(utf8FromPath(imgPath));
-    if (!surface) {
-        setStatus("AI: detection failed (sidecar error)");
-        return;
-    }
-
-    // Low confidence: do NOT auto-warp onto a possibly-wrong surface — ask the
-    // user to disambiguate instead (the spike's load-bearing human-confirm step).
-    constexpr float kConfidenceThreshold = 0.35f;
-    if (surface->confidence < kConfidenceThreshold) {
-        char msg[256];
-        snprintf(msg, sizeof(msg),
-                 "AI: low confidence (%.2f) - tap the surface to retry",
-                 surface->confidence);
-        setStatus(msg);
-        return;
-    }
-
-    // Apply the proposed corners (TL,TR,BR,BL, normalized [0,1] — same order and
-    // space as QuadGeometry). The result is an ordinary warp: drawn on canvas,
-    // F11-projectable, and refinable with Tab-cycle + arrow-nudge.
-    std::array<Vec2, 4> corners{
-        Vec2{surface->corners[0][0], surface->corners[0][1]},
-        Vec2{surface->corners[1][0], surface->corners[1][1]},
-        Vec2{surface->corners[2][0], surface->corners[2][1]},
-        Vec2{surface->corners[3][0], surface->corners[3][1]},
-    };
-    quad->getGeometry().setCorners(corners);
-
-    char msg[256];
-    snprintf(msg, sizeof(msg),
-             "AI: surface applied (confidence %.2f) - nudge with Tab + arrows",
-             surface->confidence);
-    setStatus(msg);
-}
-
-bool Application::captureCameraFrameToPng(const std::string& pngPath,
-                                          std::string& error) {
-    const auto cameras = enumerateCameraDevices();
-    if (cameras.empty()) {
-        error = "no camera found (connect one or set QM_AI_TEST_IMAGE)";
-        return false;
-    }
-    CameraSource camera(cameras.front().name);
-    if (!camera.initialize()) {
-        error = "failed to open camera";
-        return false;
-    }
-    // Pump updates until the first frame lands (or give up after ~1s).
-    for (int i = 0; i < 60 && !camera.hasNewFrame(); ++i) {
-        camera.update(0.016);
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
-    }
-    const bool captured = camera.captureCurrentFrameToPng(pathFromUtf8(pngPath));
-    camera.shutdown();
-    if (!captured) {
-        error = "camera capture failed (no frame)";
-        return false;
-    }
-    return true;
-}
-
-void Application::oneFlashEmitPattern() {
-    EditorState& es = *m_editorState;
-    auto setStatus = [&](const std::string& msg) {
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
-        es.statusTimer = 5.0f;
-        Logger::info(msg);
-    };
-
-    // Lazily load the calibration pattern + build the fullscreen identity quad.
-    if (!m_calibTexture) {
-        std::filesystem::path patternPath;
-        const std::filesystem::path rel("resources/patterns/charuco.png");
-        for (const std::filesystem::path& base :
-             {std::filesystem::current_path(),
-              std::filesystem::current_path() / "..",
-              std::filesystem::current_path() / ".." / ".."}) {
-            std::error_code ec;
-            if (std::filesystem::exists(base / rel, ec)) {
-                patternPath = base / rel;
-                break;
-            }
-        }
-        auto tex = std::make_unique<Texture>();
-        if (patternPath.empty() || !tex->loadFromFile(patternPath)) {
-            setStatus("One-Flash: pattern asset not found (resources/patterns/charuco.png)");
-            return;
-        }
-        m_calibTexture = std::move(tex);
-        m_calibQuad = std::make_unique<Quad>();
-        m_calibQuad->getGeometry().setCorners(
-            {Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)});
-    }
-
-    m_emitPattern = true;
-    if (!m_outputManager->isInPerformMode()) {
-        setStatus("One-Flash: pattern armed - press F11 to flash it on the projector");
-    } else {
-        setStatus("One-Flash: pattern on projector - capture a photo, then Clear Pattern");
-    }
-}
-
-void Application::oneFlashCapturePhoto() {
-    EditorState& es = *m_editorState;
-    auto setStatus = [&](const std::string& msg) {
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
-        es.statusTimer = 6.0f;
-        Logger::info(msg);
-    };
-
-    if (m_outputManager && m_outputManager->isBlackout()) {  // the photo would be black
-        setStatus("One-Flash: Blackout is on - turn it off to capture");
-        return;
-    }
-    const std::filesystem::path out =
-        std::filesystem::temp_directory_path() / "quadmapper_oneflash_capture.png";
-    std::string err;
-    if (!captureCameraFrameToPng(utf8FromPath(out), err)) {
-        setStatus("One-Flash: " + err);
-        return;
-    }
-    setStatus("One-Flash: captured " + utf8FromPath(out));
-}
-
-void Application::oneFlashClearPattern() {
-    EditorState& es = *m_editorState;
-    m_emitPattern = false;
-    snprintf(es.statusMessage, sizeof(es.statusMessage), "One-Flash: pattern cleared");
-    es.statusTimer = 4.0f;
-    Logger::info("One-Flash: pattern cleared");
-}
-
-void Application::oneFlashSolveAndApply() {
-    runOneFlash(nullptr, "warp applied");
-}
-
-void Application::oneFlashAnamorphic() {
-    // A centered rectangle in the audience (photo) view: content mapped here
-    // looks like a frontal rectangle from the captured viewpoint.
-    static const std::array<std::array<float, 2>, 4> kAudienceTarget{{
-        {0.15f, 0.15f}, {0.85f, 0.15f}, {0.85f, 0.85f}, {0.15f, 0.85f}}};
-    runOneFlash(&kAudienceTarget, "anamorphic warp applied");
-}
-
-void Application::runOneFlash(const std::array<std::array<float, 2>, 4>* audienceTarget,
-                              const char* label) {
-    EditorState& es = *m_editorState;
-    auto setStatus = [&](const std::string& msg) {
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "%s", msg.c_str());
-        es.statusTimer = 6.0f;
-        Logger::info(msg);
-    };
-
-    // Under blackout the projectors show no pattern, so the camera would photograph
-    // black and the solve would report a detection failure.
-    if (m_outputManager && m_outputManager->isBlackout()) {
-        setStatus("One-Flash: Blackout is on - turn it off to capture");
-        return;
-    }
-    if (!m_sidecarClient ||
-        (m_sidecarClient->state() != ai::SidecarState::Attached &&
-         m_sidecarClient->state() != ai::SidecarState::Launched)) {
-        setStatus("One-Flash: enable the sidecar first (AI > Enable AI Assist)");
-        return;
-    }
-    Quad* quad = es.quadManager().getPrimarySelectedQuad();
-    if (!quad) {
-        setStatus("One-Flash: select a quad to warp first");
-        return;
-    }
-
-    // The pattern photo: QM_AI_TEST_IMAGE override (a synthetic capture for
-    // verification) else a live camera shot of the projected pattern.
-    std::filesystem::path patternPath;
-    if (const char* testImg = std::getenv("QM_AI_TEST_IMAGE")) {
-        patternPath = testImg;
-        if (!std::filesystem::exists(patternPath)) {
-            setStatus("One-Flash: QM_AI_TEST_IMAGE not found");
-            return;
-        }
-    } else {
-        patternPath = std::filesystem::temp_directory_path() /
-                      "quadmapper_oneflash_capture.png";
-        std::string err;
-        if (!captureCameraFrameToPng(utf8FromPath(patternPath), err)) {
-            setStatus("One-Flash: " + err);
-            return;
-        }
-    }
-
-    auto result = m_sidecarClient->requestOneFlash(utf8FromPath(patternPath), audienceTarget);
-    if (!result || result->stub) {
-        setStatus("One-Flash: pattern not detected (need the ChArUco visible)");
-        return;
-    }
-    constexpr float kConfidenceThreshold = 0.35f;
-    if (result->confidence < kConfidenceThreshold) {
-        char msg[256];
-        snprintf(msg, sizeof(msg),
-                 "One-Flash: low confidence (%.2f) - reframe the pattern",
-                 result->confidence);
-        setStatus(msg);
-        return;
-    }
-
-    std::array<Vec2, 4> corners{
-        Vec2{result->corners[0][0], result->corners[0][1]},
-        Vec2{result->corners[1][0], result->corners[1][1]},
-        Vec2{result->corners[2][0], result->corners[2][1]},
-        Vec2{result->corners[3][0], result->corners[3][1]},
-    };
-    quad->getGeometry().setCorners(corners);
-
-    char msg[256];
-    snprintf(msg, sizeof(msg),
-             "One-Flash: %s (confidence %.2f) - send to projector (F11)",
-             label, result->confidence);
-    setStatus(msg);
-}
-
 void Application::renderProjectorFrames() {
     if (!m_outputManager || !m_editorState || !m_renderer) {
         return;
@@ -2951,10 +2577,7 @@ void Application::renderProjectorFrames() {
 
     // One-Flash: when a calibration pattern is armed, flash it fullscreen on the
     // outputs instead of the scene (QM-059).
-    if (m_emitPattern && m_calibQuad) {
-        m_outputManager->renderPatternFrames(*m_calibQuad, m_calibTexture.get(), *m_renderer);
-        return;
-    }
+    if (m_aiAssist->renderPatternFrames(*m_outputManager, *m_renderer)) return;
 
     // Resolve every quad's texture (image via SourceManager/mediaId, video via the
     // legacy wrapper) through the shared builder, with the projector's missing-media
@@ -2975,7 +2598,7 @@ void Application::shutdown() {
     // Cleanup components in reverse order of creation
     m_externalControl.reset(); // joins the OSC thread, closes MIDI devices
     m_audioEngine.reset();     // stops every video's audio, then closes the device
-    m_sidecarClient.reset();   // stop()s / kills any launched sidecar (no orphan)
+    if (m_aiAssist) m_aiAssist->stopSidecar();  // kills any launched sidecar (no orphan)
     m_outputManager.reset();
 
     // Everything below owns GL objects in the editor's context, so it goes while that
@@ -2986,9 +2609,9 @@ void Application::shutdown() {
     // planes and pixel buffers are deleted.
     m_sourceManager.reset();
     m_thumbnailCache.reset();
+    m_aiAssist.reset();  // the One-Flash pattern texture; holds an EditorState&, so goes first
     // Quad textures, missing-media looks, the calibration view, media-bin thumbnails.
     m_editorState.reset();
-    m_calibTexture.reset();
     m_renderer.reset();
     m_folderWatcher.reset();  // Stop watching before destroying media library
     m_mediaLibrary.reset();
