@@ -1,7 +1,7 @@
 #pragma once
 
 // The Project tab's "(modified)" label. It follows the one rule the unsaved-changes
-// prompt uses (Application::isProjectDirty): the editor no longer serializes to what
+// prompt uses (ProjectSession::isProjectDirty): the editor no longer serializes to what
 // was last saved or loaded. So opening a show, or editing and undoing back to the
 // saved state, never reads as modified, however many edit calls ran on the way.
 // Serializing the show every frame would cost too much, so the answer is

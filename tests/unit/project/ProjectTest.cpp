@@ -22,7 +22,7 @@ TEST(ProjectTest, SetNameUpdatesName) {
     EXPECT_EQ(project.getName(), "My Project");
 }
 
-// Unsaved-changes tracking (Application::isProjectDirty) compares serialized content
+// Unsaved-changes tracking (ProjectSession::isProjectDirty) compares serialized content
 // rather than a flag on Project (see UnsavedIndicatorTest below); an edit like
 // addQuad must actually change what gets serialized for that comparison to work.
 TEST(ProjectTest, AddQuadChangesSerializedContent) {

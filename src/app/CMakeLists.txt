@@ -10,6 +10,11 @@ add_executable(QUADmapper
     StressHarness.cpp
     Bench.hpp
     Bench.cpp
+    ProjectSession.hpp
+    ProjectSession.cpp
+    ProjectMapping.hpp
+    ProjectMapping.cpp
+    StatusLine.hpp
 )
 
 target_link_libraries(QUADmapper

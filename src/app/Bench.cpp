@@ -8,6 +8,7 @@
 #include "Bench.hpp"
 #include "Application.hpp"
 #include "EditorState.hpp"
+#include "ProjectSession.hpp"
 #include "StressHarness.hpp"
 #include "../core/GlObjectStats.hpp"
 #include "../core/Logger.hpp"
@@ -1208,8 +1209,8 @@ int BenchRunner::run() {
     // Deterministic and side-effect free: default dock layout (no imgui.ini read or
     // written), no autosave, no recovery prompt, no default quad.
     ImGui::GetIO().IniFilename = nullptr;
-    app_.m_autoSaveEnabled = false;
-    app_.m_haveCleanBaseline = true;
+    app_.m_session->m_autoSaveEnabled = false;
+    app_.m_session->m_haveCleanBaseline = true;
     e.initialized = true;
 
     json report;

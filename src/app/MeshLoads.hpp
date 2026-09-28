@@ -17,14 +17,19 @@
 // an object.
 
 #include "EditorState.hpp"
+#include "StatusLine.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 #include "core/UUID.hpp"
+#include "output/OutputManager.hpp"
+#include "output/OutputWindow.hpp"
 #include "scene/Commands.hpp"
 #include "scene/MeshObject.hpp"
+#include "scene/ProjectorCamera.hpp"
 #include "scene/Scene.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -224,6 +229,69 @@ inline std::vector<MeshImportOutcome> adoptLoadedMeshes(EditorState& es) {
 inline void cancelMeshLoads(EditorState& es) {
     es.objLoads.cancelAll();
     es.meshLoads = MeshLoadState{};
+}
+
+// Absolute form of a media path; texturePath and file sources are stored absolute.
+inline std::string absolutePathString(const std::filesystem::path& path) {
+    std::error_code ec;
+    const std::filesystem::path abs = std::filesystem::absolute(path, ec);
+    return utf8FromPath(ec ? path : abs);
+}
+
+// File > Import 3D Object (ADR-052): the object goes into the active scene at once,
+// selected, and shows as loading while its file parses on a worker (TD-16a);
+// adoptObjectMeshes completes it.
+inline void importObjectFile(EditorState& es, const std::string& path) {
+    const std::filesystem::path file = pathFromUtf8(path);
+    MeshObject* object = beginObjectImport(es, utf8FromPath(file.stem()), absolutePathString(file));
+    es.selectedObjectId = object->getId();
+    es.activeScene().getQuadManager().deselectAll();  // Delete/arrows must not reach a hidden quad
+    es.currentSelectionType = EditorState::SelectionType::Object;
+    es.mediaBinPanel.clearSelection();
+    es.outputPanel.clearSelection();
+    postStatus(es, "Importing 3D object: " + object->getName() + "...");
+}
+
+// Frame boundary: queue parses for meshes that need one and adopt the finished ones.
+// A finished import re-aims an uncalibrated projector on its scene's output to frame
+// the object, so it is in view as soon as it has loaded; a failed one is removed and
+// reported as the synchronous import did. A show's mesh that fails is reported and
+// listed in Missing Media, as a load that found it missing does.
+inline void adoptObjectMeshes(EditorState& es, OutputManager* om) {
+    for (const MeshImportOutcome& done : adoptLoadedMeshes(es)) {
+        if (!done.import) {
+            postStatus(es, (done.objectId.isNull() ? "Could not use " + done.name
+                                                   : "3D object '" + done.name + "': mesh not loaded") +
+                               " (" + done.error + ")");
+            es.showMissingMedia = true;
+            continue;
+        }
+        if (!done.ok) {
+            Logger::error("Import 3D object failed: {}", done.error);
+            postStatus(es, "Import failed: " + done.error);
+            if (es.selectedObjectId == done.objectId) es.selectedObjectId = UUID();
+            continue;
+        }
+        Scene* scene = es.quadResolver.findScene(done.sceneId);
+        MeshObject* object = scene ? scene->getObject(done.objectId) : nullptr;
+        if (!object) continue;
+        // Frame every uncalibrated projector showing the scene on its objects.
+        for (size_t i = 0; om && i < om->getOutputs().size(); ++i) {
+            OutputWindow* output = om->getOutputs()[i].get();
+            if (!output || output->getSceneId() != scene->getId() ||
+                output->getProjector().calibrated) {
+                continue;
+            }
+            Vec3 boxMin, boxMax;
+            object->worldBounds(boxMin, boxMax);
+            const IVec2 res = output->getEffectiveResolution();
+            output->getProjector() = ProjectorCamera::framing(
+                boxMin, boxMax, ProjectorIntrinsics::fromThrowRatio(1.5f, res.x, res.y));
+        }
+        postStatus(es, "Imported 3D object: " + object->getName() + " (" +
+                       std::to_string(object->getMesh().triangleCount()) + " triangles)");
+    }
+    requestMeshLoads(es);
 }
 
 }  // namespace quadmapper

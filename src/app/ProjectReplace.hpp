@@ -26,7 +26,7 @@ namespace quadmapper {
 //     released-transport records, which name sources of this project only;
 //  5. the missing-media records.
 // Call before the next project creates any source. The outputs themselves, MIDI
-// mappings and the Application's own queues (scene takes, the missing-media search) are
+// mappings and the app's own queues (scene takes, the missing-media search) are
 // the caller's.
 inline void clearProjectContent(EditorState& es, SourceManager* sm, OutputManager* outputs) {
     es.endSliceWarp();

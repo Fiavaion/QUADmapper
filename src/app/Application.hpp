@@ -1,14 +1,9 @@
 #pragma once
 
-#include "../core/Result.hpp"
-#include "../project/MediaRelocation.hpp"
 #include "Bench.hpp"
 #include "StressHarness.hpp"
-#include "UnsavedIndicator.hpp"
 
-#include <atomic>
 #include <chrono>
-#include <future>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -27,10 +22,9 @@ class FolderWatcher;
 class ThumbnailCache;
 class SourceManager;
 class AudioEngine;
-class AsyncFileDialog;
 struct EditorState;
-struct MissingMediaItem;
 class PreferencesDialog;
+class ProjectSession;
 class AiAssist;
 namespace control { class ExternalControl; }
 
@@ -124,48 +118,16 @@ private:
     void drawBlackoutBanner();  // inside the ImGui frame, over the canvas
     void drawBlendTestPatternBanner();  // likewise, while the blend test pattern is on
 
-    // ---- Show-safe session (ADR-046 §4) -----------------------------------------
+    // ---- Show-safe session (ADR-046 §4, ProjectSession) ---------------------------
     // Runs once per frame between glfwPollEvents() and render(): establishes the
     // clean baseline, offers startup recovery, runs any pending file action, autosaves.
     void runFrameBoundaryTasks();
-    void processPendingFileAction();
-    void performNewProject();
-    bool performLoadProject(const std::string& path);
-    // Save to the project's path, or via the Save dialog when untitled / chooseNewPath.
-    // onSaved runs once the file is written (after the dialog closes, if one was shown).
-    void performSaveProject(bool chooseNewPath, std::function<void()> onSaved = {});
-    bool writeProjectFile(const std::string& path);
-    // Show the .qmap Open/Save dialog without blocking rendering (QM-088); onChosen
-    // gets the path (empty = cancelled) from processPendingFileAction() once it closes.
-    void openProjectDialog(bool save, std::function<void(const std::string&)> onChosen);
-    void performRestoreRecovery();
-    // The live editor as a serializable Project DTO, and its canonical JSON text
-    // (compared against the last saved text to decide "unsaved changes").
-    void buildEditorProject(Project& out);
-    std::string editorSnapshot();
-    bool isProjectDirty();
-    void markProjectClean();
-    void autosaveIfDue();
-    // Collect the finished background autosave write (logs a failure). Blocks if
-    // it is still running.
-    void finishAutosaveWrite();
     void fitProjectorsToOutputs();
-    // Offer a recovery file for `projectPath` ("" = untitled) newer than the project.
-    void offerRecovery(const std::string& projectPath);
     // Unsaved-changes and recovery modals; called inside the ImGui frame.
     void renderSessionDialogs();
-
-    // Missing media (PRD §4.1.8, MissingMedia.hpp). The window lists the files a loaded
-    // project could not open; Locate and Search Folder use the non-blocking picker, and
-    // the folder is searched on a worker thread. Relocation itself runs at the frame
-    // boundary (the picker callback and pollMissingMediaSearch()).
+    // Missing media (PRD §4.1.8, MissingMedia.hpp): the window lists the files a loaded
+    // project could not open; Locate and Search Folder go to the session.
     void renderMissingMediaDialog();
-    void requestLocateMissingMedia(const MissingMediaItem& item);
-    void requestMissingMediaSearch();
-    void pollMissingMediaSearch();
-    // Stop a folder search whose results belong to a project being replaced; waits
-    // for the worker to notice.
-    void cancelMissingMediaSearch();
 
     // Draw every output's frame (its routed scene, or the armed One-Flash pattern)
     // into the OutputManager's render targets (ADR-054). Called from render() after
@@ -227,7 +189,6 @@ private:
     // Sound from video sources (ADR-050 §2): the output device, mixer and each video's
     // audio. The stress harness runs it on miniaudio's silent null device.
     std::unique_ptr<AudioEngine> m_audioEngine;
-    void applyProjectAudio();        // project master volume/mute -> engine
     void syncAudio();                // each video's sound onto its clock, once per frame
     void saveAudioDevicePreference();
 
@@ -235,22 +196,9 @@ private:
     bool m_running = false;
     float m_lastFrameTime = 0.0f;
 
-    // Show-safe session state (ADR-046 §4).
-    bool m_haveCleanBaseline = false;  // m_savedSnapshot captured after the first frame
-    std::string m_savedSnapshot;       // editorSnapshot() as of the last save/load/new
-    UnsavedIndicator m_unsavedLabel;   // the Project tab's "(modified)", by the same rule
-    std::string m_autosavedSnapshot;   // editorSnapshot() last written to the autosave
-    bool m_autoSaveEnabled = true;     // false: never this session (the bench), whatever the preferences
-    double m_lastAutosaveTime = 0.0;
-    std::future<Result<void, Error>> m_autosaveWrite;  // in-flight autosave disk write
+    // Show-safe session (ADR-046 §4): file actions, autosave, recovery, dirty state.
+    std::unique_ptr<ProjectSession> m_session;
     bool m_exitConfirmed = false;      // Exit passed the unsaved-changes check
-    std::unique_ptr<AsyncFileDialog> m_projectDialog;  // Open/Save .qmap, off the render thread
-    std::function<void(const std::string&)> m_onProjectFileChosen;
-    // Missing-media folder search in flight (declared in this order so the future,
-    // which waits for its worker, is destroyed before the flag the worker reads).
-    std::atomic<bool> m_mediaSearchCancel{false};
-    std::string m_mediaSearchFolder;
-    std::future<relocate::FolderIndex> m_mediaSearch;
 
     // Perform-mode stress harness config (QM-081 H2). Set by --stress CLI flags;
     // absent in normal (interactive) runs.

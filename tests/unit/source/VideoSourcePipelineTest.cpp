@@ -83,7 +83,7 @@ TEST(VideoSourcePipeline, LoadsAdvancesAndUploads) {
 }
 
 // QM-088 / D4: a project load restores a video's transport through the PlayableSource
-// interface (Application::createSourceFrom: setLoopMode, setSpeed, play). The source
+// interface (ProjectMapping.cpp createSourceFrom: setLoopMode, setSpeed, play). The source
 // must then actually play, with its clock on the wall clock (ADR-050) and frames never
 // ahead of it; a saved ping-pong is real Ping-Pong again.
 TEST(VideoSourcePipeline, RestoredTransportPlaysAtClockPace) {
