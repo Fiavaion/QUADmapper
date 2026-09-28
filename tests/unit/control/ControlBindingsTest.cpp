@@ -623,17 +623,17 @@ TEST(ControlPreferencesTest, RoundTripsThroughThePreferencesFile) {
     const auto file = std::filesystem::temp_directory_path() /
                       ("qm_control_prefs_" + UUID::generate().toString() + ".json");
     {
-        PreferencesDialog dialog;
-        ControlPreferences& c = dialog.getPreferences().control;
+        AppPreferences prefs;
+        ControlPreferences& c = prefs.control;
         c.oscEnabled = true;
         c.oscPort = 9001;
         c.oscBindAddress = "127.0.0.1";
         c.midiDevices = {"APC mini", "nanoKONTROL2"};
-        ASSERT_TRUE(dialog.saveToFile(file.string()));
+        ASSERT_TRUE(prefs.saveToFile(file.string()));
     }
-    PreferencesDialog loaded;
+    AppPreferences loaded;
     ASSERT_TRUE(loaded.loadFromFile(file.string()));
-    const ControlPreferences& c = loaded.getPreferences().control;
+    const ControlPreferences& c = loaded.control;
     EXPECT_TRUE(c.oscEnabled);
     EXPECT_EQ(c.oscPort, 9001);
     EXPECT_EQ(c.oscBindAddress, "127.0.0.1");
@@ -648,20 +648,20 @@ TEST(AudioPreferencesTest, OutputDeviceRoundTripsAndDefaultsToTheSystemDevice) {
     const auto file = std::filesystem::temp_directory_path() /
                       ("qm_audio_prefs_" + UUID::generate().toString() + ".json");
     {
-        PreferencesDialog dialog;
-        dialog.getPreferences().performance.audioDevice = "Speakers (USB Audio)";
-        ASSERT_TRUE(dialog.saveToFile(file.string()));
+        AppPreferences prefs;
+        prefs.performance.audioDevice = "Speakers (USB Audio)";
+        ASSERT_TRUE(prefs.saveToFile(file.string()));
     }
-    PreferencesDialog loaded;
+    AppPreferences loaded;
     ASSERT_TRUE(loaded.loadFromFile(file.string()));
-    EXPECT_EQ(loaded.getPreferences().performance.audioDevice, "Speakers (USB Audio)");
+    EXPECT_EQ(loaded.performance.audioDevice, "Speakers (USB Audio)");
     {
         std::ofstream out(file, std::ios::binary);
         out << R"({"version": "1.0", "performance": {"audioDevice": 7}})";
     }
-    PreferencesDialog odd;
+    AppPreferences odd;
     ASSERT_TRUE(odd.loadFromFile(file.string()));
-    EXPECT_TRUE(odd.getPreferences().performance.audioDevice.empty());
+    EXPECT_TRUE(odd.performance.audioDevice.empty());
     std::error_code ec;
     std::filesystem::remove(file, ec);
 }
@@ -679,9 +679,9 @@ TEST(ControlPreferencesTest, OldFilesAndBadValuesKeepDefaults) {
             ASSERT_TRUE(out.good());
             out << text;
         }
-        PreferencesDialog dialog;
-        ASSERT_TRUE(dialog.loadFromFile(file.string()));
-        const ControlPreferences& c = dialog.getPreferences().control;
+        AppPreferences prefs;
+        ASSERT_TRUE(prefs.loadFromFile(file.string()));
+        const ControlPreferences& c = prefs.control;
         EXPECT_FALSE(c.oscEnabled);
         EXPECT_EQ(c.oscPort, 8000);
         EXPECT_EQ(c.oscBindAddress, "0.0.0.0");
@@ -701,18 +701,18 @@ TEST(ControlPreferencesTest, FeedbackSettingsDefaultRoundTripAndRejectBadValues)
     const auto file = std::filesystem::temp_directory_path() /
                       ("qm_control_feedback_" + UUID::generate().toString() + ".json");
     {
-        PreferencesDialog dialog;
-        ControlPreferences& c = dialog.getPreferences().control;
+        AppPreferences prefs;
+        ControlPreferences& c = prefs.control;
         c.oscFeedbackEnabled = true;
         c.oscFeedbackHost = "192.168.1.20";
         c.oscFeedbackPort = 0;
         c.oscFeedbackUseIds = true;
-        ASSERT_TRUE(dialog.saveToFile(file.string()));
+        ASSERT_TRUE(prefs.saveToFile(file.string()));
     }
     {
-        PreferencesDialog loaded;
+        AppPreferences loaded;
         ASSERT_TRUE(loaded.loadFromFile(file.string()));
-        const ControlPreferences& c = loaded.getPreferences().control;
+        const ControlPreferences& c = loaded.control;
         EXPECT_TRUE(c.oscFeedbackEnabled);
         EXPECT_EQ(c.oscFeedbackHost, "192.168.1.20");
         EXPECT_EQ(c.oscFeedbackPort, 0);
@@ -723,9 +723,9 @@ TEST(ControlPreferencesTest, FeedbackSettingsDefaultRoundTripAndRejectBadValues)
         out << R"({"version": "1.0", "control": {"oscFeedbackEnabled": 1, "oscFeedbackHost": [],
                    "oscFeedbackPort": 65536, "oscFeedbackUseIds": "no"}})";
     }
-    PreferencesDialog odd;
+    AppPreferences odd;
     ASSERT_TRUE(odd.loadFromFile(file.string()));
-    const ControlPreferences& c = odd.getPreferences().control;
+    const ControlPreferences& c = odd.control;
     EXPECT_FALSE(c.oscFeedbackEnabled);
     EXPECT_TRUE(c.oscFeedbackHost.empty());
     EXPECT_EQ(c.oscFeedbackPort, 9000);
@@ -760,8 +760,7 @@ struct TempPrefsFile {
 TEST(PreferencesFileTest, EverySettingRoundTrips) {
     TempPrefsFile file;
     {
-        PreferencesDialog dialog;
-        AppPreferences& p = dialog.getPreferences();
+        AppPreferences p;
         p.general.defaultMediaFolder = "D:/show/media";
         p.general.autoLoadMediaOnStartup = false;
         p.general.recursiveFolderScan = true;
@@ -778,11 +777,10 @@ TEST(PreferencesFileTest, EverySettingRoundTrips) {
         p.control.oscFeedbackHost = "10.0.0.5";
         p.control.oscFeedbackPort = 9001;
         p.control.oscFeedbackUseIds = true;
-        ASSERT_TRUE(dialog.saveToFile(file.path.string()));
+        ASSERT_TRUE(p.saveToFile(file.path.string()));
     }
-    PreferencesDialog loaded;
-    ASSERT_TRUE(loaded.loadFromFile(file.path.string()));
-    const AppPreferences& p = loaded.getPreferences();
+    AppPreferences p;
+    ASSERT_TRUE(p.loadFromFile(file.path.string()));
     EXPECT_EQ(p.general.defaultMediaFolder, "D:/show/media");
     EXPECT_FALSE(p.general.autoLoadMediaOnStartup);
     EXPECT_TRUE(p.general.recursiveFolderScan);
@@ -831,16 +829,15 @@ TEST(PreferencesFileTest, SettingsThisVersionDroppedAreIgnoredAndNotWrittenBack)
                         "outputBufferCount": 3, "enableAdaptiveSync": true,
                         "audioDevice": "Line Out"},
         "control": {"oscEnabled": true}})");
-    PreferencesDialog dialog;
-    ASSERT_TRUE(dialog.loadFromFile(file.path.string()));
-    const AppPreferences& p = dialog.getPreferences();
+    AppPreferences p;
+    ASSERT_TRUE(p.loadFromFile(file.path.string()));
     EXPECT_EQ(p.general.autoSaveIntervalMinutes, 5);
     EXPECT_EQ(p.general.uiMode, 1);
     EXPECT_EQ(p.general.defaultMediaFolder, "E:/clips");
     EXPECT_EQ(p.performance.audioDevice, "Line Out");
     EXPECT_TRUE(p.control.oscEnabled);
 
-    ASSERT_TRUE(dialog.saveToFile(file.path.string()));
+    ASSERT_TRUE(p.saveToFile(file.path.string()));
     const nlohmann::json saved = file.read();
     std::vector<std::string> keys;
     for (const char* section : {"general", "performance", "control"}) {
@@ -869,9 +866,9 @@ TEST(PreferencesFileTest, WrongTypesAndOutOfRangeValuesKeepDefaults) {
           R"({"version": "1.0", "general": [1, 2], "performance": "x", "control": 7})"}) {
         SCOPED_TRACE(text);
         file.write(text);
-        PreferencesDialog dialog;
-        ASSERT_TRUE(dialog.loadFromFile(file.path.string()));
-        const GeneralPreferences& g = dialog.getPreferences().general;
+        AppPreferences prefs;
+        ASSERT_TRUE(prefs.loadFromFile(file.path.string()));
+        const GeneralPreferences& g = prefs.general;
         EXPECT_EQ(g.autoSaveIntervalMinutes, 1);
         EXPECT_EQ(g.uiMode, 0);
         EXPECT_TRUE(g.autoSaveEnabled);
@@ -886,14 +883,14 @@ TEST(PreferencesFileTest, WrongTypesAndOutOfRangeValuesKeepDefaults) {
 TEST(PreferencesFileTest, SceneFadeDefaultRoundTripsAndRejectsBadValues) {
     TempPrefsFile file;
     file.write(R"({"version": "1.0", "general": {"sceneFadeSeconds": 2}})");
-    PreferencesDialog dialog;
-    ASSERT_TRUE(dialog.loadFromFile(file.path.string()));
-    EXPECT_FLOAT_EQ(dialog.getPreferences().general.sceneFadeSeconds, 2.0f);
-    dialog.getPreferences().general.sceneFadeSeconds = 0.5f;
-    ASSERT_TRUE(dialog.saveToFile(file.path.string()));
-    PreferencesDialog loaded;
+    AppPreferences prefs;
+    ASSERT_TRUE(prefs.loadFromFile(file.path.string()));
+    EXPECT_FLOAT_EQ(prefs.general.sceneFadeSeconds, 2.0f);
+    prefs.general.sceneFadeSeconds = 0.5f;
+    ASSERT_TRUE(prefs.saveToFile(file.path.string()));
+    AppPreferences loaded;
     ASSERT_TRUE(loaded.loadFromFile(file.path.string()));
-    EXPECT_FLOAT_EQ(loaded.getPreferences().general.sceneFadeSeconds, 0.5f);
+    EXPECT_FLOAT_EQ(loaded.general.sceneFadeSeconds, 0.5f);
 
     for (const char* text : {R"({"version": "1.0", "general": {"sceneFadeSeconds": -0.5}})",
                              R"({"version": "1.0", "general": {"sceneFadeSeconds": 60.5}})",
@@ -902,10 +899,10 @@ TEST(PreferencesFileTest, SceneFadeDefaultRoundTripsAndRejectsBadValues) {
                              R"({"version": "1.0", "general": {"sceneFadeSeconds": true}})"}) {
         SCOPED_TRACE(text);
         file.write(text);
-        PreferencesDialog d;
-        d.getPreferences().general.sceneFadeSeconds = 3.0f;
+        AppPreferences d;
+        d.general.sceneFadeSeconds = 3.0f;
         ASSERT_TRUE(d.loadFromFile(file.path.string()));
-        EXPECT_FLOAT_EQ(d.getPreferences().general.sceneFadeSeconds, 3.0f);
+        EXPECT_FLOAT_EQ(d.general.sceneFadeSeconds, 3.0f);
     }
 }
 
@@ -914,11 +911,11 @@ TEST(PreferencesFileTest, AFileThatIsNotPreferencesIsRefusedAndChangesNothing) {
     for (const char* text : {"not json", "[1, 2]", R"({"general": {"uiMode": 1}})"}) {
         SCOPED_TRACE(text);
         file.write(text);
-        PreferencesDialog dialog;
-        EXPECT_FALSE(dialog.loadFromFile(file.path.string()));
-        EXPECT_EQ(dialog.getPreferences().general.uiMode, 0);
+        AppPreferences prefs;
+        EXPECT_FALSE(prefs.loadFromFile(file.path.string()));
+        EXPECT_EQ(prefs.general.uiMode, 0);
     }
-    PreferencesDialog missing;
+    AppPreferences missing;
     EXPECT_FALSE(missing.loadFromFile((file.path.string() + ".absent")));
 }
 
@@ -931,16 +928,16 @@ TEST(PreferencesFileTest, APathOutsideTheAnsiCodePageWorks) {
     std::filesystem::create_directories(dir);
     const std::filesystem::path file = dir / L"pr\u00e9f\u00e9rences.json";
     {
-        PreferencesDialog dialog;
-        dialog.getPreferences().general.defaultMediaFolder = u8"D:/Vid\u00e9os/\u65e5\u672c";
-        ASSERT_TRUE(dialog.saveToFile(file));
+        AppPreferences prefs;
+        prefs.general.defaultMediaFolder = u8"D:/Vid\u00e9os/\u65e5\u672c";
+        ASSERT_TRUE(prefs.saveToFile(file));
     }
     EXPECT_TRUE(std::filesystem::exists(file));
-    PreferencesDialog loaded;
+    AppPreferences loaded;
     ASSERT_TRUE(loaded.loadFromFile(file));
-    EXPECT_EQ(loaded.getPreferences().general.defaultMediaFolder, u8"D:/Vid\u00e9os/\u65e5\u672c");
+    EXPECT_EQ(loaded.general.defaultMediaFolder, u8"D:/Vid\u00e9os/\u65e5\u672c");
     // First run: no file yet. Refused, never thrown (its name goes into the message).
-    PreferencesDialog firstRun;
+    AppPreferences firstRun;
     EXPECT_FALSE(firstRun.loadFromFile(dir / L"\u65e5\u672c.json"));
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);

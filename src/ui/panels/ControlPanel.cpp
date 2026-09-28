@@ -5,7 +5,7 @@
 #include "control/ExternalControl.hpp"
 #include "output/OutputManager.hpp"
 #include "project/Project.hpp"
-#include "ui/dialogs/PreferencesDialog.hpp"
+#include "editor/Preferences.hpp"
 
 #include <imgui.h>
 

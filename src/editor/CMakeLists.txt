@@ -12,6 +12,8 @@ add_library(quadmapper_editor STATIC
     MeshLoads.hpp
     MissingMedia.hpp
     OutputPersistence.hpp
+    Preferences.hpp
+    Preferences.cpp
     ProjectMapping.hpp
     ProjectMapping.cpp
     ProjectReplace.hpp
@@ -44,6 +46,8 @@ target_link_libraries(quadmapper_editor
         quadmapper_audio
         quadmapper_control
         quadmapper_input
+    PRIVATE
+        nlohmann_json::nlohmann_json
 )
 
 set_target_properties(quadmapper_editor PROPERTIES

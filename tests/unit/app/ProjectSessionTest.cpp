@@ -11,7 +11,7 @@
 #include "project/Project.hpp"
 #include "project/ProjectSerializer.hpp"
 #include "source/SourceManager.hpp"
-#include "ui/dialogs/PreferencesDialog.hpp"
+#include "editor/Preferences.hpp"
 
 #include <gtest/gtest.h>
 

@@ -57,8 +57,6 @@ target_link_libraries(quadmapper_ui
         quadmapper_input
         quadmapper_control
         imgui
-    PRIVATE
-        nlohmann_json::nlohmann_json
 )
 
 set_target_properties(quadmapper_ui PROPERTIES

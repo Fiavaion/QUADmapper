@@ -16,7 +16,7 @@
 #include "../output/OutputWindow.hpp"
 #include "../audio/AudioEngine.hpp"
 #include "../ui/AsyncFileDialog.hpp"
-#include "../ui/dialogs/PreferencesDialog.hpp"
+#include "../editor/Preferences.hpp"
 
 #include <GLFW/glfw3.h>
 #include <algorithm>
