@@ -2244,7 +2244,6 @@ bool Application::performLoadProject(const std::string& path) {
 }
 
 void Application::performSaveProject(bool chooseNewPath, std::function<void()> onSaved) {
-    EditorState& es = *m_editorState;
     // The open project's own file. es.projectPath is the Project tab's editable
     // "path to load" field and may name a different show; saving there (e.g. the
     // save-before-load prompt) would overwrite that show with this one.
