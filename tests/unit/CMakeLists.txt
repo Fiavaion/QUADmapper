@@ -194,6 +194,8 @@ target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws
 # keyboard workflow, scene takes and slice editing, grid undo, and the live<->DTO
 # mapping (editor/ProjectMapping.cpp).
 add_quadmapper_test(test_editor
+    editor/ActionRegistryTest.cpp
+    editor/EditActionsTest.cpp
     editor/ControlBindingsTest.cpp
     editor/PreferencesTest.cpp
     editor/MissingMediaTest.cpp
@@ -206,10 +208,12 @@ add_quadmapper_test(test_editor
 target_link_libraries(test_editor PRIVATE quadmapper_editor)
 
 # The ui library: the Preferences window against headless ImGui, and the calibration
-# view on the canvas (ViewportEditor in a hidden GL window; skips without GL).
+# view on the canvas (ViewportEditor in a hidden GL window; skips without GL), and the
+# shortcut router against headless ImGui.
 add_quadmapper_test(test_ui
     ui/PreferencesWindowTest.cpp
     ui/CalibrationViewEditorTest.cpp
+    ui/ShortcutRouterTest.cpp
 )
 target_link_libraries(test_ui PRIVATE quadmapper_ui glfw)
 
