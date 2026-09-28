@@ -625,12 +625,20 @@ public:
             codecCtx_->codec_id != AV_CODEC_ID_H264 && codecCtx_->codec_id != AV_CODEC_ID_HEVC;
         const bool probeEnd = !isLive_ &&
             (videoStream->duration == AV_NOPTS_VALUE || videoStream->duration <= 0);
-        if (probeEnd) {
+        // TD-33: a container can declare a duration that is present and positive but
+        // still short of the real one, when an edit list trims the movie's start (the
+        // "mov,mp4,m4a,3gp,3g2,mj2" demuxer reports the trimmed stream length, not the
+        // frame count actually decoded past it). Cross-check that family even when a
+        // duration was declared, and only widen it: a well-formed file's probed end
+        // matches its declared duration and this is a no-op.
+        const bool movFamily = !isLive_ && formatCtx_->iformat && formatCtx_->iformat->name &&
+            std::strstr(formatCtx_->iformat->name, "mov") != nullptr;
+        if (probeEnd || movFamily) {
             // No video duration recorded: measure where the video really ends, since the
             // playback clock loops there (Matroska declares its end time, start offset
             // included; MPEG-TS only has an estimate).
             const double end = probeVideoEnd(info_.duration);
-            if (end > 0.0) info_.duration = end;
+            if (probeEnd ? end > 0.0 : end > info_.duration + frameSeconds_ * 0.5) info_.duration = end;
         }
         seekTargetPts_ = AV_NOPTS_VALUE;
         checkFirstPacket_ = false;
@@ -653,7 +661,7 @@ public:
             return false;
         }
         // Back to the first frame after reading the tail or the first frame.
-        if (probeEnd || probeHardware) seekExact(0.0);
+        if (probeEnd || movFamily || probeHardware) seekExact(0.0);
 
         // The logger substitutes plain {} only (no format specs).
         LOG_INFO("Opened video: {}x{}, {} fps, {} s, {} decoding", info_.width, info_.height,

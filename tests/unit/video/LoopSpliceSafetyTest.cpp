@@ -317,3 +317,26 @@ TEST(LoopSpliceSafety, Mpeg4AviBFramesDecodeCorrectlyAcrossLoopSeams) {
     // above makes decode correctly.
     EXPECT_GT(probe.restartsDelta, 0u);
 }
+
+// --- TD-33: a QuickTime/MP4 clip trimmed by an edit list still declares a duration
+// (the container's trimmed stream length), just a short one; VideoDecoder::open() used
+// to trust any present, positive duration outright, so plan_.duration (and therefore
+// the Loop wrap point) landed 1-2 frames before the clip's real end on every pass, not
+// just the first. The fix cross-checks a mov/mp4-family container's declared duration
+// against the observed last frame's end and widens it when the two disagree. ---
+
+TEST(LoopSpliceSafety, EditListTrimmedMp4KeepsEveryFrameOfEveryLoopPass) {
+    const fs::path path = fixture("h264_editlist_trim.mp4");
+    ASSERT_TRUE(fs::exists(path)) << path;
+    const Reference ref = decodeReference(path);
+    ASSERT_GT(ref.pts.size(), 3u);
+
+    const LoopProbe probe = probeLoop(path, ref, 3, 3);
+    ASSERT_TRUE(probe.opened);
+    EXPECT_EQ(probe.badPix, 0);
+    // The pre-fix bug wraps 1-2 frames early every pass, which shows up here as the
+    // decode order jumping backward to 0 before the reference's last frame is reached.
+    EXPECT_EQ(probe.badOrder, 0);
+    EXPECT_EQ(probe.badDue, 0);
+    EXPECT_EQ(probe.missing, 0);
+}
