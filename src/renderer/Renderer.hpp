@@ -76,8 +76,8 @@ public:
     // is sampled from both and mixed before the blend zones and black level, so they
     // apply to the mix exactly as to one scene. A fade from a frozen mix of two scenes
     // (a take during a fade) names both outgoing canvases and the second one's weight
-    // among them. Null: no fade (the pass is unchanged). The output frame's 3D object
-    // layers mix through the same pass (OutputManager).
+    // among them. Null: no fade (the pass is unchanged). The output frame's whole-
+    // scene layers of a fade with 3D objects mix through the same pass (OutputManager).
     struct SliceFadeCanvas {
         uint32_t texture = 0;                 // 0: nothing (transparent, black)
         IVec2 size = IVec2(0, 0);             // its canvas pixels, unrotated

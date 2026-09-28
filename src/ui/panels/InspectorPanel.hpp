@@ -6,6 +6,8 @@
 
 #include <glm/glm.hpp>
 
+#include <string>
+
 namespace quadmapper {
 
 struct EditorContext;
@@ -55,6 +57,10 @@ private:
 
     // Normalized position (0..1) for inserting a grid division (ADR-038 Tier 1).
     float gridInsertPos_ = 0.5f;
+
+    // The quad and media path the texture Path field last showed (followTexturePath).
+    UUID pathFieldQuad_;
+    std::string pathFieldPath_;
 };
 
 }  // namespace quadmapper

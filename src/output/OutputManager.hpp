@@ -631,24 +631,32 @@ private:
     SceneFades sceneFades_;
     double frameTime_ = 0.0;
 
-    // During a fade whose scenes have 3D objects, each scene's objects render opaque
-    // into their own frame-sized colour + depth layer (outgoing, its frozen second
-    // scene, incoming), and the layers mix into the frame by weight through the slice
-    // pass, whole-frame and texel for texel (objectLayerSlice_). Main context; kept
-    // while the output fades, released at the next frame after it ends, so a fade
-    // allocates once and a show without fades never does.
-    struct ObjectLayers {
+    // During a fade whose scenes have 3D objects, each scene's whole frame (its
+    // objects, then its canvas through the output's slices) renders into its own
+    // frame-sized colour + depth layer (outgoing, its frozen second scene, incoming),
+    // and the layers mix into the frame by weight through the slice pass, whole-frame
+    // and texel for texel (fadeLayerSlice_). Main context; kept while the output
+    // fades, released at the next frame after it ends, so a fade allocates once and a
+    // show without fades never does.
+    struct FadeLayers {
         std::array<std::unique_ptr<Framebuffer>, 3> legs;
     };
-    std::unordered_map<UUID, ObjectLayers> objectLayers_;
-    Slice objectLayerSlice_ = makeFullCanvasSlice(IVec2(1, 1));  // own id: its mesh is cached
+    std::unordered_map<UUID, FadeLayers> fadeLayers_;
+    Slice fadeLayerSlice_ = makeFullCanvasSlice(IVec2(1, 1));  // own id: its mesh is cached
 
-    // Draw a fading output's 3D objects as the exact dissolve of its scenes' object
-    // images (see objectLayers_). `legs` are the outgoing, frozen second and incoming
-    // scenes (null: none, black); the incoming one is never null.
-    void renderFadeObjects(const OutputWindow& output, IVec2 effectiveSize,
-                           const std::array<const Scene*, 3>& legs, const Renderer::SliceFade& weights,
-                           const std::unordered_map<UUID, Texture*>& textures, Renderer& renderer);
+    // Draw `scene`'s canvas through the output's slices over what the bound target
+    // holds; `fade` mixes the outgoing canvases in (null: no fade).
+    void renderSceneSlices(const OutputWindow& output, const Scene& scene, IVec2 effectiveSize,
+                           const Renderer::SliceFade* fade, Renderer& renderer);
+
+    // Draw a fading output as the exact dissolve of its scenes' frames (see
+    // fadeLayers_). `legs` are the outgoing, frozen second and incoming scenes (null:
+    // none, black); the incoming one is never null. False, drawing nothing, when no
+    // scene has objects (the slices mix the canvases exactly) or a layer could not
+    // be allocated.
+    bool renderFadeLayers(const OutputWindow& output, IVec2 effectiveSize,
+                          const std::array<const Scene*, 3>& legs, const Renderer::SliceFade& weights,
+                          const std::unordered_map<UUID, Texture*>& textures, Renderer& renderer);
 
     // Each output's effective resolution, and whether it was fullscreen (or
     // borderless), when followOutputSizes last saw it.

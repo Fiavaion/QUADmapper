@@ -2174,13 +2174,17 @@ size_t litPixels(const std::vector<unsigned char>& px) {
     return n;
 }
 
-// A scene holding the feature scene's textured cube and no quads.
-Scene* addCubeScene(FadeRig& rig) {
+// A scene holding the feature scene's cube, textured with `texture` (by default a
+// pattern), and no quads.
+Scene* addCubeScene(FadeRig& rig, Texture* texture = nullptr) {
     rig.scenes.push_back(std::make_unique<Scene>());
     Scene* scene = rig.scenes.back().get();
     scene->setCanvasSize(IVec2(rig.w, rig.h));
-    if (rig.media.empty()) rig.media.push_back(patternTexture(32, 4));
-    buildFeatureScene(*scene, {rig.media.front().get()}, rig.textures);
+    if (!texture) {
+        if (rig.media.empty()) rig.media.push_back(patternTexture(32, 4));
+        texture = rig.media.front().get();
+    }
+    buildFeatureScene(*scene, {texture}, rig.textures);
     std::vector<UUID> quadIds;
     for (const auto& quad : scene->getQuadManager().getQuads()) quadIds.push_back(quad->getId());
     for (const UUID& id : quadIds) scene->getQuadManager().deleteQuad(id);
@@ -2405,6 +2409,44 @@ TEST(SceneFadeRenderTest, ObjectsFollowAThirdTakeWithoutAJump) {
     rig.manager.takeScene(*rig.output, c, rig.scenes, 1.0);
     EXPECT_LE(worstDifference(rig.frameAt(100.4), before), 1) << "no jump at the take";
     EXPECT_LE(worstAgainstMix(rig.frameAt(100.9), {{0.2f, &plain}}), 2) << "fades with the frozen side";
+}
+
+// A quad in one scene and an object in its place in the next dissolve as the mix of
+// the two scenes' frames, not the mixed canvas over the mixed objects: a full white
+// quad crossfading to a white cube and no quad stays white where the cube is (it
+// dipped to 191 at mix 0.5 when both were mixed separately).
+TEST(SceneFadeRenderTest, AQuadFadingToAnObjectInItsPlaceDoesNotDip) {
+    FadeRig rig;
+    if (!rig.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    Scene* quad = rig.addScene(255, 255, 255, IVec2(rig.w, rig.h));
+    rig.media.push_back(solidTexture(255, 255, 255));
+    Scene* cube = addCubeScene(rig, rig.media.back().get());
+    fitProjectorToCube(rig, *cube);
+    OutputManager::showScene(*rig.output, cube, rig.scenes);
+    const std::vector<unsigned char> frameCube = rig.frameAt(10.0);
+    ASSERT_GT(litPixels(frameCube), 100u) << "the cube is in view";
+    size_t white = 0;
+    for (size_t i = 0; i < frameCube.size(); i += 4) {
+        if (frameCube[i] == 255 && frameCube[i + 1] == 255 && frameCube[i + 2] == 255) ++white;
+    }
+    ASSERT_GT(white, 100u) << "the cube is full white";
+    OutputManager::showScene(*rig.output, quad, rig.scenes);
+    const std::vector<unsigned char> frameQuad = rig.frameAt(20.0);
+    ASSERT_EQ(rig.centre(frameQuad), (std::array<int, 3>{255, 255, 255}));
+
+    rig.manager.setFrameTime(100.0);
+    rig.manager.takeScene(*rig.output, cube, rig.scenes, 1.0);
+    for (double t : {0.25, 0.5, 0.75}) {
+        const std::vector<unsigned char> mid = rig.frameAt(100.0 + t);
+        ASSERT_NE(rig.manager.sceneFade(*rig.output), nullptr);
+        const float m = static_cast<float>(t);
+        EXPECT_LE(worstAgainstMix(mid, {{1.0f - m, &frameQuad}, {m, &frameCube}}), 2) << "mix " << t;
+        for (size_t i = 0; i < mid.size(); i += 4) {
+            if (frameCube[i] == 255 && frameCube[i + 1] == 255 && frameCube[i + 2] == 255) {
+                ASSERT_GE(mid[i], 253) << "the cube dips at mix " << t << ", pixel " << i / 4;
+            }
+        }
+    }
 }
 
 } // namespace test

@@ -5,6 +5,7 @@
 #include "app/TextureResolve.hpp"
 #include "app/GridUndo.hpp"
 #include "app/MeshEditKeys.hpp"
+#include "app/QuadSelection.hpp"
 #include "app/SliceEditing.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
@@ -440,17 +441,12 @@ void ViewportEditor::render(EditorContext& ctx) {
                         }
                 }
             }
-            if (!onSelectedHandle) {
-                if (Quad* hit = quadManager.quadAtPoint(mouseNorm)) {
-                    if (!selectedQuad || hit->getId() != selectedQuad->getId()) {
-                        quadManager.selectQuad(hit->getId());
-                        selectedQuad = quadManager.getPrimarySelectedQuad();
-                        // Drop stale vertex selection carried from the previous quad.
-                        cornerHoveredVertex = cornerDraggedVertex = cornerSelectedVertex = -1;
-                        meshHoveredVertex = meshDraggedVertex = meshSelectedVertex = -1;
-                        es.meshSelectedHandle = es.meshHoveredHandle = es.meshDraggedHandle = -1;
-                    }
-                }
+            if (pickQuadOnCanvas(es, quadManager, mouseNorm, onSelectedHandle)) {
+                selectedQuad = quadManager.getPrimarySelectedQuad();
+                // Drop stale vertex selection carried from the previous quad.
+                cornerHoveredVertex = cornerDraggedVertex = cornerSelectedVertex = -1;
+                meshHoveredVertex = meshDraggedVertex = meshSelectedVertex = -1;
+                es.meshSelectedHandle = es.meshHoveredHandle = es.meshDraggedHandle = -1;
             }
         }
 

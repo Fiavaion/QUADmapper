@@ -1,14 +1,17 @@
 // Scene takes on the live routing (ADR-047 §5): EditorState::takeScene against real
 // outputs, with and without crossfades. Also slice editing on the same rig (ADR-047
 // part B, app/SliceEditing.hpp): the canvas keys, auto-blend and the canvas size,
-// through real commands and undo. No GL context needed.
+// through real commands and undo. And what selecting a quad shows in the Properties
+// panel (app/QuadSelection.hpp). No GL context needed.
 #include "app/EditorState.hpp"
 #include "app/MeshEditKeys.hpp"
 #include "app/ProjectReplace.hpp"
+#include "app/QuadSelection.hpp"
 #include "app/SliceEditing.hpp"
 #include "app/UndoRouting.hpp"
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <string>
 
 using namespace quadmapper;
@@ -647,4 +650,78 @@ TEST(SceneTakeFadeTest, DeletingAnOutputDropsItsFade) {
     rig.om.deleteOutput(leftId);
     EXPECT_EQ(rig.om.sceneFades().find(leftId), nullptr);
     EXPECT_NE(rig.om.sceneFade(*rig.right), nullptr);
+}
+
+namespace {
+
+// Two quads side by side in the active scene, the left one selected, with the
+// Properties panel on an output.
+struct PickRig {
+    EditorState es;
+    Quad* left = nullptr;
+    Quad* right = nullptr;
+
+    PickRig() {
+        QuadManager& quads = es.quadManager();
+        left = quads.createQuad("Left");
+        left->getGeometry().setCorners({Vec2(0.0f, 0.0f), Vec2(0.4f, 0.0f), Vec2(0.4f, 1.0f), Vec2(0.0f, 1.0f)});
+        right = quads.createQuad("Right");
+        right->getGeometry().setCorners({Vec2(0.6f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.6f, 1.0f)});
+        quads.selectQuad(left->getId());
+        es.currentSelectionType = EditorState::SelectionType::Output;
+    }
+};
+
+}  // namespace
+
+// Clicking the quad that is already selected, on the canvas, brings Quad Properties
+// back (as the Quad List does) and keeps the selection; nothing is reported, so the
+// caller keeps its vertex selection.
+TEST(QuadSelectionTest, ClickingTheSelectedQuadOnTheCanvasShowsQuadProperties) {
+    PickRig rig;
+    EXPECT_FALSE(pickQuadOnCanvas(rig.es, rig.es.quadManager(), Vec2(0.2f, 0.5f), false));
+    EXPECT_EQ(rig.es.currentSelectionType, EditorState::SelectionType::Quad);
+    EXPECT_EQ(rig.es.quadManager().getPrimarySelectedQuad(), rig.left);
+}
+
+// A press on the selected quad's handle does the same without picking; another quad
+// is picked (reported, so the vertex selection drops); empty canvas changes nothing.
+TEST(QuadSelectionTest, HandlesOtherQuadsAndEmptyCanvas) {
+    PickRig rig;
+    EXPECT_FALSE(pickQuadOnCanvas(rig.es, rig.es.quadManager(), Vec2(0.5f, 0.5f), false));
+    EXPECT_EQ(rig.es.currentSelectionType, EditorState::SelectionType::Output) << "empty canvas";
+
+    EXPECT_FALSE(pickQuadOnCanvas(rig.es, rig.es.quadManager(), Vec2(0.7f, 0.5f), true));
+    EXPECT_EQ(rig.es.currentSelectionType, EditorState::SelectionType::Quad) << "on the handle";
+    EXPECT_EQ(rig.es.quadManager().getPrimarySelectedQuad(), rig.left) << "a handle press never picks";
+
+    rig.es.currentSelectionType = EditorState::SelectionType::Output;
+    EXPECT_TRUE(pickQuadOnCanvas(rig.es, rig.es.quadManager(), Vec2(0.7f, 0.5f), false));
+    EXPECT_EQ(rig.es.currentSelectionType, EditorState::SelectionType::Quad);
+    EXPECT_EQ(rig.es.quadManager().getPrimarySelectedQuad(), rig.right);
+}
+
+// The texture Path field names the shown quad's current media: after a video replaces
+// an image on the quad it shows the video's path, it follows the selection, and a
+// path being typed is kept while nothing changes.
+TEST(QuadSelectionTest, ThePathFieldFollowsTheQuadsCurrentMedia) {
+    PickRig rig;
+    UUID shownQuad;
+    std::string shownPath;
+    rig.es.quadTexturePaths[rig.left->getId()] = "show/still.png";
+    followTexturePath(rig.es, rig.left, shownQuad, shownPath);
+    EXPECT_STREQ(rig.es.currentTexturePath, "show/still.png");
+
+    rig.es.quadTexturePaths[rig.left->getId()] = "show/clip.mp4";  // a video assigned
+    followTexturePath(rig.es, rig.left, shownQuad, shownPath);
+    EXPECT_STREQ(rig.es.currentTexturePath, "show/clip.mp4");
+
+    std::snprintf(rig.es.currentTexturePath, sizeof(rig.es.currentTexturePath), "show/ty");
+    followTexturePath(rig.es, rig.left, shownQuad, shownPath);
+    EXPECT_STREQ(rig.es.currentTexturePath, "show/ty") << "typing is kept";
+
+    followTexturePath(rig.es, rig.right, shownQuad, shownPath);
+    EXPECT_STREQ(rig.es.currentTexturePath, "") << "a quad without media";
+    followTexturePath(rig.es, rig.left, shownQuad, shownPath);
+    EXPECT_STREQ(rig.es.currentTexturePath, "show/clip.mp4");
 }

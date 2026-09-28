@@ -531,17 +531,10 @@ static void syncProjectToEditor(EditorState& es, OutputManager* om, const Projec
         }
     }
 
-    // Select the first quad of the active scene + sync the texture-path edit buffer.
+    // Select the first quad of the active scene (the Inspector's Path field follows it).
     QuadManager& aqm = es.quadManager();
     if (aqm.getQuadCount() > 0) {
         aqm.selectQuad(aqm.getQuads()[0]->getId());
-        auto pathIt = es.quadTexturePaths.find(aqm.getQuads()[0]->getId());
-        if (pathIt != es.quadTexturePaths.end()) {
-            strncpy(es.currentTexturePath, pathIt->second.c_str(), sizeof(es.currentTexturePath) - 1);
-            es.currentTexturePath[sizeof(es.currentTexturePath) - 1] = '\0';
-        } else {
-            es.currentTexturePath[0] = '\0';
-        }
     }
 }
 
@@ -1396,7 +1389,7 @@ void Application::render() {
     if (undoKey || redoKey) {
         std::string heldBack;
         if (undoKey ? undoStep(es, &heldBack) : redoStep(es, &heldBack)) {
-            m_project->setModified(true);
+            m_unsavedLabel.invalidate();
         } else if (!heldBack.empty()) {
             snprintf(es.statusMessage, sizeof(es.statusMessage), "Leave %s to %s: %s",
                      undoScopeName(es), undoKey ? "undo" : "redo", heldBack.c_str());
@@ -1598,7 +1591,7 @@ void Application::render() {
         // -------- Project Tab --------
         if (advanced && ImGui::BeginTabItem("Project")) {
             ImGui::Text("Project: %s", m_project->getName().c_str());
-            if (m_project->isModified()) {
+            if (m_unsavedLabel.shown(glfwGetTime(), [this] { return isProjectDirty(); })) {
                 ImGui::SameLine();
                 ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "(modified)");
             }
@@ -2211,7 +2204,6 @@ void Application::performNewProject() {
     dropQueuedSceneTakes();
     cancelMissingMediaSearch();
     clearProjectContent(es, m_sourceManager.get(), m_outputManager.get());
-    es.currentTexturePath[0] = '\0';
     es.midiMappings.clear();  // show content; the Control panel's device choices stay
 
     // One default scene with one quad, still aimed at the first output. Outputs are
@@ -2330,7 +2322,7 @@ void Application::performRestoreRecovery() {
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", projectPath.c_str());
     // The restored work is not in the project file yet: keep it "unsaved", and say so.
     m_savedSnapshot.clear();
-    m_project->setModified(true);
+    m_unsavedLabel.invalidate();
     const size_t missing = collectMissingMedia(es).size();
     es.showMissingMedia = missing > 0;
     postStatus(es, "Restored unsaved work from " + file + missingMediaNote(missing));
@@ -2400,6 +2392,7 @@ bool Application::isProjectDirty() {
 
 void Application::markProjectClean() {
     m_savedSnapshot = editorSnapshot();
+    m_unsavedLabel.invalidate();
     m_autosavedSnapshot.clear();
     m_lastAutosaveTime = glfwGetTime();
 }

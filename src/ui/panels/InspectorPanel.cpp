@@ -3,6 +3,7 @@
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
 #include "app/MediaAssign.hpp"
+#include "app/QuadSelection.hpp"
 #include "app/MeshLoads.hpp"
 #include "app/GridUndo.hpp"
 #include "scene/Quad.hpp"
@@ -123,6 +124,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
         // Drag-drop target for media from Media Bin
         ImGui::BeginGroup();
+        followTexturePath(es, selectedQuad, pathFieldQuad_, pathFieldPath_);
         ImGui::InputText("Path", currentTexturePath, sizeof(currentTexturePath));
         ImGui::SameLine();
         if (ImGui::Button("Load")) {
@@ -202,9 +204,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                     UUID sid = assignMediaToQuad(ctx.es, ctx.sourceManager, ctx.project,
                                                  *selectedQuad, *item);
                     if (!sid.isNull()) {
-                        strncpy(currentTexturePath, utf8FromPath(item->getPath()).c_str(),
-                                sizeof(currentTexturePath) - 1);
-                        currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
                         Logger::info("Assigned media '{}' to quad '{}'",
                                      item->getName(), selectedQuad->getName());
                         snprintf(statusMessage, sizeof(statusMessage),

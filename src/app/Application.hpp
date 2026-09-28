@@ -4,6 +4,7 @@
 #include "../project/MediaRelocation.hpp"
 #include "Bench.hpp"
 #include "StressHarness.hpp"
+#include "UnsavedIndicator.hpp"
 
 #include <array>
 #include <atomic>
@@ -281,6 +282,7 @@ private:
     // Show-safe session state (ADR-046 §4).
     bool m_haveCleanBaseline = false;  // m_savedSnapshot captured after the first frame
     std::string m_savedSnapshot;       // editorSnapshot() as of the last save/load/new
+    UnsavedIndicator m_unsavedLabel;   // the Project tab's "(modified)", by the same rule
     std::string m_autosavedSnapshot;   // editorSnapshot() last written to the autosave
     bool m_autoSaveEnabled = true;     // false: never this session (the bench), whatever the preferences
     double m_lastAutosaveTime = 0.0;

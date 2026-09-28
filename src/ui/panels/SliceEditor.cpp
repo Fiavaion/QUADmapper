@@ -148,16 +148,20 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.65f, 0.2f, 1.0f));
         if (ImGui::Button("Editing Warp on Canvas - Done")) es.endSliceWarp();
         ImGui::PopStyleColor(2);
-        ImGui::TextWrapped("Drag a corner, or Tab / Shift+Tab to pick one and the arrows to nudge "
-                           "it (Shift 10x, Alt 0.1x). Esc when done.");
     } else {
         if (ImGui::Button("Edit Warp on Canvas")) es.beginSliceWarp(output, sliceId);
         ImGui::SetItemTooltip("The canvas shows this output's frame; move the warp corners with "
                               "the mouse or the keyboard, as for a quad");
     }
+    // Beside the button, above the help text: after the wrapped text it would run off
+    // the panel's right edge.
     ImGui::SameLine();
     if (ImGui::Button("Reset Warp")) {
         edit("Reset slice warp", "", [&](Slice& s) { s.warp = fullFrameWarp(); });
+    }
+    if (warpingThis) {
+        ImGui::TextWrapped("Drag a corner, or Tab / Shift+Tab to pick one and the arrows to nudge "
+                           "it (Shift 10x, Alt 0.1x). Esc when done.");
     }
     for (int c = 0; c < 4; ++c) {
         Vec2 corner = output.getSlices()[static_cast<size_t>(index)].warp.getCorners()[static_cast<size_t>(c)];

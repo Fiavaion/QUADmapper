@@ -3,6 +3,7 @@
 #include "app/EditorContext.hpp"
 #include "app/EditorState.hpp"
 #include "app/MediaAssign.hpp"
+#include "app/QuadSelection.hpp"
 #include "app/MeshLoads.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
@@ -37,21 +38,16 @@ void QuadListPanel::render(EditorContext& ctx) {
     auto& quadManager         = es.quadManager();
     auto& scene               = es.activeScene();
     auto& quadTexturePaths    = es.quadTexturePaths;
-    auto& currentTexturePath  = es.currentTexturePath;
     auto& dragDropQuadId      = es.dragDropQuadId;
-    auto& currentSelectionType = es.currentSelectionType;
 
     // Add Quad button
     if (ImGui::Button("+ Add Quad")) {
         Quad* newQuad = quadManager.createQuad();
         quadManager.selectQuad(newQuad->getId());
-        currentTexturePath[0] = '\0';
         ctx.project->setModified(true);
         // Switch to Quad properties and clear other panel selections (deliberate
         // cross-panel coordination via EditorState — see ADR-0034 / TD-02 contract).
-        currentSelectionType = EditorState::SelectionType::Quad;
-        es.mediaBinPanel.clearSelection();
-        es.outputPanel.clearSelection();
+        showQuadProperties(es);
     }
 
     ImGui::SameLine();
@@ -59,7 +55,6 @@ void QuadListPanel::render(EditorContext& ctx) {
     // Delete button
     if (ImGui::Button("Delete") && quadManager.hasSelection()) {
         es.deleteSelectedQuads();
-        currentTexturePath[0] = '\0';
         ctx.project->setModified(true);
     }
 
@@ -251,18 +246,7 @@ void QuadListPanel::render(EditorContext& ctx) {
                 quadManager.selectQuad(quad->getId());
             }
 
-            // Switch to Quad properties and clear other selections
-            currentSelectionType = EditorState::SelectionType::Quad;
-            es.mediaBinPanel.clearSelection();
-            es.outputPanel.clearSelection();
-
-            auto pathIt = quadTexturePaths.find(quad->getId());
-            if (pathIt != quadTexturePaths.end()) {
-                strncpy(currentTexturePath, pathIt->second.c_str(), sizeof(currentTexturePath) - 1);
-                currentTexturePath[sizeof(currentTexturePath) - 1] = '\0';
-            } else {
-                currentTexturePath[0] = '\0';
-            }
+            showQuadProperties(es);  // and clear the other panels' selections
         }
         }  // end if (!renamingThis)
 
