@@ -5,8 +5,6 @@ add_library(quadmapper_output STATIC
     OutputManager.cpp
     OutputWindow.hpp
     OutputWindow.cpp
-    PerformMode.hpp
-    PerformMode.cpp
 )
 
 target_include_directories(quadmapper_output

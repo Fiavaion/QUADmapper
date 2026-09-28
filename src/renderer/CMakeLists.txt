@@ -3,10 +3,6 @@
 add_library(quadmapper_renderer STATIC
     Renderer.hpp
     Renderer.cpp
-    RenderContext.hpp
-    RenderContext.cpp
-    Shader.hpp
-    Shader.cpp
     ShaderProgram.hpp
     ShaderProgram.cpp
     ComputeShader.hpp
@@ -25,12 +21,6 @@ add_library(quadmapper_renderer STATIC
     Framebuffer.cpp
     UvTestGrid.hpp
     UvTestGrid.cpp
-    Mesh.hpp
-    Mesh.cpp
-    VertexArray.hpp
-    VertexArray.cpp
-    VertexBuffer.hpp
-    VertexBuffer.cpp
 )
 
 target_include_directories(quadmapper_renderer

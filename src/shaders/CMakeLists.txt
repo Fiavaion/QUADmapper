@@ -3,8 +3,6 @@
 # Read shader source files
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/quad.vert QUAD_VERT_SOURCE)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/quad.frag QUAD_FRAG_SOURCE)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/mesh.vert MESH_VERT_SOURCE)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/mesh.frag MESH_FRAG_SOURCE)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/mesh3d.vert MESH3D_VERT_SOURCE)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/outline.vert OUTLINE_VERT_SOURCE)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/outline.frag OUTLINE_FRAG_SOURCE)
@@ -32,8 +30,6 @@ target_include_directories(quadmapper_shaders
 set(SHADER_FILES
     quad.vert
     quad.frag
-    mesh.vert
-    mesh.frag
     mesh3d.vert
     outline.vert
     outline.frag

@@ -26,26 +26,14 @@ add_library(quadmapper_ui STATIC
     panels/VideoPlayerPanel.cpp
     panels/MediaBinPanel.hpp
     panels/MediaBinPanel.cpp
-    panels/ProceduralEditorPanel.hpp
-    panels/ProceduralEditorPanel.cpp
     panels/CalibrationPanel.hpp
     panels/CalibrationPanel.cpp
     panels/ControlPanel.hpp
     panels/ControlPanel.cpp
     dialogs/PreferencesDialog.hpp
     dialogs/PreferencesDialog.cpp
-    dialogs/OutputConfigDialog.hpp
-    dialogs/OutputConfigDialog.cpp
     dialogs/HapConvertWindow.hpp
     dialogs/HapConvertWindow.cpp
-    widgets/QuadCornerWidget.hpp
-    widgets/QuadCornerWidget.cpp
-    widgets/PlaybackControls.hpp
-    widgets/PlaybackControls.cpp
-    widgets/MediaThumbnail.hpp
-    widgets/MediaThumbnail.cpp
-    menus/MainMenu.hpp
-    menus/MainMenu.cpp
 )
 
 target_include_directories(quadmapper_ui
