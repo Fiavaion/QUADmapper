@@ -45,12 +45,13 @@ TEST(ProjectTest, HasEmptyFilePathByDefault) {
     EXPECT_EQ(project.getFilePath(), "C:/test/project.qmap");
 }
 
-TEST(ProjectTest, GetSettingsReturnsValidSettings) {
+TEST(ProjectTest, NewProjectHasDefaultSettings) {
     Project project;
 
     const ProjectSettings& settings = project.getSettings();
-    // Settings should be valid (just checking it doesn't crash)
-    EXPECT_TRUE(true);
+    EXPECT_EQ(settings.defaultResolution, IVec2(1920, 1080));
+    EXPECT_EQ(settings.gridSize, 32);
+    EXPECT_FALSE(settings.snapToGrid);
 }
 
 TEST(ProjectTest, QuadManagement) {
