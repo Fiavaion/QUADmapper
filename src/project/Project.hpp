@@ -135,9 +135,6 @@ public:
     const std::string& getFilePath() const { return filePath_; }
     void setFilePath(const std::string& path) { filePath_ = path; }
 
-    bool isModified() const { return modified_; }
-    void setModified(bool modified) { modified_ = modified; }
-
     ProjectSettings& getSettings() { return settings_; }
     const ProjectSettings& getSettings() const { return settings_; }
 
@@ -145,8 +142,8 @@ public:
     std::vector<Quad>& getQuads() { return quads_; }
     const std::vector<Quad>& getQuads() const { return quads_; }
 
-    void addQuad(Quad quad) { quads_.push_back(std::move(quad)); setModified(true); }
-    void clearQuads() { quads_.clear(); setModified(true); }
+    void addQuad(Quad quad) { quads_.push_back(std::move(quad)); }
+    void clearQuads() { quads_.clear(); }
 
     // Texture path storage (relative paths for portability)
     std::vector<std::string>& getTexturePaths() { return texturePaths_; }
@@ -156,8 +153,8 @@ public:
     std::vector<QuadGroup>& getGroups() { return groups_; }
     const std::vector<QuadGroup>& getGroups() const { return groups_; }
 
-    void addGroup(QuadGroup group) { groups_.push_back(std::move(group)); setModified(true); }
-    void clearGroups() { groups_.clear(); setModified(true); }
+    void addGroup(QuadGroup group) { groups_.push_back(std::move(group)); }
+    void clearGroups() { groups_.clear(); }
 
     // Multi-scene + output DTOs (.qmap v3). When non-empty the serializer writes
     // v3; the flat quads_/groups_ above stay populated as a backward-compatible
@@ -176,7 +173,6 @@ public:
 private:
     std::string name_;
     std::string filePath_;
-    bool modified_ = false;
     ProjectSettings settings_;
     std::vector<Quad> quads_;
     std::vector<std::string> texturePaths_;  // Parallel to quads_

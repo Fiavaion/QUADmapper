@@ -27,14 +27,13 @@ namespace quadmapper {
 
 // Core: bind an already-resolved source (by UUID) to a quad. path may be empty
 // (procedural). isVideo makes the source the Video Player's active source.
-inline void bindSourceToQuad(EditorState& es, Project* project, Quad& quad,
+inline void bindSourceToQuad(EditorState& es, Quad& quad,
                              const UUID& sourceId, const std::string& path, bool isVideo) {
     quad.getTexture().mediaId = sourceId;
     es.quadTextures.erase(quad.getId());          // drop any legacy per-quad texture
     if (!path.empty()) es.quadTexturePaths[quad.getId()] = path;
     else               es.quadTexturePaths.erase(quad.getId());
     if (isVideo) es.activeVideoSourceId = sourceId;
-    if (project) project->setModified(true);
 }
 
 // Resolve a MediaItem to a (deduped) SourceManager source by type. Null on failure or
@@ -97,14 +96,14 @@ inline void applySavedTransport(SourceManager& sm, const UUID& id,
 
 // Resolve a MediaItem to a source, then bind it to the quad. Returns the bound
 // source UUID, or null on failure / unsupported type (audio).
-inline UUID assignMediaToQuad(EditorState& es, SourceManager* sm, Project* project,
+inline UUID assignMediaToQuad(EditorState& es, SourceManager* sm,
                               Quad& quad, const MediaItem& item) {
     if (!sm) return UUID();
     bool isVideo = false;
     const UUID sid = resolveMediaSource(*sm, item, isVideo);
     if (sid.isNull()) return UUID();
 
-    bindSourceToQuad(es, project, quad, sid,
+    bindSourceToQuad(es, quad, sid,
                      item.hasPath() ? utf8FromPath(item.getPath()) : std::string(), isVideo);
     if (isVideo) playAssignedVideo(*sm, sid);
     return sid;
@@ -112,7 +111,7 @@ inline UUID assignMediaToQuad(EditorState& es, SourceManager* sm, Project* proje
 
 // The same for a 3D object (ADR-052), as one undo step (TD-16). Objects have no legacy
 // texturePath: the "sources" table alone persists the binding.
-inline UUID assignMediaToObject(EditorState& es, SourceManager* sm, Project* project,
+inline UUID assignMediaToObject(EditorState& es, SourceManager* sm,
                                 const ObjectRef& target, const MediaItem& item) {
     const MeshObject* object = target.object();
     if (!sm || !object) return UUID();
@@ -129,7 +128,6 @@ inline UUID assignMediaToObject(EditorState& es, SourceManager* sm, Project* pro
         es.activeVideoSourceId = sid;
         playAssignedVideo(*sm, sid);
     }
-    if (project) project->setModified(true);
     return sid;
 }
 

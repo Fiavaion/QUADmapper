@@ -49,13 +49,12 @@ void showPlaybackError(const PlayableSource& video) {
 }
 
 // Once / Loop / Ping-Pong (ADR-050), and why a requested Ping-Pong plays as Loop.
-void loopModeSelector(PlayableSource& video, Project* project, float width) {
+void loopModeSelector(PlayableSource& video, float width) {
     static const char* const LOOP_MODES[] = {"Once", "Loop", "Ping-Pong"};  // LoopMode order
     int mode = static_cast<int>(video.getLoopMode());
     ImGui::SetNextItemWidth(width);
     if (ImGui::Combo("Loop Mode", &mode, LOOP_MODES, IM_ARRAYSIZE(LOOP_MODES))) {
         video.setLoopMode(static_cast<LoopMode>(mode));
-        if (project) project->setModified(true);
     }
     ImGui::SetItemTooltip("Once stops on the last frame; Loop starts over; Ping-Pong plays "
                           "back and forth");
@@ -70,7 +69,6 @@ void loopModeSelector(PlayableSource& video, Project* project, float width) {
 // The source's sound (ADR-050 §2): mute and volume, and why it is silent when it is.
 void audioControls(PlayableSource& video, const UUID& id, EditorContext& ctx, float width) {
     AudioEngine* audio = ctx.audio;
-    Project* project = ctx.project;
     const SourceAudioStatus status = audio ? audio->status(id) : SourceAudioStatus::None;
     if (status == SourceAudioStatus::NoAudio) {
         ImGui::TextDisabled("No audio stream");
@@ -83,7 +81,6 @@ void audioControls(PlayableSource& video, const UUID& id, EditorContext& ctx, fl
     bool muted = video.isAudioMuted();
     if (ImGui::Checkbox("Mute##source audio", &muted)) {
         video.setAudioMuted(muted);
-        if (project) project->setModified(true);
     }
     ImGui::SetItemTooltip("Mute this video's sound");
     ImGui::SameLine();
@@ -91,7 +88,6 @@ void audioControls(PlayableSource& video, const UUID& id, EditorContext& ctx, fl
     ImGui::SetNextItemWidth(width);
     if (ImGui::SliderFloat("Volume##source audio", &percent, 0.0f, 100.0f, "%.0f%%")) {
         video.setAudioVolume(percent / 100.0f);
-        if (project) project->setModified(true);
     }
     ImGui::SetItemTooltip("This video's volume (the menu bar's master volume applies on top)");
     if (const char* reason = audioSilenceReason(video)) {
@@ -132,7 +128,7 @@ void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
 
     if (simpleMode) {
         if (Quad* selected = es.quadManager().getPrimarySelectedQuad()) {
-            bindSourceToQuad(es, ctx.project, *selected, sid, es.videoPath, /*isVideo=*/true);
+            bindSourceToQuad(es, *selected, sid, es.videoPath, /*isVideo=*/true);
         }
         // Auto-play so the video is visible at once.
         if (auto* video = ctx.sourceManager->getSourceAs<PlayableSource>(sid)) {
@@ -207,7 +203,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
                 if (playing) video->pause(); else video->play();
             }
             ImGui::EndDisabled();
-            loopModeSelector(*video, ctx.project, 180.0f);
+            loopModeSelector(*video, 180.0f);
             ImGui::BeginDisabled(video->isTimelineLocked());
             float speed = video->getSpeed();
             ImGui::SetNextItemWidth(180.0f);
@@ -273,7 +269,6 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         bool locked = video->isTimelineLocked();
         if (ImGui::Checkbox("Lock to master timeline", &locked)) {
             ctx.sourceManager->setTimelineLocked(es.activeVideoSourceId, locked);
-            if (ctx.project) ctx.project->setModified(true);
         }
         ImGui::SetItemTooltip("Follow the master timeline in the menu bar; its time is looped "
                               "over this clip, so locked videos stay in step");
@@ -318,7 +313,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         if (ImGui::Button("1x")) video->setSpeed(1.0f);
         ImGui::EndDisabled();
 
-        loopModeSelector(*video, ctx.project, ImGui::CalcItemWidth());
+        loopModeSelector(*video, ImGui::CalcItemWidth());
 
         ImGui::Separator();
         ImGui::Text("Audio:");
@@ -336,11 +331,10 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
                 if (isAssigned) {
                     selected->getTexture().mediaId = UUID();
                     es.quadTexturePaths.erase(selected->getId());
-                    ctx.project->setModified(true);
                 } else {
                     // Centralized bind (ADR-042 P2): records the path so the assignment
                     // persists in the .qmap; load re-creates the source and re-binds.
-                    bindSourceToQuad(es, ctx.project, *selected, es.activeVideoSourceId,
+                    bindSourceToQuad(es, *selected, es.activeVideoSourceId,
                                      utf8FromPath(ctx.sourceManager->getSourcePath(es.activeVideoSourceId)),
                                      /*isVideo=*/true);
                 }
@@ -364,7 +358,6 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
                     if (quad->getTexture().mediaId == unloaded) {
                         quad->getTexture().mediaId = UUID();
                         es.quadTexturePaths.erase(quad->getId());
-                        ctx.project->setModified(true);
                     }
                 }
             }

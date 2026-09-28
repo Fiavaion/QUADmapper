@@ -175,7 +175,7 @@ inline bool noteRelocation(EditorState& es, const MissingMediaItem& item, const 
 
 // "Locate...": relocate item to the file the user picked, then every other missing
 // file that sits in the same folder under its own name. Returns how many were resolved.
-inline int locateMissingMedia(EditorState& es, SourceManager* sm, Project* project,
+inline int locateMissingMedia(EditorState& es, SourceManager* sm,
                               const MissingMediaItem& item, const std::filesystem::path& newPath) {
     if (!noteRelocation(es, item, relocateMissingItem(es, sm, item, newPath))) return 0;
     int resolved = 1;
@@ -186,12 +186,11 @@ inline int locateMissingMedia(EditorState& es, SourceManager* sm, Project* proje
             ++resolved;
         }
     }
-    if (project) project->setModified(true);
     return resolved;
 }
 
 // "Search folder...": relocate every missing file found under the searched folder.
-inline int relocateMissingFromIndex(EditorState& es, SourceManager* sm, Project* project,
+inline int relocateMissingFromIndex(EditorState& es, SourceManager* sm,
                                     const relocate::FolderIndex& index) {
     int resolved = 0;
     for (const MissingMediaItem& item : collectMissingMedia(es)) {
@@ -200,7 +199,6 @@ inline int relocateMissingFromIndex(EditorState& es, SourceManager* sm, Project*
             ++resolved;
         }
     }
-    if (resolved > 0 && project) project->setModified(true);
     return resolved;
 }
 

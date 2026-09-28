@@ -731,7 +731,7 @@ TEST(MeshLoadsTest, RelocatingAMissingMeshLoadsOnTheWorkerAndMovesItsObjects) {
     const MissingMediaItem item = collectMissingMedia(fx.es)[0];
 
     const std::string found = fx.writeObj("prop.obj", 4);
-    EXPECT_EQ(locateMissingMedia(fx.es, nullptr, nullptr, item, pathFromUtf8(found)), 1);
+    EXPECT_EQ(locateMissingMedia(fx.es, nullptr, item, pathFromUtf8(found)), 1);
     // Accepted, not loaded yet: loading, not missing, and not parsed on this thread.
     EXPECT_TRUE(a->getMesh().empty());
     EXPECT_TRUE(isMeshLoading(fx.es, *a));

@@ -39,7 +39,7 @@ namespace {
 // calibration pixels with the same press rule and keyboard model as quad vertices.
 // Pixels are canvas-normalised positions times the projector image size.
 void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mouseNorm,
-                           bool mouseDown, bool canvasPress, Project* project) {
+                           bool mouseDown, bool canvasPress) {
     CalibrationSession& cal = es.calibration;
     auto& points = output.getCalibrationPoints();
     const ProjectorIntrinsics& k = output.getProjector().intrinsics;
@@ -51,7 +51,6 @@ void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mo
     auto changed = [&](const std::string& description, int mergeKey) {
         cal.noteEdit(description, mergeKey);
         cal.markChanged();
-        if (project) project->setModified(true);
     };
     auto moved = [&](int index) {
         changed("Move calibration point " + std::to_string(index + 1),
@@ -126,7 +125,7 @@ void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mo
 // and the selected slice's warp corners are dragged and nudged with the same press
 // rule and keyboard model as a quad's corners. A drag is one undo step on release.
 void editSliceWarp(EditorState& es, OutputWindow& output, const Vec2& mouseNorm, bool mouseDown,
-                   bool canvasPress, Project* project) {
+                   bool canvasPress) {
     auto& slices = output.getSlices();
     const int index = findSliceIndex(slices, es.selectedSliceId);
     if (index < 0) return;
@@ -139,7 +138,6 @@ void editSliceWarp(EditorState& es, OutputWindow& output, const Vec2& mouseNorm,
             const Vec2 pos = es.sliceWarpDragStartPos + (mouseNorm - es.sliceWarpDragStartMouse);
             if (pos != corners[static_cast<size_t>(dragged)]) {
                 warp.setCorner(dragged, pos);
-                if (project) project->setModified(true);
             }
         } else {
             es.finishSliceWarpDrag();
@@ -161,8 +159,8 @@ void editSliceWarp(EditorState& es, OutputWindow& output, const Vec2& mouseNorm,
             es.sliceWarpDragBefore = OutputSlices{slices, output.getSlicesCanvas()};
         }
     }
-    if (dragged < 0 && canvasOwnsEditingKeys(true) && applySliceWarpKeys(readCanvasKeys(), es, output)) {
-        if (project) project->setModified(true);
+    if (dragged < 0 && canvasOwnsEditingKeys(true)) {
+        applySliceWarpKeys(readCanvasKeys(), es, output);
     }
 }
 
@@ -245,7 +243,6 @@ void ViewportEditor::render(EditorContext& ctx) {
     EditorState& es = ctx.es;
     auto* m_renderer = ctx.renderer;
     auto* m_window = ctx.window;
-    auto* m_project = ctx.project;
     auto* m_outputManager = ctx.outputManager;
 
     auto& quadManager = es.quadManager();
@@ -387,7 +384,7 @@ void ViewportEditor::render(EditorContext& ctx) {
         // Slice warp editing: the canvas edits the selected slice's warp corners, and
         // quad vertices stay untouched (as while calibrating).
         if (warpOutput) {
-            editSliceWarp(es, *warpOutput, mouseNorm, mouseDown, canvasPress, m_project);
+            editSliceWarp(es, *warpOutput, mouseNorm, mouseDown, canvasPress);
             cornerHoveredVertex = cornerDraggedVertex = -1;
             meshHoveredVertex = meshDraggedVertex = -1;
             es.meshHoveredHandle = es.meshDraggedHandle = -1;
@@ -400,8 +397,7 @@ void ViewportEditor::render(EditorContext& ctx) {
         // (when it shows the one being calibrated), and quad vertices stay untouched.
         if (calibrating) {
             if (canvasOutput && canvasOutput->getId() == es.calibratingOutputId) {
-                editCalibrationPoints(es, *canvasOutput, mouseNorm, mouseDown, canvasPress,
-                                      m_project);
+                editCalibrationPoints(es, *canvasOutput, mouseNorm, mouseDown, canvasPress);
             }
             cornerHoveredVertex = cornerDraggedVertex = -1;
             meshHoveredVertex = meshDraggedVertex = -1;
@@ -522,14 +518,12 @@ void ViewportEditor::render(EditorContext& ctx) {
                             es.gridInsertDragIndex = isColumn
                                 ? geometry.insertUDivision(uv.x)
                                 : geometry.insertVDivision(uv.y);
-                            m_project->setModified(true);
                         }
                     } else if (es.gridInsertDragIndex >= 0 && uv.x >= 0.0f) {
                         // Held over the surface: drag the just-inserted line to
                         // fine-position it (off the surface it stays put).
                         if (isColumn) geometry.moveUDivision(es.gridInsertDragIndex, uv.x);
                         else          geometry.moveVDivision(es.gridInsertDragIndex, uv.y);
-                        m_project->setModified(true);
                     }
                 } else {
                     // Release: commit + disarm only if a line was actually placed,
@@ -559,7 +553,6 @@ void ViewportEditor::render(EditorContext& ctx) {
                         newPos = findSnapTarget(newPos, selectedQuad->getId());
 
                         geometry.setCorner(cornerDraggedVertex, newPos);
-                        m_project->setModified(true);
                     } else {
                         // Mouse released — record the completed drag as ONE undo step.
                         if (cornerDraggedVertex >= 0 &&
@@ -601,7 +594,6 @@ void ViewportEditor::render(EditorContext& ctx) {
                         if (mouseDown) {
                             geometry.setBezierControl(es.bezierDragged / 2,
                                                       es.bezierDragged % 2, mouseNorm);
-                            m_project->setModified(true);
                         } else {
                             // Release — record the whole bend as one undo step.
                             es.commandHistory.execute(
@@ -631,10 +623,9 @@ void ViewportEditor::render(EditorContext& ctx) {
                 }
 
                 // Keyboard: Tab cycles TL, TR, BR, BL; arrows nudge (MeshEditKeys.hpp).
-                if (canvasOwnsEditingKeys(true) &&
+                if (canvasOwnsEditingKeys(true)) {
                     applyCornerKeys(readCanvasKeys(), es.quadRef(*selectedQuad), geometry,
-                                    es.commandHistory, cornerSelectedVertex)) {
-                    m_project->setModified(true);
+                                    es.commandHistory, cornerSelectedVertex);
                 }
 
                 // Reset mesh state when in corner mode
@@ -656,7 +647,6 @@ void ViewportEditor::render(EditorContext& ctx) {
                         geometry.setGridHandlePosition(
                             meshSelectedVertex, es.meshDraggedHandle,
                             es.meshHandleDragStartPos + (mouseNorm - es.meshHandleDragStartMousePos));
-                        m_project->setModified(true);
                     } else {
                         const VertexTangents after = geometry.getVertexTangent(meshSelectedVertex);
                         if (after != es.meshHandleDragBefore) {
@@ -684,7 +674,6 @@ void ViewportEditor::render(EditorContext& ctx) {
                         newOffset = snappedPos - basePos;
 
                         geometry.setMeshVertexByIndex(meshDraggedVertex, newOffset);
-                        m_project->setModified(true);
                     } else {
                         // Mouse released — record the completed mesh drag as one undo step.
                         if (meshDraggedVertex >= 0) {
@@ -741,11 +730,10 @@ void ViewportEditor::render(EditorContext& ctx) {
 
                 // Keyboard: Tab cycles vertices, H their grid-line handles, arrows nudge.
                 // Not mid handle-drag, which edits the selected vertex's handle.
-                if (es.meshDraggedHandle < 0 && canvasOwnsEditingKeys(true) &&
+                if (es.meshDraggedHandle < 0 && canvasOwnsEditingKeys(true)) {
                     applyMeshEditKeys(readCanvasKeys(), es.quadRef(*selectedQuad), geometry,
                                       es.commandHistory, meshSelectedVertex,
-                                      es.meshSelectedHandle)) {
-                    m_project->setModified(true);
+                                      es.meshSelectedHandle);
                 }
 
                 // Reset corner state when in mesh mode

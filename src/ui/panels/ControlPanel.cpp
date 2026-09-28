@@ -490,7 +490,6 @@ void ControlPanel::renderMappings(EditorContext& ctx, control::ExternalControl& 
         if (ImGui::Combo("##mode", &mode, kModes, IM_ARRAYSIZE(kModes))) {
             m.mode = static_cast<MidiMode>(mode);
             m.ccHigh = false;
-            if (ctx.project) ctx.project->setModified(true);
         }
 
         ImGui::TableNextColumn();
@@ -499,7 +498,6 @@ void ControlPanel::renderMappings(EditorContext& ctx, control::ExternalControl& 
             ImGui::SameLine();
             if (ImGui::SmallButton("Any")) {
                 m.device = "any";
-                if (ctx.project) ctx.project->setModified(true);
             }
             ImGui::SetItemTooltip("Accept this control from any MIDI device");
         }
@@ -512,7 +510,6 @@ void ControlPanel::renderMappings(EditorContext& ctx, control::ExternalControl& 
 
     if (removeIndex >= 0) {
         mappings.erase(mappings.begin() + removeIndex);
-        if (ctx.project) ctx.project->setModified(true);
     }
 }
 

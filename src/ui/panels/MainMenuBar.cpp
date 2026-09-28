@@ -71,13 +71,12 @@ void MainMenuBar::renderAudioDevices(AudioEngine& audio, bool menu, bool& listOp
     }
 }
 
-void MainMenuBar::renderAudioStrip(EditorContext& ctx, AudioEngine& audio) {
+void MainMenuBar::renderAudioStrip(AudioEngine& audio) {
     ImGui::TextDisabled("Audio:");
     const bool muted = audio.masterMuted();
     if (muted) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.25f, 0.2f, 1.0f));
     if (ImGui::Button(muted ? "Muted##master" : "Mute##master")) {
         audio.setMasterMuted(!muted);
-        if (ctx.project) ctx.project->setModified(true);
     }
     if (muted) ImGui::PopStyleColor();
     ImGui::SetItemTooltip(muted ? "All sound is muted: click to unmute" : "Mute all sound");
@@ -86,7 +85,6 @@ void MainMenuBar::renderAudioStrip(EditorContext& ctx, AudioEngine& audio) {
     ImGui::SetNextItemWidth(90.0f);
     if (ImGui::SliderFloat("##master volume", &percent, 0.0f, 100.0f, "Vol %.0f%%")) {
         audio.setMasterVolume(percent / 100.0f);
-        if (ctx.project) ctx.project->setModified(true);
     }
     ImGui::SetItemTooltip("Master volume of every video's sound (Ctrl+click to type a value)");
 
@@ -150,10 +148,10 @@ void MainMenuBar::render(EditorContext& ctx) {
         // While calibrating or editing a slice warp, only that output's calibration or
         // slice steps (UndoRouting.hpp).
         if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndoStep(es))) {
-            if (undoStep(es) && ctx.project) ctx.project->setModified(true);
+            undoStep(es);
         }
         if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedoStep(es))) {
-            if (redoStep(es) && ctx.project) ctx.project->setModified(true);
+            redoStep(es);
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Select All", "Ctrl+A")) {
@@ -165,7 +163,6 @@ void MainMenuBar::render(EditorContext& ctx) {
         ImGui::Separator();
         if (ImGui::MenuItem("Delete Selected", "Delete", false, es.quadManager().hasSelection())) {
             es.deleteSelectedQuads();
-            if (ctx.project) ctx.project->setModified(true);
         }
         ImGui::Separator();
         // Projector calibration (ADR-052): the first output showing the active scene,
@@ -218,13 +215,11 @@ void MainMenuBar::render(EditorContext& ctx) {
             ImGui::Separator();
             if (ImGui::MenuItem("Mute Audio", nullptr, ctx.audio->masterMuted())) {
                 ctx.audio->setMasterMuted(!ctx.audio->masterMuted());
-                if (ctx.project) ctx.project->setModified(true);
             }
             float percent = ctx.audio->masterVolume() * 100.0f;
             ImGui::SetNextItemWidth(140.0f);
             if (ImGui::SliderFloat("Master Volume", &percent, 0.0f, 100.0f, "%.0f%%")) {
                 ctx.audio->setMasterVolume(percent / 100.0f);
-                if (ctx.project) ctx.project->setModified(true);
             }
             if (ImGui::BeginMenu("Audio Output")) {
                 renderAudioDevices(*ctx.audio, /*menu=*/true, audioMenuOpen_);
@@ -331,7 +326,7 @@ void MainMenuBar::render(EditorContext& ctx) {
 
     if (ctx.audio) {
         ImGui::Separator();
-        renderAudioStrip(ctx, *ctx.audio);
+        renderAudioStrip(*ctx.audio);
     }
 
     // Reset all playheads (available in both modes) — restart every video (and its

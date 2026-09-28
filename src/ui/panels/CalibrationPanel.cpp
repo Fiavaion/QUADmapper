@@ -100,7 +100,6 @@ void CalibrationPanel::render(EditorContext& ctx) {
     auto& points = output->getCalibrationPoints();
     ProjectorCamera& projector = output->getProjector();
     const Scene* scene = OutputManager::sceneForOutput(es.scenes, *output);
-    auto setModified = [&]() { if (ctx.project) ctx.project->setModified(true); };
 
     if (cal.selected >= static_cast<int>(points.size())) cal.selected = -1;
     if (shownOutputId_ != es.calibratingOutputId) {
@@ -143,7 +142,6 @@ void CalibrationPanel::render(EditorContext& ctx) {
             cal.mode = static_cast<CalibrationMode>(mode);
             cal.noteEdit("Change calibration lens mode");
             cal.markChanged();
-            setModified();
         }
 
         const ProjectorIntrinsics& lens = cal.lens;
@@ -162,7 +160,6 @@ void CalibrationPanel::render(EditorContext& ctx) {
             // Typing a value or holding a +/- button is one step.
             cal.noteEdit("Change projector lens", LENS_EDIT_KEY);
             cal.markChanged();
-            setModified();
         }
         ImGui::TextDisabled("fx %.0f  fy %.0f  cx %.0f  cy %.0f  (%dx%d)", cal.lens.fx, cal.lens.fy,
                             cal.lens.cx, cal.lens.cy, cal.lens.width, cal.lens.height);
@@ -185,7 +182,6 @@ void CalibrationPanel::render(EditorContext& ctx) {
             cal.cancelPick();
             cal.noteEdit("Clear calibration points");
             cal.markChanged();
-            setModified();
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
@@ -200,7 +196,6 @@ void CalibrationPanel::render(EditorContext& ctx) {
             cal.statusIsError = false;
             cal.status = "View reset: edit a point to solve again";
             cal.noteEdit("Reset projector view");
-            setModified();
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Aim the uncalibrated projector at the objects with this lens");
@@ -257,7 +252,6 @@ void CalibrationPanel::render(EditorContext& ctx) {
                     cal.noteEdit(std::string(p.enabled ? "Enable" : "Disable") +
                                  " calibration point " + std::to_string(i + 1));
                     cal.markChanged();
-                    setModified();
                 }
                 ImGui::TableNextColumn();
                 if (ImGui::SmallButton("X")) deleteIndex = i;
@@ -269,7 +263,6 @@ void CalibrationPanel::render(EditorContext& ctx) {
         if (deleteIndex >= 0) {
             cal.noteEdit("Delete calibration point " + std::to_string(deleteIndex + 1));
             cal.removePoint(points, deleteIndex);
-            setModified();
         }
         if (!points.empty()) {
             ImGui::TextDisabled("Tab/Shift+Tab: select   Arrows: nudge (Shift 10x, Alt 0.1x)");

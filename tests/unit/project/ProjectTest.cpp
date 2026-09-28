@@ -22,26 +22,16 @@ TEST(ProjectTest, SetNameUpdatesName) {
     EXPECT_EQ(project.getName(), "My Project");
 }
 
-TEST(ProjectTest, NewProjectIsNotModified) {
+// Unsaved-changes tracking (Application::isProjectDirty) compares serialized content
+// rather than a flag on Project (see UnsavedIndicatorTest below); an edit like
+// addQuad must actually change what gets serialized for that comparison to work.
+TEST(ProjectTest, AddQuadChangesSerializedContent) {
     Project project;
-
-    EXPECT_FALSE(project.isModified());
-}
-
-TEST(ProjectTest, AddQuadMarksModified) {
-    Project project;
+    const std::string before = ProjectSerializer().serialize(project);
     Quad quad;
     project.addQuad(quad);
 
-    EXPECT_TRUE(project.isModified());
-}
-
-TEST(ProjectTest, SetModifiedFalseClearsFlag) {
-    Project project;
-    project.setModified(true);
-    project.setModified(false);
-
-    EXPECT_FALSE(project.isModified());
+    EXPECT_NE(ProjectSerializer().serialize(project), before);
 }
 
 TEST(ProjectTest, HasEmptyFilePathByDefault) {
@@ -171,9 +161,8 @@ TEST(ProjectSerializerTest, DeserializeMissingVersionFails) {
 }
 
 // The "(modified)" label follows the unsaved-changes rule (the show no longer
-// serializes to what was saved or loaded), not Project::isModified: a show just
-// opened, which load-time follow-ups mark modified, reads unmodified, and so does an
-// edit undone back to the loaded state.
+// serializes to what was saved or loaded): a show just opened reads unmodified, and
+// so does an edit undone back to the loaded state.
 TEST(UnsavedIndicatorTest, AnOpenedShowAndAnUndoneEditAreNotModified) {
     auto loaded = ProjectSerializer::load(std::filesystem::path(QM_PROJECT_FIXTURES_DIR) /
                                           "v3.4-canvas-slices.qmap");
@@ -181,7 +170,6 @@ TEST(UnsavedIndicatorTest, AnOpenedShowAndAnUndoneEditAreNotModified) {
     Project project = std::move(loaded.value());
     const std::string saved = ProjectSerializer().serialize(project);
     auto dirty = [&] { return ProjectSerializer().serialize(project) != saved; };
-    project.setModified(true);  // as the output-size follow-up after a load does
 
     UnsavedIndicator label;
     EXPECT_FALSE(label.shown(10.0, dirty)) << "just opened";
@@ -197,7 +185,6 @@ TEST(UnsavedIndicatorTest, AnOpenedShowAndAnUndoneEditAreNotModified) {
     geometry.setCorner(0, corner);  // undone
     label.invalidate();
     EXPECT_FALSE(label.shown(10.2, dirty)) << "undone back to the loaded state";
-    EXPECT_TRUE(project.isModified()) << "the flag alone would still say modified";
 }
 
 // Serializing every frame costs too much: without invalidate() the answer is kept

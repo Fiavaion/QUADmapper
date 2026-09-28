@@ -114,7 +114,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                              ImGuiInputTextFlags_EnterReturnsTrue)) {
             ctx.es.commandHistory.execute(
                 std::make_unique<RenameQuadCommand>(ctx.es.quadRef(*selectedQuad), quadName_));
-            ctx.project->setModified(true);
         }
 
         ImGui::Separator();
@@ -134,7 +133,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 UUID sid = ctx.sourceManager
                     ? ctx.sourceManager->getOrCreateImageSource(pathFromUtf8(currentTexturePath)) : UUID();
                 if (!sid.isNull()) {
-                    bindSourceToQuad(ctx.es, ctx.project, *selectedQuad, sid,
+                    bindSourceToQuad(ctx.es, *selectedQuad, sid,
                                      currentTexturePath, /*isVideo=*/false);
                     Logger::info("Loaded texture for quad '{}': {}",
                                  selectedQuad->getName(), currentTexturePath);
@@ -171,7 +170,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 quadTextures.erase(selectedQuad->getId());
                 quadTexturePaths.erase(selectedQuad->getId());
                 currentTexturePath[0] = '\0';
-                ctx.project->setModified(true);
             }
         }
 
@@ -185,7 +183,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             currentTexturePath[0] = '\0';
             snprintf(statusMessage, sizeof(statusMessage), "Applied UV test grid");
             statusTimer = 3.0f;
-            ctx.project->setModified(true);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Colored UV reference grid — check orientation/stretch");
@@ -201,7 +198,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 MediaItem* item = ctx.mediaLibrary->getItem(mediaId);
                 if (item) {
                     // Centralized bind (ADR-042 P2): resolves image vs video correctly.
-                    UUID sid = assignMediaToQuad(ctx.es, ctx.sourceManager, ctx.project,
+                    UUID sid = assignMediaToQuad(ctx.es, ctx.sourceManager,
                                                  *selectedQuad, *item);
                     if (!sid.isNull()) {
                         Logger::info("Assigned media '{}' to quad '{}'",
@@ -223,12 +220,10 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             // Flip buttons at the top
             if (ImGui::Button(texBinding.flipH ? "Flip H [ON]" : "Flip H")) {
                 texBinding.flipH = !texBinding.flipH;
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button(texBinding.flipV ? "Flip V [ON]" : "Flip V")) {
                 texBinding.flipV = !texBinding.flipV;
-                ctx.project->setModified(true);
             }
 
             // Prominent one-click reset for the whole UV transform (offset / coverage
@@ -239,7 +234,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 texBinding.resetUV();   // uvOffset=0, uvScale=1 (=100% coverage), uvRotation=0
                 texBinding.flipH = false;
                 texBinding.flipV = false;
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Reset pan, coverage/scale, rotation and flips to defaults");
@@ -253,15 +247,11 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::Text("Offset (Pan):");
             ImGui::TextDisabled("Ctrl+Click to type value");
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Offset X", &texBinding.uvOffset.x,
-                                 0.01f, -2.0f, 2.0f, "%.3f")) {
-                ctx.project->setModified(true);
-            }
+            ImGui::DragFloat("Offset X", &texBinding.uvOffset.x,
+                             0.01f, -2.0f, 2.0f, "%.3f");
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Offset Y", &texBinding.uvOffset.y,
-                                 0.01f, -2.0f, 2.0f, "%.3f")) {
-                ctx.project->setModified(true);
-            }
+            ImGui::DragFloat("Offset Y", &texBinding.uvOffset.y,
+                             0.01f, -2.0f, 2.0f, "%.3f");
 
             ImGui::Spacing();
 
@@ -279,13 +269,11 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             if (ImGui::DragFloat("U Coverage", &coverageU,
                                  1.0f, 10.0f, 400.0f, "%.0f%%")) {
                 texBinding.uvScale.x = 100.0f / std::max(coverageU, 1.0f);
-                ctx.project->setModified(true);
             }
             ImGui::SetNextItemWidth(200.0f);
             if (ImGui::DragFloat("V Coverage", &coverageV,
                                  1.0f, 10.0f, 400.0f, "%.0f%%")) {
                 texBinding.uvScale.y = 100.0f / std::max(coverageV, 1.0f);
-                ctx.project->setModified(true);
             }
 
             ImGui::Spacing();
@@ -293,15 +281,11 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             // Scale (direct control)
             ImGui::Text("Scale (Zoom):");
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Scale X", &texBinding.uvScale.x,
-                                 0.01f, 0.1f, 10.0f, "%.3f")) {
-                ctx.project->setModified(true);
-            }
+            ImGui::DragFloat("Scale X", &texBinding.uvScale.x,
+                             0.01f, 0.1f, 10.0f, "%.3f");
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Scale Y", &texBinding.uvScale.y,
-                                 0.01f, 0.1f, 10.0f, "%.3f")) {
-                ctx.project->setModified(true);
-            }
+            ImGui::DragFloat("Scale Y", &texBinding.uvScale.y,
+                             0.01f, 0.1f, 10.0f, "%.3f");
 
             ImGui::Spacing();
 
@@ -312,28 +296,23 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             if (ImGui::DragFloat("Rotation##uv", &rotationDegrees,
                                  0.5f, -180.0f, 180.0f, "%.1f deg")) {
                 texBinding.uvRotation = rotationDegrees * 3.14159265f / 180.0f;
-                ctx.project->setModified(true);
             }
             // Quick rotation buttons
             ImGui::SameLine();
             if (ImGui::Button("0##rot")) {
                 texBinding.uvRotation = 0.0f;
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("90##rot")) {
                 texBinding.uvRotation = 90.0f * 3.14159265f / 180.0f;
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("180##rot")) {
                 texBinding.uvRotation = 180.0f * 3.14159265f / 180.0f;
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("270##rot")) {
                 texBinding.uvRotation = 270.0f * 3.14159265f / 180.0f;
-                ctx.project->setModified(true);
             }
 
             // Crop (ADR-040) — sample a sub-rectangle of the source, stretched to
@@ -364,12 +343,10 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
             if (cornersChanged) {
                 geometry.setCorners(corners);
-                ctx.project->setModified(true);
             }
 
             if (ImGui::Button("Reset Corners")) {
                 geometry.resetCorners();
-                ctx.project->setModified(true);
             }
 
             // Curved (bezier) edges — drag the amber handles on the canvas to bow the
@@ -378,7 +355,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 bool bez = geometry.isBezierEnabled();
                 if (ImGui::Checkbox("Curved edges (bezier)", &bez)) {
                     geometry.setBezierEnabled(bez);
-                    ctx.project->setModified(true);
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Drag the amber edge handles on the canvas to curve the edges");
@@ -387,7 +363,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                     ImGui::SameLine();
                     if (ImGui::Button("Reset Curves")) {
                         geometry.resetBezier();
-                        ctx.project->setModified(true);
                     }
                 }
             }
@@ -400,7 +375,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 geometry.setUniformGrid(meshRes);
                 pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Even Grid",
                                before, captureGrid(geometry));
-                ctx.project->setModified(true);
             }
 
             // Non-uniform grid divisions (ADR-038 Tier 1): add/remove division
@@ -415,7 +389,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 geometry.insertUDivision(gridInsertPos_);
                 pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Add Column",
                                before, captureGrid(geometry));
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("Add Row")) {
@@ -423,7 +396,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 geometry.insertVDivision(gridInsertPos_);
                 pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Add Row",
                                before, captureGrid(geometry));
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("Del Column") && geometry.getColumns() > MIN_MESH_RESOLUTION) {
@@ -431,7 +403,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 geometry.removeUDivision(geometry.getColumns() - 1);
                 pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Delete Column",
                                before, captureGrid(geometry));
-                ctx.project->setModified(true);
             }
             ImGui::SameLine();
             if (ImGui::Button("Del Row") && geometry.getRows() > MIN_MESH_RESOLUTION) {
@@ -439,7 +410,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 geometry.removeVDivision(geometry.getRows() - 1);
                 pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Delete Row",
                                before, captureGrid(geometry));
-                ctx.project->setModified(true);
             }
 
             // Click-on-edge insert tool (ADR-038 Tier 1 batch 3b): arm, then click
@@ -479,7 +449,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 es.cornerDraggedVertex = -1;
                 es.cornerHoveredVertex = -1;
                 es.cornerSelectedVertex = -1;
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip(
@@ -494,7 +463,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                     ImGui::SameLine();
                     if (ImGui::Button("Reset Mesh")) {
                         geometry.resetMesh();
-                        ctx.project->setModified(true);
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip(
@@ -517,7 +485,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             float opacity = selectedQuad->getOpacity();
             if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f)) {
                 selectedQuad->setOpacity(opacity);
-                ctx.project->setModified(true);
             }
 
             ImGui::Separator();
@@ -529,7 +496,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             // Z-order buttons with proper labels
             if (ImGui::Button("Bring to Front")) {
                 quadManager.moveQuadToBottom(selectedQuad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Ctrl+Shift+]");
@@ -537,7 +503,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::SameLine();
             if (ImGui::Button("Send to Back")) {
                 quadManager.moveQuadToTop(selectedQuad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Ctrl+Shift+[");
@@ -545,7 +510,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
             if (ImGui::Button("Bring Forward")) {
                 quadManager.moveQuadDown(selectedQuad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Ctrl+]");
@@ -553,7 +517,6 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::SameLine();
             if (ImGui::Button("Send Backward")) {
                 quadManager.moveQuadUp(selectedQuad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Ctrl+[");
@@ -565,21 +528,12 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Color Correction")) {
             ColorCorrection& cc = selectedQuad->getColorCorrection();
-            if (ImGui::SliderFloat("Brightness", &cc.brightness, -1.0f, 1.0f)) {
-                ctx.project->setModified(true);
-            }
-            if (ImGui::SliderFloat("Contrast", &cc.contrast, 0.0f, 2.0f)) {
-                ctx.project->setModified(true);
-            }
-            if (ImGui::SliderFloat("Gamma", &cc.gamma, 0.1f, 4.0f)) {
-                ctx.project->setModified(true);
-            }
-            if (ImGui::SliderFloat3("RGB Gain", &cc.rgbGain.x, 0.0f, 2.0f)) {
-                ctx.project->setModified(true);
-            }
+            ImGui::SliderFloat("Brightness", &cc.brightness, -1.0f, 1.0f);
+            ImGui::SliderFloat("Contrast", &cc.contrast, 0.0f, 2.0f);
+            ImGui::SliderFloat("Gamma", &cc.gamma, 0.1f, 4.0f);
+            ImGui::SliderFloat3("RGB Gain", &cc.rgbGain.x, 0.0f, 2.0f);
             if (ImGui::Button("Reset Color")) {
                 cc.reset();
-                ctx.project->setModified(true);
             }
         }
 
@@ -588,18 +542,13 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Soft Edge Blending")) {
             SoftEdge& se = selectedQuad->getSoftEdge();
-            bool changed = false;
-            changed |= ImGui::SliderFloat("Left", &se.left, 0.0f, 0.5f);
-            changed |= ImGui::SliderFloat("Right", &se.right, 0.0f, 0.5f);
-            changed |= ImGui::SliderFloat("Top", &se.top, 0.0f, 0.5f);
-            changed |= ImGui::SliderFloat("Bottom", &se.bottom, 0.0f, 0.5f);
-            changed |= ImGui::SliderFloat("Edge Gamma", &se.gamma, 0.1f, 4.0f);
-            if (changed) {
-                ctx.project->setModified(true);
-            }
+            ImGui::SliderFloat("Left", &se.left, 0.0f, 0.5f);
+            ImGui::SliderFloat("Right", &se.right, 0.0f, 0.5f);
+            ImGui::SliderFloat("Top", &se.top, 0.0f, 0.5f);
+            ImGui::SliderFloat("Bottom", &se.bottom, 0.0f, 0.5f);
+            ImGui::SliderFloat("Edge Gamma", &se.gamma, 0.1f, 4.0f);
             if (ImGui::Button("Reset Edges")) {
                 se.reset();
-                ctx.project->setModified(true);
             }
         }
     } else {
@@ -633,7 +582,6 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texB
         {"Crop Top##crop", CropEdge::Top},     {"Crop Bottom##crop", CropEdge::Bottom},
     };
 
-    bool changed = false;
     if (inPixels) {
         ImGui::TextDisabled("Crop in from each edge (source pixels, %d x %d)",
                             srcWidth, srcHeight);
@@ -644,7 +592,6 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texB
             if (ImGui::DragInt(c.label, &px, 1.0f, 0, maxPx, "%d px",
                                ImGuiSliderFlags_AlwaysClamp)) {
                 crop = withCropInsetPixels(crop, c.edge, px, srcWidth, srcHeight);
-                changed = true;
             }
         }
         const int left = cropInsetPixels(crop, CropEdge::Left, srcWidth, srcHeight);
@@ -660,17 +607,12 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texB
             ImGui::SetNextItemWidth(200.0f);
             if (ImGui::DragFloat(c.label, &pct, 0.5f, 0.0f, 100.0f, "%.1f%%")) {
                 crop = withCropInset(crop, c.edge, pct / 100.0, 0.01);
-                changed = true;
             }
         }
-    }
-    if (changed) {
-        ctx.project->setModified(true);
     }
 
     auto setCrop = [&](float x, float y, float w, float h) {
         crop = NormalizedRect{x, y, w, h};
-        ctx.project->setModified(true);
     };
     ImGui::TextDisabled("Halves (two-face split):");
     if (ImGui::Button("Left 1/2"))   setCrop(0.0f, 0.0f, 0.5f, 1.0f); ImGui::SameLine();
@@ -688,7 +630,6 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texB
     column("4##cq", 0.75f); ImGui::SameLine();
     if (ImGui::Button("Full##cq")) {
         texBinding.resetCrop();
-        ctx.project->setModified(true);
     }
 }
 
@@ -706,27 +647,26 @@ void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) 
                          ImGuiInputTextFlags_EnterReturnsTrue)) {
         ctx.es.commandHistory.execute(
             std::make_unique<RenameQuadCommand>(ctx.es.quadRef(quad), quadName_));
-        ctx.project->setModified(true);
     }
     ImGui::Separator();
 
     // Flip
     if (ImGui::Button(texBinding.flipH ? "Flip U [ON]" : "Flip U")) {
-        texBinding.flipH = !texBinding.flipH; ctx.project->setModified(true);
+        texBinding.flipH = !texBinding.flipH;
     }
     ImGui::SameLine();
     if (ImGui::Button(texBinding.flipV ? "Flip V [ON]" : "Flip V")) {
-        texBinding.flipV = !texBinding.flipV; ctx.project->setModified(true);
+        texBinding.flipV = !texBinding.flipV;
     }
 
     // Rotation
     float deg = texBinding.uvRotation * 180.0f / kPi;
     ImGui::SetNextItemWidth(200.0f);
     if (ImGui::DragFloat("Rotation", &deg, 1.0f, -360.0f, 360.0f, "%.0f deg")) {
-        texBinding.uvRotation = deg * kPi / 180.0f; ctx.project->setModified(true);
+        texBinding.uvRotation = deg * kPi / 180.0f;
     }
     auto rotBtn = [&](const char* label, float d) {
-        if (ImGui::Button(label)) { texBinding.uvRotation = d * kPi / 180.0f; ctx.project->setModified(true); }
+        if (ImGui::Button(label)) { texBinding.uvRotation = d * kPi / 180.0f; }
     };
     rotBtn("0##r",   0.0f);   ImGui::SameLine();
     rotBtn("90##r",  90.0f);  ImGui::SameLine();
@@ -737,13 +677,11 @@ void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) 
     bool bez = quad.getGeometry().isBezierEnabled();
     if (ImGui::Checkbox("Curved edges (bezier)", &bez)) {
         quad.getGeometry().setBezierEnabled(bez);
-        ctx.project->setModified(true);
     }
     if (bez) {
         ImGui::SameLine();
         if (ImGui::Button("Reset Curves")) {
             quad.getGeometry().resetBezier();
-            ctx.project->setModified(true);
         }
     }
 
@@ -760,7 +698,6 @@ void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) 
         texBinding.resetCrop();
         quad.getGeometry().resetCorners();
         quad.getGeometry().resetBezier();
-        ctx.project->setModified(true);
     }
     ImGui::SetItemTooltip("Reset warp, flip, rotation and crop (keeps the assigned media)");
 }
@@ -794,7 +731,6 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
         if (ImGui::BeginCombo("##OutputScene", shown ? shown->getName().c_str() : "(no scene)")) {
             if (ImGui::Selectable("(no scene)", shown == nullptr)) {
                 OutputManager::showScene(*selectedOutput, nullptr, es.scenes);
-                if (ctx.project) ctx.project->setModified(true);
             }
             for (const auto& scene : es.scenes) {
                 if (!scene) continue;
@@ -802,7 +738,6 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
                 const bool isShown = scene.get() == shown;
                 if (ImGui::Selectable(scene->getName().c_str(), isShown) && !isShown) {
                     ctx.outputManager->routeScene(*selectedOutput, scene.get(), es.scenes);
-                    if (ctx.project) ctx.project->setModified(true);
                 }
                 if (isShown) ImGui::SetItemDefaultFocus();
                 ImGui::PopID();
@@ -1151,7 +1086,6 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
                          ImGuiInputTextFlags_EnterReturnsTrue) &&
         object->getName() != objectName_) {
         es.commandHistory.execute(makeRenameObjectCommand(es.objectRef(*object), objectName_));
-        ctx.project->setModified(true);
     }
 
     if (isMeshLoading(es, *object)) {
@@ -1168,12 +1102,10 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
     bool visible = object->isVisible();
     if (ImGui::Checkbox("Visible", &visible)) {
         es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(*object), visible));
-        ctx.project->setModified(true);
     }
     float opacity = object->getOpacity();
     if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
         es.commandHistory.execute(makeSetObjectOpacityCommand(es.objectRef(*object), opacity));
-        ctx.project->setModified(true);
     }
 
     // Transform, shown as position / rotation / uniform scale. The fields are re-read
@@ -1204,7 +1136,6 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
         transformShown_ = composeObjectTransform(objectPosition_, objectRotationDeg_, objectScale_);
         es.commandHistory.execute(
             makeSetObjectTransformCommand(es.objectRef(*object), transformShown_, !reset));
-        ctx.project->setModified(true);
     }
 
     // Media: the same bin items quads can be given (audio cannot texture anything).
@@ -1231,14 +1162,13 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
             TextureBinding unbound = object->getTexture();
             unbound.mediaId = UUID();
             es.commandHistory.execute(makeSetObjectTextureCommand(es.objectRef(*object), unbound));
-            ctx.project->setModified(true);
         }
         if (ctx.mediaLibrary) {
             for (const auto& item : ctx.mediaLibrary->getItems()) {
                 if (!item || item->getType() == MediaType::AUDIO) continue;
                 ImGui::PushID(item->getId().toString().c_str());
                 if (ImGui::Selectable(item->getName().c_str(), isBound(*item))) {
-                    assignMediaToObject(es, ctx.sourceManager, ctx.project, es.objectRef(*object), *item);
+                    assignMediaToObject(es, ctx.sourceManager, es.objectRef(*object), *item);
                 }
                 ImGui::PopID();
             }

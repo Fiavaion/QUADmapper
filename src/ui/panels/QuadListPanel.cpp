@@ -44,7 +44,6 @@ void QuadListPanel::render(EditorContext& ctx) {
     if (ImGui::Button("+ Add Quad")) {
         Quad* newQuad = quadManager.createQuad();
         quadManager.selectQuad(newQuad->getId());
-        ctx.project->setModified(true);
         // Switch to Quad properties and clear other panel selections (deliberate
         // cross-panel coordination via EditorState — see ADR-0034 / TD-02 contract).
         showQuadProperties(es);
@@ -55,7 +54,6 @@ void QuadListPanel::render(EditorContext& ctx) {
     // Delete button
     if (ImGui::Button("Delete") && quadManager.hasSelection()) {
         es.deleteSelectedQuads();
-        ctx.project->setModified(true);
     }
 
     ImGui::SameLine();
@@ -74,7 +72,6 @@ void QuadListPanel::render(EditorContext& ctx) {
             if (pathIt != quadTexturePaths.end()) {
                 quadTexturePaths[dupId] = pathIt->second;
             }
-            ctx.project->setModified(true);
         }
     }
 
@@ -82,10 +79,7 @@ void QuadListPanel::render(EditorContext& ctx) {
     if (quadManager.getSelectionCount() >= 2) {
         ImGui::SameLine();
         if (ImGui::Button("Group")) {
-            QuadGroup* newGroup = scene.createGroupFromSelection();
-            if (newGroup) {
-                ctx.project->setModified(true);
-            }
+            scene.createGroupFromSelection();
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Create group from selected quads (Ctrl+G)");
@@ -120,7 +114,6 @@ void QuadListPanel::render(EditorContext& ctx) {
         ImGui::BeginDisabled(isFirst);
         if (ImGui::SmallButton("^")) {
             quadManager.moveQuadDown(quad->getId());
-            ctx.project->setModified(true);
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -131,7 +124,6 @@ void QuadListPanel::render(EditorContext& ctx) {
         ImGui::BeginDisabled(isLast);
         if (ImGui::SmallButton("v")) {
             quadManager.moveQuadUp(quad->getId());
-            ctx.project->setModified(true);
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -145,7 +137,6 @@ void QuadListPanel::render(EditorContext& ctx) {
             Quad* mutableQuad = quadManager.getQuad(quad->getId());
             if (mutableQuad) {
                 mutableQuad->setVisible(visible);
-                ctx.project->setModified(true);
             }
         }
         if (ImGui::IsItemHovered()) {
@@ -159,7 +150,6 @@ void QuadListPanel::render(EditorContext& ctx) {
             Quad* mutableQuad = quadManager.getQuad(quad->getId());
             if (mutableQuad) {
                 mutableQuad->setLocked(locked);
-                ctx.project->setModified(true);
             }
         }
         if (ImGui::IsItemHovered()) {
@@ -176,7 +166,6 @@ void QuadListPanel::render(EditorContext& ctx) {
                                  ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
                 es.commandHistory.execute(
                     std::make_unique<RenameQuadCommand>(es.quadRef(*quad), quadNameBuf_));
-                ctx.project->setModified(true);
                 quadRenaming_ = false;
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape)) quadRenaming_ = false;
@@ -215,7 +204,7 @@ void QuadListPanel::render(EditorContext& ctx) {
                 Quad* mutableQuad = quadManager.getQuad(quad->getId());
                 MediaItem* item = ctx.mediaLibrary ? ctx.mediaLibrary->getItem(mid) : nullptr;
                 if (mutableQuad && item) {
-                    assignMediaToQuad(es, ctx.sourceManager, ctx.project, *mutableQuad, *item);
+                    assignMediaToQuad(es, ctx.sourceManager, *mutableQuad, *item);
                 }
             }
             if (const ImGuiPayload* qp = ImGui::AcceptDragDropPayload("QUAD_DND")) {
@@ -231,7 +220,6 @@ void QuadListPanel::render(EditorContext& ctx) {
                     guard = static_cast<int>(quadManager.getQuadCount()) + 1;
                     while (dragged->getZOrder() > target && guard-- > 0)
                         quadManager.moveQuadUp(draggedId);
-                    ctx.project->setModified(true);
                 }
             }
             ImGui::EndDragDropTarget();
@@ -261,19 +249,15 @@ void QuadListPanel::render(EditorContext& ctx) {
             ImGui::Separator();
             if (ImGui::MenuItem("Bring to Front", "Ctrl+Shift+]")) {
                 quadManager.moveQuadToBottom(quad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::MenuItem("Bring Forward", "Ctrl+]")) {
                 quadManager.moveQuadDown(quad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::MenuItem("Send Backward", "Ctrl+[")) {
                 quadManager.moveQuadUp(quad->getId());
-                ctx.project->setModified(true);
             }
             if (ImGui::MenuItem("Send to Back", "Ctrl+Shift+[")) {
                 quadManager.moveQuadToTop(quad->getId());
-                ctx.project->setModified(true);
             }
 
             // Group submenu
@@ -289,7 +273,6 @@ void QuadListPanel::render(EditorContext& ctx) {
                             } else {
                                 scene.addQuadToGroup(grp->getId(), quad->getId());
                             }
-                            ctx.project->setModified(true);
                         }
                     }
                     ImGui::EndMenu();
@@ -318,7 +301,6 @@ void QuadListPanel::render(EditorContext& ctx) {
         bool groupVisible = group->isVisible();
         if (ImGui::Checkbox("##grpVisible", &groupVisible)) {
             scene.applyGroupVisibility(group->getId(), groupVisible);
-            ctx.project->setModified(true);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Toggle group visibility");
@@ -329,7 +311,6 @@ void QuadListPanel::render(EditorContext& ctx) {
         bool groupLocked = group->isLocked();
         if (ImGui::Checkbox("##grpLocked", &groupLocked)) {
             scene.applyGroupLock(group->getId(), groupLocked);
-            ctx.project->setModified(true);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Toggle group lock");
@@ -355,7 +336,6 @@ void QuadListPanel::render(EditorContext& ctx) {
 
             if (ImGui::InputText("Rename", groupNameBuf_, sizeof(groupNameBuf_), ImGuiInputTextFlags_EnterReturnsTrue)) {
                 group->setName(groupNameBuf_);
-                ctx.project->setModified(true);
                 ImGui::CloseCurrentPopup();
             }
 
@@ -363,7 +343,6 @@ void QuadListPanel::render(EditorContext& ctx) {
 
             if (ImGui::MenuItem("Delete Group")) {
                 scene.deleteGroup(group->getId());
-                ctx.project->setModified(true);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
@@ -378,7 +357,6 @@ void QuadListPanel::render(EditorContext& ctx) {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("QUAD_DND")) {
                 UUID droppedQuadId = *(const UUID*)payload->Data;
                 scene.addQuadToGroup(group->getId(), droppedQuadId);
-                ctx.project->setModified(true);
             }
             ImGui::EndDragDropTarget();
         }
@@ -436,7 +414,6 @@ void QuadListPanel::render(EditorContext& ctx) {
                 for (auto& grp : scene.getGroups()) {
                     grp->removeMember(droppedQuadId);
                 }
-                ctx.project->setModified(true);
             }
             ImGui::EndDragDropTarget();
         }
@@ -467,7 +444,6 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
         bool visible = object.isVisible();
         if (ImGui::Checkbox("##objVisible", &visible)) {
             es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(object), visible));
-            ctx.project->setModified(true);
         }
         ImGui::SetItemTooltip("Visible");
         ImGui::SameLine();
@@ -488,7 +464,6 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
                                  ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
                 if (object.getName() != objectNameBuf_) {
                     es.commandHistory.execute(makeRenameObjectCommand(es.objectRef(object), objectNameBuf_));
-                    ctx.project->setModified(true);
                 }
                 objectRenaming_ = false;
             }
@@ -527,7 +502,6 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
             std::make_unique<DeleteObjectCommand>(ObjectRef{&es.quadResolver, scene.getId(), deleteId}));
         if (es.selectedObjectId == deleteId) es.selectedObjectId = UUID();
         if (objectRenameId_ == deleteId) objectRenaming_ = false;
-        ctx.project->setModified(true);
     }
 }
 

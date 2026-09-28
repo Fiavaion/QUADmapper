@@ -1496,7 +1496,6 @@ Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path
         loadProjectModel(json, project, projectBaseDir(path));
 
         project.setFilePath(utf8FromPath(path));
-        project.setModified(false);
 
         Logger::info("Loaded project '{}' with {} scene(s), {} quads and {} groups",
                      project.getName(), project.getScenes().size(),
@@ -1536,8 +1535,6 @@ Result<void, std::string> ProjectSerializer::deserialize(const std::string& json
         project.getMidiMappings().clear();
 
         loadProjectModel(json, project, fs::path());
-
-        project.setModified(false);
 
         return Result<void, std::string>::success();
     } catch (const std::exception& e) {

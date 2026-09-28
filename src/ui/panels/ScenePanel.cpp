@@ -39,14 +39,13 @@ void ScenePanel::renderActionButtons(EditorContext& ctx) {
                 s->getQuadManager().selectQuad(q->getId());
             }
         }
-        if (ctx.project) ctx.project->setModified(true);
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create a new scene and make it active");
 
     ImGui::SameLine();
 
     if (ImGui::Button("Duplicate")) {
-        if (es.duplicateScene(es.activeSceneId) && ctx.project) ctx.project->setModified(true);
+        es.duplicateScene(es.activeSceneId);
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Copy the active scene (on no output) and make the copy active");
@@ -56,7 +55,7 @@ void ScenePanel::renderActionButtons(EditorContext& ctx) {
 
     ImGui::BeginDisabled(!es.canDeleteScene());
     if (ImGui::Button("Delete")) {
-        if (es.deleteScene(es.activeSceneId, ctx.outputManager) && ctx.project) ctx.project->setModified(true);
+        es.deleteScene(es.activeSceneId, ctx.outputManager);
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -83,9 +82,7 @@ void ScenePanel::renderCanvasControls(EditorContext& ctx) {
         canvasSceneId_ = scene.getId();
     }
     auto apply = [&](IVec2 newSize, bool locked) {
-        if (setSceneCanvas(es, scene.getId(), newSize, locked) && ctx.project) {
-            ctx.project->setModified(true);
-        }
+        setSceneCanvas(es, scene.getId(), newSize, locked);
     };
 
     ImGui::AlignTextToFramePadding();
@@ -166,7 +163,6 @@ void ScenePanel::renderSceneList(EditorContext& ctx) {
             if (ImGui::InputText("##rename", renameBuffer_, sizeof(renameBuffer_),
                                  ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
                 scene->setName(renameBuffer_);
-                if (ctx.project) ctx.project->setModified(true);
                 renamingId_ = UUID::null();
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
@@ -232,7 +228,6 @@ void ScenePanel::renderSceneList(EditorContext& ctx) {
                     if (ImGui::Selectable(output->getName().c_str(), shows,
                                           ImGuiSelectableFlags_DontClosePopups)) {
                         om->routeScene(*output, shows ? nullptr : scene, es.scenes);
-                        if (ctx.project) ctx.project->setModified(true);
                     }
                 }
             }
@@ -246,15 +241,13 @@ void ScenePanel::renderSceneList(EditorContext& ctx) {
     ImGui::EndChild();
 
     if (!pendingDelete.isNull()) {
-        if (es.deleteScene(pendingDelete, ctx.outputManager) && ctx.project) ctx.project->setModified(true);
+        es.deleteScene(pendingDelete, ctx.outputManager);
     }
     if (!pendingDuplicate.isNull()) {
-        if (es.duplicateScene(pendingDuplicate) && ctx.project) ctx.project->setModified(true);
+        es.duplicateScene(pendingDuplicate);
     }
     if (moveFrom >= 0 && moveTo >= 0) {
-        if (es.moveScene(static_cast<size_t>(moveFrom), static_cast<size_t>(moveTo)) && ctx.project) {
-            ctx.project->setModified(true);
-        }
+        es.moveScene(static_cast<size_t>(moveFrom), static_cast<size_t>(moveTo));
     }
 
     ImGui::TextDisabled("Click to make active. Double-click to rename. Drag to reorder.");

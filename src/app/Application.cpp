@@ -900,8 +900,6 @@ bool Application::initializeComponents() {
         m_editorState->statusTimer = 4.0f;
     });
     m_outputManager->setSceneKeyCallback([this](int sceneNumber) { queueSceneTake(sceneNumber); });
-    // Outputs, their routing and slices are saved with the show.
-    m_outputManager->setOutputRemovedCallback([this](const UUID&) { m_project->setModified(true); });
     Logger::info("Output manager initialized with {} monitors", m_outputManager->getMonitorCount());
 
     // ADR-039 P2: create the default output and route the default scene to it. The
@@ -1121,7 +1119,6 @@ void Application::render() {
             [this](const std::filesystem::path& original, const std::filesystem::path& converted) {
                 if (!m_sourceManager) return std::string("Media cannot be loaded right now.");
                 std::string error = replaceClipInShow(*m_editorState, *m_sourceManager, original, converted);
-                if (error.empty() && m_project) m_project->setModified(true);
                 return error;
             });
         mediaBinPanel.setVisible(true);  // Make visible by default
@@ -1355,7 +1352,7 @@ void Application::render() {
                                     (cy - es.lastViewOffset.y) / es.lastViewScale.y);
                 if (Quad* target = es.quadManager().quadAtPoint(canvasPt)) {
                     UUID sid = assignMediaToQuad(es, m_sourceManager.get(),
-                                                 m_project.get(), *target, *item);
+                                                 *target, *item);
                     if (!sid.isNull()) {
                         es.quadManager().selectQuad(target->getId());
                         snprintf(es.statusMessage, sizeof(es.statusMessage),
@@ -1416,16 +1413,14 @@ void Application::render() {
                                         std::to_string(es.calibration.selected + 1));
                 es.calibration.removePoint(calibrated->getCalibrationPoints(),
                                            es.calibration.selected);
-                m_project->setModified(true);
             }
         } else if (!quadKeys) {
             // Slice warp editing: the quads are hidden, Delete leaves them alone.
         } else if (quadManager.hasSelection()) {
             // Selecting an object deselects the quads, so a quad selection is newer.
             es.deleteSelectedQuads();
-            m_project->setModified(true);
-        } else if (es.deleteSelectedObject()) {
-            m_project->setModified(true);
+        } else {
+            es.deleteSelectedObject();
         }
     }
 
@@ -1485,7 +1480,6 @@ void Application::render() {
         if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) {
             if (quadManager.hasSelection()) {
                 quadManager.moveSelectedUp();
-                m_project->setModified(true);
             }
         }
 
@@ -1493,7 +1487,6 @@ void Application::render() {
         if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false)) {
             if (quadManager.hasSelection()) {
                 quadManager.moveSelectedDown();
-                m_project->setModified(true);
             }
         }
 
@@ -1501,7 +1494,6 @@ void Application::render() {
         if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) {
             if (quadManager.hasSelection()) {
                 quadManager.moveSelectedToTop();
-                m_project->setModified(true);
             }
         }
 
@@ -1509,7 +1501,6 @@ void Application::render() {
         if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false)) {
             if (quadManager.hasSelection()) {
                 quadManager.moveSelectedToBottom();
-                m_project->setModified(true);
             }
         }
 
@@ -1523,7 +1514,6 @@ void Application::render() {
             if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_M, false)) {
                 bool isEdit = (geo.getMeshMode() == MeshMode::MESH_EDIT);
                 geo.setMeshMode(isEdit ? MeshMode::CORNERS_ONLY : MeshMode::MESH_EDIT);
-                m_project->setModified(true);
             }
 
             // Alt+= : Increase mesh resolution
@@ -1531,7 +1521,6 @@ void Application::render() {
                 int res = geo.getMeshResolution();
                 if (res < 64) {
                     geo.setMeshResolution(res + 1);
-                    m_project->setModified(true);
                 }
             }
 
@@ -1540,7 +1529,6 @@ void Application::render() {
                 int res = geo.getMeshResolution();
                 if (res > 2) {
                     geo.setMeshResolution(res - 1);
-                    m_project->setModified(true);
                 }
             }
 
@@ -1548,7 +1536,6 @@ void Application::render() {
             if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
                 if (geo.getMeshMode() == MeshMode::MESH_EDIT && geo.hasMeshModifications()) {
                     geo.resetMesh();
-                    m_project->setModified(true);
                 }
             }
         }
@@ -1841,7 +1828,7 @@ AsyncFileDialog::Request objectFileRequest() {
 // File > Import 3D Object (ADR-052): the object goes into the active scene at once,
 // selected, and shows as loading while its file parses on a worker (TD-16a);
 // adoptObjectMeshes completes it.
-void importObjectFile(EditorState& es, Project* project, const std::string& path) {
+void importObjectFile(EditorState& es, const std::string& path) {
     const std::filesystem::path file = pathFromUtf8(path);
     MeshObject* object = beginObjectImport(es, utf8FromPath(file.stem()), absolutePathString(file));
     es.selectedObjectId = object->getId();
@@ -1849,7 +1836,6 @@ void importObjectFile(EditorState& es, Project* project, const std::string& path
     es.currentSelectionType = EditorState::SelectionType::Object;
     es.mediaBinPanel.clearSelection();
     es.outputPanel.clearSelection();
-    if (project) project->setModified(true);
     postStatus(es, "Importing 3D object: " + object->getName() + "...");
 }
 
@@ -1858,7 +1844,7 @@ void importObjectFile(EditorState& es, Project* project, const std::string& path
 // the object, so it is in view as soon as it has loaded; a failed one is removed and
 // reported as the synchronous import did. A show's mesh that fails is reported and
 // listed in Missing Media, as a load that found it missing does.
-void adoptObjectMeshes(EditorState& es, OutputManager* om, Project* project) {
+void adoptObjectMeshes(EditorState& es, OutputManager* om) {
     for (const MeshImportOutcome& done : adoptLoadedMeshes(es)) {
         if (!done.import) {
             postStatus(es, (done.objectId.isNull() ? "Could not use " + done.name
@@ -1889,7 +1875,6 @@ void adoptObjectMeshes(EditorState& es, OutputManager* om, Project* project) {
             output->getProjector() = ProjectorCamera::framing(
                 boxMin, boxMax, ProjectorIntrinsics::fromThrowRatio(1.5f, res.x, res.y));
         }
-        if (project) project->setModified(true);
         postStatus(es, "Imported 3D object: " + object->getName() + " (" +
                        std::to_string(object->getMesh().triangleCount()) + " triangles)");
     }
@@ -1917,7 +1902,6 @@ void Application::takeSceneByNumber(int number, std::optional<float> fadeSeconds
 
     const Scene& scene = es.activeScene();
     if (take.kind == SceneTake::Kind::Route) {
-        m_project->setModified(true);
         const OutputWindow* output = m_outputManager->getOutput(take.outputIds.front());
         const std::string where = take.outputIds.size() > 1
                                       ? std::to_string(take.outputIds.size()) + " outputs"
@@ -2065,7 +2049,7 @@ void Application::runFrameBoundaryTasks() {
         offerRecovery("");
     }
     processPendingFileAction();
-    adoptObjectMeshes(*m_editorState, m_outputManager.get(), m_project.get());
+    adoptObjectMeshes(*m_editorState, m_outputManager.get());
     processExternalControl();
     pollMissingMediaSearch();
     if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager);
@@ -2078,7 +2062,7 @@ void Application::runFrameBoundaryTasks() {
 // Every render and calibration path then reads a camera that is already right.
 void Application::fitProjectorsToOutputs() {
     if (!m_outputManager) return;
-    if (m_outputManager->followOutputSizes(m_editorState->scenes)) m_project->setModified(true);
+    m_outputManager->followOutputSizes(m_editorState->scenes);
     for (const auto& output : m_outputManager->getOutputs()) {
         if (!output) continue;
         const IVec2 size = output->getEffectiveResolution();
@@ -2182,7 +2166,7 @@ void Application::processPendingFileAction() {
             if (m_projectDialog->open(objectFileRequest())) {
                 m_onProjectFileChosen = [this](const std::string& path) {
                     if (path.empty()) return;
-                    importObjectFile(*m_editorState, m_project.get(), path);
+                    importObjectFile(*m_editorState, path);
                 };
             }
             break;
@@ -2290,7 +2274,6 @@ bool Application::writeProjectFile(const std::string& path) {
     }
 
     m_project->setFilePath(path);
-    m_project->setModified(false);
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
     markProjectClean();
     // The real file now holds everything the autosave did.
@@ -2385,7 +2368,7 @@ std::string Application::editorSnapshot() {
 
 // Dirty = the editor no longer serializes to what was last saved/loaded. Comparing
 // snapshots (only on New/Open/Exit and the autosave tick) catches every edit path,
-// including ones that never call Project::setModified().
+// with no need for callers to flag individual edits.
 bool Application::isProjectDirty() {
     return editorSnapshot() != m_savedSnapshot;
 }
@@ -2628,7 +2611,7 @@ void Application::requestLocateMissingMedia(const MissingMediaItem& item) {
         if (path.empty()) return;
         EditorState& state = *m_editorState;
         const int resolved =
-            locateMissingMedia(state, m_sourceManager.get(), m_project.get(), item, pathFromUtf8(path));
+            locateMissingMedia(state, m_sourceManager.get(), item, pathFromUtf8(path));
         if (resolved > 0) {
             postStatus(state, "Relocated " + std::to_string(resolved) + " missing file" +
                                   (resolved == 1 ? "" : "s"));
@@ -2663,7 +2646,7 @@ void Application::pollMissingMediaSearch() {
     const relocate::FolderIndex index = m_mediaSearch.get();
     EditorState& es = *m_editorState;
     const size_t missing = collectMissingMedia(es).size();
-    const int resolved = relocateMissingFromIndex(es, m_sourceManager.get(), m_project.get(), index);
+    const int resolved = relocateMissingFromIndex(es, m_sourceManager.get(), index);
     std::string status = "Found " + std::to_string(resolved) + " of " + std::to_string(missing) +
                          " missing file" + (missing == 1 ? "" : "s") + " in " + m_mediaSearchFolder;
     if (index.truncated) status += " (search stopped early: folder too large)";
@@ -2767,7 +2750,6 @@ void Application::aiDetectSurface() {
         Vec2{surface->corners[3][0], surface->corners[3][1]},
     };
     quad->getGeometry().setCorners(corners);
-    m_project->setModified(true);
 
     char msg[256];
     snprintf(msg, sizeof(msg),
@@ -2953,7 +2935,6 @@ void Application::runOneFlash(const std::array<std::array<float, 2>, 4>* audienc
         Vec2{result->corners[3][0], result->corners[3][1]},
     };
     quad->getGeometry().setCorners(corners);
-    m_project->setModified(true);
 
     char msg[256];
     snprintf(msg, sizeof(msg),

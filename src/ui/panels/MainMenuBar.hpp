@@ -42,7 +42,7 @@ public:
 private:
     // Master sound (ADR-050 §2): mute, volume and the output device, beside the master
     // timeline so the show's transport and sound live in one strip.
-    void renderAudioStrip(EditorContext& ctx, AudioEngine& audio);
+    void renderAudioStrip(AudioEngine& audio);
     // Output-device choices; `menu` renders menu items, otherwise combo entries.
     // `listOpen` is that list's was-open-last-frame flag: the devices are enumerated
     // once when it opens, not every frame.

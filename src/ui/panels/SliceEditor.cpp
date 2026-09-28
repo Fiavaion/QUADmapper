@@ -47,10 +47,6 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
     ImGui::TextDisabled("Canvas of '%s': %d x %d px", scene->getName().c_str(), canvas.x, canvas.y);
 
     const UUID outputId = output.getId();
-    auto modified = [&]() {
-        if (ctx.project) ctx.project->setModified(true);
-    };
-
     // ---- List: select, add, remove ------------------------------------------------
     const auto& slices = output.getSlices();
     if (findSliceIndex(slices, es.selectedSliceId) < 0 && !slices.empty()) {
@@ -80,7 +76,6 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
         const UUID addedId = added.id;
         editSlices(es, output, "Add slice", "", [&](std::vector<Slice>& s) { s.push_back(added); });
         es.selectedSliceId = addedId;
-        modified();
         return;  // the list changed under this frame's references
     }
     ImGui::SetItemTooltip("Add a slice of the whole canvas to this output");
@@ -93,7 +88,6 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
                        [&](std::vector<Slice>& s) { s.erase(s.begin() + index); });
             const auto& now = output.getSlices();
             es.selectedSliceId = now[static_cast<size_t>(std::min<int>(index, static_cast<int>(now.size()) - 1))].id;
-            modified();
         }
         ImGui::EndDisabled();
         return;
@@ -112,7 +106,6 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
     auto edit = [&](const char* description, const std::string& key, auto&& apply) {
         editSlices(es, output, description, key.empty() ? std::string() : key + " " + idText,
                    [&](std::vector<Slice>& s) { apply(s[static_cast<size_t>(index)]); });
-        modified();
     };
 
     ImGui::Separator();
@@ -171,7 +164,6 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
             const Vec2 moved(value[0], value[1]);
             editSlices(es, output, "Move slice warp corner", sliceWarpCornerKey(sliceId, c),
                        [&](std::vector<Slice>& s) { s[static_cast<size_t>(index)].warp.setCorner(c, moved); });
-            modified();
         }
         ImGui::PopID();
     }
@@ -231,7 +223,6 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
     if (ImGui::Button("Auto-blend")) {
         const int edges = autoBlendScene(es, *om, scene->getId());
         if (edges > 0) {
-            modified();
             setStatus(es, "Auto-blend: set " + std::to_string(edges) + " blend edge" +
                               (edges == 1 ? "" : "s") + " of '" + scene->getName() + "'");
         } else {
