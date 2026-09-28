@@ -1366,7 +1366,12 @@ private:
 
             if (packet->stream_index == videoStreamIndex_) {
                 // A seek that lands on a non-key packet resumes at the next keyframe.
-                const bool landedOffKey = checkFirstPacket_ && !(packet->flags & AV_PKT_FLAG_KEY);
+                // TD-14b test hook: pretend this packet landed off-key regardless of its
+                // real flags, standing in for a demuxer whose index is that coarse.
+                const bool forcedOffKey = checkFirstPacket_ && testOffKeyRemaining_ > 0;
+                if (forcedOffKey) --testOffKeyRemaining_;
+                const bool landedOffKey =
+                    checkFirstPacket_ && (forcedOffKey || !(packet->flags & AV_PKT_FLAG_KEY));
                 if (checkFirstPacket_ && !landedOffKey) {
                     landedKeyPts_ = packet->pts != AV_NOPTS_VALUE
                         ? static_cast<double>(packet->pts - startPts_) * timeBase_
@@ -1601,6 +1606,10 @@ private:
         atEnd_ = false;
         currentTime_ = timeSeconds;
         currentFrame_ = static_cast<int64_t>(timeSeconds * info_.frameRate);
+        // TD-14b test hooks: simulate this many misses of the real seek-retry mechanism
+        // before it is allowed to see the truth and land normally.
+        testLateRemaining_ = options_.testForceSeekLandsLateFrames;
+        testOffKeyRemaining_ = options_.testForceSeekLandsOffKeyFrames;
         return true;
     }
 
@@ -1654,7 +1663,11 @@ private:
 
         if (checkFirstFrame_) {
             checkFirstFrame_ = false;
-            if (frame_->pts > seekTargetPts_ && retrySeekEarlier()) return false;
+            // TD-14b test hook: pretend this frame landed past the target regardless of
+            // its real pts, standing in for a demuxer whose own seek missed.
+            const bool forcedLate = testLateRemaining_ > 0;
+            if (forcedLate) --testLateRemaining_;
+            if ((forcedLate || frame_->pts > seekTargetPts_) && retrySeekEarlier()) return false;
         }
         if (keepPreroll_) return true;
 
@@ -2185,6 +2198,8 @@ private:
     bool checkFirstFrame_ = false;   // next decoded frame is the first after a demuxer seek
     bool keepPreroll_ = false;       // a keyframe seek: keep the frames before the target
     double landedKeyPts_ = 0.0;      // pts of the keyframe the last demuxer seek landed on
+    int testLateRemaining_ = 0;      // TD-14b: reachedSeekTarget() pretends "landed late"
+    int testOffKeyRemaining_ = 0;    // TD-14b: decodeNextRaw() pretends "landed off-key"
     int lastReadError_ = 0;     // last non-EOF av_read_frame error (decode thread only)
     bool isOpen_ = false;
     bool isLive_ = false;   // live capture device (no seek/duration)

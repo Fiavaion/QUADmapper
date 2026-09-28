@@ -166,6 +166,58 @@ TEST(VideoDecoderPaths, OpensClipInNonAsciiFolder) {
     EXPECT_TRUE(decoded);
 }
 
+// --- TD-14b: each branch of the MPEG-TS seek-retry mechanism (VideoDecoder::
+// retrySeekEarlier / reachedSeekTarget / decodeNextRaw's landedOffKey check), on its
+// own. The tests above exercise the mechanism as a whole on small in-memory clips,
+// where a seek generally lands correctly in one try — they would keep passing even if
+// retrySeekEarlier() were deleted outright. The DecodeOptions test hooks
+// (testForceSeekLandsLateFrames / testForceSeekLandsOffKeyFrames) make an ordinary
+// seek() behave as if the real seek missed a controlled number of times, standing in
+// for MPEG-TS's coarse, timestamp-bisection index (the case the mechanism exists for),
+// so each retry path is forced to run and checked on its own.
+
+TEST_P(VideoDecoderSeek, SeekThatLandsLateOnceStillFindsTheTargetFrame) {
+    decoder_.close();
+    DecodeOptions options;
+    options.testForceSeekLandsLateFrames = 1;  // one forced "landed past the target"
+    ASSERT_TRUE(decoder_.open(path_, options));
+
+    const uint64_t before = decoder_.decoderRestarts();
+    EXPECT_NEAR(firstPtsAfterSeek(15.0 / FPS), 15.0 / FPS, PTS_TOLERANCE);
+    // The forced miss plus the real seek that finds the target: at least two
+    // seekDemuxer() calls, proving retrySeekEarlier() actually ran.
+    EXPECT_GE(decoder_.decoderRestarts() - before, 2u);
+}
+
+TEST_P(VideoDecoderSeek, SeekThatLandsOffKeyOnceStillFindsTheTargetFrame) {
+    decoder_.close();
+    DecodeOptions options;
+    options.testForceSeekLandsOffKeyFrames = 1;  // one forced "landed on a non-key packet"
+    ASSERT_TRUE(decoder_.open(path_, options));
+
+    const uint64_t before = decoder_.decoderRestarts();
+    EXPECT_NEAR(firstPtsAfterSeek(15.0 / FPS), 15.0 / FPS, PTS_TOLERANCE);
+    EXPECT_GE(decoder_.decoderRestarts() - before, 2u);
+}
+
+// Repeated misses that would back off past the stream's own start (here offset
+// START_OFFSET_FRAMES into the container's raw timeline, as MPEG-TS is) must stop
+// retrying rather than loop or seek somewhere nonsensical: retrySeekEarlier() gives up
+// once seekFromPts_ < startPts_, decoding resumes from wherever the last attempt
+// landed, and the call still returns a frame instead of hanging or failing outright.
+TEST_P(VideoDecoderSeek, SeekRetryGivesUpBeforeTheStreamStartInsteadOfLooping) {
+    decoder_.close();
+    DecodeOptions options;
+    options.testForceSeekLandsLateFrames = 1000;  // far more than back-off needs to give up
+    ASSERT_TRUE(decoder_.open(path_, options));
+
+    EXPECT_TRUE(decoder_.seek(1.0 / FPS));
+    VideoFrame f = decoder_.decodeNextFrame();
+    EXPECT_TRUE(f.isValid());
+    // No claim on exactly which frame: the point is that giving up is safe and
+    // terminates, not that it is still frame-exact once every attempt is forced wrong.
+}
+
 INSTANTIATE_TEST_SUITE_P(Containers, VideoDecoderSeek,
                          testing::Values(ClipSpec{".ts", 12},
                                          ClipSpec{".ts", 300},  // whole clip is one GOP

@@ -72,6 +72,15 @@ struct DecodeOptions {
     // seek overshoots — so readFirstFrame()'s "first" check has a concrete wrong keyframe
     // to refuse. 0 disables.
     int testSpliceSeekOvershootFrames = 0;
+    // Test hooks (TD-14b): make an ordinary seek() behave as if the demuxer's own seek
+    // missed the target this many times in a row before landing correctly, standing in
+    // for MPEG-TS's coarse, timestamp-bisection index (VideoDecoder::retrySeekEarlier).
+    // ...LandsLateFrames makes reachedSeekTarget() treat the first decoded frame as past
+    // the target regardless of its real pts; ...LandsOffKeyFrames makes decodeNextRaw()
+    // treat the first read packet as landing on a non-key packet regardless of its real
+    // flags. Each retry consumes one count; 0 disables (the real check runs instead).
+    int testForceSeekLandsLateFrames = 0;
+    int testForceSeekLandsOffKeyFrames = 0;
 };
 
 // Memory the backward GOP decoder may hold for Ping-Pong's reverse leg (ADR-050 §4).
