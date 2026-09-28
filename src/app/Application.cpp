@@ -38,9 +38,7 @@
 #include "../output/OutputWindow.hpp"
 #include "../input/VertexKeyboard.hpp"
 #include "../ui/Theme.hpp"
-#include "../ui/panels/OutputPanel.hpp"
-#include "../ui/panels/MediaBinPanel.hpp"
-#include "../ui/panels/QuadListPanel.hpp"
+#include "../ui/EditorPanels.hpp"
 #include "../ui/dialogs/PreferencesDialog.hpp"
 #include "../audio/AudioEngine.hpp"
 #include "../audio/AudioMixer.hpp"
@@ -318,6 +316,7 @@ bool Application::initializeComponents() {
 
     // Per-session editor/scene state (replaces render()'s function-statics; see ADR-031 TD-02)
     m_editorState = std::make_unique<EditorState>();
+    m_editorPanels = std::make_unique<EditorPanels>(*m_editorState);
 
     // Create media library
     m_mediaLibrary = std::make_unique<MediaLibrary>();
@@ -540,11 +539,12 @@ void Application::render() {
     // now a SourceManager source updated by updateAll() below (ADR-040 P3) — no manual
     // decode/upload here.
 
-    auto& mediaBinPanel = es.mediaBinPanel;
-    auto& mediaBinInitialized = es.mediaBinInitialized;
+    EditorPanels& panels = *m_editorPanels;
+    auto& mediaBinPanel = panels.mediaBinPanel;
+    auto& mediaBinInitialized = panels.mediaBinInitialized;
 
-    auto& outputPanel = es.outputPanel;
-    auto& outputPanelInitialized = es.outputPanelInitialized;
+    auto& outputPanel = panels.outputPanel;
+    auto& outputPanelInitialized = panels.outputPanelInitialized;
 
     auto& showResources = es.showResources;
 
@@ -593,17 +593,17 @@ void Application::render() {
 
     // Initialize Main Menu Bar callbacks (set once; lambdas capture this). File items
     // queue es.pendingFileAction directly (ADR-046), so they need no callbacks.
-    if (!es.mainMenuBarInitialized) {
+    if (!panels.mainMenuBarInitialized) {
         // AI pre-show assist (ADR-035): every item no-ops gracefully without a sidecar.
-        es.mainMenuBar.setAiActiveQuery([this]() { return m_aiAssist->isActive(); });
-        es.mainMenuBar.setOnEnableAi([this]()     { m_aiAssist->enable(); });
-        es.mainMenuBar.setOnDetectSurface([this]() { m_aiAssist->detectSurface(); });
-        es.mainMenuBar.setOnEmitPattern([this]()  { m_aiAssist->emitPattern(*m_outputManager); });
-        es.mainMenuBar.setOnCapturePhoto([this]() { m_aiAssist->capturePhoto(m_outputManager.get()); });
-        es.mainMenuBar.setOnClearPattern([this]() { m_aiAssist->clearPattern(); });
-        es.mainMenuBar.setOnSolveApply([this]()   { m_aiAssist->solveAndApply(m_outputManager.get()); });
-        es.mainMenuBar.setOnAnamorphic([this]()   { m_aiAssist->anamorphic(m_outputManager.get()); });
-        es.mainMenuBarInitialized = true;
+        panels.mainMenuBar.setAiActiveQuery([this]() { return m_aiAssist->isActive(); });
+        panels.mainMenuBar.setOnEnableAi([this]()     { m_aiAssist->enable(); });
+        panels.mainMenuBar.setOnDetectSurface([this]() { m_aiAssist->detectSurface(); });
+        panels.mainMenuBar.setOnEmitPattern([this]()  { m_aiAssist->emitPattern(*m_outputManager); });
+        panels.mainMenuBar.setOnCapturePhoto([this]() { m_aiAssist->capturePhoto(m_outputManager.get()); });
+        panels.mainMenuBar.setOnClearPattern([this]() { m_aiAssist->clearPattern(); });
+        panels.mainMenuBar.setOnSolveApply([this]()   { m_aiAssist->solveAndApply(m_outputManager.get()); });
+        panels.mainMenuBar.setOnAnamorphic([this]()   { m_aiAssist->anamorphic(m_outputManager.get()); });
+        panels.mainMenuBarInitialized = true;
     }
 
     float deltaTime = ImGui::GetIO().DeltaTime;
@@ -634,7 +634,7 @@ void Application::render() {
         EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
-        es.viewportEditor.render(ctx);
+        panels.viewportEditor.render(ctx);
     }
 
     // Create dockspace over the entire viewport
@@ -718,7 +718,7 @@ void Application::render() {
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
         ctx.audio = m_audioEngine.get();
-        es.mainMenuBar.render(ctx);
+        panels.mainMenuBar.render(ctx);
         saveAudioDevicePreference();
     }
     saveUiModePreference();
@@ -991,7 +991,7 @@ void Application::render() {
         EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
-        es.quadListPanel.render(ctx);
+        panels.quadListPanel.render(ctx);
     }
 
     // ============ Properties Panel (Context-Sensitive) ============
@@ -999,7 +999,7 @@ void Application::render() {
         EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
-        es.inspectorPanel.render(ctx);
+        panels.inspectorPanel.render(ctx);
     }
 
     // ============ Calibration Panel (only while calibrating, ADR-052) ============
@@ -1007,8 +1007,8 @@ void Application::render() {
         EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
-        es.calibrationPanel.render(ctx);
-        es.calibrationPanel.drawCanvasOverlay(ctx);
+        panels.calibrationPanel.render(ctx);
+        panels.calibrationPanel.drawCanvasOverlay(ctx);
     }
 
     // ============ Resources Panel (Tabbed: Project, Media, Outputs) ============
@@ -1068,7 +1068,7 @@ void Application::render() {
             EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                               m_sourceManager.get(), m_outputManager.get(),
                               m_renderer.get(), m_window};
-            es.scenePanel.renderContent(ctx);
+            panels.scenePanel.renderContent(ctx);
             ImGui::EndTabItem();
         }
 
@@ -1077,7 +1077,7 @@ void Application::render() {
             EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                               m_sourceManager.get(), m_outputManager.get(),
                               m_renderer.get(), m_window};
-            es.outputPreviewPanel.renderContent(ctx);
+            panels.outputPreviewPanel.renderContent(ctx);
             ImGui::EndTabItem();
         }
 
@@ -1106,7 +1106,7 @@ void Application::render() {
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
         ctx.audio = m_audioEngine.get();
-        es.videoPlayerPanel.render(ctx);
+        panels.videoPlayerPanel.render(ctx);
     }
 
     // ============ Control Panel (OSC / MIDI, ADR-048) ============
@@ -1114,7 +1114,7 @@ void Application::render() {
         EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
                           m_sourceManager.get(), m_outputManager.get(),
                           m_renderer.get(), m_window};
-        if (es.controlPanel.render(ctx, *m_externalControl, m_preferences->getPreferences().control,
+        if (panels.controlPanel.render(ctx, *m_externalControl, m_preferences->getPreferences().control,
                                    glfwGetTime())) {
             saveControlPreferences();
         }
@@ -1135,7 +1135,7 @@ void Application::render() {
     if (m_outputManager && m_outputManager->isBlendTestPattern()) drawBlendTestPatternBanner();
 
     renderMissingMediaDialog();
-    es.mediaBinPanel.renderConversions();  // Convert to HAP progress (QM-082)
+    panels.mediaBinPanel.renderConversions();  // Convert to HAP progress (QM-082)
     // Unsaved-changes / recovery modals (ADR-046); drawn last so they sit on top.
     renderSessionDialogs();
 
@@ -1559,7 +1559,9 @@ void Application::shutdown() {
     m_sourceManager.reset();
     m_thumbnailCache.reset();
     m_aiAssist.reset();  // the One-Flash pattern texture; holds an EditorState&, so goes first
-    // Quad textures, missing-media looks, the calibration view, media-bin thumbnails.
+    // Media-bin thumbnails and the calibration view, then quad textures and the
+    // missing-media looks (the panels refer to the editor state, so go first).
+    m_editorPanels.reset();
     m_editorState.reset();
     m_renderer.reset();
     m_folderWatcher.reset();  // Stop watching before destroying media library

@@ -23,6 +23,7 @@ class ThumbnailCache;
 class SourceManager;
 class AudioEngine;
 struct EditorState;
+struct EditorPanels;
 class PreferencesDialog;
 class ProjectSession;
 class AiAssist;
@@ -169,6 +170,8 @@ private:
 
     // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
     std::unique_ptr<EditorState> m_editorState;
+    // The editor's panels (ADR-051 §1); they refer to m_editorState, so go before it.
+    std::unique_ptr<EditorPanels> m_editorPanels;
     std::vector<int> m_pendingSceneTakes;  // scene numbers pressed since the last frame
     // Scene takes asked for by OSC/MIDI since the last frame (ADR-048). Kept apart from
     // the key presses because they skip the typing/popup guard (see render()).

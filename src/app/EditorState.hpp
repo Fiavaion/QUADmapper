@@ -33,17 +33,6 @@
 #include "../renderer/Texture.hpp"
 #include "../renderer/UvTestGrid.hpp"
 #include "../video/VideoPlayer.hpp"
-#include "../ui/panels/CalibrationPanel.hpp"
-#include "../ui/panels/ControlPanel.hpp"
-#include "../ui/panels/InspectorPanel.hpp"
-#include "../ui/panels/MainMenuBar.hpp"
-#include "../ui/panels/MediaBinPanel.hpp"
-#include "../ui/panels/OutputPanel.hpp"
-#include "../ui/panels/OutputPreviewPanel.hpp"
-#include "../ui/panels/QuadListPanel.hpp"
-#include "../ui/panels/ScenePanel.hpp"
-#include "../ui/panels/VideoPlayerPanel.hpp"
-#include "../ui/panels/ViewportEditor.hpp"
 
 namespace quadmapper {
 
@@ -380,22 +369,6 @@ struct EditorState {
     // and no single videoAssignedQuadId anymore.
     char videoPath[512] = "";
     UUID activeVideoSourceId;
-
-    // Panels
-    InspectorPanel inspectorPanel;
-    MainMenuBar mainMenuBar;
-    bool mainMenuBarInitialized = false;
-    MediaBinPanel mediaBinPanel{*this};
-    bool mediaBinInitialized = false;
-    OutputPanel outputPanel{*this};
-    bool outputPanelInitialized = false;
-    QuadListPanel quadListPanel;
-    ScenePanel scenePanel;
-    OutputPreviewPanel outputPreviewPanel;
-    VideoPlayerPanel videoPlayerPanel;
-    ViewportEditor viewportEditor;  // Non-Panel: pre-NewFrame on-canvas warp surface (ADR-0034)
-    CalibrationPanel calibrationPanel;  // shown while calibrating a projector (ADR-052)
-    ControlPanel controlPanel;          // OSC / MIDI external control (ADR-048)
 
     // The show's MIDI mappings (ADR-048 §4), saved in the project. Their targets name
     // quads and sources by live id; load remaps the saved ids.

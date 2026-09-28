@@ -5,6 +5,7 @@ add_library(quadmapper_ui STATIC
     Theme.cpp
     AsyncFileDialog.hpp
     AsyncFileDialog.cpp
+    EditorPanels.hpp
     panels/Panel.hpp
     panels/InspectorPanel.hpp
     panels/InspectorPanel.cpp
