@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Types.hpp"
+
 namespace quadmapper {
 
 struct EditorContext;
@@ -35,8 +37,18 @@ class ViewportEditor {
 public:
     ViewportEditor() = default;
 
+    // The mouse over the editor window: its position in window coordinates (GLFW's
+    // logical pixels) and whether the left button is down.
+    struct Pointer {
+        Vec2 position{0.0f, 0.0f};
+        bool leftDown = false;
+    };
+
     // Call once per frame, right after ImGui::NewFrame(), from Application::render().
+    // Reads the pointer from the editor window.
     void render(EditorContext& ctx);
+    // The same frame with the pointer given (tests drive the canvas with it).
+    void render(EditorContext& ctx, const Pointer& pointer);
 };
 
 }  // namespace quadmapper

@@ -212,7 +212,9 @@ void drawSliceWarpCanvas(EditorState& es, Renderer& renderer, const OutputManage
 }
 
 // The calibration view (TD-29): the calibrated output's frame as its projector shows
-// it, drawn by the call that draws the output frames (OutputManager::renderSceneFrame):
+// it outside a crossfade and blackout (mid-fade the view draws the incoming scene alone,
+// and it keeps the picture during blackout), drawn by the call that draws the output
+// frames (OutputManager::renderSceneFrame):
 // black, the scene's 3D objects from the projector, then the scene's canvas through the
 // output's slices, warp, blend zones and black level. `frameMin`..`frameMax` is the
 // frame on the editor framebuffer in GL pixels; the scissor (the canvas region) clips it.
@@ -280,6 +282,13 @@ void drawSliceInputOverlay(EditorState& es, Renderer& renderer, OutputManager* o
 }  // namespace
 
 void ViewportEditor::render(EditorContext& ctx) {
+    double mouseX = 0.0, mouseY = 0.0;
+    glfwGetCursorPos(ctx.window, &mouseX, &mouseY);
+    const bool leftDown = glfwGetMouseButton(ctx.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    render(ctx, Pointer{Vec2(static_cast<float>(mouseX), static_cast<float>(mouseY)), leftDown});
+}
+
+void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
     // Same-named aliases keep the moved render()/interaction body verbatim
     // (LESSON-ARCH-006). All editing state lives in EditorState; the manager
     // pointers come from the per-frame EditorContext.
@@ -401,19 +410,19 @@ void ViewportEditor::render(EditorContext& ctx) {
         // stays under the cursor at any zoom/pan (the success-metric warp UX). Computed
         // ONCE here, before selection handling, so click-to-select works with no
         // current selection too.
-        double mouseX, mouseY;
-        glfwGetCursorPos(m_window, &mouseX, &mouseY);
+        const float mouseX = pointer.position.x;
+        const float mouseY = pointer.position.y;
 
         const float vnX = (regionW > 0.0f)
-            ? (static_cast<float>(mouseX) - regionX) / regionW : -1.0f;
+            ? (mouseX - regionX) / regionW : -1.0f;
         const float vnY = (regionH > 0.0f)
-            ? (static_cast<float>(mouseY) - regionY) / regionH : -1.0f;
+            ? (mouseY - regionY) / regionH : -1.0f;
         const Vec2 mouseNorm(
             (viewScaleX != 0.0f) ? (vnX - viewOffsetX) / viewScaleX : 0.0f,
             (viewScaleY != 0.0f) ? (vnY - viewOffsetY) / viewScaleY : 0.0f
         );
 
-        const bool mouseDown = glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        const bool mouseDown = pointer.leftDown;
         const bool mousePressed = mouseDown && !es.canvasMouseDownPrev;  // press edge
         es.canvasMouseDownPrev = mouseDown;
         const bool inRegion = mouseX >= regionX && mouseX <= regionX + regionW &&

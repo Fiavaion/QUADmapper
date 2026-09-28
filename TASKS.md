@@ -5,8 +5,9 @@ Last Updated: 2026-09-26 (Session 23)
 ## Quick Status
 - In Progress: 0
 - Todo: ADR-051 editor architecture / Application.cpp split (with Phase 0 S6: move AI out of
-  Application.cpp), TD-12 present threads (hardware), TD-14b, TD-29 calibration with slices,
-  TD-32/33 (pre-existing loop bugs), dev→master PR #2, 🚩 QM-061
+  Application.cpp), TD-12 present threads (hardware), TD-14b, TD-29 running-app check
+  (calibration on sliced outputs, done in code), TD-32/33 (pre-existing loop bugs), dev→master
+  PR #2, 🚩 QM-061
 - Done: Session 22 added QM-083..QM-099; Session 23 added QM-100..QM-109 (PRD MVP gaps + control);
   2026-09-27/28 added QM-117..QM-121 (ADR-047 canvas/slices/blend/crossfades, ADR-049, ADR-056
   zero-copy), TD-30/31 fixed; quiet-machine gates met (see TECHNICAL_DEBT.md)
@@ -32,8 +33,8 @@ Last Updated: 2026-09-26 (Session 23)
   Alt 0.1×) in an explicit slice-warp mode; Auto-blend of facing edges (one undo step); blend
   test pattern (session only, orange banner while on); canvas size in the Scenes panel with
   slice rescale and the canvas lock (`scenes[].canvasLocked`, routing never overwrites a set
-  size); calibration restricted to outputs with the default slicing (TD-29). GUI-checked on
-  the v3.4 fixture.
+  size); calibration restricted to outputs with the default slicing (TD-29; lifted in code on
+  2026-09-28 by ADR-047 Amendment 6, running-app check pending). GUI-checked on the v3.4 fixture.
 - **QM-121 B2 DONE (2026-09-27, ADR-047 Amendment 4)** — scene crossfades: Preferences fade
   default (0 = cut), OSC `/qm/scene/take i n f seconds`, both canvases mixed in the slice
   shader before blend and black level, blended groups fade together, take-during-fade

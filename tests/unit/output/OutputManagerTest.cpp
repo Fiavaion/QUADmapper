@@ -1992,7 +1992,7 @@ struct CalibrationViewShot {
 };
 
 // The marker quad on the canvas, normalised (inside every case's slice input).
-constexpr float MARKER_X0 = 0.55f, MARKER_X1 = 0.62f, MARKER_Y0 = 0.40f, MARKER_Y1 = 0.50f;
+constexpr float MARKER_X0 = 0.48f, MARKER_X1 = 0.72f, MARKER_Y0 = 0.40f, MARKER_Y1 = 0.50f;
 
 }  // namespace
 
@@ -2109,6 +2109,7 @@ TEST(CalibrationViewTest, PicksMapToProjectorPixelsWhateverTheSlicing) {
         marker->setVisible(false);
         shot.objects = view();
         marker->setVisible(true);
+        const std::vector<unsigned char> both = view();
         scene.getObjects().front()->setVisible(false);
         const std::vector<unsigned char> quads = view();
         for (int y = 0; y < h; ++y) {
@@ -2120,10 +2121,53 @@ TEST(CalibrationViewTest, PicksMapToProjectorPixelsWhateverTheSlicing) {
             }
         }
 
+        // Draw order: the canvas lies over the objects. Where the opaque marker covers
+        // the cube (two pixels inside the marker, on the cube, outside the slice's blend
+        // zones), the view with both is the marker alone; where the canvas is transparent
+        // (nothing of the marker within two pixels), it is the objects alone.
+        const Slice& slice = output->getSlices().front();
+        auto lit = [&](const std::vector<unsigned char>& px, int x, int y) {
+            const size_t i = (static_cast<size_t>(y) * w + x) * 4;
+            return px[i] + px[i + 1] + px[i + 2] > 0;
+        };
+        auto outsideBlendZones = [&](int x, int y) {
+            const Vec2 uv = slice.warp.surfaceParamsAt(Vec2((x + 0.5f) / w, (h - 1 - y + 0.5f) / h));
+            if (uv.x < 0.0f) return false;
+            const float dLeft = uv.x * slice.input.width, dTop = uv.y * slice.input.height;
+            return dLeft > slice.blend[SLICE_EDGE_LEFT].width + 1.0f &&
+                   slice.input.width - dLeft > slice.blend[SLICE_EDGE_RIGHT].width + 1.0f &&
+                   dTop > slice.blend[SLICE_EDGE_TOP].width + 1.0f &&
+                   slice.input.height - dTop > slice.blend[SLICE_EDGE_BOTTOM].width + 1.0f;
+        };
+        int coveredCube = 0, coveredWrong = 0, uncoveredWrong = 0;
+        for (int y = 2; y < h - 2; ++y) {
+            for (int x = 2; x < w - 2; ++x) {
+                int markerAround = 0;
+                for (int dy = -2; dy <= 2; ++dy) {
+                    for (int dx = -2; dx <= 2; ++dx) markerAround += lit(quads, x + dx, y + dy) ? 1 : 0;
+                }
+                const size_t i = (static_cast<size_t>(y) * w + x) * 4;
+                int diffQuads = 0, diffObjects = 0;
+                for (int ch = 0; ch < 3; ++ch) {
+                    diffQuads = std::max(diffQuads, std::abs(both[i + ch] - quads[i + ch]));
+                    diffObjects = std::max(diffObjects, std::abs(both[i + ch] - shot.objects[i + ch]));
+                }
+                if (markerAround == 25 && lit(shot.objects, x, y)) {
+                    if (!outsideBlendZones(x, y)) continue;
+                    ++coveredCube;
+                    if (diffQuads > 1) ++coveredWrong;
+                } else if (markerAround == 0 && diffObjects > 1) {
+                    ++uncoveredWrong;
+                }
+            }
+        }
+        EXPECT_GT(coveredCube, 10) << "the marker must lie over the cube";
+        EXPECT_EQ(coveredWrong, 0) << "the objects show through the canvas";
+        EXPECT_EQ(uncoveredWrong, 0) << "the transparent canvas changed the objects";
+
         // 2D: the view shows the canvas through this output's slice. Every lit pixel,
         // taken back through the slice's warp (surfaceParamsAt) and input rectangle,
         // lands on the marker quad of the canvas, within a canvas pixel.
-        const Slice& slice = output->getSlices().front();
         EXPECT_GT(shot.markerPoints.size(), 10u) << "the marker must be in the view";
         float worst = 0.0f;
         for (const Vec2& f : shot.markerPoints) {
