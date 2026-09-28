@@ -6,6 +6,7 @@
 
 namespace quadmapper {
 
+struct EditorState;
 class OutputManager;
 class OutputWindow;
 
@@ -16,7 +17,9 @@ class OutputWindow;
  */
 class OutputPanel : public Panel {
 public:
-    OutputPanel();
+    // The selected output lives in `es` (EditorState::selectedOutputId), which
+    // outlives the panel.
+    explicit OutputPanel(EditorState& es);
 
     /**
      * Set the output manager.
@@ -34,22 +37,9 @@ public:
      */
     void renderContent();
 
-    /**
-     * Get the currently selected output ID.
-     */
-    const UUID& getSelectedOutputId() const { return selectedOutputId_; }
-
-    /**
-     * Check if there is a selected output.
-     */
-    bool hasSelection() const { return !selectedOutputId_.isNull(); }
-
-    /**
-     * Clear the current selection.
-     */
-    void clearSelection() { selectedOutputId_ = UUID::null(); }
-
 private:
+    bool hasSelection() const;
+
     // Render the perform mode section
     void renderPerformModeSection();
 
@@ -74,8 +64,8 @@ private:
     // Render rotation controls
     void renderRotationControls(OutputWindow* output);
 
+    EditorState& es_;
     OutputManager* outputManager_ = nullptr;
-    UUID selectedOutputId_;
 
     // State for renaming
     bool isRenaming_ = false;

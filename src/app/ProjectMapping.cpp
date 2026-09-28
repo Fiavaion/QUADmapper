@@ -186,8 +186,8 @@ static bool isFileSource(const Project::SourceData& source) {
 }
 
 void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
-                         SourceManager* sm) {
-    clearProjectContent(es, sm, om);  // before any of the new project's sources exist
+                         SourceManager* sm, const MediaLibrary* library) {
+    clearProjectContent(es, sm, om, library);  // before any of the new project's sources exist
 
     // Rebuild outputs from the file (v3), each with the scene it shows (scene ids are
     // kept on load) and its slices. v1/v2 files carry no outputs: keep the existing

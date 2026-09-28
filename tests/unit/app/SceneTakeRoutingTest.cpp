@@ -630,7 +630,7 @@ TEST(SliceEditingTest, ProjectReplaceEndsSliceEditingTheTestPatternAndFades) {
     rig.es.takeScene(3, rig.om, 1.0);
     ASSERT_FALSE(rig.om.sceneFades().empty());
 
-    clearProjectContent(rig.es, nullptr, &rig.om);
+    clearProjectContent(rig.es, nullptr, &rig.om, nullptr);
     EXPECT_TRUE(rig.es.sliceWarpOutputId.isNull());
     EXPECT_TRUE(rig.es.selectedSliceId.isNull());
     EXPECT_FALSE(rig.om.isBlendTestPattern());
@@ -798,6 +798,31 @@ struct PickRig {
 };
 
 }  // namespace
+
+// Showing Quad Properties (the Quad List or a canvas pick) clears the media bin and
+// Outputs tab selections, so the Inspector cannot fall back to either; all on
+// EditorState, with no panel.
+TEST(QuadSelectionTest, ShowQuadPropertiesClearsMediaAndOutputSelection) {
+    PickRig rig;
+    rig.es.selectedMediaId = UUID::generate();
+    rig.es.selectedOutputId = UUID::generate();
+    showQuadProperties(rig.es);
+    EXPECT_EQ(rig.es.currentSelectionType, EditorState::SelectionType::Quad);
+    EXPECT_TRUE(rig.es.selectedMediaId.isNull());
+    EXPECT_TRUE(rig.es.selectedOutputId.isNull());
+
+    rig.es.selectedMediaId = UUID::generate();
+    rig.es.selectedOutputId = UUID::generate();
+    rig.es.currentSelectionType = EditorState::SelectionType::Media;
+    EXPECT_TRUE(pickQuadOnCanvas(rig.es, rig.es.quadManager(), Vec2(0.7f, 0.5f), false));
+    EXPECT_TRUE(rig.es.selectedMediaId.isNull()) << "a canvas pick clears them too";
+    EXPECT_TRUE(rig.es.selectedOutputId.isNull());
+
+    const UUID media = UUID::generate();
+    rig.es.selectedMediaId = media;
+    EXPECT_FALSE(pickQuadOnCanvas(rig.es, rig.es.quadManager(), Vec2(0.5f, 0.5f), false));
+    EXPECT_EQ(rig.es.selectedMediaId, media) << "empty canvas keeps the selection";
+}
 
 // Clicking the quad that is already selected, on the canvas, brings Quad Properties
 // back (as the Quad List does) and keeps the selection; nothing is reported, so the

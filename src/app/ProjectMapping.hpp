@@ -15,6 +15,7 @@ namespace quadmapper {
 struct EditorState;
 class OutputManager;
 class SourceManager;
+class MediaLibrary;
 class Project;
 
 void syncEditorToProject(EditorState& es, OutputManager* om, SourceManager* sm, Project& project);
@@ -22,7 +23,8 @@ void syncEditorToProject(EditorState& es, OutputManager* om, SourceManager* sm, 
 // Media and mesh files that cannot be opened never fail the load (PRD §4.1.8): their
 // quads and objects keep the reference (EditorState::missingSources; an object keeps
 // its mesh path with an empty mesh) and collectMissingMedia() lists them to relocate.
+// The sources of the media bin's `library` survive the old project's release.
 void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
-                         SourceManager* sm);
+                         SourceManager* sm, const MediaLibrary* library);
 
 }  // namespace quadmapper

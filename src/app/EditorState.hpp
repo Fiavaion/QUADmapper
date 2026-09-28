@@ -385,9 +385,9 @@ struct EditorState {
     InspectorPanel inspectorPanel;
     MainMenuBar mainMenuBar;
     bool mainMenuBarInitialized = false;
-    MediaBinPanel mediaBinPanel;
+    MediaBinPanel mediaBinPanel{*this};
     bool mediaBinInitialized = false;
-    OutputPanel outputPanel;
+    OutputPanel outputPanel{*this};
     bool outputPanelInitialized = false;
     QuadListPanel quadListPanel;
     ScenePanel scenePanel;
@@ -413,6 +413,19 @@ struct EditorState {
     SelectionType currentSelectionType = SelectionType::Quad;
     // The 3D object of the active scene the Inspector edits (ADR-052); null = none.
     UUID selectedObjectId;
+    // The media bin item and the Outputs tab output the Inspector shows; null = none.
+    // The panels write them here (ADR-051 §1), so editor code never touches a panel.
+    UUID selectedMediaId;
+    UUID selectedOutputId;
+
+    // The media bin's hover-to-play preview: one open clip (previewSourceId, playing
+    // previewSourcePath) that no quad is bound to, so the unused-source cleanup keeps
+    // it. The bin never removes a preview itself, since an assignment earlier in the
+    // same frame may have bound it: a preview whose hover ended goes to endedPreviews,
+    // and the frame boundary (releaseUnusedSources) removes each one nothing bound.
+    UUID previewSourceId;
+    std::string previewSourcePath;
+    std::vector<UUID> endedPreviews;
 
     // Projector calibration mode (ADR-052 §6). While an output is being calibrated the
     // canvas edits that output's calibration points instead of quad vertices.

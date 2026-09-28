@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
 
 namespace quadmapper {
 
@@ -132,11 +133,11 @@ inline UUID assignMediaToObject(EditorState& es, SourceManager* sm,
 }
 
 // Sources the editor keeps alive whatever the project references: the Video
-// Player's source, the media bin's hover preview, and every source the bin offers
-// (its procedural generators), so bin items stay assignable.
-inline std::unordered_set<UUID> editorOwnedSources(const EditorState& es) {
-    std::unordered_set<UUID> ids{es.activeVideoSourceId, es.mediaBinPanel.getPreviewSourceId()};
-    if (const MediaLibrary* library = es.mediaBinPanel.getMediaLibrary()) {
+// Player's source, the media bin's hover preview, and every source the bin's
+// `library` offers (its procedural generators), so bin items stay assignable.
+inline std::unordered_set<UUID> editorOwnedSources(const EditorState& es, const MediaLibrary* library) {
+    std::unordered_set<UUID> ids{es.activeVideoSourceId, es.previewSourceId};
+    if (library) {
         for (const auto& item : library->getItems()) {
             if (item && item->hasSource()) ids.insert(item->getSourceId());
         }
@@ -185,8 +186,8 @@ inline void pauseSourcesOnlyUndoHolds(EditorState& es, SourceManager& sm,
 // transport it had when it was released (EditorState::releasedTransports), else plays
 // as on assign. If that fails the binding is cleared so it is not retried every frame.
 // A binding to a missing file (EditorState::missingSources) is kept as it is, for the
-// user to relocate.
-inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
+// user to relocate. `library` is the media bin's (see editorOwnedSources).
+inline void releaseUnusedSources(EditorState& es, SourceManager& sm, const MediaLibrary* library) {
     std::unordered_set<UUID> onScreen;  // bound to a quad that exists right now
     for (const auto& scene : es.scenes) {
         if (!scene) continue;
@@ -232,12 +233,16 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm) {
     const auto bound = [&](const UUID& id) {
         return inUse.count(id) > 0 || id == es.activeVideoSourceId;
     };
-    for (const UUID& id : es.mediaBinPanel.takeEndedPreviews()) {
+    for (const UUID& id : std::exchange(es.endedPreviews, {})) {
         if (!bound(id)) sm.removeSource(id);
     }
-    const UUID preview = es.mediaBinPanel.getPreviewSourceId();
-    if (!preview.isNull() && bound(preview)) es.mediaBinPanel.handOverPreviewSource();
-    const std::unordered_set<UUID> owned = editorOwnedSources(es);
+    // The bin forgets a bound preview without removing it; a still-hovered item gets a
+    // new preview next frame.
+    if (!es.previewSourceId.isNull() && bound(es.previewSourceId)) {
+        es.previewSourceId = UUID();
+        es.previewSourcePath.clear();
+    }
+    const std::unordered_set<UUID> owned = editorOwnedSources(es, library);
     inUse.insert(owned.begin(), owned.end());
     // Remember how each clip about to be released was playing, for a binding that
     // comes back to it later (the re-open above).

@@ -255,10 +255,10 @@ void drawCalibrationView(EditorState& es, Renderer& renderer, OutputManager& out
 // the active scene. The selected slice is drawn brighter.
 void drawSliceInputOverlay(EditorState& es, Renderer& renderer, OutputManager* outputs) {
     if (!outputs || es.currentSelectionType != EditorState::SelectionType::Output ||
-        !es.outputPanel.hasSelection()) {
+        es.selectedOutputId.isNull()) {
         return;
     }
-    const OutputWindow* output = outputs->getOutput(es.outputPanel.getSelectedOutputId());
+    const OutputWindow* output = outputs->getOutput(es.selectedOutputId);
     if (!output || output->getSceneId() != es.activeScene().getId()) return;
     const IVec2 size = es.activeScene().getCanvasSize();
     const float w = static_cast<float>(size.x);

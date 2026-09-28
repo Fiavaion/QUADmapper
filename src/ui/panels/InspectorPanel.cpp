@@ -709,9 +709,9 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
     EditorState& es = ctx.es;
 
     OutputWindow* selectedOutput = nullptr;
-    if (es.outputPanel.hasSelection() && ctx.outputManager) {
+    if (!es.selectedOutputId.isNull() && ctx.outputManager) {
         selectedOutput =
-            ctx.outputManager->getOutput(es.outputPanel.getSelectedOutputId());
+            ctx.outputManager->getOutput(es.selectedOutputId);
     }
 
     if (selectedOutput) {
@@ -900,8 +900,8 @@ void InspectorPanel::renderMediaProperties(EditorContext& ctx) {
     EditorState& es = ctx.es;
 
     MediaItem* selectedMedia = nullptr;
-    if (es.mediaBinPanel.hasSelection() && ctx.mediaLibrary) {
-        selectedMedia = ctx.mediaLibrary->getItem(es.mediaBinPanel.getSelectedItemId());
+    if (!es.selectedMediaId.isNull() && ctx.mediaLibrary) {
+        selectedMedia = ctx.mediaLibrary->getItem(es.selectedMediaId);
     }
 
     if (selectedMedia) {

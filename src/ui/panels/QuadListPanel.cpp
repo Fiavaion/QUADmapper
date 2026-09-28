@@ -481,8 +481,8 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
                 // A quad left selected behind the object's properties would still take
                 // Delete and the arrow keys.
                 scene.getQuadManager().deselectAll();
-                es.mediaBinPanel.clearSelection();
-                es.outputPanel.clearSelection();
+                es.selectedMediaId = UUID();
+                es.selectedOutputId = UUID();
             }
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 beginRename();

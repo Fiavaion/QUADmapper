@@ -15,12 +15,11 @@
 
 namespace quadmapper {
 
-// Show Quad Properties and clear the other panels' selections (deliberate cross-panel
-// coordination via EditorState, ADR-0034 / TD-02).
+// Show Quad Properties and clear the media bin and output selections.
 inline void showQuadProperties(EditorState& es) {
     es.currentSelectionType = EditorState::SelectionType::Quad;
-    es.mediaBinPanel.clearSelection();
-    es.outputPanel.clearSelection();
+    es.selectedMediaId = UUID();
+    es.selectedOutputId = UUID();
 }
 
 // A fresh left-press on the canvas at `point` (ADR-042). Unless it is on the selected

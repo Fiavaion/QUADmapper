@@ -418,6 +418,7 @@ bool Application::initializeComponents() {
         services.sources = m_sourceManager.get();
         services.outputs = m_outputManager.get();
         services.audio = m_audioEngine.get();
+        services.library = m_mediaLibrary.get();
         services.dropQueuedSceneTakes = [this]() { dropQueuedSceneTakes(); };
         services.confirmExit = [this]() {
             m_exitConfirmed = true;
@@ -1051,13 +1052,13 @@ void Application::render() {
 
         // -------- Media Bin Tab --------
         if (ImGui::BeginTabItem("Media")) {
-            UUID prevMediaSelection = mediaBinPanel.getSelectedItemId();
+            UUID prevMediaSelection = es.selectedMediaId;
             mediaBinPanel.renderContent();
             // Switch to Media properties if a media item was just selected
-            if (mediaBinPanel.hasSelection() && mediaBinPanel.getSelectedItemId() != prevMediaSelection) {
+            if (!es.selectedMediaId.isNull() && es.selectedMediaId != prevMediaSelection) {
                 currentSelectionType = SelectionType::Media;
                 quadManager.deselectAll();
-                outputPanel.clearSelection();
+                es.selectedOutputId = UUID();
             }
             ImGui::EndTabItem();
         }
@@ -1082,13 +1083,13 @@ void Application::render() {
 
         // -------- Outputs Tab --------
         if (advanced && ImGui::BeginTabItem("Outputs")) {
-            UUID prevOutputSelection = outputPanel.getSelectedOutputId();
+            UUID prevOutputSelection = es.selectedOutputId;
             outputPanel.renderContent();
             // Switch to Output properties if an output was just selected
-            if (outputPanel.hasSelection() && outputPanel.getSelectedOutputId() != prevOutputSelection) {
+            if (!es.selectedOutputId.isNull() && es.selectedOutputId != prevOutputSelection) {
                 currentSelectionType = SelectionType::Output;
                 quadManager.deselectAll();
-                mediaBinPanel.clearSelection();
+                es.selectedMediaId = UUID();
             }
             ImGui::EndTabItem();
         }
@@ -1323,7 +1324,7 @@ void Application::runFrameBoundaryTasks() {
     adoptObjectMeshes(*m_editorState, m_outputManager.get());
     processExternalControl();
     m_session->pollMissingMediaSearch();
-    if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager);
+    if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager, m_mediaLibrary.get());
     fitProjectorsToOutputs();
     m_session->autosaveIfDue();
 }

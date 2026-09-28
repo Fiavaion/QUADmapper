@@ -20,15 +20,17 @@ namespace quadmapper {
 //  2. the undo history, before the scenes its commands point into;
 //     then every OBJ parse in progress (MeshLoads.hpp);
 //  3. the scenes, their per-quad bindings, the object selection and any calibration;
-//  4. the project's sources, released now (the media bin's own sources stay, so its
-//     items remain assignable), so the next project's media opens fresh instead of
-//     inheriting live decoders found by path; with them go the pause-while-unseen and
-//     released-transport records, which name sources of this project only;
+//  4. the project's sources, released now (the sources of the media bin's `library`
+//     stay, so its items remain assignable), so the next project's media opens fresh
+//     instead of inheriting live decoders found by path; with them go the
+//     pause-while-unseen and released-transport records, which name sources of this
+//     project only;
 //  5. the missing-media records.
 // Call before the next project creates any source. The outputs themselves, MIDI
 // mappings and the app's own queues (scene takes, the missing-media search) are
 // the caller's.
-inline void clearProjectContent(EditorState& es, SourceManager* sm, OutputManager* outputs) {
+inline void clearProjectContent(EditorState& es, SourceManager* sm, OutputManager* outputs,
+                                const MediaLibrary* library) {
     es.endSliceWarp();
     es.selectedSliceId = UUID();
     if (outputs) {
@@ -45,7 +47,7 @@ inline void clearProjectContent(EditorState& es, SourceManager* sm, OutputManage
     es.activeVideoSourceId = UUID();  // the Video Player's clip belongs to the project
     es.sourcesPausedWhileUnseen.clear();
     es.releasedTransports.clear();
-    if (sm) sm->releaseUnreferenced(editorOwnedSources(es));
+    if (sm) sm->releaseUnreferenced(editorOwnedSources(es, library));
     clearMissingMedia(es);
 }
 

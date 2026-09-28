@@ -247,8 +247,8 @@ inline void importObjectFile(EditorState& es, const std::string& path) {
     es.selectedObjectId = object->getId();
     es.activeScene().getQuadManager().deselectAll();  // Delete/arrows must not reach a hidden quad
     es.currentSelectionType = EditorState::SelectionType::Object;
-    es.mediaBinPanel.clearSelection();
-    es.outputPanel.clearSelection();
+    es.selectedMediaId = UUID();
+    es.selectedOutputId = UUID();
     postStatus(es, "Importing 3D object: " + object->getName() + "...");
 }
 

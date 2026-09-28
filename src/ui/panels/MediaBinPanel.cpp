@@ -1,4 +1,5 @@
 #include "MediaBinPanel.hpp"
+#include "app/EditorState.hpp"
 #include "core/FileSystem.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
@@ -35,8 +36,7 @@ static const char* getProceduralTypeName(ProceduralType type) {
     }
 }
 
-MediaBinPanel::MediaBinPanel() : Panel("Media Bin") {
-    selectedItemId_ = UUID::null();
+MediaBinPanel::MediaBinPanel(EditorState& es) : Panel("Media Bin"), es_(es) {
     contextMenuItemId_ = UUID::null();
 }
 
@@ -244,14 +244,14 @@ void MediaBinPanel::renderThumbnailGrid() {
 void MediaBinPanel::updateHoverPreview() {
     if (!sourceManager_) return;
     // Only act when the hovered video changes (avoid per-frame decoder churn).
-    if (hoveredVideoThisFrame_ == hoverPreviewPath_) return;
+    if (hoveredVideoThisFrame_ == es_.previewSourcePath) return;
 
     // Retire the previous preview decoder; the frame boundary removes it unless
-    // something bound it meanwhile (takeEndedPreviews).
-    if (!hoverPreviewId_.isNull()) {
-        endedPreviews_.push_back(hoverPreviewId_);
-        hoverPreviewId_ = UUID();
-        hoverPreviewPath_.clear();
+    // something bound it meanwhile (releaseUnusedSources).
+    if (!es_.previewSourceId.isNull()) {
+        es_.endedPreviews.push_back(es_.previewSourceId);
+        es_.previewSourceId = UUID();
+        es_.previewSourcePath.clear();
     }
 
     // Spin up a dedicated decoder for the newly-hovered video and play it. This is a
@@ -260,8 +260,8 @@ void MediaBinPanel::updateHoverPreview() {
     if (!hoveredVideoThisFrame_.empty()) {
         UUID sid = sourceManager_->createVideoSource(pathFromUtf8(hoveredVideoThisFrame_));
         if (!sid.isNull()) {
-            hoverPreviewId_ = sid;
-            hoverPreviewPath_ = hoveredVideoThisFrame_;
+            es_.previewSourceId = sid;
+            es_.previewSourcePath = hoveredVideoThisFrame_;
             if (auto* v = sourceManager_->getSourceAs<PlayableSource>(sid)) v->play();
         }
     }
@@ -270,7 +270,7 @@ void MediaBinPanel::updateHoverPreview() {
 void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
     ImGui::PushID(index);
 
-    bool isSelected = (item->getId() == selectedItemId_);
+    bool isSelected = (item->getId() == es_.selectedMediaId);
     ImVec2 size(thumbnailSize_, thumbnailSize_);
 
     // Create a button-like area for the thumbnail
@@ -293,12 +293,12 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
 
     // Handle selection on click
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-        selectedItemId_ = item->getId();
+        es_.selectedMediaId = item->getId();
     }
 
     // Handle right-click for context menu
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-        selectedItemId_ = item->getId();
+        es_.selectedMediaId = item->getId();
         contextMenuItemId_ = item->getId();
         ImGui::OpenPopup("MediaItemContextMenu");
     }
@@ -378,8 +378,8 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
         if (ImGui::IsItemHovered()) hoveredVideoThisFrame_ = path;
 
         Texture* drawTex = nullptr;
-        if (path == hoverPreviewPath_ && sourceManager_ && !hoverPreviewId_.isNull()) {
-            drawTex = sourceManager_->getTexture(hoverPreviewId_);  // live preview
+        if (path == es_.previewSourcePath && sourceManager_ && !es_.previewSourceId.isNull()) {
+            drawTex = sourceManager_->getTexture(es_.previewSourceId);  // live preview
         }
         if (!drawTex || !drawTex->isValid()) {
             drawTex = getVideoThumbnail(item->getPath());           // static first frame
@@ -490,8 +490,8 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
         }
 
         if (ImGui::MenuItem("Remove from Library")) {
-            if (selectedItemId_ == item->getId()) {
-                selectedItemId_ = UUID::null();
+            if (es_.selectedMediaId == item->getId()) {
+                es_.selectedMediaId = UUID::null();
             }
             // Also remove the source from SourceManager if it exists
             if (sourceManager_ && item->hasSource()) {
@@ -675,7 +675,7 @@ void MediaBinPanel::createProcedural(ProceduralType type) {
     mediaLibrary_->addItem(std::move(item));
 
     // Select the newly created item
-    selectedItemId_ = itemId;
+    es_.selectedMediaId = itemId;
 
     // Optionally open editor for the new procedural
     if (proceduralEditCallback_) {

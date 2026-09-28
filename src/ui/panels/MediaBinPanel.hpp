@@ -14,6 +14,7 @@
 
 namespace quadmapper {
 
+struct EditorState;
 class MediaLibrary;
 class MediaItem;
 class HapConvertWindow;
@@ -28,7 +29,9 @@ class Texture;
  */
 class MediaBinPanel : public Panel {
 public:
-    MediaBinPanel();
+    // The selected item and the hover preview live in `es` (EditorState::selectedMediaId,
+    // previewSourceId), which outlives the panel.
+    explicit MediaBinPanel(EditorState& es);
     ~MediaBinPanel();  // defined in .cpp (owns unique_ptr<Texture> video thumbnails)
 
     /**
@@ -36,7 +39,6 @@ public:
      * @param library Pointer to the media library
      */
     void setMediaLibrary(MediaLibrary* library) { mediaLibrary_ = library; }
-    const MediaLibrary* getMediaLibrary() const { return mediaLibrary_; }
 
     /**
      * Set the source manager for creating procedural sources.
@@ -60,45 +62,6 @@ public:
      * Useful for embedding in tabs.
      */
     void renderContent();
-
-    /**
-     * Get the currently selected media item ID.
-     * @return The UUID of the selected item, or null UUID if none selected
-     */
-    const UUID& getSelectedItemId() const { return selectedItemId_; }
-
-    /**
-     * Check if there is a selected item.
-     */
-    bool hasSelection() const { return !selectedItemId_.isNull(); }
-
-    /**
-     * Clear the current selection.
-     */
-    void clearSelection() { selectedItemId_ = UUID::null(); }
-
-    /**
-     * The hover-to-play preview source, or null. It is bound to no quad, so the
-     * unused-source cleanup must be told to keep it.
-     */
-    const UUID& getPreviewSourceId() const { return hoverPreviewId_; }
-
-    /**
-     * The preview's decoder was bound elsewhere (a Load or an assignment found it by
-     * path, like any open clip): it belongs to that user now. Forget it without
-     * removing it; a still-hovered item gets a new preview next frame.
-     */
-    void handOverPreviewSource() {
-        hoverPreviewId_ = UUID();
-        hoverPreviewPath_.clear();
-    }
-
-    /**
-     * Previews whose hover ended since the last call. The bin never removes a preview
-     * itself: an assignment earlier in the same frame may have bound it. The frame
-     * boundary (releaseUnusedSources) removes each one nothing bound.
-     */
-    std::vector<UUID> takeEndedPreviews() { return std::exchange(endedPreviews_, {}); }
 
     // Thumbnail size settings
     float getThumbnailSize() const { return thumbnailSize_; }
@@ -160,10 +123,10 @@ private:
     // preview decoder so the video under the cursor plays (and reverts when you leave).
     void updateHoverPreview();
 
+    EditorState& es_;
     MediaLibrary* mediaLibrary_ = nullptr;
     SourceManager* sourceManager_ = nullptr;
     ThumbnailCache* thumbnailCache_ = nullptr;
-    UUID selectedItemId_;
 
     // UI settings
     float thumbnailSize_ = 80.0f;
@@ -189,14 +152,11 @@ private:
     // Cached video first-frame thumbnails, keyed by file path (RAII textures).
     std::unordered_map<std::string, std::unique_ptr<Texture>> videoThumbs_;
 
-    // Hover-to-play preview: ONE dedicated decoder for the video under the cursor.
-    // Kept separate (createVideoSource, not getOrCreate) so it never disturbs a video
-    // already assigned to a quad. hoveredVideoThisFrame_ is collected during the grid
-    // pass, then reconciled in updateHoverPreview().
-    UUID hoverPreviewId_;
-    std::string hoverPreviewPath_;
+    // Hover-to-play preview: ONE dedicated decoder for the video under the cursor
+    // (es_.previewSourceId). Kept separate (createVideoSource, not getOrCreate) so it
+    // never disturbs a video already assigned to a quad. hoveredVideoThisFrame_ is
+    // collected during the grid pass, then reconciled in updateHoverPreview().
     std::string hoveredVideoThisFrame_;
-    std::vector<UUID> endedPreviews_;  // see takeEndedPreviews()
 
     // Load Files / Load Folder run off the render thread (QM-088); one at a time.
     AsyncFileDialog importDialog_;

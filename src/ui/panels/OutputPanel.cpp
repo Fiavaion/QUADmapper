@@ -1,4 +1,5 @@
 #include "OutputPanel.hpp"
+#include "app/EditorState.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include <imgui.h>
@@ -6,9 +7,9 @@
 
 namespace quadmapper {
 
-OutputPanel::OutputPanel() : Panel("Outputs") {
-    selectedOutputId_ = UUID::null();
-}
+OutputPanel::OutputPanel(EditorState& es) : Panel("Outputs"), es_(es) {}
+
+bool OutputPanel::hasSelection() const { return !es_.selectedOutputId.isNull(); }
 
 void OutputPanel::render() {
     if (!visible_) return;
@@ -82,7 +83,7 @@ void OutputPanel::renderActionButtons() {
     if (ImGui::Button("Add Output")) {
         OutputWindow* newOutput = outputManager_->createOutput();
         if (newOutput) {
-            selectedOutputId_ = newOutput->getId();
+            es_.selectedOutputId = newOutput->getId();
         }
     }
     if (ImGui::IsItemHovered()) {
@@ -95,13 +96,13 @@ void OutputPanel::renderActionButtons() {
     ImGui::BeginDisabled(!hasSelection() || outputManager_->getOutputCount() <= 1);
     if (ImGui::Button("Remove Output")) {
         if (hasSelection()) {
-            outputManager_->deleteOutput(selectedOutputId_);
-            selectedOutputId_ = UUID::null();
+            outputManager_->deleteOutput(es_.selectedOutputId);
+            es_.selectedOutputId = UUID::null();
 
             // Select first remaining output
             const auto& outputs = outputManager_->getOutputs();
             if (!outputs.empty()) {
-                selectedOutputId_ = outputs[0]->getId();
+                es_.selectedOutputId = outputs[0]->getId();
             }
         }
     }
@@ -147,7 +148,7 @@ void OutputPanel::renderOutputList() {
 void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
     ImGui::PushID(index);
 
-    bool isSelected = (output->getId() == selectedOutputId_);
+    bool isSelected = (output->getId() == es_.selectedOutputId);
 
     // Enabled checkbox
     bool enabled = output->isEnabled();
@@ -180,7 +181,7 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
 
         ImGuiSelectableFlags flags = ImGuiSelectableFlags_AllowDoubleClick;
         if (ImGui::Selectable(output->getName().c_str(), isSelected, flags)) {
-            selectedOutputId_ = output->getId();
+            es_.selectedOutputId = output->getId();
 
             if (ImGui::IsMouseDoubleClicked(0)) {
                 isRenaming_ = true;
@@ -220,8 +221,8 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
         ImGui::BeginDisabled(!canDelete);
         if (ImGui::MenuItem("Delete")) {
             outputManager_->deleteOutput(output->getId());
-            if (selectedOutputId_ == output->getId()) {
-                selectedOutputId_ = UUID::null();
+            if (es_.selectedOutputId == output->getId()) {
+                es_.selectedOutputId = UUID::null();
             }
         }
         ImGui::EndDisabled();
@@ -233,9 +234,9 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
 }
 
 void OutputPanel::renderOutputProperties() {
-    OutputWindow* output = outputManager_->getOutput(selectedOutputId_);
+    OutputWindow* output = outputManager_->getOutput(es_.selectedOutputId);
     if (!output) {
-        selectedOutputId_ = UUID::null();
+        es_.selectedOutputId = UUID::null();
         return;
     }
 

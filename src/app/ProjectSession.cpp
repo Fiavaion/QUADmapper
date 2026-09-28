@@ -279,7 +279,7 @@ void ProjectSession::performNewProject() {
 
     dropQueuedSceneTakes();
     cancelMissingMediaSearch();
-    clearProjectContent(es, m_services.sources, m_services.outputs);
+    clearProjectContent(es, m_services.sources, m_services.outputs, m_services.library);
     es.midiMappings.clear();  // show content; the Control panel's device choices stay
 
     // One default scene with one quad, still aimed at the first output. Outputs are
@@ -324,7 +324,7 @@ bool ProjectSession::performLoadProject(const std::string& path) {
     m_project = std::move(result.value());
     dropQueuedSceneTakes();
     cancelMissingMediaSearch();
-    syncProjectToEditor(es, m_services.outputs, m_project, m_services.sources);
+    syncProjectToEditor(es, m_services.outputs, m_project, m_services.sources, m_services.library);
     applyProjectAudio();
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
     markProjectClean();
@@ -391,7 +391,7 @@ void ProjectSession::performRestoreRecovery() {
     m_project.setFilePath(projectPath);  // it belongs to the project, not the autosave
     dropQueuedSceneTakes();
     cancelMissingMediaSearch();
-    syncProjectToEditor(es, m_services.outputs, m_project, m_services.sources);
+    syncProjectToEditor(es, m_services.outputs, m_project, m_services.sources, m_services.library);
     applyProjectAudio();
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", projectPath.c_str());
     // The restored work is not in the project file yet: keep it "unsaved", and say so.

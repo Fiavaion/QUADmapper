@@ -14,6 +14,7 @@ namespace quadmapper {
 
 class Project;
 class SourceManager;
+class MediaLibrary;
 class OutputManager;
 class AudioEngine;
 class AsyncFileDialog;
@@ -39,6 +40,8 @@ public:
         SourceManager* sources = nullptr;
         OutputManager* outputs = nullptr;
         AudioEngine* audio = nullptr;
+        // The media bin's library: its sources survive New, Load and Restore.
+        const MediaLibrary* library = nullptr;
         // New, Load and Restore drop scene takes still queued for the replaced show.
         std::function<void()> dropQueuedSceneTakes;
         // Exit passed the unsaved-changes check: close the editor.
