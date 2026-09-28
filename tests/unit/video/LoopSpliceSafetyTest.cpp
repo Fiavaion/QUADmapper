@@ -279,3 +279,41 @@ TEST(LoopSpliceSafety, SeekOvershootPastTheStartIsRefused) {
     EXPECT_EQ(probe.badOrder, 0);
     EXPECT_EQ(probe.missing, 0);
 }
+
+// --- TD-32: an AVI container with an MPEG-4 ASP (mpeg4) stream and B-frames has no
+// decode-order timestamp field, so its demuxer can only back-fill a presentation pts
+// for some of the stream's packets (see VideoDecoder::open(), "unreliableFramePts_")
+// and leaves the rest (typically the I/P pictures) AV_NOPTS_VALUE. Trusting the pts
+// where the demuxer did supply one mixes decode-order values into a presentation-order
+// sequence: on the pre-fix code, looping this fixture corrupts most of the stream
+// (badPix/badOrder nonzero) whether or not the Loop splice itself runs, because the
+// same mixed-up pts poisons an ordinary restart-and-reseek too. The fix makes the
+// decoder ignore this stream's pts entirely and fall back to its existing sequential
+// (no-pts) timing, which is already correct since libavcodec's own B-frame reordering
+// guarantees decode-output order is display order. ---
+
+TEST(LoopSpliceSafety, Mpeg4AviBFramesDecodeCorrectlyAcrossLoopSeams) {
+    const fs::path path = fixture("mpeg4_bframes.avi");
+    ASSERT_TRUE(fs::exists(path)) << path;
+    const Reference ref = decodeReference(path);
+    ASSERT_GT(ref.pts.size(), 3u);
+
+    // Start exactly at the clip's first frame (a real keyframe): seeking to an
+    // arbitrary mid-file time in this codec/container pair is not frame-exact (the
+    // same missing-pts problem this test fixes at the decode level also limits how
+    // precisely a seek can land there) — a separate, pre-existing limitation this row
+    // does not claim to fix. What TD-32 is about, and what this checks, is that once
+    // playing, every Loop seam decodes in the right order with the right pixels.
+    const int n = static_cast<int>(ref.pts.size());
+    const LoopProbe probe = probeLoop(path, ref, n, 3);
+    ASSERT_TRUE(probe.opened);
+    EXPECT_EQ(probe.badPix, 0);
+    EXPECT_EQ(probe.badOrder, 0);
+    EXPECT_EQ(probe.badDue, 0);
+    EXPECT_EQ(probe.missing, 0);
+    // This codec/container pair's pts cannot be trusted (see above), so
+    // lastForwardPts_ never carries a value and the Loop splice never attempts to run
+    // for it — every seam falls back to the ordinary restart-and-reseek, which the fix
+    // above makes decode correctly.
+    EXPECT_GT(probe.restartsDelta, 0u);
+}

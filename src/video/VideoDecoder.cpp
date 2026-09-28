@@ -41,6 +41,7 @@ extern "C" {
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
@@ -606,6 +607,22 @@ public:
         frameSeconds_ = info_.frameRate > 0.0 ? 1.0 / info_.frameRate : 0.04;
         const AVCodecDescriptor* descriptor = avcodec_descriptor_get(codecCtx_->codec_id);
         intraOnly_ = descriptor && (descriptor->props & AV_CODEC_PROP_INTRA_ONLY);
+        // TD-32: AVI has no decode-order timestamp field, so its demuxer can only
+        // back-fill a presentation pts for some packets of a B-frame stream (the ones
+        // it can place without knowing how many more B pictures follow) and leaves the
+        // rest (typically the I/P pictures) AV_NOPTS_VALUE. H.264/HEVC in AVI still
+        // carry real timestamps in practice and are excluded; every other B-frame codec
+        // in this container gets an unreliable, decode-order-tainted pts on the frames
+        // that do have one (see AVI's own review notes). The decoder already has a
+        // solid, tested fallback for a frame with no pts at all (sequential timing from
+        // the last known time, ADR-050/055): forcing every frame of such a stream onto
+        // that path, instead of trusting the sometimes-present pts, keeps presentation
+        // order (which libavcodec's B-frame reordering already guarantees) and drops
+        // the per-frame values that do not mean what they look like they mean.
+        const bool aviContainer = formatCtx_->iformat && formatCtx_->iformat->name &&
+            std::strstr(formatCtx_->iformat->name, "avi") != nullptr;
+        unreliableFramePts_ = aviContainer && videoStream->codecpar->video_delay > 0 &&
+            codecCtx_->codec_id != AV_CODEC_ID_H264 && codecCtx_->codec_id != AV_CODEC_ID_HEVC;
         const bool probeEnd = !isLive_ &&
             (videoStream->duration == AV_NOPTS_VALUE || videoStream->duration <= 0);
         if (probeEnd) {
@@ -1305,6 +1322,9 @@ private:
                 break;
             }
             if (receiveResult >= 0) {
+                // TD-32: this stream's pts, where the demuxer supplied one at all, is
+                // decode-order-tainted (see open()); treat every frame as if it had none.
+                if (unreliableFramePts_) frame_->pts = AV_NOPTS_VALUE;
                 if (!reachedSeekTarget()) continue;
                 if (!finishHardwareFrame()) {
                     if (!codecCtx_) break;  // not even software decoding could open
@@ -2146,6 +2166,10 @@ private:
     int64_t frameTicks_ = 1;    // one frame's duration, in time_base units
     double frameSeconds_ = 0.04;  // one frame's duration
     bool intraOnly_ = false;      // every frame is a keyframe (ProRes, MJPEG, ...)
+    // TD-32: an AVI B-frame stream (not H.264/HEVC) whose per-frame pts is only
+    // partially back-filled by the demuxer and not trustworthy where present; every
+    // frame is treated as if it had no pts (sequential timing instead).
+    bool unreliableFramePts_ = false;
     // Decode thread only (seek() runs while the thread is stopped).
     int64_t seekTargetPts_ = AV_NOPTS_VALUE;  // skip frames before this; NOPTS = no seek pending
     int64_t seekFromPts_ = 0;   // where the demuxer was last asked to seek
