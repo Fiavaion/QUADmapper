@@ -194,11 +194,11 @@ target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws
 # the project session (app/ProjectSession.cpp and the live<->DTO mapping it uses,
 # compiled in here because the app is an executable, TD-14). No GL context needed.
 add_quadmapper_test(test_control_app
-    control/ControlBindingsTest.cpp
-    app/MissingMediaTest.cpp
-    app/ReplaceMediaTest.cpp
-    app/MeshEditKeysTest.cpp
-    app/SceneTakeRoutingTest.cpp
+    editor/ControlBindingsTest.cpp
+    editor/MissingMediaTest.cpp
+    editor/ReplaceMediaTest.cpp
+    editor/MeshEditKeysTest.cpp
+    editor/SceneTakeRoutingTest.cpp
     app/ProjectSessionTest.cpp
     ${CMAKE_SOURCE_DIR}/src/app/ProjectSession.cpp
 )

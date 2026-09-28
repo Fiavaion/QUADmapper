@@ -8,7 +8,7 @@
 #include "editor/MissingMedia.hpp"
 #include "editor/ProjectReplace.hpp"
 #include "editor/UndoRouting.hpp"
-#include "../control/FakePlayable.hpp"
+#include "FakePlayable.hpp"
 
 #include <gtest/gtest.h>
 
