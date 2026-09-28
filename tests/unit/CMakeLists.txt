@@ -190,14 +190,18 @@ target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws
 
 # The application's control targets (app/ControlBindings.hpp) on real scenes, quads and
 # sources, plus the control preferences, the missing-media relocation logic
-# (app/MissingMedia.hpp) and the mesh-edit keyboard workflow (app/MeshEditKeys.hpp).
-# No GL context needed.
+# (app/MissingMedia.hpp), the mesh-edit keyboard workflow (app/MeshEditKeys.hpp) and
+# the project session (app/ProjectSession.cpp and the live<->DTO mapping it uses,
+# compiled in here because the app is an executable, TD-14). No GL context needed.
 add_quadmapper_test(test_control_app
     control/ControlBindingsTest.cpp
     app/MissingMediaTest.cpp
     app/ReplaceMediaTest.cpp
     app/MeshEditKeysTest.cpp
     app/SceneTakeRoutingTest.cpp
+    app/ProjectSessionTest.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/ProjectSession.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/ProjectMapping.cpp
 )
 target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_control
     quadmapper_project quadmapper_scene quadmapper_source quadmapper_core)
