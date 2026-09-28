@@ -628,12 +628,14 @@ public:
         // TD-33: a container can declare a duration that is present and positive but
         // still short of the real one, when an edit list trims the movie's start (the
         // "mov,mp4,m4a,3gp,3g2,mj2" demuxer reports the trimmed stream length, not the
-        // frame count actually decoded past it). Cross-check that family even when a
-        // duration was declared, and only widen it: a well-formed file's probed end
-        // matches its declared duration and this is a no-op.
+        // frame count actually decoded past it). Cross-check that family, only widening
+        // the duration, and only when the first video packet is marked for discard (the
+        // sign of a start-trimming edit list): the probe reads the last second of packets,
+        // which for an all-intra 4K file (ProRes) is ~100 MB on the opening thread.
         const bool movFamily = !isLive_ && formatCtx_->iformat && formatCtx_->iformat->name &&
             std::strstr(formatCtx_->iformat->name, "mov") != nullptr;
-        if (probeEnd || movFamily) {
+        const bool trimmedMov = movFamily && startIsTrimmedByEditList();
+        if (probeEnd || trimmedMov) {
             // No video duration recorded: measure where the video really ends, since the
             // playback clock loops there (Matroska declares its end time, start offset
             // included; MPEG-TS only has an estimate).
@@ -1569,6 +1571,22 @@ private:
                    rgbFrame_->data[0] + y * rgbFrame_->linesize[0],
                    rowBytes);
         }
+    }
+
+    // Is the first video packet marked for discard, as a start-trimming edit list marks
+    // its pre-roll (TD-33)? Reads up to the first video packet; the caller seeks back.
+    bool startIsTrimmedByEditList() {
+        AVPacket* packet = av_packet_alloc();
+        if (!packet) return false;
+        bool trimmed = false;
+        for (int i = 0; i < 1000 && av_read_frame(formatCtx_, packet) >= 0; ++i) {
+            const bool video = packet->stream_index == videoStreamIndex_;
+            if (video) trimmed = (packet->flags & AV_PKT_FLAG_DISCARD) != 0;
+            av_packet_unref(packet);
+            if (video) break;
+        }
+        av_packet_free(&packet);
+        return trimmed;
     }
 
     // End of the last video packet (pts + duration, relative to the stream start),
