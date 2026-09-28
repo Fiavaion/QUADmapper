@@ -1,0 +1,177 @@
+# ADR-051: Editor architecture: an editor library, one Panel interface, an action registry, a perform lock
+
+**Date:** 2026-09-28
+**Status:** Accepted (owner: "continue", 2026-09-28). Reserved by the foundation audit, 2026-09-25.
+**Deciders:** Jones
+
+## Context
+
+- **`Application.cpp` is 3,019 lines** (the audit's target is under 1,200). It holds:
+  - the live⇄DTO project mapping (about 450 lines, untested);
+  - file actions, autosave and recovery (about 650);
+  - the AI One-Flash code (about 260);
+  - a 660-line `render()` with a 175-line shortcut block;
+  - the dialogs' ImGui code.
+- **`ui` and `app` include each other.**
+  - `EditorState` holds 11 panels by value, and panels include about 40 `app/` headers.
+  - Editor logic reaches into panel state: the media bin's selection and preview source, the output selection.
+  - `test_control_app` links the whole `ui` library only because `EditorState` drags the panels in.
+  - The editor helpers are header-only in `src/app` because the app is an executable (TD-14).
+- **Panels are wired by hand.** Each draws its own window from an `EditorState::show*` flag. Two are set up lazily through setters, and the menu bar takes 8 AI callbacks. The Window menu lists hard-coded flags.
+- **Shortcuts are hard-coded** in `render()`. The menu disagrees with the keys:
+  - "Deselect All — Escape" does nothing;
+  - menu Delete ignores objects and calibration points;
+  - menu Select All ignores the calibration guard.
+
+  Modifiers match loosely: Ctrl+Shift+S also saves.
+- **Nothing stops an accidental edit during a live show.**
+- `KeyboardShortcuts`/`InputManager`, named by the audit, were already deleted (2f3ae37). Dead stubs remain:
+  - `renderer/{Mesh,VertexArray,VertexBuffer,RenderContext,Shader}`;
+  - `output/PerformMode`, `ui/menus/MainMenu`, three widgets, `OutputConfigDialog`;
+  - the never-instantiated `ProceduralEditorPanel`;
+  - the unused mesh shaders;
+  - `Application::update()` and `showDemo`.
+
+## Decision
+
+### 1. Layers
+`core → {scene, project, media, video, audio, control, renderer, source, output, input} → editor → ui → app`
+
+- **`src/editor`, a static library (`quadmapper_editor`).**
+  - **Contents:**
+    - `EditorState` (with no panels) and `EditorContext`;
+    - the commands helpers and mutations now in `src/app`: GridUndo, MediaAssign, MeshEditKeys, MeshLoads, MissingMedia, OutputPersistence, ProjectReplace, QuadSelection, ReplaceMedia, SliceEditing, SourceAudio, TextureResolve, UndoRouting, UnsavedIndicator, ControlBindings;
+    - the live⇄DTO mapping as `ProjectMapping.cpp`;
+    - the action registry and the perform lock;
+    - `EditorServices`, a pure interface the app implements: file-action requests, status, missing-media search, dialog state, preference saves.
+  - **ImGui:** it has no ImGui dependency beyond `input/VertexKeyboard.hpp`, which stays put so the success-metric code does not move.
+- **Model state leaves the panels.** The selected media id, the selected output id and the preview source move into `EditorState`. Editor code never touches a panel.
+- **`ui`** holds the panels, `EditorUi` (dock layout, menu, canvas overlay, banners, dialogs), `PanelHost` and `ShortcutRouter`.
+- **`app`** holds:
+  - `Application`: the loop, GLFW/GL/ImGui setup and shutdown, projector frames;
+  - `ProjectSession`: New/Open/Save, autosave, recovery, dirty state, emergency save;
+  - `AiAssist`: the sidecar and One-Flash;
+  - `AppActions`: registers the actions that need app services;
+  - `Bench` and `StressHarness`.
+- **The layering is tested.** A `layering_check` ctest fails on any `ui/` or `app/` include under `src/editor` and any `app/` include under `src/ui`. A `test_editor` target links only the editor library.
+
+### 2. One Panel interface
+```cpp
+enum class PanelKind { Window, Tab, Overlay };           // Tab = inside Resources
+class Panel {
+public:
+    virtual ~Panel() = default;
+    virtual const char* id() const = 0;                  // window, dock and imgui.ini name
+    virtual const char* menuLabel() const { return id(); } // Window menu; nullptr = unlisted
+    virtual PanelKind kind() const { return PanelKind::Window; }
+    virtual bool editsShow() const { return true; }      // drawn disabled under the perform lock
+    virtual void onAttach(EditorContext&) {}             // replaces lazy setters and callbacks
+    virtual void onProjectReplaced(EditorContext&) {}    // New / Open / Restore
+    virtual void drawContent(EditorContext&) = 0;        // the host does Begin/End
+    bool visible = true;
+};
+```
+- The host opens the window, applies `BeginDisabled` when the lock is on and the panel edits the show, and closes it.
+- The Window menu is generated from the host's panels.
+- Editor code that must show a window posts a request, which the host drains.
+- Panels get everything through `EditorContext`: state, project, sources, outputs, renderer, audio, actions, services, external control, preferences.
+- `ViewportEditor` and `MainMenuBar` stay non-Panel classes owned by `EditorUi`, for ordering (TD-21: the canvas runs straight after `NewFrame`) and because the menu bar is not a window.
+
+### 3. Action registry
+```cpp
+struct Chord { int key; uint8_t mods; };                 // ImGuiKey, exact Ctrl|Shift|Alt|Super
+enum class ActionClass { Show, Edit, File, View };
+enum class KeyGuard { Editing /*no text field, no popup*/, Show /*no text field*/ };
+struct Action { std::string id, label; std::optional<Chord> chord; ActionClass cls;
+                KeyGuard guard = KeyGuard::Editing; bool fixed = false;
+                std::function<bool(const EditorContext&)> enabled;
+                std::function<void(EditorContext&)> run; };
+enum class Outcome { Ran, Disabled, Locked, Unknown };
+```
+- **`add()` refuses:**
+  - duplicate ids;
+  - clashing chords;
+  - any chord on a reserved canvas key (Tab, the arrows and H, with any modifiers).
+- **The menu and the keys invoke the same action**, and the menu shows the registry's label and chord, so they cannot disagree. Modifiers match exactly.
+- **Canvas keys stay outside the registry:**
+  - Tab/Shift+Tab, the arrows with Shift 10× and Alt 0.1×, and H/Shift+H;
+  - widget-local Esc.
+
+  They are modal, they repeat, and Shift/Alt are step sizes, not chord parts. `SetKeyOwner` keeps protecting them. They are the success metric.
+- **Captured outside, dispatched through the registry:**
+  - scene takes 1–9 and numpad keys, from the physical GLFW key (layout-independent) through the take queue;
+  - an output window's own Esc/F11/Ctrl+B/1–9, which stay in `OutputManager` because output must not depend on editor.
+- **In the registry:**
+  - with the looser `Show` guard and not rebindable: F11, Esc (the perform/calibration/learn chain) and Ctrl+B;
+  - with the `Editing` guard: Delete, Ctrl+Z/Y/A/,/S, Ctrl+[/] (±Shift), Ctrl+M, Alt+=/−/R.
+- **No new bindings.** New menu chords such as Ctrl+N/Ctrl+O/Ctrl+Shift+S need the owner's sign-off first. Rebinding and a keymap file are deferred.
+- **OSC/MIDI (ADR-048) keeps its own `ControlRegistry`.** Only `Show`-class actions may ever be exported to external control.
+
+### 4. Perform lock
+- **Blocks:**
+  - `Edit` actions;
+  - canvas picking, dragging and keys (no canvas key owner);
+  - media drops;
+  - show-editing panels, which are drawn disabled;
+  - New, Open, Import OBJ and Restore;
+  - calibration and slice-warp editing;
+  - One-Flash;
+  - MIDI learn and mapping edits;
+  - Preferences edits;
+  - as a safety net, `CommandHistory` refuses commands.
+- **Keeps:**
+  - scene takes by key, OSC and MIDI, with their fades;
+  - blackout, F11/Esc and perform mode;
+  - every OSC/MIDI target;
+  - the Video Player transport;
+  - Save and autosave;
+  - canvas zoom, pan and viewing;
+  - Exit, which still confirms.
+- **Toggle:**
+  - Output > Perform Lock, and `perform.lock` on Ctrl+Shift+L, which is currently unused (a new binding: listed for the owner's sign-off before E7 ships).
+  - Locking is immediate. Unlocking asks for confirmation.
+  - A persistent LOCKED banner shows while it is on.
+- **Persistence:** runtime state, like blackout. It is not saved, and there is no `.qmap` change.
+
+### 5. Migration, in slices that each build and pass the full ctest
+- **E0.** Delete the dead stubs, `ProceduralEditorPanel` and the mesh shaders.
+- **E1.** `AiAssist` out of `Application.cpp`; delete `update()`/`showDemo`.
+- **E2.** `ProjectSession` out (file actions, recovery, autosave, dirty state, missing-media search, emergency save).
+- **E3.** Break the cycle: panels out of `EditorState`, selection/preview state into it, editor helpers stop touching panels.
+- **E4.** Create the `quadmapper_editor` library (`git mv`), `ProjectMapping.cpp` with a round-trip test, `test_editor`, `layering_check`.
+- **E5.** `Panel`, `PanelHost`, `EditorUi`: `render()`'s layout, panels, banners and dialogs move to ui; visibility moves into panels; the Window menu is generated.
+- **E6.** `ActionRegistry`, `ShortcutRouter`, `AppActions`; the shortcut block is deleted; the menu invokes actions.
+- **E7.** The perform lock.
+- **E8.** CLAUDE.md (component graph, "Adding a New Panel", "Adding a New Keyboard Shortcut", Key Files) and the debt ledger.
+
+E0 can run alongside anything. E1, E2, E3 and E5 all touch `Application.cpp`, so they merge in order. E4 runs alone because it renames headers.
+
+### 6. Gates
+- Every slice keeps `ctest` green, including `bench_smoke`, which drives Tab + arrow nudges and 1–9 through the real GLFW key callback: the automated success-metric gate.
+- **Tests:**
+  - `ProjectMappingTest` round-trips scenes, quads, groups, missing sources and MIDI mappings.
+  - `PanelHostTest` and `ActionRegistryTest`/`ShortcutRouterTest` check that:
+    - Delete in a text field does nothing;
+    - Ctrl+B fires with a popup open;
+    - Tab with a quad selected is never consumed;
+    - the menu and the key have the same effect.
+  - `PerformLockTest`.
+  - `layering_check`.
+- **Manual after E5, E6 and E7:** the success metric by hand, F11, the dock layout on a fresh `imgui.ini`, and the lock (Tab and the arrows do nothing; 1–9, Ctrl+B and F11 work).
+- **Size:** `Application.cpp` is under 1,200 lines by E5. If E5 slips, moving scene takes, external control and component setup into `app/ShowControl.cpp` gets there without the UI rework.
+
+## Consequences
+- ✅ Editor logic is testable without ImGui or a window. The layering is enforced by a test, not by convention.
+- ✅ One place to add a panel and one place to add a shortcut. The menu cannot disagree with the keys.
+- ✅ A live show can be locked against accidental edits without losing show control.
+- ❌ Header moves touch about 70 include lines. The history of moved files needs `git log --follow`.
+- ❌ Exact modifier matching changes two accidental behaviours: Ctrl+Shift+S and Ctrl+Alt+M no longer fire Save and Mesh.
+- ❌ Controls that edit the model directly, outside commands, are covered by the lock only through `BeginDisabled`. New panels must keep `editsShow` true unless they are show controls.
+
+## Alternatives considered
+1. **An INTERFACE library of headers in `src/app`.** Rejected: no `.cpp` homes, and no link-level proof that the cycle is gone.
+2. **Routing canvas keys through the registry.** Rejected: the canvas keys are modal and repeat, and Shift/Alt are step sizes. Putting them behind a chord table risks the success metric for no gain.
+3. **A persistent perform lock saved in the show.** Rejected: a show opened on another machine would open locked. The lock belongs to the session, like blackout.
+
+## Out of scope
+The renderer↔source include cycle (`GpuCompressedFormat` in `source/FrameData.hpp`) is a separate hygiene item.
