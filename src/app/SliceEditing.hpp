@@ -40,6 +40,20 @@ inline OutputWindow* sliceWarpOutput(EditorState& es, OutputManager* outputs) {
     return output;
 }
 
+// The output whose frame the canvas shows while calibrating (TD-29): the output being
+// calibrated, when it shows the active scene. The canvas is then that output's frame
+// edge to edge, drawn as its projector shows it (OutputManager::renderSceneFrame:
+// objects from the projector, the scene's canvas through the output's slices), so a
+// point on the canvas is a projector pixel (canvasToPixel) whatever the slicing, and
+// no pick goes through canvas space or a slice's warp. Null otherwise (not
+// calibrating, or the calibrated output shows another scene or none): the canvas is
+// the scene's canvas and calibration points are not edited on it.
+inline OutputWindow* calibrationViewOutput(EditorState& es, OutputManager* outputs) {
+    if (es.calibratingOutputId.isNull() || !outputs) return nullptr;
+    OutputWindow* calibrated = outputs->getOutput(es.calibratingOutputId);
+    return calibrated && calibrated->getSceneId() == es.activeScene().getId() ? calibrated : nullptr;
+}
+
 // What the canvas editing keys (Tab, the arrows, H) act on this frame. Calibration
 // comes first, then slice warp editing, which the operator turns on explicitly in the
 // slice editor; otherwise the selected quad, exactly as without slices. Selecting a
@@ -48,9 +62,8 @@ enum class CanvasKeyOwner { None, Quad, Calibration, SliceWarp };
 
 inline CanvasKeyOwner canvasKeyOwner(EditorState& es, OutputManager* outputs) {
     if (!es.calibratingOutputId.isNull()) {
-        const OutputWindow* calibrated = outputs ? outputs->getOutput(es.calibratingOutputId) : nullptr;
-        const bool points = calibrated && calibrated->getSceneId() == es.activeScene().getId() &&
-                            !calibrated->getCalibrationPoints().empty();
+        const OutputWindow* calibrated = calibrationViewOutput(es, outputs);
+        const bool points = calibrated && !calibrated->getCalibrationPoints().empty();
         return points ? CanvasKeyOwner::Calibration : CanvasKeyOwner::None;
     }
     if (sliceWarpOutput(es, outputs)) return CanvasKeyOwner::SliceWarp;
@@ -108,14 +121,14 @@ inline bool applySliceWarpKeys(const CanvasKeys& keys, EditorState& es, OutputWi
 // outputs that show `sceneId` gets the overlap's width, gamma 2.2 and the default
 // curve (autoBlendEdges); other edges keep their values. One undo step. Returns how
 // many edges were set: 0 (and no step) when no two outputs' slices overlap. The output
-// being calibrated takes no part: calibration needs its default slicing (canCalibrate).
+// being calibrated blends like any other: its calibration is in projector pixels, which
+// slices do not move (TD-29).
 inline int autoBlendScene(EditorState& es, OutputManager& outputs, const UUID& sceneId) {
     std::vector<OutputWindow*> shown;
     std::vector<SlicePlacement> placements;
     std::vector<std::pair<size_t, size_t>> where;  // placement -> (output, slice)
     for (const auto& output : outputs.getOutputs()) {
         if (!output || sceneId.isNull() || output->getSceneId() != sceneId) continue;
-        if (output->getId() == es.calibratingOutputId) continue;
         for (size_t s = 0; s < output->getSlices().size(); ++s) {
             placements.push_back(SlicePlacement{output->getId(), output->getSlices()[s].input});
             where.emplace_back(shown.size(), s);

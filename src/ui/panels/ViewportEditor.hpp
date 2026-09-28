@@ -19,8 +19,10 @@ struct EditorContext;
 // Application claims Tab/arrows after NewFrame so a focused panel cannot swallow
 // them. (See ADR-0034 / the CLAUDE.md success metric.)
 // While a projector is being calibrated (EditorState::calibratingOutputId, ADR-052)
-// quad editing is suspended and, when the canvas shows that projector, the same mouse
-// and keyboard model places, drags and nudges its calibration points instead.
+// quad editing is suspended and, when that projector shows the active scene, the canvas
+// shows its output frame (objects from its projector, slices of the scene's canvas over
+// them, TD-29) and the same mouse and keyboard model places, drags and nudges its
+// calibration points, in projector pixels, instead.
 // While a slice warp is edited (EditorState::sliceWarpOutputId, ADR-047) the canvas
 // shows that output's frame and the same model moves the slice's warp corners; the
 // selected output's slice input rectangles are outlined on the scene canvas otherwise.

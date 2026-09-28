@@ -246,21 +246,163 @@ TEST(SliceEditingTest, WarpEditingOfAVanishedSliceEnds) {
     EXPECT_TRUE(rig.es.sliceWarpOutputId.isNull());
 }
 
-// Calibration needs the untouched default slice (ADR-047 Amendment 3), and entering
-// it leaves warp editing.
-TEST(SliceEditingTest, CalibrationOnlyWithTheDefaultSlicing) {
+// Calibration works on an output however it is sliced (TD-29): the blended and warped
+// output enters it, the canvas shows that output's frame (calibrationViewOutput) and
+// the canvas keys go to its points, never the quad. Entering it leaves warp editing,
+// and warp editing cannot start while calibrating.
+TEST(SliceEditingTest, CalibrationWorksOnAnySlicing) {
     SliceRig rig;
-    EXPECT_FALSE(rig.es.canCalibrate(*rig.left));  // blended slice
-    rig.es.beginCalibration(*rig.left);
-    EXPECT_TRUE(rig.es.calibratingOutputId.isNull());
-
-    EXPECT_TRUE(rig.es.canCalibrate(*rig.side));   // one whole-canvas slice
+    rig.right->getSlices()[0].warp.setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.06f),
+                                               Vec2(0.97f, 0.95f), Vec2(0.02f, 1.0f)});
+    ASSERT_FALSE(isDefaultSlicing(rig.right->getSlices(), IVec2(3200, 1080)));
     rig.es.beginSliceWarp(*rig.left, rig.left->getSlices()[0].id);
-    rig.es.beginCalibration(*rig.side);
-    EXPECT_EQ(rig.es.calibratingOutputId, rig.side->getId());
+
+    rig.es.beginCalibration(*rig.right);  // blended, keystoned, part of the canvas
+    EXPECT_EQ(rig.es.calibratingOutputId, rig.right->getId());
     EXPECT_TRUE(rig.es.sliceWarpOutputId.isNull());
+    EXPECT_EQ(calibrationViewOutput(rig.es, &rig.om), rig.right);
+    EXPECT_EQ(canvasKeyOwner(rig.es, &rig.om), CanvasKeyOwner::None) << "no points yet";
+    rig.right->getCalibrationPoints().push_back(CalibrationPoint{});
+    EXPECT_EQ(canvasKeyOwner(rig.es, &rig.om), CanvasKeyOwner::Calibration);
+    const Vec2 quadTl = rig.quad->getGeometry().getCorners()[0];
+    EXPECT_FALSE(rig.press(tabKey()));
+    EXPECT_FALSE(rig.press(rightKey(/*shift=*/true)));
+    EXPECT_EQ(rig.quad->getGeometry().getCorners()[0], quadTl) << "the quad never moves";
+
     rig.es.beginSliceWarp(*rig.left, rig.left->getSlices()[0].id);
     EXPECT_TRUE(rig.es.sliceWarpOutputId.isNull()) << "not while calibrating";
+
+    // Another scene made active: the canvas is that scene's, and no point is edited on it.
+    rig.es.setActiveScene(rig.other);
+    EXPECT_EQ(calibrationViewOutput(rig.es, &rig.om), nullptr);
+    EXPECT_EQ(canvasKeyOwner(rig.es, &rig.om), CanvasKeyOwner::None);
+
+    rig.es.endCalibration();
+    EXPECT_EQ(calibrationViewOutput(rig.es, &rig.om), nullptr);
+}
+
+namespace {
+
+// A 2x2x2 box seen obliquely by a projector of `size` (as in CalibrationSessionTest).
+ProjectorCamera trueProjector(IVec2 size) {
+    return orbitCamera(Vec3(0.0f), 25.0f, 15.0f, 6.0f, size.x, size.y);
+}
+
+// Calibrate `output` from the box's eight corners as the operator would on the
+// calibration view: each point is picked where the view shows it (the output frame, in
+// which the truth projects it; CalibrationViewTest proves the view draws it there
+// whatever the slicing) and mapped by canvasToPixel. Leaves calibration running.
+void pickBoxCorners(EditorState& es, OutputWindow& output, const ProjectorCamera& truth) {
+    output.getCalibrationPoints().clear();
+    output.getProjector() = ProjectorCamera{};
+    output.getProjector().intrinsics = ProjectorIntrinsics::fromThrowRatio(
+        1.5f, truth.intrinsics.width, truth.intrinsics.height);
+    es.beginCalibration(output);
+    const ProjectorIntrinsics& k = output.getProjector().intrinsics;
+    for (int i = 0; i < 8; ++i) {
+        CalibrationPoint point;
+        point.world = Vec3((i & 1) ? 1.0f : -1.0f, (i & 2) ? 1.0f : -1.0f, (i & 4) ? 1.0f : -1.0f);
+        Vec2 truthPixel;
+        ASSERT_TRUE(truth.project(point.world, truthPixel));
+        const Vec2 onView(truthPixel.x / static_cast<float>(k.width),
+                          truthPixel.y / static_cast<float>(k.height));
+        point.pixel = canvasToPixel(onView, k);
+        output.getCalibrationPoints().push_back(point);
+    }
+    es.calibration.markChanged();
+    ASSERT_TRUE(es.calibration.update(output.getCalibrationPoints(), output.getProjector()))
+        << es.calibration.status;
+}
+
+}  // namespace
+
+// A solve on a warped, blended slice of the canvas recovers the same camera as one on
+// an output with the default slicing, and the true camera, within the solver's usual
+// tolerances (CalibrationSessionTest.EnoughPointsSolveAndCalibrateTheProjector).
+TEST(SliceEditingTest, ASolveOnAWarpedSliceRecoversTheCameraOfTheDefaultSlicing) {
+    SliceRig rig;
+    rig.right->getSlices()[0].warp.setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.06f),
+                                               Vec2(0.97f, 0.95f), Vec2(0.02f, 1.0f)});
+    ASSERT_TRUE(isDefaultSlicing(rig.side->getSlices(), rig.es.scenes[1]->getCanvasSize()));
+    const IVec2 size = rig.right->getEffectiveResolution();
+    ASSERT_EQ(size, rig.side->getEffectiveResolution());
+    const ProjectorCamera truth = trueProjector(size);
+
+    pickBoxCorners(rig.es, *rig.side, truth);
+    const ProjectorCamera plain = rig.side->getProjector();
+    rig.es.endCalibration();
+    pickBoxCorners(rig.es, *rig.right, truth);
+    const ProjectorCamera warped = rig.right->getProjector();
+    EXPECT_LT(rig.es.calibration.rmsError, 0.05f);
+    rig.es.endCalibration();
+
+    ASSERT_TRUE(plain.calibrated);
+    ASSERT_TRUE(warped.calibrated);
+    for (const ProjectorCamera* solved : {&plain, &warped}) {
+        EXPECT_NEAR(solved->intrinsics.fx, truth.intrinsics.fx, 1.0f);
+        EXPECT_NEAR(solved->intrinsics.cx, truth.intrinsics.cx, 1.0f);
+        EXPECT_NEAR(solved->intrinsics.cy, truth.intrinsics.cy, 1.0f);
+        EXPECT_LT(glm::length(solved->position() - truth.position()), 1e-2f);
+    }
+    EXPECT_NEAR(warped.intrinsics.fx, plain.intrinsics.fx, 1e-3f);
+    EXPECT_LT(glm::length(warped.position() - plain.position()), 1e-4f);
+    for (int i = 0; i < 8; ++i) {
+        const Vec3 corner((i & 1) ? 1.0f : -1.0f, (i & 2) ? 1.0f : -1.0f, (i & 4) ? 1.0f : -1.0f);
+        Vec2 a, b;
+        ASSERT_TRUE(plain.project(corner, a));
+        ASSERT_TRUE(warped.project(corner, b));
+        EXPECT_LT(glm::length(a - b), 0.01f);
+    }
+}
+
+// A slice change while its output is calibrated (the slice editor, auto-blend, a canvas
+// resize) changes only the 2D picture the calibration view shows: the points are
+// projector pixels and the objects are drawn from the projector, so the points, the
+// solved projector and the session stay as they were, with no re-solve. The slice steps
+// are held back from undo until calibration ends (TD-17 scoping), then undo in order.
+TEST(SliceEditingTest, ASliceChangeMidCalibrationLeavesThePointsAndTheSolve) {
+    SliceRig rig;
+    const ProjectorCamera truth = trueProjector(rig.right->getEffectiveResolution());
+    pickBoxCorners(rig.es, *rig.right, truth);
+    ASSERT_EQ(rig.es.calibratingOutputId, rig.right->getId());
+    const std::vector<CalibrationPoint> points = rig.right->getCalibrationPoints();
+    const ProjectorCamera solved = rig.right->getProjector();
+    const std::vector<Slice> slicesBefore = rig.right->getSlices();
+    ASSERT_FALSE(rig.es.calibration.isDirty());
+
+    const UUID sliceId = rig.right->getSlices()[0].id;
+    editSlices(rig.es, *rig.right, "Move slice warp corner", sliceWarpCornerKey(sliceId, 1),
+               [](std::vector<Slice>& s) { s[0].warp.setCorner(1, Vec2(0.9f, 0.1f)); });
+    rig.right->getSlices()[0].blend[SLICE_EDGE_LEFT].width = 0.0f;
+    rig.left->getSlices()[0].blend[SLICE_EDGE_RIGHT].width = 0.0f;
+    EXPECT_EQ(autoBlendScene(rig.es, rig.om, rig.wide), 2) << "the calibrated output blends too";
+    EXPECT_FLOAT_EQ(rig.right->getSlices()[0].blend[SLICE_EDGE_LEFT].width, 640.0f);
+    EXPECT_TRUE(setSceneCanvas(rig.es, rig.wide, IVec2(1600, 540), /*locked=*/true));
+    EXPECT_FLOAT_EQ(rig.right->getSlices()[0].input.x, 640.0f) << "rescaled with the canvas";
+
+    ASSERT_EQ(rig.right->getCalibrationPoints().size(), points.size());
+    for (size_t i = 0; i < points.size(); ++i) {
+        EXPECT_EQ(rig.right->getCalibrationPoints()[i].pixel, points[i].pixel);
+        EXPECT_EQ(rig.right->getCalibrationPoints()[i].world, points[i].world);
+    }
+    EXPECT_EQ(rig.right->getProjector().pose.rotation, solved.pose.rotation);
+    EXPECT_EQ(rig.right->getProjector().pose.translation, solved.pose.translation);
+    EXPECT_EQ(rig.right->getProjector().intrinsics.fx, solved.intrinsics.fx);
+    EXPECT_FALSE(rig.es.calibration.isDirty()) << "no re-solve";
+    EXPECT_FALSE(rig.es.calibration.update(rig.right->getCalibrationPoints(), rig.right->getProjector()));
+    EXPECT_EQ(calibrationViewOutput(rig.es, &rig.om), rig.right);
+    EXPECT_EQ(canvasKeyOwner(rig.es, &rig.om), CanvasKeyOwner::Calibration);
+
+    std::string heldBack;
+    EXPECT_FALSE(undoStep(rig.es, &heldBack));
+    EXPECT_FALSE(heldBack.empty());
+    EXPECT_STREQ(undoScopeName(rig.es), "calibration");
+    rig.es.endCalibration();
+    ASSERT_TRUE(undoStep(rig.es));  // the canvas size
+    ASSERT_TRUE(undoStep(rig.es));  // auto-blend
+    ASSERT_TRUE(undoStep(rig.es));  // the warp corner
+    EXPECT_EQ(rig.right->getSlices()[0].warp.getCorners(), slicesBefore[0].warp.getCorners());
+    EXPECT_EQ(rig.right->getCalibrationPoints().size(), points.size()) << "slice undo leaves points";
 }
 
 TEST(SliceEditingTest, AutoBlendSetsTheFacingEdgesAsOneUndoStep) {
@@ -463,23 +605,6 @@ TEST(SliceEditingTest, WarpEditingUndoesOnlyThatOutputsSliceSteps) {
     EXPECT_FALSE(canRedoStep(rig.es)) << "the quad step is next to redo";
     EXPECT_FALSE(redoStep(rig.es));
     EXPECT_EQ(rig.quad->getGeometry().getCorners()[0], quadTl);
-}
-
-// Auto-blend never changes the slicing of the output being calibrated, which must stay
-// its default (canCalibrate), even when another output's slice overlaps it.
-TEST(SliceEditingTest, AutoBlendLeavesTheCalibratingOutputAlone) {
-    SliceRig rig;
-    OutputManager::showScene(*rig.side, rig.es.scenes[0].get(), rig.es.scenes);
-    rig.es.beginCalibration(*rig.side);
-    ASSERT_EQ(rig.es.calibratingOutputId, rig.side->getId());
-    rig.right->getSlices()[0].input = CanvasRect{2800.0f, 0.0f, 1920.0f, 1080.0f};  // past the side's right edge
-
-    EXPECT_EQ(autoBlendScene(rig.es, rig.om, rig.wide), 0);
-    EXPECT_TRUE(rig.es.canCalibrate(*rig.side));
-
-    rig.right->getSlices()[0].input = CanvasRect{1280.0f, 0.0f, 1920.0f, 1080.0f};
-    EXPECT_EQ(autoBlendScene(rig.es, rig.om, rig.wide), 2) << "the other outputs still blend";
-    EXPECT_TRUE(rig.es.canCalibrate(*rig.side));
 }
 
 // The slice editor's input rectangle stays on the canvas.

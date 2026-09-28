@@ -423,21 +423,11 @@ struct EditorState {
     OutputCalibrationResolver outputResolver{calibratingOutputId, calibration};
     OutputRef outputRef(const UUID& outputId) { return OutputRef{&outputResolver, outputId}; }
 
-    // Calibration picks projector pixels on the editor canvas, so it needs the canvas
-    // to be the projector frame: an output that shows a scene through anything but its
-    // default slicing (the whole canvas, no warp, no blend) cannot be calibrated
-    // (ADR-047 Amendment 3, TECHNICAL_DEBT TD-29). An output that shows no scene can.
-    bool canCalibrate(const OutputWindow& output) const {
-        const int index = findSceneIndex(scenes, output.getSceneId());
-        return index < 0 ||
-               isDefaultSlicing(output.getSlices(), scenes[static_cast<size_t>(index)]->getCanvasSize());
-    }
-
-    // Enter calibration on an output (refused when canCalibrate is false). The scene it
-    // shows becomes the active one, so the canvas shows that projector. Leaves slice
-    // warp editing.
+    // Enter calibration on an output, however it is sliced. The scene it shows becomes
+    // the active one, so the canvas shows that projector's output frame, slices, warp
+    // and blend included, with the calibration points in projector pixels
+    // (calibrationViewOutput, TD-29). Leaves slice warp editing.
     void beginCalibration(const OutputWindow& output) {
-        if (!canCalibrate(output)) return;
         endSliceWarp();
         if (findSceneIndex(scenes, output.getSceneId()) >= 0) setActiveScene(output.getSceneId());
         calibratingOutputId = output.getId();

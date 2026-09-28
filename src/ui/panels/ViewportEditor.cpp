@@ -27,6 +27,8 @@
 #include <imgui.h>
 #include <glm/glm.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <array>
 #include <unordered_map>
@@ -37,7 +39,9 @@ namespace {
 
 // Calibration mode on the canvas (ADR-052 §6): place, drag and nudge the output's
 // calibration pixels with the same press rule and keyboard model as quad vertices.
-// Pixels are canvas-normalised positions times the projector image size.
+// The canvas shows the output's frame edge to edge (calibrationViewOutput, TD-29), so
+// pixels are canvas-normalised positions times the projector image size, whatever
+// the output's slices.
 void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mouseNorm,
                            bool mouseDown, bool canvasPress) {
     CalibrationSession& cal = es.calibration;
@@ -207,6 +211,45 @@ void drawSliceWarpCanvas(EditorState& es, Renderer& renderer, const OutputManage
     }
 }
 
+// The calibration view (TD-29): the calibrated output's frame as its projector shows
+// it, drawn by the call that draws the output frames (OutputManager::renderSceneFrame):
+// black, the scene's 3D objects from the projector, then the scene's canvas through the
+// output's slices, warp, blend zones and black level. `frameMin`..`frameMax` is the
+// frame on the editor framebuffer in GL pixels; the scissor (the canvas region) clips it.
+void drawCalibrationView(EditorState& es, Renderer& renderer, OutputManager& outputs,
+                         const OutputWindow& output,
+                         const std::unordered_map<UUID, Texture*>& textures, const IVec2& frameMin,
+                         const IVec2& frameMax) {
+    const Scene* shown = OutputManager::sceneForOutput(es.scenes, output);
+    if (!shown) return;
+
+    // The frame is black where the projector sends no light (outside the slices, in
+    // blend zones), not the editor's grey.
+    GLint scissor[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_SCISSOR_BOX, scissor);
+    GLfloat clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, clearColor);
+    const int x0 = std::max(frameMin.x, scissor[0]);
+    const int y0 = std::max(frameMin.y, scissor[1]);
+    const int x1 = std::min(frameMax.x, scissor[0] + scissor[2]);
+    const int y1 = std::min(frameMax.y, scissor[1] + scissor[3]);
+    glScissor(x0, y0, std::max(x1 - x0, 0), std::max(y1 - y0, 0));
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+    glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+
+    GLint prevBlend[4] = {GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA};
+    glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlend[0]);
+    glGetIntegerv(GL_BLEND_DST_RGB, &prevBlend[1]);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlend[2]);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlend[3]);
+    outputs.renderSceneFrame(output, *shown, output.getEffectiveResolution(), textures, renderer);
+    renderer.endFrame();
+    glBlendFuncSeparate(static_cast<GLenum>(prevBlend[0]), static_cast<GLenum>(prevBlend[1]),
+                        static_cast<GLenum>(prevBlend[2]), static_cast<GLenum>(prevBlend[3]));
+}
+
 // Outlines of the selected output's slice input rectangles on the scene canvas, while
 // the slice editor shows that output (an output selected in the Inspector) and it shows
 // the active scene. The selected slice is drawn brighter.
@@ -284,10 +327,12 @@ void ViewportEditor::render(EditorContext& ctx) {
     OutputWindow* canvasOutput = nullptr;
     const IVec2 canvasSize = es.activeScene().getCanvasSize();
     canvasAspect = static_cast<float>(canvasSize.x) / static_cast<float>(canvasSize.y);
-    // Slice warp editing shows that output's frame instead (its effective size).
+    // Slice warp editing and calibration show that output's frame instead (its
+    // effective size).
     OutputWindow* warpOutput = sliceWarpOutput(es, m_outputManager);
-    if (warpOutput) {
-        const IVec2 frame = warpOutput->getEffectiveResolution();
+    OutputWindow* calibrationView = calibrationViewOutput(es, m_outputManager);
+    if (OutputWindow* frameOutput = warpOutput ? warpOutput : calibrationView) {
+        const IVec2 frame = frameOutput->getEffectiveResolution();
         if (frame.x > 0 && frame.y > 0) {
             canvasAspect = static_cast<float>(frame.x) / static_cast<float>(frame.y);
         }
@@ -295,10 +340,8 @@ void ViewportEditor::render(EditorContext& ctx) {
     if (m_outputManager) {
         // The projector being calibrated when it shows this scene, else the first
         // output showing it.
-        OutputWindow* calibrated = m_outputManager->getOutput(es.calibratingOutputId);
-        canvasOutput = calibrated && calibrated->getSceneId() == es.activeScene().getId()
-                           ? calibrated
-                           : m_outputManager->firstOutputShowing(es.activeScene().getId());
+        canvasOutput = calibrationView ? calibrationView
+                                       : m_outputManager->firstOutputShowing(es.activeScene().getId());
         if (canvasOutput) canvasProjector = &canvasOutput->getProjector();
     }
 
@@ -393,11 +436,11 @@ void ViewportEditor::render(EditorContext& ctx) {
             return;
         }
 
-        // Calibrating: the canvas edits the calibration points of the projector it shows
-        // (when it shows the one being calibrated), and quad vertices stay untouched.
+        // Calibrating: the canvas edits the calibration points of the projector whose
+        // frame it shows, and quad vertices stay untouched.
         if (calibrating) {
-            if (canvasOutput && canvasOutput->getId() == es.calibratingOutputId) {
-                editCalibrationPoints(es, *canvasOutput, mouseNorm, mouseDown, canvasPress);
+            if (calibrationView) {
+                editCalibrationPoints(es, *calibrationView, mouseNorm, mouseDown, canvasPress);
             }
             cornerHoveredVertex = cornerDraggedVertex = -1;
             meshHoveredVertex = meshDraggedVertex = -1;
@@ -793,6 +836,27 @@ void ViewportEditor::render(EditorContext& ctx) {
         // (ADR-040 P2). The output frames use the same builder with the projector's
         // missing-media look.
         auto texturePtrs = buildQuadTextureMap(es, ctx.sourceManager, SurfaceView::Editor);
+
+        // Calibrating: the projector's output frame, no quad handles (TD-29). The
+        // calibration points are drawn over it by CalibrationPanel::drawCanvasOverlay.
+        if (calibrationView && m_outputManager) {
+            // The frame [0,1] on the framebuffer, in GL pixels (origin bottom-left).
+            const float left = regionX + viewOffsetX * regionW;
+            const float top = regionY + viewOffsetY * regionH;
+            const float right = left + viewScaleX * regionW;
+            const float bottom = top + viewScaleY * regionH;
+            const IVec2 frameMin(static_cast<int>(std::floor(left * dpiX)),
+                                 static_cast<int>(std::floor((winHeight - bottom) * dpiY)));
+            const IVec2 frameMax(static_cast<int>(std::ceil(right * dpiX)),
+                                 static_cast<int>(std::ceil((winHeight - top) * dpiY)));
+            drawCalibrationView(es, *m_renderer, *m_outputManager, *calibrationView, texturePtrs,
+                                frameMin, frameMax);
+            m_renderer->renderCanvasBorder(glm::vec4(0.45f, 0.45f, 0.5f, 0.9f), 1.0f);
+            m_renderer->endFrame();
+            m_renderer->resetViewTransform();
+            restoreViewport();
+            return;
+        }
 
         // 3D objects as the canvas's projector sees them (WYSIWYG with the output),
         // under the quads. The scissor limits the depth clear to the canvas region.

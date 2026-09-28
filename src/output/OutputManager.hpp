@@ -494,6 +494,19 @@ public:
     Rotation sceneCanvasRotation(const UUID& sceneId) const;
 
     /**
+     * What `output` shows of `scene` with no crossfade, drawn over what the bound
+     * target holds: the scene's 3D objects from the output's projector, then the
+     * scene's canvas (as the last renderOutputFrames drew it) through the output's
+     * slices, blend zones and black level. `effectiveSize` is the output's unturned
+     * frame. The output frames are drawn with it, and so is the editor's calibration
+     * view (TD-29), which is why a point picked on that view is a projector pixel
+     * whatever the slicing. Changes the blend function; a caller that needs its own
+     * restores it.
+     */
+    void renderSceneFrame(const OutputWindow& output, const Scene& scene, IVec2 effectiveSize,
+                          const std::unordered_map<UUID, Texture*>& textures, Renderer& renderer);
+
+    /**
      * Blend test pattern (ADR-047 §3): while on, every canvas is drawn as a grid of
      * white lines on black with solid white bands across the middle instead of its
      * scene's quads, so the outputs show it through their slices and the overlaps can

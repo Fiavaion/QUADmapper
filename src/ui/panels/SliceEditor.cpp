@@ -39,10 +39,6 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
         ImGui::TextDisabled("Show a scene on this output to edit its slices.");
         return;
     }
-    if (es.calibratingOutputId == output.getId()) {
-        ImGui::TextDisabled("Leave calibration to edit this output's slices.");
-        return;
-    }
     const IVec2 canvas = scene->getCanvasSize();
     ImGui::TextDisabled("Canvas of '%s': %d x %d px", scene->getName().c_str(), canvas.x, canvas.y);
 
@@ -142,9 +138,16 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
         if (ImGui::Button("Editing Warp on Canvas - Done")) es.endSliceWarp();
         ImGui::PopStyleColor(2);
     } else {
+        // The canvas belongs to calibration while a projector is calibrated
+        // (EditorState::beginSliceWarp refuses); the numbers below still edit the warp.
+        const bool calibrating = !es.calibratingOutputId.isNull();
+        ImGui::BeginDisabled(calibrating);
         if (ImGui::Button("Edit Warp on Canvas")) es.beginSliceWarp(output, sliceId);
-        ImGui::SetItemTooltip("The canvas shows this output's frame; move the warp corners with "
-                              "the mouse or the keyboard, as for a quad");
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(calibrating
+                                  ? "Leave calibration to edit the warp on the canvas"
+                                  : "The canvas shows this output's frame; move the warp corners with "
+                                    "the mouse or the keyboard, as for a quad");
     }
     // Beside the button, above the help text: after the wrapped text it would run off
     // the panel's right edge.

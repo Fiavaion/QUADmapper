@@ -25,7 +25,9 @@ struct CanvasView {
     Vec2 toRegion(const Vec2& canvas) const { return canvas * scale + offset; }
 };
 
-// The canvas shows the projector image edge to edge: canvas [0,1] <-> [0,width]x[0,height].
+// While calibrating, the canvas shows the projector's output frame edge to edge, its
+// slices, warp and blend included (TD-29): canvas [0,1] <-> [0,width]x[0,height], so a
+// pick maps to a projector pixel without going through the slices.
 inline Vec2 canvasToPixel(const Vec2& canvas, const ProjectorIntrinsics& k) {
     return Vec2(canvas.x * static_cast<float>(k.width), canvas.y * static_cast<float>(k.height));
 }

@@ -5,6 +5,7 @@
 #include "renderer/Framebuffer.hpp"
 #include "renderer/Renderer.hpp"
 #include "renderer/Texture.hpp"
+#include "scene/CalibrationSession.hpp"
 #include "scene/MeshObject.hpp"
 #include "scene/ProjectorCamera.hpp"
 #include "scene/Scene.hpp"
@@ -1964,6 +1965,216 @@ TEST(CanvasSliceRenderTest, CanvasIsColourOnly) {
 
     renderer.shutdown();
     manager.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// The calibration view (TD-29): the calibrated output's frame, drawn by
+// renderSceneFrame as the output frames are. A pick on it maps to a projector pixel
+// by canvasToPixel, whatever the slicing.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// One slicing case: the scene's canvas size (in frames) and the slices of the output
+// the view shows (`partner` gives a second output showing the scene too, for a pair).
+struct CalibrationViewCase {
+    const char* name;
+    int canvasFrames;  // canvas width in frame widths
+    std::vector<Slice> (*slices)(IVec2 canvas, int w, int h);
+    std::vector<Slice> (*partner)(IVec2 canvas, int w, int h);
+};
+
+// Where the view shows things, one case: the lit pixels of the objects alone, and the
+// lit pixels of the marker quad alone, as frame-normalised points (+y down).
+struct CalibrationViewShot {
+    std::vector<unsigned char> objects;
+    std::vector<Vec2> markerPoints;
+};
+
+// The marker quad on the canvas, normalised (inside every case's slice input).
+constexpr float MARKER_X0 = 0.55f, MARKER_X1 = 0.62f, MARKER_Y0 = 0.40f, MARKER_Y1 = 0.50f;
+
+}  // namespace
+
+TEST(CalibrationViewTest, PicksMapToProjectorPixelsWhateverTheSlicing) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    const std::vector<CalibrationViewCase> cases = {
+        {"(a) default slicing", 1,
+         [](IVec2 canvas, int, int) { return std::vector<Slice>{makeFullCanvasSlice(canvas)}; },
+         nullptr},
+        {"(b) offset and scaled slice", 2,
+         [](IVec2, int w, int h) {
+             Slice s = makeFullCanvasSlice(IVec2(1, 1));
+             s.input = CanvasRect{0.5f * w, 0.1f * h, 1.0f * w, 0.8f * h};
+             return std::vector<Slice>{s};
+         },
+         nullptr},
+        {"(c) warped slice", 2,
+         [](IVec2 canvas, int, int) {
+             Slice s = makeFullCanvasSlice(canvas);
+             s.warp.setCorners({Vec2(0.10f, 0.05f), Vec2(0.95f, 0.0f), Vec2(0.85f, 1.0f),
+                                Vec2(0.0f, 0.90f)});
+             return std::vector<Slice>{s};
+         },
+         nullptr},
+        {"(d) right of a blended, keystoned pair", 2,
+         [](IVec2, int w, int h) {
+             Slice s = makeFullCanvasSlice(IVec2(1, 1));
+             s.input = CanvasRect{0.8f * w, 0.0f, 1.2f * w, 1.0f * h};
+             s.blend[SLICE_EDGE_LEFT].width = 0.4f * w;
+             s.warp.setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.06f), Vec2(0.97f, 0.95f),
+                                Vec2(0.02f, 1.0f)});
+             return std::vector<Slice>{s};
+         },
+         [](IVec2, int w, int h) {
+             Slice s = makeFullCanvasSlice(IVec2(1, 1));
+             s.input = CanvasRect{0.0f, 0.0f, 1.2f * w, 1.0f * h};
+             s.blend[SLICE_EDGE_RIGHT].width = 0.4f * w;
+             return std::vector<Slice>{s};
+         }},
+    };
+
+    // Ground truth: the cube's corners as the projector projects them (the bounding
+    // box of its silhouette, in projector pixels).
+    Vec2 truthMin(1e9f), truthMax(-1e9f);
+    ProjectorCamera projector;
+    std::vector<CalibrationViewShot> shots;
+    int w = 0, h = 0;
+
+    for (const CalibrationViewCase& c : cases) {
+        SCOPED_TRACE(c.name);
+        OutputManager manager;
+        ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+        OutputWindow* output = manager.createOutput("Calibrated");
+        ASSERT_NE(output, nullptr);
+        glfwSetWindowSize(output->getGLFWwindow(), 96, 64);
+        glfwGetFramebufferSize(output->getGLFWwindow(), &w, &h);
+        OutputWindow* partner = c.partner ? manager.createOutput("Partner") : nullptr;
+        glfwMakeContextCurrent(gl.win);
+
+        auto media = patternTexture(32, 4);
+        std::vector<std::unique_ptr<Scene>> scenes;
+        scenes.push_back(std::make_unique<Scene>());
+        Scene& scene = *scenes.front();
+        const IVec2 canvas(c.canvasFrames * w, h);
+        scene.setCanvasSize(canvas);
+        std::unordered_map<UUID, Texture*> textures;
+        buildFeatureScene(scene, {media.get()}, textures);  // the cube
+        std::vector<UUID> quadIds;
+        for (const auto& quad : scene.getQuadManager().getQuads()) quadIds.push_back(quad->getId());
+        for (const UUID& id : quadIds) scene.getQuadManager().deleteQuad(id);
+        Quad* marker = scene.getQuadManager().createQuad("Marker");
+        marker->getGeometry().setCorners({Vec2(MARKER_X0, MARKER_Y0), Vec2(MARKER_X1, MARKER_Y0),
+                                          Vec2(MARKER_X1, MARKER_Y1), Vec2(MARKER_X0, MARKER_Y1)});
+        OutputManager::showScene(*output, &scene, scenes);
+        output->getSlices() = c.slices(canvas, w, h);
+        if (partner) {
+            OutputManager::showScene(*partner, &scene, scenes);
+            partner->getSlices() = c.partner(canvas, w, h);
+        }
+        Vec3 lo, hi;
+        ASSERT_TRUE(scene.visibleObjectBounds(lo, hi));
+        output->getProjector() = ProjectorCamera::fitToOutput(ProjectorCamera{}, w, h, &lo, &hi);
+        projector = output->getProjector();
+        truthMin = Vec2(1e9f);
+        truthMax = Vec2(-1e9f);
+        const MeshObject& cube = *scene.getObjects().front();
+        for (const Vec3& local : cube.getMesh().positions) {
+            Vec2 pixel;
+            ASSERT_TRUE(projector.project(Vec3(cube.getTransform() * glm::vec4(local, 1.0f)), pixel));
+            truthMin = glm::min(truthMin, pixel);
+            truthMax = glm::max(truthMax, pixel);
+        }
+
+        Renderer renderer;
+        ASSERT_TRUE(renderer.initialize());
+        // The view as the editor draws it: the canvases from the last output frames,
+        // then the calibrated output's frame over black.
+        auto view = [&]() {
+            manager.renderOutputFrames(scenes, textures, renderer);
+            Framebuffer target(Framebuffer::Depth::With);
+            EXPECT_TRUE(target.resize(w, h));
+            target.bind();
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            manager.renderSceneFrame(*output, scene, IVec2(w, h), textures, renderer);
+            renderer.endFrame();
+            std::vector<unsigned char> px = readBound(w, h);
+            Framebuffer::unbind();
+            return px;
+        };
+        CalibrationViewShot shot;
+        marker->setVisible(false);
+        shot.objects = view();
+        marker->setVisible(true);
+        scene.getObjects().front()->setVisible(false);
+        const std::vector<unsigned char> quads = view();
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const size_t i = (static_cast<size_t>(y) * w + x) * 4;  // bottom-up rows
+                if (quads[i] + quads[i + 1] + quads[i + 2] > 60) {
+                    shot.markerPoints.emplace_back((x + 0.5f) / w, (h - 1 - y + 0.5f) / h);
+                }
+            }
+        }
+
+        // 2D: the view shows the canvas through this output's slice. Every lit pixel,
+        // taken back through the slice's warp (surfaceParamsAt) and input rectangle,
+        // lands on the marker quad of the canvas, within a canvas pixel.
+        const Slice& slice = output->getSlices().front();
+        EXPECT_GT(shot.markerPoints.size(), 10u) << "the marker must be in the view";
+        float worst = 0.0f;
+        for (const Vec2& f : shot.markerPoints) {
+            const Vec2 uv = slice.warp.surfaceParamsAt(f);
+            ASSERT_GE(uv.x, 0.0f) << "a lit pixel outside the slice's warp";
+            const Vec2 onCanvas(slice.input.x + uv.x * slice.input.width,
+                                slice.input.y + uv.y * slice.input.height);
+            const float dx = std::max({MARKER_X0 * canvas.x - onCanvas.x, onCanvas.x - MARKER_X1 * canvas.x, 0.0f});
+            const float dy = std::max({MARKER_Y0 * canvas.y - onCanvas.y, onCanvas.y - MARKER_Y1 * canvas.y, 0.0f});
+            worst = std::max(worst, std::max(dx, dy));
+        }
+        EXPECT_LE(worst, 1.0f) << "canvas pixels off the marker";
+        shots.push_back(std::move(shot));
+
+        renderer.shutdown();
+        media.reset();
+        manager.shutdown();
+    }
+
+    // Where the view shows the cube, against the ground truth.
+    const ProjectorIntrinsics& k = projector.intrinsics;
+    ASSERT_EQ(k.width, w);
+    ASSERT_EQ(k.height, h);
+    for (size_t s = 0; s < shots.size(); ++s) {
+        SCOPED_TRACE(cases[s].name);
+        // 3D: the objects are drawn in projector space, never through the slices, so
+        // they are the same picture whatever the slicing.
+        EXPECT_EQ(shots[s].objects, shots.front().objects) << "slicing moved the 3D objects";
+        // Picks at the silhouette's edges on the view map (canvasToPixel) to the
+        // projected bounding box, within a pixel.
+        int minX = w, minY = h, maxX = -1, maxY = -1;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const size_t i = (static_cast<size_t>(y) * w + x) * 4;
+                const auto& px = shots[s].objects;
+                if (px[i] + px[i + 1] + px[i + 2] <= 30) continue;
+                const int top = h - 1 - y;
+                minX = std::min(minX, x); maxX = std::max(maxX, x);
+                minY = std::min(minY, top); maxY = std::max(maxY, top);
+            }
+        }
+        ASSERT_GE(maxX, 0) << "the cube must be in the view";
+        const Vec2 pickedMin = canvasToPixel(Vec2(static_cast<float>(minX) / w,
+                                                  static_cast<float>(minY) / h), k);
+        const Vec2 pickedMax = canvasToPixel(Vec2(static_cast<float>(maxX + 1) / w,
+                                                  static_cast<float>(maxY + 1) / h), k);
+        EXPECT_NEAR(pickedMin.x, truthMin.x, 1.0f);
+        EXPECT_NEAR(pickedMin.y, truthMin.y, 1.0f);
+        EXPECT_NEAR(pickedMax.x, truthMax.x, 1.0f);
+        EXPECT_NEAR(pickedMax.y, truthMax.y, 1.0f);
+    }
 }
 
 // ---------------------------------------------------------------------------

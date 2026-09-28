@@ -838,27 +838,18 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
         ImGui::Separator();
         sliceEditor_.render(ctx, *selectedOutput);
 
-        // Projector calibration (ADR-052 §6). It needs the untouched default slice
-        // (EditorState::canCalibrate, ADR-047 Amendment 3).
+        // Projector calibration (ADR-052 §6), however the output is sliced (TD-29).
         ImGui::Separator();
         const bool calibratingThis = es.calibratingOutputId == selectedOutput->getId();
-        const bool canCalibrate = es.canCalibrate(*selectedOutput);
-        ImGui::BeginDisabled(calibratingThis || !canCalibrate);
+        ImGui::BeginDisabled(calibratingThis);
         if (ImGui::Button("Calibrate Projector...")) {
             es.beginCalibration(*selectedOutput);
         }
         ImGui::EndDisabled();
-        ImGui::SetItemTooltip(canCalibrate
-                                  ? "Pair points on the 3D objects with projector pixels to solve "
-                                    "this projector's lens and position"
-                                  : "Calibration needs this output's default slice: one slice of the "
-                                    "whole canvas with no warp and no blend");
+        ImGui::SetItemTooltip("Pair points on the 3D objects with projector pixels to solve "
+                              "this projector's lens and position");
         ImGui::SameLine();
         ImGui::TextDisabled(selectedOutput->getProjector().calibrated ? "calibrated" : "not calibrated");
-        if (!canCalibrate && !calibratingThis) {
-            ImGui::TextWrapped("Calibration is off while this output's slices are edited (warp, "
-                               "blend or part of the canvas).");
-        }
 
         // Enabled checkbox
         ImGui::Separator();

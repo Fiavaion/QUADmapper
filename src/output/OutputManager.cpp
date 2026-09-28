@@ -947,8 +947,7 @@ void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>
         }
         const SceneFade* fade = sceneFade(output);
         if (!fade) {
-            renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures);
-            renderSceneSlices(output, *scene, effectiveSize, nullptr, renderer);
+            renderSceneFrame(output, *scene, effectiveSize, textures, renderer);
             return;
         }
         Renderer::SliceFade sliceFade;
@@ -972,6 +971,14 @@ void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>
         sliceFade.fromNext = outgoing(fromNext);
         renderSceneSlices(output, *scene, effectiveSize, &sliceFade, renderer);
     });
+}
+
+void OutputManager::renderSceneFrame(const OutputWindow& output, const Scene& scene,
+                                     IVec2 effectiveSize,
+                                     const std::unordered_map<UUID, Texture*>& textures,
+                                     Renderer& renderer) {
+    renderer.renderMeshObjects(scene.getObjects(), output.getProjector(), textures);
+    renderSceneSlices(output, scene, effectiveSize, nullptr, renderer);
 }
 
 void OutputManager::renderSceneSlices(const OutputWindow& output, const Scene& scene,
@@ -1027,8 +1034,7 @@ bool OutputManager::renderFadeLayers(const OutputWindow& output, IVec2 effective
         layer->bind();
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures);
-        renderSceneSlices(output, *scene, effectiveSize, nullptr, renderer);
+        renderSceneFrame(output, *scene, effectiveSize, textures, renderer);
         textureOf[i] = layer->colorTexture();
     }
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(frameFbo));
