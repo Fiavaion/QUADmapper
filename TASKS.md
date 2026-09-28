@@ -4,10 +4,12 @@ Last Updated: 2026-09-26 (Session 23)
 
 ## Quick Status
 - In Progress: 0
-- Todo: Phase 0 S6 hygiene (move AI out of Application.cpp, dead stubs,
-  dev→master PR), Phase 1 ADR-047 and ADR-051 (ADR-048/049/050 done), TD-12/14b/15..17, 🚩 QM-061
-- Done: Session 22 added QM-083..QM-099 (see below); Session 23 added QM-100..QM-109 (PRD MVP
-  gaps + post-MVP control)
+- Todo: ADR-051 editor architecture / Application.cpp split (with Phase 0 S6: move AI out of
+  Application.cpp), TD-12 present threads (hardware), TD-14b, TD-29 calibration with slices,
+  TD-32/33 (pre-existing loop bugs), dev→master PR #2, 🚩 QM-061
+- Done: Session 22 added QM-083..QM-099; Session 23 added QM-100..QM-109 (PRD MVP gaps + control);
+  2026-09-27/28 added QM-117..QM-121 (ADR-047 canvas/slices/blend/crossfades, ADR-049, ADR-056
+  zero-copy), TD-30/31 fixed; quiet-machine gates met (see TECHNICAL_DEBT.md)
 - Blocked: 0
 - Plan of record: [docs/audits/2026-09-25-foundation-audit.md](docs/audits/2026-09-25-foundation-audit.md) §8
 
