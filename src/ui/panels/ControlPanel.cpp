@@ -1,7 +1,7 @@
 #include "ControlPanel.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
 #include "control/ExternalControl.hpp"
 #include "output/OutputManager.hpp"
 #include "project/Project.hpp"

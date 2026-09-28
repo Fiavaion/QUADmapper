@@ -1,9 +1,9 @@
 #include "VideoPlayerPanel.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
-#include "app/MediaAssign.hpp"
-#include "app/SourceAudio.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/MediaAssign.hpp"
+#include "editor/SourceAudio.hpp"
 #include "audio/AudioEngine.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"

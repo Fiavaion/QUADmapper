@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "project/Project.hpp"
 #include "project/ProjectSerializer.hpp"
-#include "app/UnsavedIndicator.hpp"
+#include "editor/UnsavedIndicator.hpp"
 
 #include <filesystem>
 #include <string>

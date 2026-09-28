@@ -1,5 +1,5 @@
 #include "AiAssist.hpp"
-#include "EditorState.hpp"
+#include "../editor/EditorState.hpp"
 #include "../ai/SidecarClient.hpp"
 #include "../core/FileSystem.hpp"
 #include "../core/Logger.hpp"

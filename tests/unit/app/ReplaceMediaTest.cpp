@@ -1,8 +1,8 @@
-// Replace in show (app/ReplaceMedia.hpp, QM-082) on a real EditorState: what shows the
+// Replace in show (editor/ReplaceMedia.hpp, QM-082) on a real EditorState: what shows the
 // original clip moves to the converted one as one undo step, and undo/redo touch only
 // what that step moved. Opening a real file needs GL, so the command is driven with ids.
 
-#include "app/ReplaceMedia.hpp"
+#include "editor/ReplaceMedia.hpp"
 
 #include <gtest/gtest.h>
 

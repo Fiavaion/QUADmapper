@@ -16,7 +16,7 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
-#include "app/SourceAudio.hpp"
+#include "editor/SourceAudio.hpp"
 #include "audio/AudioAttachment.hpp"
 #include "audio/AudioDecoder.hpp"
 #include "audio/AudioDevice.hpp"

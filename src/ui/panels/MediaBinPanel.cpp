@@ -1,5 +1,5 @@
 #include "MediaBinPanel.hpp"
-#include "app/EditorState.hpp"
+#include "editor/EditorState.hpp"
 #include "core/FileSystem.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"

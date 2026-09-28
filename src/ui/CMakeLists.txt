@@ -45,6 +45,7 @@ target_include_directories(quadmapper_ui
 
 target_link_libraries(quadmapper_ui
     PUBLIC
+        quadmapper_editor
         quadmapper_core
         quadmapper_scene
         quadmapper_renderer

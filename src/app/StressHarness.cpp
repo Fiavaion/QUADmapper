@@ -2,9 +2,9 @@
 
 #include "StressHarness.hpp"
 #include "Application.hpp"
-#include "EditorState.hpp"
-#include "TextureResolve.hpp"
-#include "SourceAudio.hpp"
+#include "../editor/EditorState.hpp"
+#include "../editor/TextureResolve.hpp"
+#include "../editor/SourceAudio.hpp"
 #include "../audio/AudioEngine.hpp"
 #include "../audio/AudioMixer.hpp"
 #include "../core/GlObjectStats.hpp"

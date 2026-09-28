@@ -1,5 +1,5 @@
 #include "OutputPanel.hpp"
-#include "app/EditorState.hpp"
+#include "editor/EditorState.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include <imgui.h>

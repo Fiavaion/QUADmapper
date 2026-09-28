@@ -1,13 +1,13 @@
-// Missing-media app logic (app/MissingMedia.hpp) and the saved-transport helper it
-// shares with load and source release (app/MediaAssign.hpp), plus the project-replace
-// order (app/ProjectReplace.hpp) and pause-while-unseen, on a real EditorState.
+// Missing-media app logic (editor/MissingMedia.hpp) and the saved-transport helper it
+// shares with load and source release (editor/MediaAssign.hpp), plus the project-replace
+// order (editor/ProjectReplace.hpp) and pause-while-unseen, on a real EditorState.
 // Opening a real file needs GL (its texture), so relocation is tested from the point
 // the new source exists: the rebind and the transport it is given. Also the app's
-// off-thread mesh loading (app/MeshLoads.hpp) and undo routing (app/UndoRouting.hpp).
+// off-thread mesh loading (editor/MeshLoads.hpp) and undo routing (editor/UndoRouting.hpp).
 
-#include "app/MissingMedia.hpp"
-#include "app/ProjectReplace.hpp"
-#include "app/UndoRouting.hpp"
+#include "editor/MissingMedia.hpp"
+#include "editor/ProjectReplace.hpp"
+#include "editor/UndoRouting.hpp"
 #include "../control/FakePlayable.hpp"
 
 #include <gtest/gtest.h>
@@ -384,7 +384,7 @@ TEST(MediaPreviewTest, AnEndedPreviewIsRemovedUnlessBoundAndABoundOneIsHandedOve
     EXPECT_TRUE(fx.es.previewSourcePath.empty());
 }
 
-// ---- Undo while calibrating (TD-17, app/UndoRouting.hpp) ------------------------------
+// ---- Undo while calibrating (TD-17, editor/UndoRouting.hpp) ------------------------------
 
 namespace {
 
@@ -507,7 +507,7 @@ TEST(UndoRoutingTest, UndoAfterTheOutputWasDeletedAndReCreatedIsANoOp) {
     EXPECT_FALSE(fx.es.commandHistory.canRedo());
 }
 
-// ---- Meshes parsed off the render thread (TD-16a, app/MeshLoads.hpp) -----------------
+// ---- Meshes parsed off the render thread (TD-16a, editor/MeshLoads.hpp) -----------------
 
 namespace {
 

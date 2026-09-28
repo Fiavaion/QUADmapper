@@ -3,7 +3,7 @@
 // leaves the quads alone. No GL context, camera or Python needed.
 
 #include "app/AiAssist.hpp"
-#include "app/EditorState.hpp"
+#include "editor/EditorState.hpp"
 #include "ai/SidecarClient.hpp"
 
 #include <gtest/gtest.h>

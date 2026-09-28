@@ -1,6 +1,6 @@
 #include "PreferencesDialog.hpp"
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
 #include "audio/AudioEngine.hpp"
 #include "core/Logger.hpp"
 #include "core/FileSystem.hpp"

@@ -1,8 +1,8 @@
 #include "ScenePanel.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
-#include "app/SliceEditing.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/SliceEditing.hpp"
 #include "scene/Scene.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"

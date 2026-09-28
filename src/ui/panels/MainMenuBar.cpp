@@ -1,9 +1,9 @@
 #include "MainMenuBar.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
-#include "app/MissingMedia.hpp"
-#include "app/UndoRouting.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/MissingMedia.hpp"
+#include "editor/UndoRouting.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "project/Project.hpp"

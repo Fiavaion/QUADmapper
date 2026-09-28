@@ -1,13 +1,13 @@
-// The application's control targets (app/ControlBindings.hpp) against real Scenes,
+// The application's control targets (editor/ControlBindings.hpp) against real Scenes,
 // Quads and a SourceManager, driven through the dispatcher as OSC and MIDI would.
 // No GL: the stand-in playable source has zero size, so no texture is created.
 
-#include "app/ControlBindings.hpp"
+#include "editor/ControlBindings.hpp"
 #include "FakePlayable.hpp"
 #include "control/ControlDispatcher.hpp"
 #include "ui/dialogs/PreferencesDialog.hpp"
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>

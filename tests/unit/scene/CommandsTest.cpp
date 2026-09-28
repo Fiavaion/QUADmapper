@@ -4,7 +4,7 @@
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGroup.hpp"
 #include "scene/Scene.hpp"
-#include "app/GridUndo.hpp"
+#include "editor/GridUndo.hpp"
 #include "core/CommandHistory.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <map>
@@ -624,7 +624,7 @@ TEST_F(SceneCommandsTest, MoveGridHandleMergesPerHandleAndIsSafeAfterDelete) {
     EXPECT_FALSE(history_->undo());
 }
 
-// Grid undo (app/GridUndo.hpp) through the id-based command
+// Grid undo (editor/GridUndo.hpp) through the id-based command
 TEST_F(SceneCommandsTest, GridChangeUndoRestoresGridAndIsSafeAfterDelete) {
     Quad* quad = manager().createQuad();
     QuadGeometry& geo = quad->getGeometry();

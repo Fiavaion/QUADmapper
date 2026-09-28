@@ -7,7 +7,7 @@
 
 #include "Bench.hpp"
 #include "Application.hpp"
-#include "EditorState.hpp"
+#include "../editor/EditorState.hpp"
 #include "ProjectSession.hpp"
 #include "StressHarness.hpp"
 #include "../core/GlObjectStats.hpp"

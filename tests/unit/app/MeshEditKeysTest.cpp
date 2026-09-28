@@ -1,10 +1,10 @@
-// The mesh-edit keyboard workflow (app/MeshEditKeys.hpp): the success-metric vertex
+// The mesh-edit keyboard workflow (editor/MeshEditKeys.hpp): the success-metric vertex
 // nudge in mesh edit, and the grid-line handles of ADR-049 §3, through real commands
 // and undo, as ViewportEditor drives them each frame.
 
 #include <gtest/gtest.h>
 
-#include "app/MeshEditKeys.hpp"
+#include "editor/MeshEditKeys.hpp"
 #include "core/CommandHistory.hpp"
 #include "scene/Commands.hpp"
 #include "scene/Scene.hpp"

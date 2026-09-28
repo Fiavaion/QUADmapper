@@ -12,9 +12,6 @@ add_executable(QUADmapper
     Bench.cpp
     ProjectSession.hpp
     ProjectSession.cpp
-    ProjectMapping.hpp
-    ProjectMapping.cpp
-    StatusLine.hpp
 )
 
 target_link_libraries(QUADmapper
@@ -30,6 +27,7 @@ target_link_libraries(QUADmapper
         quadmapper_source
         quadmapper_ai
         quadmapper_control
+        quadmapper_editor
         quadmapper_ui
         quadmapper_input
         glad

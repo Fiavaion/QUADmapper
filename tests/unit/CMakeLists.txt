@@ -201,9 +201,8 @@ add_quadmapper_test(test_control_app
     app/SceneTakeRoutingTest.cpp
     app/ProjectSessionTest.cpp
     ${CMAKE_SOURCE_DIR}/src/app/ProjectSession.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/ProjectMapping.cpp
 )
-target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_control
+target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_editor quadmapper_control
     quadmapper_project quadmapper_scene quadmapper_source quadmapper_core)
 
 # The AI assist's status paths (app/AiAssist.cpp, compiled in here because the app is an

@@ -2,7 +2,7 @@
 
 #include "../core/Result.hpp"
 #include "../project/MediaRelocation.hpp"
-#include "UnsavedIndicator.hpp"
+#include "../editor/UnsavedIndicator.hpp"
 
 #include <atomic>
 #include <functional>

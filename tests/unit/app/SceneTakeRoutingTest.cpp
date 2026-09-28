@@ -1,16 +1,16 @@
 // Scene takes on the live routing (ADR-047 §5): EditorState::takeScene against real
 // outputs, with and without crossfades. Also slice editing on the same rig (ADR-047
-// part B, app/SliceEditing.hpp): the canvas keys, auto-blend and the canvas size,
+// part B, editor/SliceEditing.hpp): the canvas keys, auto-blend and the canvas size,
 // through real commands and undo. And what selecting a quad shows in the Properties
-// panel (app/QuadSelection.hpp). None of that needs GL; the calibration view tests at the
+// panel (editor/QuadSelection.hpp). None of that needs GL; the calibration view tests at the
 // end drive ViewportEditor in a hidden GL window and skip without one.
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
-#include "app/MeshEditKeys.hpp"
-#include "app/ProjectReplace.hpp"
-#include "app/QuadSelection.hpp"
-#include "app/SliceEditing.hpp"
-#include "app/UndoRouting.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/MeshEditKeys.hpp"
+#include "editor/ProjectReplace.hpp"
+#include "editor/QuadSelection.hpp"
+#include "editor/SliceEditing.hpp"
+#include "editor/UndoRouting.hpp"
 #include "renderer/Framebuffer.hpp"
 #include "renderer/Renderer.hpp"
 #include "scene/MeshObject.hpp"

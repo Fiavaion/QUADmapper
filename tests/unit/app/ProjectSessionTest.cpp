@@ -4,8 +4,8 @@
 // temp folder first, so no action touches the machine's untitled recovery files.
 
 #include "app/ProjectSession.hpp"
-#include "app/EditorState.hpp"
-#include "app/ProjectMapping.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/ProjectMapping.hpp"
 #include "core/FileSystem.hpp"
 #include "core/UUID.hpp"
 #include "project/Project.hpp"

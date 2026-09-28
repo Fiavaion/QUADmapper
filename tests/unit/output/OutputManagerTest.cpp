@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "output/OutputManager.hpp"
-#include "app/OutputPersistence.hpp"
+#include "editor/OutputPersistence.hpp"
 #include "core/GlObjectStats.hpp"
 #include "renderer/Framebuffer.hpp"
 #include "renderer/Renderer.hpp"

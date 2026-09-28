@@ -1,7 +1,7 @@
 #include "OutputPreviewPanel.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "scene/Scene.hpp"
