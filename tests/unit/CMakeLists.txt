@@ -93,6 +93,7 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
     add_quadmapper_test(test_video_decoder
         video/VideoDecoderSeekTest.cpp
         video/VideoPlayerPlaybackTest.cpp
+        video/LoopSpliceSafetyTest.cpp    # TD-30/TD-31 review: splice-safety regressions
         source/HapPlaybackTest.cpp
         video/HapExportTest.cpp           # QM-082 Convert to HAP, end to end
         video/RealMediaPlaybackBench.cpp  # opt-in (DISABLED_), needs local media
@@ -103,6 +104,11 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
     target_include_directories(test_video_decoder PRIVATE ${AVCODEC_INCLUDE_DIR})
     target_link_libraries(test_video_decoder PRIVATE quadmapper_source quadmapper_video quadmapper_core glfw glad
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY})
+    # Pre-made open-GOP/CRA fixtures (no x264/x265 encoder in the linked FFmpeg build):
+    # the loop-splice safety checks only branch on real H.264/HEVC NAL headers.
+    target_compile_definitions(test_video_decoder PRIVATE
+        QM_VIDEO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/videos"
+    )
 endif()
 
 # Media module tests

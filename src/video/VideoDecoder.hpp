@@ -63,6 +63,15 @@ struct DecodeOptions {
     // cannot share NV12/P010 textures.
     int failGpuTextureAfter = -1;
     bool denySharedFormat = false;
+    // Test hook (TD-30 Finding 2): force AV_NOPTS_VALUE on the frame that would otherwise
+    // signal a Loop splice's seam (VideoDecoder::spliceNextPass) by its pts dropping back
+    // to the clip's start, to reproduce a stream that drops its timestamp right there.
+    bool testStripPtsAfterSplice = false;
+    // Test hook (TD-30 review): make the Loop splice's first backward seek target this
+    // many frames past the clip's start once, standing in for a demuxer (MPEG-TS) whose
+    // seek overshoots — so readFirstFrame()'s "first" check has a concrete wrong keyframe
+    // to refuse. 0 disables.
+    int testSpliceSeekOvershootFrames = 0;
 };
 
 // Memory the backward GOP decoder may hold for Ping-Pong's reverse leg (ADR-050 §4).

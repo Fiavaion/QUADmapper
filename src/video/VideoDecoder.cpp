@@ -54,6 +54,10 @@ constexpr size_t MEGABYTE = size_t(1) << 20;
 constexpr int MAX_REVERSE_RETRIES = 20;
 // Leg changes in a row that produced no frame: the plan cannot make progress.
 constexpr int MAX_EMPTY_LEGS = 3;
+// Frames decoded while a Loop splice is pending before the seam is forced by count
+// instead of by pts: comfortably past any real B-frame reorder depth, so a stream that
+// drops a timestamp right at the seam cannot wedge the splice forever (Finding 2).
+constexpr int MAX_SPLICE_PENDING_FRAMES = 32;
 // Row alignment of frames copied from the GPU.
 constexpr int TRANSFER_ALIGN = 32;
 // How long a wait for a GPU copy may take before the copy counts as failed. Polled
@@ -1646,6 +1650,7 @@ private:
     void beginForward(double position) {
         phase_ = Phase::Forward;
         splicePending_ = false;
+        splicePendingFrames_ = 0;
         lastForwardPts_.reset();
         seekExact(position);
     }
@@ -1667,7 +1672,16 @@ private:
         }
         // By time; MPEG-TS seeks by bisecting timestamps and can land past the first
         // frame, so there the start of the file, by byte.
-        bool clean = av_seek_frame(formatCtx_, videoStreamIndex_, startPts_, AVSEEK_FLAG_BACKWARD) >= 0 &&
+        int64_t seekPts = startPts_;
+        if (!testOvershootConsumed_ && options_.testSpliceSeekOvershootFrames != 0) {
+            // Test hook: stand in for a demuxer whose backward seek overshoots (as
+            // MPEG-TS can, see above) by asking for a later keyframe outright, so
+            // readFirstFrame()'s "first" check (that the packet found really is the
+            // clip's start, not just any keyframe) has a concrete case to refuse.
+            seekPts = startPts_ + static_cast<int64_t>(options_.testSpliceSeekOvershootFrames) * frameTicks_;
+            testOvershootConsumed_ = true;
+        }
+        bool clean = av_seek_frame(formatCtx_, videoStreamIndex_, seekPts, AVSEEK_FLAG_BACKWARD) >= 0 &&
                      readFirstFrame(packet);
         if (!clean && !(formatCtx_->iformat->flags & AVFMT_NO_BYTE_SEEK)) {
             clean = av_seek_frame(formatCtx_, -1, 0, AVSEEK_FLAG_BYTE) >= 0 && readFirstFrame(packet);
@@ -1676,6 +1690,8 @@ private:
         avcodec_send_packet(codecCtx_, packet);  // room: the decoder just asked for input
         av_packet_unref(packet);
         splicePending_ = true;
+        splicePendingFrames_ = 0;
+        testStripNextSplicePts_ = options_.testStripPtsAfterSplice;
         return true;
     }
 
@@ -1742,6 +1758,7 @@ private:
     void beginReverse(double bound) {
         phase_ = Phase::Reverse;
         splicePending_ = false;
+        splicePendingFrames_ = 0;
         releaseReverse();
         building_.bound = std::min(bound, plan_.duration);
     }
@@ -1802,15 +1819,38 @@ private:
         while (!stopDecoding_ && !planStalled_) {
             if (phase_ == Phase::Forward) {
                 if (decodeNextRaw()) {
+                    if (testStripNextSplicePts_ && splicePending_ && lastForwardPts_ &&
+                        frame_->pts != AV_NOPTS_VALUE &&
+                        framePts(frame_) <= *lastForwardPts_ + FRAME_DUE_EPSILON) {
+                        // Test hook (Finding 2): this is the exact frame that would signal
+                        // the seam by its pts dropping back to the start; strip it, as a
+                        // real stream that drops a timestamp right there would.
+                        testStripNextSplicePts_ = false;
+                        frame_->pts = AV_NOPTS_VALUE;
+                    }
                     const double pts = framePts(frame_);
-                    if (splicePending_ && lastForwardPts_ && frame_->pts != AV_NOPTS_VALUE &&
-                        pts <= *lastForwardPts_ + FRAME_DUE_EPSILON) {
+                    if (splicePending_) ++splicePendingFrames_;
+                    // The seam is normally found by the pts dropping back to the start; a
+                    // frame with no timestamp right there must not lose the reference the
+                    // drop is measured against, or the splice would never resolve and every
+                    // frame after it would carry the wrong (stale) leg (Finding 2). Past any
+                    // real reorder depth with still no drop, force the switch by frame count.
+                    const bool splicedByPts = splicePending_ && lastForwardPts_ &&
+                        frame_->pts != AV_NOPTS_VALUE && pts <= *lastForwardPts_ + FRAME_DUE_EPSILON;
+                    const bool splicedByCount = splicePending_ && !splicedByPts &&
+                        splicePendingFrames_ > MAX_SPLICE_PENDING_FRAMES;
+                    if (splicedByPts || splicedByCount) {
                         // The first frame of the pass spliced on: the last one came out whole.
                         splicePending_ = false;
+                        splicePendingFrames_ = 0;
                         endSeen_ = true;
                         leg_ = nextLeg(leg_, plan_.duration, plan_.loopMode);
                     }
-                    if (frame_->pts != AV_NOPTS_VALUE) lastForwardPts_ = pts; else lastForwardPts_.reset();
+                    if (frame_->pts != AV_NOPTS_VALUE) {
+                        lastForwardPts_ = pts;
+                    } else if (!splicePending_) {
+                        lastForwardPts_.reset();
+                    }
                     observedEnd_ = std::max(observedEnd_.load(), pts + frameSeconds_);
                     // A frame stamped past the clip's end would show after the next pass began.
                     if (planLoops() && pts >= plan_.duration - FRAME_DUE_EPSILON) continue;
@@ -1822,6 +1862,7 @@ private:
                 }
                 if (!atEnd_) return VideoFrame{};  // read error or stop
                 splicePending_ = false;  // a splice that never showed a new pass: restart as usual
+                splicePendingFrames_ = 0;
                 endSeen_ = true;  // observedEnd_ now includes the last frame
                 if (leg_.final) {
                     phase_ = Phase::Done;          // atEnd_ stays set: the clip is over
@@ -2144,6 +2185,9 @@ private:
     std::string reverseError_;       // guarded by bufferMutex_
     bool splicePending_ = false;     // Loop: the start was fed after the end (spliceNextPass)
     std::optional<double> lastForwardPts_;  // the last frame decoded going forward, if timed
+    int splicePendingFrames_ = 0;    // frames decoded since splicePending_ was set (Finding 2)
+    bool testStripNextSplicePts_ = false;  // test hook: NOPTS the next frame after a splice
+    bool testOvershootConsumed_ = false;   // test hook: testSpliceSeekOvershootFrames used once
 
     // Background decoding
     std::thread backgroundThread_;
