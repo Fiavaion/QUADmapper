@@ -42,6 +42,13 @@ add_subdirectory(unit)
 # Integration tests
 add_subdirectory(integration)
 
+# layering_check (ADR-051 §1): src/editor includes neither ui/ nor app/, src/ui no app/.
+add_test(
+    NAME layering_check
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${PROJECT_SOURCE_DIR}/src
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/LayeringCheck.cmake
+)
+
 # ---------------------------------------------------------------------------
 # stress_smoke — QM-081 H3: fast CI gate for the perform-mode stress harness.
 # Runs 5 cycles, 1 output, 20 frames/cycle in --hidden mode (no screen grab).
