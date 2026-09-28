@@ -134,6 +134,7 @@ TEST_F(ProjectSessionTest, SaveBeforeLoadSavesTheOpenShowThenLoads) {
     es_.activeScene().getQuadManager().createQuad("Quad 2");
     es_.saveBeforeAction = true;
     es_.pendingLoadPath = file("b.qmap");
+    snprintf(es_.projectPath, sizeof(es_.projectPath), "%s", file("b.qmap").c_str());  // typed in the Project tab
     es_.pendingFileAction = FileAction::Load;
 
     session_->processPendingFileAction();
@@ -169,6 +170,35 @@ TEST_F(ProjectSessionTest, ExitClosesOnlyWhenNothingIsUnsaved) {
     es_.pendingFileAction = FileAction::Exit;
     session_->processPendingFileAction();
     EXPECT_TRUE(exitConfirmed_);
+}
+
+// Exit on a dirty show asks first; the autosave must survive until that is answered, or
+// a cancelled Exit followed by a crash would leave nothing to recover.
+TEST_F(ProjectSessionTest, ADirtyExitKeepsTheAutosaveWhileItAsks) {
+    openAs(file("show.qmap"));
+    { std::FILE* f = std::fopen(file("show.autosave.qmap").c_str(), "wb"); ASSERT_TRUE(f); std::fclose(f); }
+    es_.activeScene().getQuadManager().createQuad("Quad 2");
+    es_.pendingFileAction = FileAction::Exit;
+
+    session_->processPendingFileAction();
+
+    EXPECT_EQ(es_.unsavedPromptFor, FileAction::Exit);
+    EXPECT_FALSE(exitConfirmed_);
+    EXPECT_TRUE(fs::exists(dir_ / "show.autosave.qmap"));
+}
+
+// While the recovery prompt is unanswered, saving must not delete the file it offers.
+TEST_F(ProjectSessionTest, SavingKeepsTheRecoveryFileTheOpenPromptOffers) {
+    openAs(file("show.qmap"));
+    { std::FILE* f = std::fopen(file("show.autosave.qmap").c_str(), "wb"); ASSERT_TRUE(f); std::fclose(f); }
+    es_.recoveryFilePath = file("show.autosave.qmap");
+    es_.recoveryProjectPath = file("show.qmap");
+    es_.pendingFileAction = FileAction::Save;
+
+    session_->processPendingFileAction();
+
+    EXPECT_TRUE(fs::exists(dir_ / "show.qmap"));
+    EXPECT_TRUE(fs::exists(dir_ / "show.autosave.qmap"));
 }
 
 TEST_F(ProjectSessionTest, EmergencySaveWritesTheCrashFileNotTheProject) {
