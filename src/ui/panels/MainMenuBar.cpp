@@ -1,5 +1,7 @@
 #include "MainMenuBar.hpp"
 
+#include "editor/ActionRegistry.hpp"
+#include "editor/EditActions.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorServices.hpp"
 #include "editor/EditorState.hpp"
@@ -14,12 +16,14 @@
 #include "source/SourceManager.hpp"
 #include "audio/AudioEngine.hpp"
 #include "ui/PanelHost.hpp"
-#include "ui/dialogs/PreferencesDialog.hpp"
+#include "ui/ShortcutRouter.hpp"
 
 #include <imgui.h>
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
+#include <string>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -53,6 +57,17 @@ const char* outputProblem(const AudioEngine& audio) {
 }
 
 }  // namespace
+
+void actionMenuItem(EditorContext& ctx, const char* id, bool selected, std::optional<bool> enabled) {
+    const Action* action = ctx.actions ? ctx.actions->find(id) : nullptr;
+    if (!action) return;
+    const std::string chord = action->chord ? chordText(*action->chord) : std::string();
+    const bool canRun = enabled ? *enabled : (!action->enabled || action->enabled(ctx));
+    if (ImGui::MenuItem(action->label.c_str(), chord.empty() ? nullptr : chord.c_str(), selected,
+                        canRun)) {
+        ctx.actions->invoke(id, ctx, Source::Menu);
+    }
+}
 
 void MainMenuBar::renderAudioDevices(AudioEngine& audio, bool menu, bool& listOpen) {
     // Enumerating asks the OS, so only when a list is opened, not every frame.
@@ -126,9 +141,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             es.pendingFileAction = FileAction::Open;
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
-            es.pendingFileAction = FileAction::Save;
-        }
+        actionMenuItem(ctx, action_id::SAVE);
         if (ImGui::MenuItem("Save Project As...")) {
             es.pendingFileAction = FileAction::SaveAs;
         }
@@ -149,24 +162,14 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
 
     if (ImGui::BeginMenu("Edit")) {
         // While calibrating or editing a slice warp, only that output's calibration or
-        // slice steps (UndoRouting.hpp).
-        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndoStep(es))) {
-            undoStep(es);
-        }
-        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedoStep(es))) {
-            redoStep(es);
-        }
+        // slice steps (UndoRouting.hpp): greyed out when nothing there can be undone.
+        actionMenuItem(ctx, action_id::UNDO, false, canUndoStep(es));
+        actionMenuItem(ctx, action_id::REDO, false, canRedoStep(es));
         ImGui::Separator();
-        if (ImGui::MenuItem("Select All", "Ctrl+A")) {
-            es.quadManager().selectAll();
-        }
-        if (ImGui::MenuItem("Deselect All", "Escape")) {
-            es.quadManager().deselectAll();
-        }
+        actionMenuItem(ctx, action_id::SELECT_ALL);
+        actionMenuItem(ctx, action_id::DESELECT_ALL);
         ImGui::Separator();
-        if (ImGui::MenuItem("Delete Selected", "Delete", false, es.quadManager().hasSelection())) {
-            es.deleteSelectedQuads();
-        }
+        actionMenuItem(ctx, action_id::DELETE_SELECTION);
         ImGui::Separator();
         // Projector calibration (ADR-052): the first output showing the active scene,
         // else the first output.
@@ -187,7 +190,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             }
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Preferences...", "Ctrl+,")) es.requestPanelOpen(PreferencesDialog::ID);
+        actionMenuItem(ctx, action_id::PREFERENCES);
         ImGui::EndMenu();
     }
 
@@ -198,10 +201,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
 
     if (ImGui::BeginMenu("Output")) {
         // Master blackout (ADR-048 §3): every projector output goes black.
-        const bool blackout = ctx.outputManager && ctx.outputManager->isBlackout();
-        if (ImGui::MenuItem("Blackout", "Ctrl+B", blackout, ctx.outputManager != nullptr)) {
-            ctx.outputManager->toggleBlackout();
-        }
+        actionMenuItem(ctx, action_id::BLACKOUT, ctx.outputManager && ctx.outputManager->isBlackout());
         if (ctx.audio) {
             ImGui::Separator();
             if (ImGui::MenuItem("Mute Audio", nullptr, ctx.audio->masterMuted())) {
@@ -279,8 +279,8 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             }
         }
         ImGui::SetItemTooltip("Put a calibration grid on the selected quad");
-        if (ImGui::Button("Send to Projector (F11)")) {
-            if (ctx.outputManager) ctx.outputManager->handleF11Key();
+        if (ImGui::Button("Send to Projector (F11)") && ctx.actions) {
+            ctx.actions->invoke(action_id::PERFORM_TOGGLE, ctx, Source::Menu);
         }
         ImGui::SetItemTooltip("Toggle fullscreen output on the projector");
     }

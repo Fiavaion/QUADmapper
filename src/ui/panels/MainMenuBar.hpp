@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -9,11 +10,21 @@ struct EditorContext;
 class AudioEngine;
 class PanelHost;
 
+// A menu item for the registered action `id` (ADR-051 §3): the registry's label and
+// chord, and a click invokes it (Source::Menu), so the menu and the key cannot
+// disagree. `enabled` overrides the action's own enabled() for the grey-out (Undo /
+// Redo). Draws nothing when ctx.actions has no such action.
+void actionMenuItem(EditorContext& ctx, const char* id, bool selected = false,
+                    std::optional<bool> enabled = std::nullopt);
+
 // Renders the application main menu bar (File / Edit / Window / Output / AI).
 // Not a Panel: it is always shown and manages its own ImGui::BeginMainMenuBar /
 // EndMainMenuBar lifetime (ADR-051 §2). EditorUi owns it.
-// File items (New / Open / Save / Save As / Exit) set ctx.es.pendingFileAction,
-// which Application runs at the next frame boundary (ADR-046). The Window menu is
+// Items with a registered action (Save, Undo, Redo, Select All, Deselect All, Delete,
+// Preferences, Blackout) invoke it through ctx.actions and show the registry's label
+// and chord, so they do exactly what the key does (ADR-051 §3). The other File items
+// (New / Open / Save As / Import / Exit) set ctx.es.pendingFileAction, which
+// Application runs at the next frame boundary (ADR-046). The Window menu is
 // generated from `panels`; windows are opened through EditorState::requestPanelOpen.
 // The AI menu (ADR-035) goes through ctx.services and degrades cleanly without it.
 class MainMenuBar {

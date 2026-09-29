@@ -29,6 +29,7 @@ class EditorUi;
 class PreferencesDialog;
 class ProjectSession;
 class AiAssist;
+class ActionRegistry;
 namespace control { class ExternalControl; }
 
 // Also the editor's services (ADR-051 §1): the panels reach the session, the
@@ -62,7 +63,7 @@ public:
 
     // Live-show scene take (US-008). Key events from the editor window and, in perform
     // mode, from a focused output window only queue the scene number (GLFW callbacks
-    // run inside glfwPollEvents); render() takes them under the editing-key guards.
+    // run inside glfwPollEvents); runSceneTakes() takes them under the editing-key guard.
     void queueSceneTake(int number) { m_pendingSceneTakes.push_back(number); }
 
     // Accessors
@@ -112,9 +113,19 @@ private:
     // the work runs in processPendingFileAction() at the next frame boundary (ADR-046).
     void saveProject();   // Save; an untitled project asks for a path
 
+    // The editor's actions (ADR-051 §3, AppActions.cpp): the edit.* actions and the
+    // app's own (Save, Preferences, Blackout, F11, Esc, scene takes 1-9), in the order
+    // the old shortcut block ran them. Once, from initializeComponents().
+    void registerActions();
+
     // Live-show scene take, fading over `fadeSeconds` (nullopt = the Preferences
     // default, ADR-047 §5); ignored while calibrating.
     void takeSceneByNumber(int number, std::optional<float> fadeSeconds = std::nullopt);
+    // The takes queued since the last frame, through the scene.take.N actions, after the
+    // shortcuts (EditorUi::frame). Key presses only under the Editing key guard (not
+    // while a text field is active or a popup is open; presses made then are dropped,
+    // never replayed); OSC/MIDI takes skip it (Source::Control).
+    void runSceneTakes(EditorContext& ctx);
     // New, Load and Restore drop takes still queued: they were pressed for the show
     // that was just replaced and must not put its scene N of the new one on air.
     void dropQueuedSceneTakes() {
@@ -187,6 +198,11 @@ private:
         std::optional<float> fadeSeconds;  // nullopt = the Preferences default
     };
     std::vector<ExternalSceneTake> m_pendingExternalSceneTakes;
+    // The fade of the OSC/MIDI take being invoked; nullopt for a key press.
+    std::optional<float> m_controlTakeFade;
+
+    // The editor's actions: the keys, the menu and the scene takes all invoke them.
+    std::unique_ptr<ActionRegistry> m_actions;
 
     // External control (ADR-048); null in the stress harness.
     std::unique_ptr<control::ExternalControl> m_externalControl;

@@ -1,4 +1,6 @@
 #include "Application.hpp"
+#include "../editor/ActionRegistry.hpp"
+#include "../editor/EditActions.hpp"
 #include "../editor/EditorContext.hpp"
 #include "../editor/EditorState.hpp"
 #include "../editor/TextureResolve.hpp"
@@ -6,7 +8,6 @@
 #include "../editor/MissingMedia.hpp"
 #include "../editor/ReplaceMedia.hpp"
 #include "../editor/MeshLoads.hpp"
-#include "../editor/UndoRouting.hpp"
 #include "../editor/SliceEditing.hpp"
 #include "../editor/ControlBindings.hpp"
 #include "AiAssist.hpp"
@@ -37,6 +38,7 @@
 #include "../input/VertexKeyboard.hpp"
 #include "../ui/Theme.hpp"
 #include "../ui/EditorUi.hpp"
+#include "../ui/ShortcutRouter.hpp"
 #include "../ui/dialogs/PreferencesDialog.hpp"
 #include "../audio/AudioEngine.hpp"
 #include "../audio/AudioMixer.hpp"
@@ -445,6 +447,8 @@ bool Application::initializeComponents() {
         }
     }
 
+    registerActions();
+
     // The editor's UI (ADR-051 §2): its panels take what they need from the context.
     m_ui = std::make_unique<EditorUi>(*m_preferences);
     {
@@ -464,6 +468,7 @@ EditorContext Application::editorContext() {
     ctx.control = m_externalControl.get();
     ctx.prefs = &m_preferences->getPreferences();
     ctx.services = this;
+    ctx.actions = m_actions.get();
     return ctx;
 }
 
@@ -607,193 +612,12 @@ void Application::render() {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    // Canvas keys, the canvas itself (straight after NewFrame, TD-21), the dockspace,
-    // the menu bar and the canvas overlay (EditorUi).
+    // The editor's frame (EditorUi::frame): canvas keys, the canvas itself (straight
+    // after NewFrame, TD-21), the dockspace, the menu bar, the canvas overlay, the
+    // shortcuts, this frame's scene takes, every panel, then calibration, the banners
+    // and the session modals on top.
     EditorContext ctx = editorContext();
-    m_ui->beginFrame(ctx);
-
-    ImGuiIO& io = ImGui::GetIO();
-
-    // Handle keyboard shortcuts. Editing shortcuts stay off while text is typed or a
-    // popup/modal is open (e.g. the unsaved-changes prompt: Delete must not delete
-    // quads behind it, Ctrl+S must not bypass it). F11/Esc are handled separately.
-    const bool editingKeys = !io.WantTextInput &&
-        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-    // While calibrating a projector or editing a slice warp the quads are hidden and
-    // not being edited, so the quad shortcuts (select all, Delete, z-order, mesh) must
-    // not reach them.
-    const bool quadKeys = editingKeys && es.calibratingOutputId.isNull() &&
-                          es.sliceWarpOutputId.isNull();
-    if (editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
-        saveProject();
-    }
-
-    // Undo/redo also run while calibrating or editing a slice warp, on that output's
-    // calibration or slice steps only (UndoRouting.hpp, TD-17).
-    const bool undoKey = editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false);
-    const bool redoKey = editingKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false);
-    if (undoKey || redoKey) {
-        std::string heldBack;
-        if (undoKey ? undoStep(es, &heldBack) : redoStep(es, &heldBack)) {
-            m_session->invalidateUnsavedLabel();
-        } else if (!heldBack.empty()) {
-            snprintf(es.statusMessage, sizeof(es.statusMessage), "Leave %s to %s: %s",
-                     undoScopeName(es), undoKey ? "undo" : "redo", heldBack.c_str());
-            es.statusTimer = 3.0f;
-        }
-    }
-
-    if (quadKeys && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
-        quadManager.selectAll();
-    }
-
-    // Edit > Preferences. Ctrl+, is no other shortcut's key.
-    if (editingKeys && io.KeyCtrl && !io.KeyShift && !io.KeyAlt &&
-        ImGui::IsKeyPressed(ImGuiKey_Comma, false)) {
-        es.requestPanelOpen(PreferencesDialog::ID);
-    }
-
-    if (editingKeys && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
-        if (!es.calibratingOutputId.isNull()) {
-            // Calibrating: Delete removes the selected calibration point, never quads.
-            OutputWindow* calibrated = m_outputManager->getOutput(es.calibratingOutputId);
-            if (calibrated && es.calibration.selected >= 0) {
-                es.calibration.noteEdit("Delete calibration point " +
-                                        std::to_string(es.calibration.selected + 1));
-                es.calibration.removePoint(calibrated->getCalibrationPoints(),
-                                           es.calibration.selected);
-            }
-        } else if (!quadKeys) {
-            // Slice warp editing: the quads are hidden, Delete leaves them alone.
-        } else if (quadManager.hasSelection()) {
-            // Selecting an object deselects the quads, so a quad selection is newer.
-            es.deleteSelectedQuads();
-        } else {
-            es.deleteSelectedObject();
-        }
-    }
-
-    // Scene take (US-008): the 1-9 presses queued since the last frame put scene N on
-    // air. Not while a text field is active (renaming a scene, typing a number) or a
-    // popup is open; presses made then are dropped, never replayed later.
-    if (editingKeys) {
-        for (int n : m_pendingSceneTakes) takeSceneByNumber(n);
-    }
-    m_pendingSceneTakes.clear();
-    // OSC/MIDI takes (ADR-048) go through the same take but skip that guard: it exists
-    // so keys typed into a field or behind a modal do not act on the show, and an
-    // operator's controller is not typing. Calibration still holds them off
-    // (takeSceneByNumber), as it does the keys.
-    for (const ExternalSceneTake& t : m_pendingExternalSceneTakes) {
-        takeSceneByNumber(t.number, t.fadeSeconds);
-        Logger::info("Control: scene take {} requested; active scene is now '{}'", t.number,
-                     es.activeScene().getName());
-    }
-    m_pendingExternalSceneTakes.clear();
-
-    // Blackout (ADR-048 §3): Ctrl+B, the panic key, works with a popup open like F11;
-    // only a text field keeps it. Tab/arrows/Delete/1-9/Ctrl+S/Z/Y/A/M/[/] and Alt+=/-/R
-    // are the editing keys, so Ctrl+B collides with none of them.
-    if (!io.WantTextInput && io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper &&
-        ImGui::IsKeyPressed(ImGuiKey_B, false)) {
-        m_outputManager->toggleBlackout();
-    }
-
-    // F11 toggles perform mode and Esc leaves it, even with a popup open: the way out
-    // of fullscreen must never take two presses. Only a text field keeps them (its Esc
-    // cancels the edit).
-    if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F11, false)) {
-        m_outputManager->handleF11Key();
-    }
-    // While calibrating, the editor's Esc belongs to calibration: it cancels a pick in
-    // progress, else leaves calibration, and never also leaves perform mode (Esc on an
-    // output window still does).
-    // Esc also cancels a pending MIDI learn, in the same press. Slice warp editing
-    // takes Esc the same way: it leaves warp editing.
-    if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        if (m_externalControl) m_externalControl->dispatcher().cancelLearn();
-        if (!es.sliceWarpOutputId.isNull()) {
-            es.endSliceWarp();
-        } else if (es.calibratingOutputId.isNull()) {
-            m_outputManager->handleEscapeKey();
-        } else if (es.calibration.pick != CalibrationSession::Pick::None) {
-            es.calibration.cancelPick();
-        } else {
-            es.endCalibration();
-        }
-    }
-
-    // Z-order and mesh keyboard shortcuts
-    if (quadKeys) {
-        // Ctrl+] : Move selected quad(s) up (bring forward - render later = on top)
-        if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) {
-            if (quadManager.hasSelection()) {
-                quadManager.moveSelectedUp();
-            }
-        }
-
-        // Ctrl+[ : Move selected quad(s) down (send backward - render earlier = behind)
-        if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false)) {
-            if (quadManager.hasSelection()) {
-                quadManager.moveSelectedDown();
-            }
-        }
-
-        // Ctrl+Shift+] : Move to top (bring to front)
-        if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) {
-            if (quadManager.hasSelection()) {
-                quadManager.moveSelectedToTop();
-            }
-        }
-
-        // Ctrl+Shift+[ : Move to bottom (send to back)
-        if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false)) {
-            if (quadManager.hasSelection()) {
-                quadManager.moveSelectedToBottom();
-            }
-        }
-
-
-        // Mesh editing shortcuts
-        Quad* meshQuad = quadManager.getPrimarySelectedQuad();
-        if (meshQuad) {
-            QuadGeometry& geo = meshQuad->getGeometry();
-
-            // Ctrl+M : Toggle mesh edit mode
-            if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_M, false)) {
-                bool isEdit = (geo.getMeshMode() == MeshMode::MESH_EDIT);
-                geo.setMeshMode(isEdit ? MeshMode::CORNERS_ONLY : MeshMode::MESH_EDIT);
-            }
-
-            // Alt+= : Increase mesh resolution
-            if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_Equal, false)) {
-                int res = geo.getMeshResolution();
-                if (res < 64) {
-                    geo.setMeshResolution(res + 1);
-                }
-            }
-
-            // Alt+- : Decrease mesh resolution
-            if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_Minus, false)) {
-                int res = geo.getMeshResolution();
-                if (res > 2) {
-                    geo.setMeshResolution(res - 1);
-                }
-            }
-
-            // Alt+R : Reset mesh (residuals and grid handles) to the corner-pin surface
-            if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
-                if (geo.getMeshMode() == MeshMode::MESH_EDIT && geo.hasMeshModifications()) {
-                    geo.resetMesh();
-                }
-            }
-        }
-    }
-
-    // Every panel after the shortcuts and scene takes, so they show this frame's
-    // state; then calibration, the banners and the session modals on top.
-    m_ui->drawPanels(ctx);
-    m_ui->drawOverlays(ctx);
+    m_ui->frame(ctx, [this](EditorContext& frameCtx) { runSceneTakes(frameCtx); });
 
     if (m_benchInFrameEdit) m_benchInFrameEdit();
 
@@ -810,12 +634,33 @@ void Application::render() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     // Handle multi-viewport platform windows
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         GLFWwindow* backupContext = glfwGetCurrentContext();
         ImGui::UpdatePlatformWindows();
         ImGui::RenderPlatformWindowsDefault();
         glfwMakeContextCurrent(backupContext);
     }
+}
+
+void Application::runSceneTakes(EditorContext& ctx) {
+    // Scene take (US-008): the 1-9 presses queued since the last frame put scene N on
+    // air, under the Editing guard (renaming a scene, typing a number, a modal).
+    const bool keysAllowed = keyGuardAllows(KeyGuard::Editing);
+    for (int n : m_pendingSceneTakes) {
+        if (keysAllowed) m_actions->invoke(sceneTakeId(n), ctx, Source::Key);
+    }
+    m_pendingSceneTakes.clear();
+    // OSC/MIDI takes (ADR-048) skip that guard: it exists so keys typed into a field or
+    // behind a modal do not act on the show, and an operator's controller is not
+    // typing. Calibration still holds them off (takeSceneByNumber), as it does the keys.
+    for (const ExternalSceneTake& t : m_pendingExternalSceneTakes) {
+        m_controlTakeFade = t.fadeSeconds;
+        m_actions->invoke(sceneTakeId(t.number), ctx, Source::Control);
+        m_controlTakeFade.reset();
+        Logger::info("Control: scene take {} requested; active scene is now '{}'", t.number,
+                     m_editorState->activeScene().getName());
+    }
+    m_pendingExternalSceneTakes.clear();
 }
 
 void Application::takeSceneByNumber(int number, std::optional<float> fadeSeconds) {

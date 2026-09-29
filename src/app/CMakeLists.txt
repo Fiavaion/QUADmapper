@@ -4,6 +4,7 @@ add_executable(QUADmapper
     main.cpp
     Application.hpp
     Application.cpp
+    AppActions.cpp
     AiAssist.hpp
     AiAssist.cpp
     StressHarness.hpp

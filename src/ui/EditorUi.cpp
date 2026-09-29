@@ -12,6 +12,7 @@
 #include "media/MediaLibrary.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
+#include "ui/ShortcutRouter.hpp"
 #include "ui/dialogs/PreferencesDialog.hpp"
 
 #include <imgui.h>
@@ -47,11 +48,12 @@ void EditorUi::attach(EditorContext& ctx) { host_.attach(ctx); }
 
 void EditorUi::projectReplaced(EditorContext& ctx) { host_.projectReplaced(ctx); }
 
-void EditorUi::beginFrame(EditorContext& ctx) {
+void EditorUi::frame(EditorContext& ctx, const std::function<void(EditorContext&)>& sceneTakes) {
     // The canvas takes Tab/arrows for the selected quad's vertices or, while
     // calibrating the projector it shows, for the calibration points (ADR-052), or,
     // while a slice warp is edited, for its corners (ADR-047).
     claimCanvasEditingKeys(canvasKeyOwner(ctx.es, ctx.outputManager) != CanvasKeyOwner::None);
+    stepDone(FrameStep::CanvasKeys);
 
     // On-canvas viewport: the corner-pin / mesh-edit warp interaction, then every
     // quad drawn to the main GL framebuffer. Runs right after NewFrame(), ahead of
@@ -59,19 +61,28 @@ void EditorUi::beginFrame(EditorContext& ctx) {
     // vertex-warp UX) and a nudge shows in the very next presented frame (TD-21).
     // See ADR-0034 / ViewportEditor.
     viewport_.render(ctx);
+    stepDone(FrameStep::Canvas);
 
     drawDockSpace(ctx);
+    stepDone(FrameStep::DockSpace);
     menuBar_.render(ctx, host_);
     savePreferenceChanges(ctx);
+    stepDone(FrameStep::MenuBar);
     drawCanvasOverlay(ctx);
-}
+    stepDone(FrameStep::CanvasOverlay);
 
-void EditorUi::drawPanels(EditorContext& ctx) {
+    // The editor-wide keys, after the canvas has read its own (ADR-051 §3).
+    if (ctx.actions) routeShortcuts(*ctx.actions, ctx);
+    stepDone(FrameStep::Shortcuts);
+    if (sceneTakes) sceneTakes(ctx);
+    stepDone(FrameStep::SceneTakes);
+
     host_.drawWindows(ctx);
     savePreferenceChanges(ctx);  // a device or mode picked in the Preferences window
+    stepDone(FrameStep::Panels);
+    host_.drawOverlays(ctx);
+    stepDone(FrameStep::Overlays);
 }
-
-void EditorUi::drawOverlays(EditorContext& ctx) { host_.drawOverlays(ctx); }
 
 void EditorUi::drawDockSpace(EditorContext& ctx) {
     EditorState& es = ctx.es;

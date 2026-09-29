@@ -2,15 +2,17 @@
 
 // The editor's user interface (ADR-051 §1–2): the canvas (ViewportEditor), the dock
 // layout, the main menu bar, the canvas overlay (zoom, pan, media drop), and every
-// panel, drawn through one PanelHost. Application owns it and calls, once a frame:
+// panel, drawn through one PanelHost. Application owns it and, once a frame, calls
+// NewFrame -> ui.frame(ctx, takes) -> [bench hook, projector frames, ImGui::Render].
+// frame() runs, in this order (FrameStep):
 //
-//   NewFrame -> ui.beginFrame(ctx)  (canvas keys, canvas, dockspace, menu, overlay)
-//            -> [app: shortcuts, then the queued scene takes]
-//            -> ui.drawPanels(ctx) -> ui.drawOverlays(ctx)
-//            -> [app: bench hook, projector frames, ImGui::Render]
+//   canvas keys claimed -> canvas (ViewportEditor) -> dockspace -> menu bar
+//   -> canvas overlay -> shortcuts (ShortcutRouter) -> the app's queued scene takes
+//   -> panels -> overlays (calibration, banners, session modals)
 //
 // The canvas runs straight after NewFrame, ahead of every panel, so a vertex nudge acts
-// on this frame's input and shows in the next presented frame (TD-21).
+// on this frame's input and shows in the next presented frame (TD-21). The shortcuts
+// and takes run before the panels, so the panels show this frame's state.
 
 #include "ui/PanelHost.hpp"
 #include "ui/dialogs/MissingMediaWindow.hpp"
@@ -28,6 +30,8 @@
 #include "ui/panels/ScenePanel.hpp"
 #include "ui/panels/VideoPlayerPanel.hpp"
 #include "ui/panels/ViewportEditor.hpp"
+
+#include <functional>
 
 namespace quadmapper {
 
@@ -48,17 +52,32 @@ public:
     // After New, Open or Restore replaced the show.
     void projectReplaced(EditorContext& ctx);
 
-    // Right after ImGui::NewFrame(): claims the canvas keys, runs the canvas, then the
-    // dockspace (with the first-run layout), the menu bar and the canvas overlay.
-    void beginFrame(EditorContext& ctx);
-    // The windows (Resources with its tabs), after the shortcuts and scene takes.
-    void drawPanels(EditorContext& ctx);
-    // Calibration, the banners, Convert to HAP, then the session modals, on top.
-    void drawOverlays(EditorContext& ctx);
+    // The steps of frame(), in order.
+    enum class FrameStep {
+        CanvasKeys,     // the canvas claims Tab / the arrows / H when it edits
+        Canvas,         // ViewportEditor
+        DockSpace,      // with the first-run layout
+        MenuBar,
+        CanvasOverlay,  // zoom, pan and media drop
+        Shortcuts,      // ctx.actions through the ShortcutRouter
+        SceneTakes,     // `sceneTakes`
+        Panels,         // the windows (Resources with its tabs)
+        Overlays,       // calibration, the banners, Convert to HAP, the session modals
+    };
+
+    // One editor frame, right after ImGui::NewFrame(). `sceneTakes` runs the scene
+    // takes queued since the last frame.
+    void frame(EditorContext& ctx, const std::function<void(EditorContext&)>& sceneTakes);
+
+    // Tests only: called as each step of frame() finishes.
+    std::function<void(FrameStep)> onFrameStep;
 
     PanelHost& panels() { return host_; }
 
 private:
+    void stepDone(FrameStep step) {
+        if (onFrameStep) onFrameStep(step);
+    }
     void drawDockSpace(EditorContext& ctx);
     void drawCanvasOverlay(EditorContext& ctx);
     // The UI mode and the audio device are machine preferences (ADR-042, ADR-050 §5),

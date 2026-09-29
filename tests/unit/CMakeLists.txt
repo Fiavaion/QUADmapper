@@ -207,7 +207,8 @@ add_quadmapper_test(test_editor
 )
 target_link_libraries(test_editor PRIVATE quadmapper_editor)
 
-# The ui library: the PanelHost, the Preferences window and the shortcut router against
+# The ui library: the PanelHost, the Preferences window, the shortcut router, and the
+# editor frame's order with the menu's action items against
 # headless ImGui, and the calibration view on the canvas (ViewportEditor in a hidden GL
 # window; skips without GL).
 add_quadmapper_test(test_ui
@@ -215,6 +216,7 @@ add_quadmapper_test(test_ui
     ui/PreferencesWindowTest.cpp
     ui/CalibrationViewEditorTest.cpp
     ui/ShortcutRouterTest.cpp
+    ui/EditorUiFrameTest.cpp
 )
 target_link_libraries(test_ui PRIVATE quadmapper_ui glfw)
 
