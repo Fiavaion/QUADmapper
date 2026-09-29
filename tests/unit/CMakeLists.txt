@@ -64,14 +64,6 @@ add_quadmapper_test(test_audio
 )
 target_link_libraries(test_audio PRIVATE quadmapper_audio quadmapper_core)
 
-# Audio from video kept on the playback clock (ADR-050 §2): real decode, real mixer path,
-# the app's clock mapping (editor/SourceAudio.hpp). Media tests skip without D:	esting Videos.
-add_quadmapper_test(test_audio_sync
-    audio/AudioSyncTest.cpp
-)
-target_link_libraries(test_audio_sync PRIVATE quadmapper_audio quadmapper_source quadmapper_video
-    quadmapper_scene quadmapper_core)
-
 # Input module tests
 add_quadmapper_test(test_input
     input/VertexKeyboardTest.cpp
@@ -188,11 +180,14 @@ add_quadmapper_test(test_control
 )
 target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws2_32)
 
-# The editor library (ADR-051 E4), linked alone: no panel, no app code, no GL context.
+# The editor library (ADR-051 E4), linked alone: no panel, no app code.
 # The control targets (editor/ControlBindings.hpp) on real scenes, quads and sources, the
 # preferences file, missing media and relocation, replace in show, the mesh-edit
 # keyboard workflow, scene takes and slice editing, grid undo, and the live<->DTO
-# mapping (editor/ProjectMapping.cpp).
+# mapping (editor/ProjectMapping.cpp). Also the editor tests the lower modules' targets
+# held until E8: output persistence, the "(modified)" label, and audio from video kept
+# on the playback clock (editor/SourceAudio.hpp; real decode and mixer, media tests skip
+# without D:\testing Videos).
 add_quadmapper_test(test_editor
     editor/ActionRegistryTest.cpp
     editor/EditActionsTest.cpp
@@ -205,8 +200,14 @@ add_quadmapper_test(test_editor
     editor/GridUndoTest.cpp
     editor/ProjectMappingTest.cpp
     editor/PerformLockTest.cpp
+    editor/OutputPersistenceTest.cpp
+    editor/UnsavedIndicatorTest.cpp
+    editor/AudioSyncTest.cpp
 )
 target_link_libraries(test_editor PRIVATE quadmapper_editor)
+target_compile_definitions(test_editor PRIVATE
+    QM_PROJECT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/projects"
+)
 
 # The ui library: the PanelHost, the Preferences window, the shortcut router, and the
 # editor frame's order with the menu's action items against

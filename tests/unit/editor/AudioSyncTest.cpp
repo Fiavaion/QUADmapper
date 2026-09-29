@@ -10,6 +10,8 @@
 // Offline tests drive AudioMixer::renderOffline() with simulated time (a minute of
 // playback in a second or two); one test runs the real device thread (null backend)
 // in real time. Media from D:\testing Videos; the tests skip when it is absent.
+// In test_editor since ADR-051 E8: the clock mapping and scene gains it drives are the
+// editor's (editor/SourceAudio.hpp).
 
 #include <gtest/gtest.h>
 
@@ -28,7 +30,7 @@
 #include "scene/Scene.hpp"
 #include "scene/SceneFade.hpp"
 #include "video/PlaybackClock.hpp"
-#include "AudioTestMedia.hpp"
+#include "../audio/AudioTestMedia.hpp"
 
 #include <algorithm>
 #include <array>
