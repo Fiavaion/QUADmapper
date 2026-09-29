@@ -35,7 +35,6 @@
 #include "../renderer/GpuCapabilities.hpp"
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
-#include "../input/VertexKeyboard.hpp"
 #include "../ui/Theme.hpp"
 #include "../ui/EditorUi.hpp"
 #include "../ui/ShortcutRouter.hpp"
@@ -270,7 +269,7 @@ bool Application::initializeImGui() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable keyboard navigation
     // A focused panel must not stop the canvas from taking Tab/arrows (the vertex
     // warp keys). Only a widget being edited captures the keyboard; see
-    // claimCanvasEditingKeys() below NewFrame().
+    // claimCanvasEditingKeys(), which EditorUi::frame() calls first after NewFrame().
     io.ConfigNavCaptureKeyboard = false;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;      // Enable docking
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;    // Enable multi-viewport
