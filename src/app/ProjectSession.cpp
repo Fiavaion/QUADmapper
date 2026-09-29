@@ -277,10 +277,7 @@ void ProjectSession::processPendingFileAction() {
         case FileAction::ImportObject:
             if (!m_projectDialog) m_projectDialog = std::make_unique<AsyncFileDialog>();
             if (m_projectDialog->open(objectFileRequest())) {
-                m_onProjectFileChosen = [this](const std::string& path) {
-                    if (path.empty()) return;
-                    importObjectFile(m_editor, path);
-                };
+                m_onProjectFileChosen = [this](const std::string& path) { objectFileChosen(path); };
             }
             break;
         case FileAction::DiscardRecovery: {
@@ -543,18 +540,7 @@ void ProjectSession::requestLocateMissingMedia(const MissingMediaItem& item) {
         postStatus(es, "Another file dialog is already open");
         return;
     }
-    m_onProjectFileChosen = [this, item](const std::string& path) {
-        if (path.empty()) return;
-        EditorState& state = m_editor;
-        const int resolved =
-            locateMissingMedia(state, m_services.sources, item, pathFromUtf8(path));
-        if (resolved > 0) {
-            postStatus(state, "Relocated " + std::to_string(resolved) + " missing file" +
-                                  (resolved == 1 ? "" : "s"));
-        } else {
-            postStatus(state, "Could not use " + utf8FromPath(pathFromUtf8(path).filename()));
-        }
-    };
+    m_onProjectFileChosen = [this, item](const std::string& path) { locateFileChosen(item, path); };
 }
 
 void ProjectSession::requestMissingMediaSearch() {
@@ -564,14 +550,35 @@ void ProjectSession::requestMissingMediaSearch() {
         postStatus(es, "Another file dialog is already open");
         return;
     }
-    m_onProjectFileChosen = [this](const std::string& folder) {
-        if (folder.empty() || m_mediaSearch.valid()) return;
-        m_mediaSearchCancel = false;
-        m_mediaSearchFolder = folder;
-        m_mediaSearch = std::async(std::launch::async, [this, root = pathFromUtf8(folder)]() {
-            return relocate::indexFolder(root, &m_mediaSearchCancel);
-        });
-    };
+    m_onProjectFileChosen = [this](const std::string& folder) { searchFolderChosen(folder); };
+}
+
+void ProjectSession::objectFileChosen(const std::string& path) {
+    if (path.empty() || refusedByPerformLock(m_editor, "Import 3D Object")) return;
+    importObjectFile(m_editor, path);
+}
+
+void ProjectSession::locateFileChosen(const MissingMediaItem& item, const std::string& path) {
+    EditorState& es = m_editor;
+    if (path.empty() || refusedByPerformLock(es, "Relocating missing media")) return;
+    const int resolved = locateMissingMedia(es, m_services.sources, item, pathFromUtf8(path));
+    if (resolved > 0) {
+        postStatus(es, "Relocated " + std::to_string(resolved) + " missing file" +
+                           (resolved == 1 ? "" : "s"));
+    } else {
+        postStatus(es, "Could not use " + utf8FromPath(pathFromUtf8(path).filename()));
+    }
+}
+
+void ProjectSession::searchFolderChosen(const std::string& folder) {
+    if (folder.empty() || m_mediaSearch.valid()) return;
+    if (refusedByPerformLock(m_editor, "Searching for missing media")) return;
+    m_mediaSearchCancel = false;
+    m_mediaSearchFolder = folder;
+    m_mediaSearchHeldNoted = false;
+    m_mediaSearch = std::async(std::launch::async, [this, root = pathFromUtf8(folder)]() {
+        return relocate::indexFolder(root, &m_mediaSearchCancel);
+    });
 }
 
 void ProjectSession::pollMissingMediaSearch() {
@@ -579,8 +586,18 @@ void ProjectSession::pollMissingMediaSearch() {
         m_mediaSearch.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
         return;
     }
-    const relocate::FolderIndex index = m_mediaSearch.get();
     EditorState& es = m_editor;
+    // A search started before the lock relinks nothing while it is on: its result
+    // waits, and is applied on the first poll after the unlock.
+    if (es.performLock.isOn()) {
+        if (!m_mediaSearchHeldNoted) {
+            m_mediaSearchHeldNoted = true;
+            postStatus(es, "Missing media search finished: its files are relinked once the "
+                           "show is unlocked (Output > Perform Lock)");
+        }
+        return;
+    }
+    const relocate::FolderIndex index = m_mediaSearch.get();
     const size_t missing = collectMissingMedia(es).size();
     const int resolved = relocateMissingFromIndex(es, m_services.sources, index);
     std::string status = "Found " + std::to_string(resolved) + " of " + std::to_string(missing) +

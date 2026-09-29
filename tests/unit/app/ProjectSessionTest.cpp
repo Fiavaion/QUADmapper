@@ -5,6 +5,7 @@
 
 #include "app/ProjectSession.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/MissingMedia.hpp"
 #include "editor/PerformLock.hpp"
 #include "editor/ProjectMapping.hpp"
 #include "core/FileSystem.hpp"
@@ -18,10 +19,12 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 
 using namespace quadmapper;
 namespace fs = std::filesystem;
@@ -316,4 +319,98 @@ TEST_F(ProjectSessionTest, PerformLockRefusesNewAndLoadButSaves) {
     ASSERT_TRUE(saved) << "Save runs under the lock";
     EXPECT_EQ(saved.value().getScenes()[0].quads.size(), 2u);
     EXPECT_FALSE(session_->isProjectDirty());
+}
+
+// ---- Pickers answered after the lock was taken (ADR-051 §4) --------------------------
+// The file dialogs are ownerless, so the menu stays usable while one is open, and it
+// can be answered after locking. The answer is refused, with a status.
+
+namespace {
+
+std::string writeTriangleObj(const fs::path& file) {
+    fs::create_directories(file.parent_path());
+    std::FILE* out = std::fopen(utf8FromPath(file).c_str(), "wb");
+    if (out) {
+        std::fputs("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", out);
+        std::fclose(out);
+    }
+    return utf8FromPath(file);
+}
+
+// A saved object whose mesh file is gone, as a load finds it: listed in Missing Media.
+void addMissingMesh(EditorState& es, const std::string& path) {
+    es.activeScene().createObject("Prop")->setSourcePath(path);
+    requestMeshLoads(es);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!es.meshLoads.tickets.empty() && std::chrono::steady_clock::now() < deadline) {
+        adoptLoadedMeshes(es);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
+
+bool statusSaysLocked(const EditorState& es) {
+    return std::string(es.statusMessage).find("the show is locked") != std::string::npos;
+}
+
+}  // namespace
+
+TEST_F(ProjectSessionTest, ImportObjectPickedAfterLockingAddsNothing) {
+    openAs(file("show.qmap"));
+    const std::string obj = writeTriangleObj(dir_ / "prop.obj");
+    lockPerform(es_);
+    session_->objectFileChosen(obj);
+    EXPECT_TRUE(es_.activeScene().getObjects().empty());
+    EXPECT_TRUE(statusSaysLocked(es_)) << es_.statusMessage;
+}
+
+TEST_F(ProjectSessionTest, LocatePickedAfterLockingRelinksNothing) {
+    openAs(file("show.qmap"));
+    addMissingMesh(es_, utf8FromPath(dir_ / "gone" / "prop.obj"));
+    ASSERT_EQ(collectMissingMedia(es_).size(), 1u);
+    const MissingMediaItem item = collectMissingMedia(es_)[0];
+    const std::string found = writeTriangleObj(dir_ / "found" / "prop.obj");
+
+    lockPerform(es_);
+    session_->locateFileChosen(item, found);
+    EXPECT_EQ(collectMissingMedia(es_).size(), 1u) << "still missing";
+    EXPECT_TRUE(es_.meshLoads.relocations.empty());
+    EXPECT_TRUE(statusSaysLocked(es_)) << es_.statusMessage;
+}
+
+TEST_F(ProjectSessionTest, SearchPickedAfterLockingStartsNothing) {
+    openAs(file("show.qmap"));
+    lockPerform(es_);
+    session_->searchFolderChosen(utf8FromPath(dir_));
+    EXPECT_FALSE(session_->isSearchingMedia());
+    EXPECT_TRUE(statusSaysLocked(es_)) << es_.statusMessage;
+}
+
+// A search started before locking finishes under the lock: its result waits, and is
+// applied once the show is unlocked.
+TEST_F(ProjectSessionTest, ASearchFinishingUnderTheLockIsHeldUntilUnlocked) {
+    openAs(file("show.qmap"));
+    addMissingMesh(es_, utf8FromPath(dir_ / "gone" / "prop.obj"));
+    ASSERT_EQ(collectMissingMedia(es_).size(), 1u);
+    writeTriangleObj(dir_ / "found" / "prop.obj");
+
+    session_->searchFolderChosen(utf8FromPath(dir_ / "found"));
+    ASSERT_TRUE(session_->isSearchingMedia());
+    lockPerform(es_);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::string(es_.statusMessage).find("once the show is unlocked") == std::string::npos &&
+           std::chrono::steady_clock::now() < deadline) {
+        session_->pollMissingMediaSearch();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_NE(std::string(es_.statusMessage).find("once the show is unlocked"), std::string::npos)
+        << es_.statusMessage;
+    session_->pollMissingMediaSearch();
+    EXPECT_EQ(collectMissingMedia(es_).size(), 1u) << "nothing relinked while locked";
+    EXPECT_TRUE(session_->isSearchingMedia()) << "the result is held, not dropped";
+
+    requestPerformUnlock(es_);
+    ASSERT_TRUE(confirmPerformUnlock(es_));
+    session_->pollMissingMediaSearch();
+    EXPECT_FALSE(session_->isSearchingMedia());
+    EXPECT_TRUE(collectMissingMedia(es_).empty()) << "relinked after the unlock";
 }

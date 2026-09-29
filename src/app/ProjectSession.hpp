@@ -94,6 +94,14 @@ public:
     void requestLocateMissingMedia(const MissingMediaItem& item);
     void requestMissingMediaSearch();
     bool isFileDialogBusy() const;
+
+    // ---- A picker's answer (empty = cancelled), at the frame boundary --------------
+    // The pickers are ownerless, so one can be answered after the perform lock was
+    // taken (ADR-051 §4): each of these then refuses, with a status. A folder search
+    // that finishes under the lock is held and applied once the show is unlocked.
+    void objectFileChosen(const std::string& path);
+    void locateFileChosen(const MissingMediaItem& item, const std::string& path);
+    void searchFolderChosen(const std::string& folder);
     bool isSearchingMedia() const { return m_mediaSearch.valid(); }
     const std::string& mediaSearchFolder() const { return m_mediaSearchFolder; }
 
@@ -140,6 +148,7 @@ private:
     // which waits for its worker, is destroyed before the flag the worker reads).
     std::atomic<bool> m_mediaSearchCancel{false};
     std::string m_mediaSearchFolder;
+    bool m_mediaSearchHeldNoted = false;  // "held until unlocked" posted for this search
     std::future<relocate::FolderIndex> m_mediaSearch;
 };
 

@@ -260,7 +260,8 @@ inline void importObjectFile(EditorState& es, const std::string& path) {
 
 // Frame boundary: queue parses for meshes that need one and adopt the finished ones.
 // A finished import re-aims an uncalibrated projector on its scene's output to frame
-// the object, so it is in view as soon as it has loaded; a failed one is removed and
+// the object, so it is in view as soon as it has loaded (not under the perform lock:
+// the object stays, the projectors do not move); a failed one is removed and
 // reported as the synchronous import did. A show's mesh that fails is reported and
 // listed in Missing Media, as a load that found it missing does.
 inline void adoptObjectMeshes(EditorState& es, OutputManager* om) {
@@ -281,6 +282,13 @@ inline void adoptObjectMeshes(EditorState& es, OutputManager* om) {
         Scene* scene = es.quadResolver.findScene(done.sceneId);
         MeshObject* object = scene ? scene->getObject(done.objectId) : nullptr;
         if (!object) continue;
+        // Under the perform lock the object imported before locking stays, but no
+        // projector moves: re-aiming would jump everything on air.
+        if (es.performLock.isOn()) {
+            postStatus(es, "Imported 3D object: " + object->getName() +
+                               " (projectors not re-aimed: the show is locked)");
+            continue;
+        }
         // Frame every uncalibrated projector showing the scene on its objects.
         for (size_t i = 0; om && i < om->getOutputs().size(); ++i) {
             OutputWindow* output = om->getOutputs()[i].get();

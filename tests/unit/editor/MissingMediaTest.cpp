@@ -611,6 +611,39 @@ TEST(MeshLoadsTest, ImportFinishingUnderThePerformLockKeepsItsObject) {
     EXPECT_FALSE(fx.es.commandHistory.canUndo());
 }
 
+// A finished import frames the uncalibrated projectors on it, except under the perform
+// lock: the object imported before locking stays, and nothing on air moves.
+TEST(MeshLoadsTest, AnImportFinishingUnderThePerformLockDoesNotReAimProjectors) {
+    MeshLoadFixture fx;
+    OutputManager om;
+    OutputWindow* output = om.createOutput("Projector");
+    OutputManager::showScene(*output, &fx.es.activeScene(), fx.es.scenes);
+    const auto adopt = [&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        do {
+            adoptObjectMeshes(fx.es, &om);
+            if (fx.es.meshLoads.tickets.empty()) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        } while (std::chrono::steady_clock::now() < deadline);
+    };
+
+    const Vec3 aimed = output->getProjector().position();
+    const UUID id = beginObjectImport(fx.es, "prop", fx.writeObj("prop.obj", 2))->getId();
+    lockPerform(fx.es);
+    adopt();
+    ASSERT_NE(fx.es.activeScene().getObject(id), nullptr) << "the object stays";
+    EXPECT_EQ(output->getProjector().position(), aimed) << "the projector did not move";
+    EXPECT_NE(std::string(fx.es.statusMessage).find("not re-aimed"), std::string::npos)
+        << fx.es.statusMessage;
+
+    // Unlocked, the same import frames the projector on it.
+    requestPerformUnlock(fx.es);
+    ASSERT_TRUE(confirmPerformUnlock(fx.es));
+    beginObjectImport(fx.es, "prop2", fx.writeObj("prop2.obj", 2));
+    adopt();
+    EXPECT_NE(output->getProjector().position(), aimed);
+}
+
 TEST(MeshLoadsTest, ImportKeepsItsPlaceAndEditsMadeWhileLoading) {
     MeshLoadFixture fx;
     Scene& scene = fx.es.activeScene();
