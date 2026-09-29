@@ -1,18 +1,29 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-09-26 (Session 23)
+Last Updated: 2026-09-29 (ADR-051 E0–E8)
 
 ## Quick Status
 - In Progress: 0
-- Todo: ADR-051 editor architecture / Application.cpp split (with Phase 0 S6: move AI out of
-  Application.cpp), TD-12 present threads (hardware), TD-14b, TD-29 running-app check
+- Todo: ADR-051 owner sign-off on the pending chords and the GUI check of the perform lock
+  (QM-122), TD-12 present threads (hardware), TD-14b, TD-29 running-app check
   (calibration on sliced outputs, done in code), TD-32/33 (pre-existing loop bugs), dev→master
   PR #2, 🚩 QM-061
 - Done: Session 22 added QM-083..QM-099; Session 23 added QM-100..QM-109 (PRD MVP gaps + control);
   2026-09-27/28 added QM-117..QM-121 (ADR-047 canvas/slices/blend/crossfades, ADR-049, ADR-056
-  zero-copy), TD-30/31 fixed; quiet-machine gates met (see TECHNICAL_DEBT.md)
+  zero-copy), TD-30/31 fixed; quiet-machine gates met (see TECHNICAL_DEBT.md); 2026-09-29
+  QM-122 (ADR-051 editor architecture E0–E8, perform lock)
 - Blocked: 0
 - Plan of record: [docs/audits/2026-09-25-foundation-audit.md](docs/audits/2026-09-25-foundation-audit.md) §8
+
+## 2026-09-28/29 — ADR-051 editor architecture
+
+- **QM-122 DONE (code and tests; GUI check pending)** — ADR-051 E0–E8: dead stubs gone, `AiAssist` and
+  `ProjectSession` out of `Application.cpp`, the `quadmapper_editor` library with
+  `layering_check`, `Panel` / `PanelHost` / `EditorUi`, `ActionRegistry` and the shortcut
+  router, and the perform lock (E7) with its review fixes. `Application.cpp` went from 878 to 860 lines over the review fixes and E8. The
+  lower modules' tests no longer include editor code (E8). Pending owner decisions (new
+  bindings, ADR-051 §3): Ctrl+Shift+L for the perform lock; Ctrl+N / Ctrl+O / Ctrl+Shift+S;
+  Ctrl+Shift+Z for redo. Pending by hand: the ADR-051 §6 manual gate, the lock included.
 
 ## Session 24 (2026-09-27) — ADR-047 scene canvas → output slices
 
