@@ -8,6 +8,7 @@
 #include "../editor/MissingMedia.hpp"
 #include "../editor/ReplaceMedia.hpp"
 #include "../editor/MeshLoads.hpp"
+#include "../editor/PerformLock.hpp"
 #include "../editor/SliceEditing.hpp"
 #include "../editor/ControlBindings.hpp"
 #include "AiAssist.hpp"
@@ -485,6 +486,9 @@ void Application::savePreferences() { m_preferences->savePreferences(); }
 bool Application::aiActive() const { return m_aiAssist->isActive(); }
 
 void Application::runAi(AiAction action) {
+    // The perform lock (ADR-051 §4) blocks the AI assist, which warps quads and puts
+    // patterns on the projectors. Clear Pattern stays: it gives the show back.
+    if (action != AiAction::ClearPattern && refusedByPerformLock(*m_editorState, "AI assist")) return;
     switch (action) {
         case AiAction::Enable:        m_aiAssist->enable(); break;
         case AiAction::DetectSurface: m_aiAssist->detectSurface(); break;

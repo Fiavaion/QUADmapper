@@ -218,6 +218,7 @@ add_quadmapper_test(test_ui
     ui/CalibrationViewEditorTest.cpp
     ui/ShortcutRouterTest.cpp
     ui/EditorUiFrameTest.cpp
+    ui/PerformLockUiTest.cpp
 )
 target_link_libraries(test_ui PRIVATE quadmapper_ui glfw)
 

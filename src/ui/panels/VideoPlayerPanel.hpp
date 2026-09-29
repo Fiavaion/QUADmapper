@@ -18,6 +18,8 @@ public:
     VideoPlayerPanel() = default;
 
     const char* id() const override { return ID; }
+    // Its transport stays usable under the perform lock; drawContent disables the rest.
+    bool editsShow() const override { return false; }
     // Collects a finished "Load Video..." pick and follows the selection, shown or not.
     void tick(EditorContext& ctx) override;
     void drawContent(EditorContext& ctx) override;

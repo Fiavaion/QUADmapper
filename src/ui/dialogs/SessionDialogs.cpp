@@ -2,6 +2,7 @@
 
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
 
 #include <imgui.h>
 
@@ -57,6 +58,25 @@ void SessionDialogs::drawContent(EditorContext& ctx) {
             es.pendingFileAction = FileAction::DiscardRecovery;
             ImGui::CloseCurrentPopup();
         }
+        ImGui::EndPopup();
+    }
+
+    // Unlocking the perform lock (ADR-051 §4) asks first, so a stray click in the
+    // Output menu never opens the show to edits.
+    constexpr const char* kUnlockPopup = "Unlock the Show?##performlock";
+    if (es.performLock.isConfirmingUnlock() && !ImGui::IsPopupOpen(kUnlockPopup)) {
+        ImGui::OpenPopup(kUnlockPopup);
+    }
+    if (ImGui::BeginPopupModal(kUnlockPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("The show is locked for performance.");
+        ImGui::TextUnformatted("Unlock it and allow edits again?");
+        ImGui::Spacing();
+        if (ImGui::Button("Unlock")) confirmPerformUnlock(es);
+        ImGui::SameLine();
+        if (ImGui::Button("Stay Locked") || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            cancelPerformUnlock(es);
+        }
+        if (!es.performLock.isConfirmingUnlock()) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
 }

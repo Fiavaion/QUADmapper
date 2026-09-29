@@ -171,8 +171,11 @@ void VideoPlayerPanel::tick(EditorContext& ctx) {
 void VideoPlayerPanel::drawContent(EditorContext& ctx) {
     EditorState& es = ctx.es;
     const bool simpleMode = es.uiMode == EditorState::UiMode::Simple;
+    // The perform lock (ADR-051 §4) keeps the transport (play, pause, stop, seek) and
+    // disables the rest: loading, assigning, speed, loop, sound and the timeline lock.
+    const bool locked = es.performLock.isOn();
     auto loadButton = [&](const char* tooltip) {
-        ImGui::BeginDisabled(loadDialog_.isBusy());
+        ImGui::BeginDisabled(loadDialog_.isBusy() || locked);
         if (ImGui::Button("Load Video...") && loadDialog_.open(videoFileRequest(es.videoPath))) {
             loadDialogSimpleMode_ = simpleMode;
         }
@@ -202,6 +205,7 @@ void VideoPlayerPanel::drawContent(EditorContext& ctx) {
                 if (playing) video->pause(); else video->play();
             }
             ImGui::EndDisabled();
+            ImGui::BeginDisabled(locked);
             loopModeSelector(*video, 180.0f);
             ImGui::BeginDisabled(video->isTimelineLocked());
             float speed = video->getSpeed();
@@ -213,6 +217,7 @@ void VideoPlayerPanel::drawContent(EditorContext& ctx) {
             if (ImGui::Button("1x")) video->setSpeed(1.0f);
             ImGui::EndDisabled();
             audioControls(*video, es.activeVideoSourceId, ctx, 120.0f);
+            ImGui::EndDisabled();
             showPlaybackError(*video);
         } else {
             ImGui::TextDisabled("No video loaded");
@@ -226,6 +231,7 @@ void VideoPlayerPanel::drawContent(EditorContext& ctx) {
     ImGui::Text("Video File:");
     loadButton("Browse the hard drive for a video file");
     ImGui::SameLine();
+    ImGui::BeginDisabled(locked);
     ImGui::SetNextItemWidth(-70.0f);
     const bool pathEntered = ImGui::InputText("##videopath", es.videoPath, sizeof(es.videoPath),
                                               ImGuiInputTextFlags_EnterReturnsTrue);
@@ -236,6 +242,7 @@ void VideoPlayerPanel::drawContent(EditorContext& ctx) {
             ? ctx.sourceManager->getSourceAs<PlayableSource>(es.activeVideoSourceId)
             : nullptr;
     }
+    ImGui::EndDisabled();
 
     if (video) {
         ImGui::Separator();
@@ -263,16 +270,18 @@ void VideoPlayerPanel::drawContent(EditorContext& ctx) {
         ImGui::Separator();
 
         // Timeline lock: the source follows the master timeline instead of its own clock.
-        bool locked = video->isTimelineLocked();
-        if (ImGui::Checkbox("Lock to master timeline", &locked)) {
-            ctx.sourceManager->setTimelineLocked(es.activeVideoSourceId, locked);
+        bool timelineLocked = video->isTimelineLocked();
+        ImGui::BeginDisabled(locked);
+        if (ImGui::Checkbox("Lock to master timeline", &timelineLocked)) {
+            ctx.sourceManager->setTimelineLocked(es.activeVideoSourceId, timelineLocked);
         }
+        ImGui::EndDisabled();
         ImGui::SetItemTooltip("Follow the master timeline in the menu bar; its time is looped "
                               "over this clip, so locked videos stay in step");
         showLockedNote(*video);
 
-        // Playback controls (the master timeline's, while locked)
-        ImGui::BeginDisabled(locked);
+        // Playback controls (the master timeline's, while locked to it)
+        ImGui::BeginDisabled(timelineLocked);
         bool playing = video->getPlaybackState() == PlaybackState::PLAYING;
         if (playing) {
             if (ImGui::Button("Pause")) video->pause();
@@ -300,8 +309,11 @@ void VideoPlayerPanel::drawContent(EditorContext& ctx) {
 
         ImGui::Separator();
 
-        // Speed
+        // Everything below edits the show: disabled under the perform lock.
         ImGui::BeginDisabled(locked);
+
+        // Speed
+        ImGui::BeginDisabled(timelineLocked);
         float speed = video->getSpeed();
         if (ImGui::SliderFloat("Speed", &speed, 0.1f, 4.0f, "%.1fx")) {
             video->setSpeed(speed);
@@ -361,6 +373,7 @@ void VideoPlayerPanel::drawContent(EditorContext& ctx) {
             ctx.sourceManager->removeSource(unloaded);
             es.activeVideoSourceId = UUID();
         }
+        ImGui::EndDisabled();
     } else {
         ImGui::TextDisabled("No video loaded");
         ImGui::TextDisabled("Click \"Load Video...\" to browse for a file");

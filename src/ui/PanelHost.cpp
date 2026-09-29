@@ -48,8 +48,8 @@ void PanelHost::drainOpenRequests(EditorState& es) {
     es.panelOpenRequests.clear();
 }
 
-bool PanelHost::drawDisabled(const Panel& /*panel*/, const EditorContext& /*ctx*/) const {
-    return false;  // E7: the perform lock on and panel.editsShow()
+bool PanelHost::drawDisabled(const Panel& panel, const EditorContext& ctx) const {
+    return ctx.es.performLock.isOn() && panel.editsShow();
 }
 
 void PanelHost::drawWindows(EditorContext& ctx) {

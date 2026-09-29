@@ -17,6 +17,7 @@ public:
 
     const char* id() const override { return ID; }
     PanelKind kind() const override { return PanelKind::Tab; }
+    bool editsShow() const override { return false; }  // viewing only
     bool available(const EditorContext& ctx) const override;
     void drawContent(EditorContext& ctx) override;
 };

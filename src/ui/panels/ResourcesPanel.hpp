@@ -15,6 +15,9 @@ public:
     explicit ResourcesPanel(PanelHost& host) : host_(host) {}
 
     const char* id() const override { return ID; }
+    // Only the tab bar: each tab is drawn disabled or not by its own editsShow(), so
+    // the Preview stays reachable under the perform lock.
+    bool editsShow() const override { return false; }
     void drawContent(EditorContext& ctx) override;
 
 private:

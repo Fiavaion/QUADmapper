@@ -43,7 +43,8 @@ public:
 
 private:
     void drainOpenRequests(EditorState& es);
-    // The one place the perform lock (ADR-051 §4, E7) will disable show-editing panels.
+    // The one place the perform lock (ADR-051 §4) disables show-editing panels: on,
+    // and the panel's editsShow().
     bool drawDisabled(const Panel& panel, const EditorContext& ctx) const;
 
     std::vector<Panel*> panels_;

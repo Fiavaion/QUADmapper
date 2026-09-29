@@ -2,6 +2,7 @@
 #include "../editor/EditorState.hpp"
 #include "../editor/MeshLoads.hpp"
 #include "../editor/MissingMedia.hpp"
+#include "../editor/PerformLock.hpp"
 #include "../editor/ProjectMapping.hpp"
 #include "../editor/ProjectReplace.hpp"
 #include "../editor/StatusLine.hpp"
@@ -196,6 +197,22 @@ void ProjectSession::processPendingFileAction() {
     const FileAction action = es.pendingFileAction;
     if (action == FileAction::None) return;
     es.pendingFileAction = FileAction::None;
+
+    // The perform lock (ADR-051 §4) keeps the show that is on: nothing replaces or adds
+    // to it. Save, Save As, Exit and discarding a recovery file stay allowed.
+    const char* locked = nullptr;
+    switch (action) {
+        case FileAction::New:             locked = "New Project"; break;
+        case FileAction::Open:            locked = "Open Project"; break;
+        case FileAction::Load:            locked = "Load Project"; break;
+        case FileAction::ImportObject:    locked = "Import 3D Object"; break;
+        case FileAction::RestoreRecovery: locked = "Restore unsaved work"; break;
+        default: break;
+    }
+    if (locked && refusedByPerformLock(es, locked)) {
+        if (action == FileAction::Load) es.pendingLoadPath.clear();
+        return;
+    }
 
     // Anything that leaves the current project first settles its unsaved changes.
     // Open only picks a file; the Load it queues settles unsaved changes at that

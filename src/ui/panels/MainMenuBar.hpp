@@ -21,8 +21,9 @@ void actionMenuItem(EditorContext& ctx, const char* id, bool selected = false,
 // Not a Panel: it is always shown and manages its own ImGui::BeginMainMenuBar /
 // EndMainMenuBar lifetime (ADR-051 §2). EditorUi owns it.
 // Items with a registered action (Save, Undo, Redo, Select All, Deselect All, Delete,
-// Preferences, Blackout) invoke it through ctx.actions and show the registry's label
-// and chord, so they do exactly what the key does (ADR-051 §3). The other File items
+// Preferences, Blackout, Perform Lock) invoke it through ctx.actions and show the
+// registry's label and chord, so they do exactly what the key does (ADR-051 §3); an
+// action the perform lock refuses is greyed out. The other File items
 // (New / Open / Save As / Import / Exit) set ctx.es.pendingFileAction, which
 // Application runs at the next frame boundary (ADR-046). The Window menu is
 // generated from `panels`; windows are opened through EditorState::requestPanelOpen.

@@ -6,6 +6,7 @@
 #include "editor/EditorServices.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/MissingMedia.hpp"
+#include "editor/PerformLock.hpp"
 #include "editor/UndoRouting.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
@@ -62,7 +63,8 @@ void actionMenuItem(EditorContext& ctx, const char* id, bool selected, std::opti
     const Action* action = ctx.actions ? ctx.actions->find(id) : nullptr;
     if (!action) return;
     const std::string chord = action->chord ? chordText(*action->chord) : std::string();
-    const bool canRun = enabled ? *enabled : (!action->enabled || action->enabled(ctx));
+    const bool canRun = (enabled ? *enabled : (!action->enabled || action->enabled(ctx))) &&
+                        !performLockRefuses(ctx.es, *action);
     if (ImGui::MenuItem(action->label.c_str(), chord.empty() ? nullptr : chord.c_str(), selected,
                         canRun)) {
         ctx.actions->invoke(id, ctx, Source::Menu);
@@ -130,14 +132,18 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         return;
     }
 
+    // The perform lock (ADR-051 §4) greys out what it blocks; the session and the
+    // registry refuse the same things again (a key, the Project tab, a queued action).
+    const bool locked = es.performLock.isOn();
+
     // File actions are only requested here; Application runs them at the next frame
     // boundary, after the unsaved-changes check (ADR-046).
     if (ImGui::BeginMenu("File")) {
         using FileAction = EditorState::FileAction;
-        if (ImGui::MenuItem("New Project")) {
+        if (ImGui::MenuItem("New Project", nullptr, false, !locked)) {
             es.pendingFileAction = FileAction::New;
         }
-        if (ImGui::MenuItem("Open Project...")) {
+        if (ImGui::MenuItem("Open Project...", nullptr, false, !locked)) {
             es.pendingFileAction = FileAction::Open;
         }
         ImGui::Separator();
@@ -146,11 +152,11 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             es.pendingFileAction = FileAction::SaveAs;
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Import 3D Object (OBJ)...")) {
+        if (ImGui::MenuItem("Import 3D Object (OBJ)...", nullptr, false, !locked)) {
             es.pendingFileAction = FileAction::ImportObject;
         }
         if (ImGui::MenuItem("Relocate Missing Media...", nullptr, false,
-                            !collectMissingMedia(es).empty())) {
+                            !locked && !collectMissingMedia(es).empty())) {
             es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
         }
         ImGui::Separator();
@@ -182,7 +188,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         }
         const bool calibrating = !es.calibratingOutputId.isNull();
         if (ImGui::MenuItem("Calibrate Projector...", nullptr, calibrating,
-                            calibrating || toCalibrate)) {
+                            !locked && (calibrating || toCalibrate))) {
             if (calibrating) {
                 es.endCalibration();
             } else {
@@ -202,6 +208,8 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
     if (ImGui::BeginMenu("Output")) {
         // Master blackout (ADR-048 §3): every projector output goes black.
         actionMenuItem(ctx, action_id::BLACKOUT, ctx.outputManager && ctx.outputManager->isBlackout());
+        // The perform lock (ADR-051 §4): locks at once; unlocking asks first.
+        actionMenuItem(ctx, action_id::PERFORM_LOCK, locked);
         if (ctx.audio) {
             ImGui::Separator();
             if (ImGui::MenuItem("Mute Audio", nullptr, ctx.audio->masterMuted())) {
@@ -230,21 +238,24 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         auto run = [services](AiAction action) {
             if (services) services->runAi(action);
         };
+        // The perform lock blocks the AI assist (it warps quads and projects patterns);
+        // Clear Pattern stays, since it gives the show back.
+        const bool aiAllowed = !locked;
         if (services && services->aiActive()) {
-            if (ImGui::MenuItem("Detect Surface (stub)")) run(AiAction::DetectSurface);
+            if (ImGui::MenuItem("Detect Surface (stub)", nullptr, false, aiAllowed)) run(AiAction::DetectSurface);
             ImGui::Separator();
             if (ImGui::BeginMenu("One-Flash")) {
-                if (ImGui::MenuItem("Emit Pattern")) run(AiAction::EmitPattern);
-                if (ImGui::MenuItem("Capture Photo")) run(AiAction::CapturePhoto);
-                if (ImGui::MenuItem("Solve & Apply")) run(AiAction::SolveApply);
-                if (ImGui::MenuItem("Anamorphic Warp")) run(AiAction::Anamorphic);
+                if (ImGui::MenuItem("Emit Pattern", nullptr, false, aiAllowed)) run(AiAction::EmitPattern);
+                if (ImGui::MenuItem("Capture Photo", nullptr, false, aiAllowed)) run(AiAction::CapturePhoto);
+                if (ImGui::MenuItem("Solve & Apply", nullptr, false, aiAllowed)) run(AiAction::SolveApply);
+                if (ImGui::MenuItem("Anamorphic Warp", nullptr, false, aiAllowed)) run(AiAction::Anamorphic);
                 if (ImGui::MenuItem("Clear Pattern")) run(AiAction::ClearPattern);
                 ImGui::EndMenu();
             }
             ImGui::Separator();
             ImGui::TextDisabled("Sidecar connected");
         } else {
-            if (ImGui::MenuItem("Enable AI Assist")) run(AiAction::Enable);
+            if (ImGui::MenuItem("Enable AI Assist", nullptr, false, aiAllowed)) run(AiAction::Enable);
             ImGui::Separator();
             ImGui::TextDisabled("Sidecar not running");
         }
@@ -269,7 +280,10 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
 
     if (simple) {
         ImGui::Separator();
-        if (ImGui::Button("Apply Test Grid")) {
+        ImGui::BeginDisabled(locked);
+        const bool applyGrid = ImGui::Button("Apply Test Grid");
+        ImGui::EndDisabled();
+        if (applyGrid) {
             if (Quad* q = es.quadManager().getPrimarySelectedQuad()) {
                 assignUvTestGrid(es.quadTextures, es.quadTexturePaths, q->getId(), 1024, 8);
                 // Override any assigned video/image: the renderer resolves mediaId

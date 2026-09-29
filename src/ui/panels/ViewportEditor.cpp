@@ -433,6 +433,17 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
         // never grabs it and clicks on overlays above the canvas never reselect quads.
         const bool canvasPress = mousePressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
 
+        // The perform lock (ADR-051 §4): no picking, dragging or keys. The canvas still
+        // shows the show, and zoom and pan (EditorUi's canvas overlay) still work.
+        if (es.performLock.isOn()) {
+            cornerHoveredVertex = cornerDraggedVertex = -1;
+            meshHoveredVertex = meshDraggedVertex = -1;
+            es.meshHoveredHandle = es.meshDraggedHandle = -1;
+            es.bezierHovered = es.bezierDragged = -1;
+            snapActive = false;
+            return;
+        }
+
         // Slice warp editing: the canvas edits the selected slice's warp corners, and
         // quad vertices stay untouched (as while calibrating).
         if (warpOutput) {

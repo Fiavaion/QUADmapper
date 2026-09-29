@@ -226,8 +226,9 @@ void EditorUi::drawCanvasOverlay(EditorContext& ctx) {
     // target can't register over the passthrough central node (no window is hovered
     // there), so detect the drop manually: while a MEDIA_ITEM_ID drag is active,
     // on left-release over the canvas, assign to the topmost quad under the cursor.
+    // Not under the perform lock (ADR-051 §4).
     const ImGuiPayload* drag = ImGui::GetDragDropPayload();
-    if (drag && drag->IsDataType("MEDIA_ITEM_ID") &&
+    if (drag && drag->IsDataType("MEDIA_ITEM_ID") && !es.performLock.isOn() &&
         ImGui::IsMouseReleased(ImGuiMouseButton_Left) && overRegion &&
         es.lastViewScale.x != 0.0f && es.lastViewScale.y != 0.0f) {
         UUID mediaId = *(const UUID*)drag->Data;

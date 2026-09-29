@@ -5,6 +5,7 @@
 
 #include "app/ProjectSession.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
 #include "editor/ProjectMapping.hpp"
 #include "core/FileSystem.hpp"
 #include "core/UUID.hpp"
@@ -271,4 +272,48 @@ TEST_F(ProjectSessionTest, MissingMediaWindowClosesAfterTheShowIsReplaced) {
 
     window.tick(ctx);
     EXPECT_FALSE(window.visible);
+}
+
+// The perform lock (ADR-051 §4) keeps the show that is on: New, Open, Load, Import and
+// Restore are refused, whoever queued them, while Save still writes the show.
+TEST_F(ProjectSessionTest, PerformLockRefusesNewAndLoadButSaves) {
+    openAs(file("show.qmap"));
+    ASSERT_TRUE(ProjectSerializer::save(project_, dir_ / "other.qmap"));
+    es_.activeScene().getQuadManager().createQuad("Quad 2");
+    lockPerform(es_);
+
+    es_.discardConfirmed = true;  // even with "Don't Save" already answered
+    es_.pendingFileAction = FileAction::New;
+    session_->processPendingFileAction();
+    EXPECT_EQ(quadCount(), 2u) << "New refused";
+    EXPECT_EQ(es_.unsavedPromptFor, FileAction::None) << "no prompt for a refused action";
+    EXPECT_NE(std::string(es_.statusMessage).find("the show is locked"), std::string::npos)
+        << es_.statusMessage;
+
+    es_.pendingLoadPath = file("other.qmap");
+    es_.pendingFileAction = FileAction::Load;
+    session_->processPendingFileAction();
+    EXPECT_EQ(quadCount(), 2u) << "Load refused";
+    EXPECT_TRUE(es_.pendingLoadPath.empty());
+
+    for (FileAction action : {FileAction::Open, FileAction::ImportObject}) {
+        es_.pendingFileAction = action;
+        session_->processPendingFileAction();
+        EXPECT_FALSE(session_->isFileDialogBusy()) << "no dialog opened";
+    }
+    es_.recoveryFilePath = file("other.qmap");
+    es_.recoveryProjectPath = file("show.qmap");
+    es_.pendingFileAction = FileAction::RestoreRecovery;
+    session_->processPendingFileAction();
+    EXPECT_EQ(quadCount(), 2u) << "Restore refused";
+    EXPECT_EQ(replaced_, 0);
+    EXPECT_EQ(takesDropped_, 0);
+    es_.recoveryFilePath.clear();
+
+    es_.pendingFileAction = FileAction::Save;
+    session_->processPendingFileAction();
+    auto saved = ProjectSerializer::load(dir_ / "show.qmap");
+    ASSERT_TRUE(saved) << "Save runs under the lock";
+    EXPECT_EQ(saved.value().getScenes()[0].quads.size(), 2u);
+    EXPECT_FALSE(session_->isProjectDirty());
 }
