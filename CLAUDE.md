@@ -49,8 +49,12 @@ ctest --preset debug
 | `src/video/` | Video decoding (FFmpeg) and playback | Phase 3 |
 | `src/audio/` | Audio mixing and multi-output routing | Phase 6 |
 | `src/output/` | Output window management, perform mode | Phase 4 |
-| `src/ui/` | User interface with Dear ImGui | All Phases |
-| `src/input/` | Input handling and keyboard shortcuts | Phase 7 |
+| `src/control/` | OSC and MIDI external control (ADR-048) | Post-MVP |
+| `src/source/` | Media sources: video, HAP, images, procedural, camera | Phase 3 |
+| `src/editor/` | Editor state and mutations, actions, perform lock: no ImGui panels (ADR-051) | ADR-051 |
+| `src/ui/` | Panels, PanelHost, EditorUi, menus and dialogs with Dear ImGui | All Phases |
+| `src/input/` | Canvas key maths (`VertexKeyboard.hpp`) | Phase 7 |
+| `src/app/` | Application loop, ProjectSession, AiAssist, AppActions, bench/stress | All Phases |
 | `tests/` | GoogleTest unit and integration tests | All Phases |
 
 ## Code Conventions
@@ -93,19 +97,17 @@ ctest --preset debug
 ```
 core (no deps)
   ↓
-project, scene, media (depend on core)
+project, scene, media, video, audio, control, renderer, source, output, input
   ↓
-renderer (depends on core, scene)
+editor   (EditorState, commands helpers, ActionRegistry, PerformLock; no ImGui panels)
   ↓
-video (depends on core, media)
-audio (depends on core)
-output (depends on core, renderer)
+ui       (panels, PanelHost, EditorUi, ShortcutRouter)
   ↓
-ui (depends on all above)
-input (depends on core)
-  ↓
-app (depends on all)
+app      (Application loop, ProjectSession, AiAssist, AppActions)
 ```
+
+The `layering_check` ctest fails on any `ui/` or `app/` include under `src/editor` and any
+`app/` include under `src/ui` (ADR-051).
 
 ## Testing
 
@@ -139,6 +141,10 @@ ctest --preset debug
 | `src/video/VideoDecoder.hpp` | FFmpeg video decoding |
 | `src/project/ProjectSerializer.hpp` | .qmap file format |
 | `src/ui/panels/InspectorPanel.hpp` | Main property editor |
+| `src/editor/EditorState.hpp` | Live editor model and selection |
+| `src/editor/ActionRegistry.hpp` | Editor actions: keys and menu run the same code |
+| `src/ui/EditorUi.hpp` | Frame order: canvas, dockspace, menu, shortcuts, takes, panels |
+| `src/app/Application.hpp` | Main loop, setup/shutdown, projector frames |
 
 ## Third-Party Libraries
 
@@ -202,18 +208,24 @@ See `.claude/agent-state/spawn-rules.json` for full configuration.
 
 ### Adding a New Panel
 
-1. Create `src/ui/panels/NewPanel.hpp` and `.cpp` (add both to `src/ui/CMakeLists.txt`) with a
-   `render(EditorContext& ctx)` that returns early when its `show…` flag is off, like
-   `VideoPlayerPanel` or `ControlPanel`.
-2. Hold the panel and its visibility flag in `EditorState` (`src/app/EditorState.hpp`).
-3. Draw it from `Application::render()` next to the other panels.
-4. Add a toggle in the Window menu (`src/ui/panels/MainMenuBar.cpp`).
-5. Check the dock layout on a first run (`imgui.ini`) so it docks sensibly.
+1. Create `src/ui/panels/NewPanel.hpp` and `.cpp` (add both to `src/ui/CMakeLists.txt`) that
+   subclass `Panel` (`src/ui/panels/Panel.hpp`): a stable `id()` (the ImGui window name), and
+   `drawContent(EditorContext&)`; the host does Begin/End. Override `kind()` for a Resources tab
+   or an overlay, `tick()` for work that must run while hidden, and `editsShow()` (false only for
+   show controls, so the perform lock leaves it usable).
+2. Register it in `EditorUi` (`src/ui/EditorUi.cpp`). The Window menu is generated from the
+   registered panels, so there is no flag in `EditorState` and no menu edit.
+3. Get everything through `EditorContext`; editor code that must open it posts
+   `es.requestPanelOpen(id)`.
+4. Check the dock layout on a first run (`imgui.ini`) so it docks sensibly.
 
 ### Adding a New Keyboard Shortcut
 
-- **Editor-wide shortcuts** go in the shortcut block of `Application::render()`, behind its
-  guards (no text field active, no popup open), with `ImGui::IsKeyPressed(key, false)`.
+- **Editor-wide shortcuts** are actions in the `ActionRegistry` (`src/editor/ActionRegistry.hpp`):
+  editor-only ones in `src/editor/EditActions.cpp`, ones needing app services in
+  `src/app/AppActions.cpp`. Give the action a chord, a class (Show/Edit/File/View) and a guard;
+  `ShortcutRouter` fires it and the menu shows its label and chord. Modifiers match exactly.
+  The registry refuses chords on Tab, the arrows and H. New bindings need the owner's sign-off.
 - **Canvas editing keys** (vertex select and nudge) live in `ViewportEditor.cpp` and
   `src/input/VertexKeyboard.hpp`, which claim the keys with `SetKeyOwner`. Never let a new
   shortcut take Tab, the arrows, Shift or Alt from the canvas.
