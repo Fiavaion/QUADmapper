@@ -204,6 +204,7 @@ add_quadmapper_test(test_editor
     editor/SceneTakeRoutingTest.cpp
     editor/GridUndoTest.cpp
     editor/ProjectMappingTest.cpp
+    editor/PerformLockTest.cpp
 )
 target_link_libraries(test_editor PRIVATE quadmapper_editor)
 

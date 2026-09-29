@@ -22,6 +22,7 @@
 #include "../core/CommandHistory.hpp"
 #include "../control/MidiMapping.hpp"
 #include "GridUndo.hpp"
+#include "PerformLock.hpp"
 #include "../project/Project.hpp"
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
@@ -413,7 +414,9 @@ struct EditorState {
     // the active one, so the canvas shows that projector's output frame, slices, warp
     // and blend included, with the calibration points in projector pixels
     // (calibrationViewOutput, TD-29). Leaves slice warp editing.
+    // Not under the perform lock (ADR-051 §4).
     void beginCalibration(const OutputWindow& output) {
+        if (performLock.isOn()) return;
         endSliceWarp();
         if (findSceneIndex(scenes, output.getSceneId()) >= 0) setActiveScene(output.getSceneId());
         calibratingOutputId = output.getId();
@@ -440,9 +443,9 @@ struct EditorState {
     OutputSlices sliceWarpDragBefore;  // for one undo step when the drag ends
 
     // Start editing the warp of `sliceId` on `output` on the canvas. Not while
-    // calibrating (calibration owns the canvas then).
+    // calibrating (calibration owns the canvas then), nor under the perform lock.
     void beginSliceWarp(const OutputWindow& output, const UUID& sliceId) {
-        if (!calibratingOutputId.isNull()) return;
+        if (!calibratingOutputId.isNull() || performLock.isOn()) return;
         finishSliceWarpDrag();
         sliceWarpOutputId = output.getId();
         selectedSliceId = sliceId;
@@ -509,6 +512,10 @@ struct EditorState {
     // Left-button state last frame, for click-to-select edge detection in the
     // viewport (ADR-042). Distinct from the corner/mesh drag latches.
     bool canvasMouseDownPrev = false;
+
+    // The perform lock (ADR-051 §4, PerformLock.hpp): runtime only, never saved. While
+    // it is on, commandHistory is read-only.
+    PerformLock performLock;
 
     // Undo/redo for quad and 3D-object edits, deletes and duplicates. Commands hold
     // (scene id, quad or object id) and resolve through quadResolver, so a target or

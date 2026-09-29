@@ -57,10 +57,12 @@ inline OutputWindow* calibrationViewOutput(EditorState& es, OutputManager* outpu
 // What the canvas editing keys (Tab, the arrows, H) act on this frame. Calibration
 // comes first, then slice warp editing, which the operator turns on explicitly in the
 // slice editor; otherwise the selected quad, exactly as without slices. Selecting a
-// slice in the slice editor alone never takes the keys from a quad.
+// slice in the slice editor alone never takes the keys from a quad. Under the perform
+// lock nothing does: the keys are not claimed and nothing nudges (ADR-051 §4).
 enum class CanvasKeyOwner { None, Quad, Calibration, SliceWarp };
 
 inline CanvasKeyOwner canvasKeyOwner(EditorState& es, OutputManager* outputs) {
+    if (es.performLock.isOn()) return CanvasKeyOwner::None;
     if (!es.calibratingOutputId.isNull()) {
         const OutputWindow* calibrated = calibrationViewOutput(es, outputs);
         const bool points = calibrated && !calibrated->getCalibrationPoints().empty();

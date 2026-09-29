@@ -140,7 +140,8 @@ TEST(ActionRegistryTest, EveryShippedChordRegisters) {
     EXPECT_EQ(edits, 13u);
     const auto noop = [](EditorContext&) {};
     for (const char* id : {action_id::SAVE, action_id::PREFERENCES, action_id::BLACKOUT,
-                           action_id::PERFORM_TOGGLE, action_id::PERFORM_ESCAPE}) {
+                           action_id::PERFORM_TOGGLE, action_id::PERFORM_ESCAPE,
+                           action_id::PERFORM_LOCK}) {
         auto action = makeAppAction(id, noop);
         ASSERT_TRUE(action.has_value()) << id;
         EXPECT_EQ(rig.registry.add(*action), AddResult::Added) << id;
@@ -154,7 +155,7 @@ TEST(ActionRegistryTest, EveryShippedChordRegisters) {
     }
     EXPECT_FALSE(makeAppAction("scene.take.10", noop).has_value());
     EXPECT_FALSE(makeAppAction("edit.undo", noop).has_value());
-    EXPECT_EQ(rig.registry.actions().size(), edits + 5 + 9);
+    EXPECT_EQ(rig.registry.actions().size(), edits + 6 + 9);
 
     // The looser Show guard and no rebinding: F11, Esc and Ctrl+B only.
     for (const Action& action : rig.registry.actions()) {

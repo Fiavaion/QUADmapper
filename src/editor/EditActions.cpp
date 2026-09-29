@@ -247,6 +247,13 @@ std::optional<Action> makeAppAction(std::string_view id, std::function<void(Edit
         action.cls = ActionClass::Show;
         action.guard = KeyGuard::Show;
         action.fixed = true;
+    } else if (id == action_id::PERFORM_LOCK) {
+        // The perform lock (ADR-051 §4): Show class, so the lock never refuses its own
+        // way out. Output > Perform Lock only for now: Ctrl+Shift+L is proposed and
+        // waits for the owner's sign-off (a new binding, ADR-051 §3); once approved, the
+        // chord goes here: Chord{ImGuiKey_L, MOD_CTRL | MOD_SHIFT}.
+        action.label = "Perform Lock";
+        action.cls = ActionClass::Show;
     } else {
         // Scene takes 1-9 have no chord: the physical key is captured outside
         // (layout-independent) and queued, and the queue drains under the Editing guard.

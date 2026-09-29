@@ -6,6 +6,7 @@
 // off-thread mesh loading (editor/MeshLoads.hpp) and undo routing (editor/UndoRouting.hpp).
 
 #include "editor/MissingMedia.hpp"
+#include "editor/PerformLock.hpp"
 #include "editor/ProjectReplace.hpp"
 #include "editor/UndoRouting.hpp"
 #include "FakePlayable.hpp"
@@ -591,6 +592,23 @@ TEST(MeshLoadsTest, ImportShowsLoadingThenBecomesOneUndoStep) {
     ASSERT_TRUE(fx.es.commandHistory.redo());
     ASSERT_NE(scene.getObject(id), nullptr);
     EXPECT_EQ(scene.getObject(id)->getMesh().triangleCount(), 3u);
+}
+
+// The perform lock (ADR-051 §4) taken while an import parses: the history is read-only,
+// so the object stays in the scene with its mesh but without an undo step.
+TEST(MeshLoadsTest, ImportFinishingUnderThePerformLockKeepsItsObject) {
+    MeshLoadFixture fx;
+    const UUID id = beginObjectImport(fx.es, "prop", fx.writeObj("prop.obj", 2))->getId();
+    lockPerform(fx.es);
+
+    const auto outcomes = fx.adoptAll();
+    ASSERT_EQ(outcomes.size(), 1u);
+    EXPECT_TRUE(outcomes[0].ok);
+    const MeshObject* object = fx.es.activeScene().getObject(id);
+    ASSERT_NE(object, nullptr);
+    EXPECT_EQ(object->getMesh().triangleCount(), 2u);
+    EXPECT_FALSE(isMeshLoading(fx.es, *object));
+    EXPECT_FALSE(fx.es.commandHistory.canUndo());
 }
 
 TEST(MeshLoadsTest, ImportKeepsItsPlaceAndEditsMadeWhileLoading) {

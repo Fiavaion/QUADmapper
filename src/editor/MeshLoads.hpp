@@ -193,9 +193,15 @@ inline std::vector<MeshImportOutcome> adoptLoadedMeshes(EditorState& es) {
 
             // The last object takes the parsed data; any others get a copy.
             const bool last = i + 1 == waiting.size();
-            if (!isImport) {
+            // An import that finishes under the perform lock (the history is read-only)
+            // keeps its object where it is, without an undo step.
+            const bool undoable = isImport && !es.commandHistory.isReadOnly();
+            if (!undoable) {
                 if (last) object.setMesh(std::move(done.mesh.value()));
                 else object.setMesh(done.mesh.value());
+                if (isImport) {
+                    outcomes.push_back({true, true, scene.getId(), object.getId(), object.getName(), {}});
+                }
                 continue;
             }
             size_t index = 0;

@@ -40,6 +40,7 @@ inline constexpr const char* PREFERENCES = "prefs.open";
 inline constexpr const char* BLACKOUT = "output.blackout";
 inline constexpr const char* PERFORM_TOGGLE = "perform.toggle";
 inline constexpr const char* PERFORM_ESCAPE = "perform.escape";
+inline constexpr const char* PERFORM_LOCK = "perform.lock";
 }  // namespace action_id
 
 // "scene.take.N" for scene take N (1-9).
@@ -88,7 +89,7 @@ void resetMeshAction(EditorState& es);
 // took a step (the app refreshes its unsaved-changes label).
 void registerEditActions(ActionRegistry& registry, std::function<void()> historyChanged = {});
 
-// The app action with this id (action_id::SAVE ... PERFORM_ESCAPE, sceneTakeId(n)),
+// The app action with this id (action_id::SAVE ... PERFORM_LOCK, sceneTakeId(n)),
 // with its label, chord, class and guard, running `run`. nullopt for any other id.
 std::optional<Action> makeAppAction(std::string_view id, std::function<void(EditorContext&)> run);
 

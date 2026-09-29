@@ -17,6 +17,8 @@ add_library(quadmapper_editor STATIC
     MeshLoads.hpp
     MissingMedia.hpp
     OutputPersistence.hpp
+    PerformLock.hpp
+    PerformLock.cpp
     Preferences.hpp
     Preferences.cpp
     ProjectMapping.hpp
