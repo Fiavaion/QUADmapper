@@ -12,6 +12,8 @@
 #include "project/ProjectSerializer.hpp"
 #include "source/SourceManager.hpp"
 #include "editor/Preferences.hpp"
+#include "editor/EditorContext.hpp"
+#include "ui/dialogs/MissingMediaWindow.hpp"
 
 #include <gtest/gtest.h>
 
@@ -37,6 +39,7 @@ protected:
         services.sources = &sources_;
         services.dropQueuedSceneTakes = [this]() { ++takesDropped_; };
         services.confirmExit = [this]() { exitConfirmed_ = true; };
+        services.projectReplaced = [this]() { ++replaced_; };
         session_ = std::make_unique<ProjectSession>(project_, es_, prefs_, std::move(services));
 
         // The editor after its first frame: one quad.
@@ -71,6 +74,7 @@ protected:
     AppPreferences prefs_;
     std::unique_ptr<ProjectSession> session_;
     int takesDropped_ = 0;
+    int replaced_ = 0;  // services.projectReplaced calls
     bool exitConfirmed_ = false;
 };
 
@@ -212,4 +216,59 @@ TEST_F(ProjectSessionTest, EmergencySaveWritesTheCrashFileNotTheProject) {
     ASSERT_TRUE(crash);
     ASSERT_EQ(crash.value().getScenes().size(), 1u);
     EXPECT_EQ(crash.value().getScenes()[0].quads.size(), 2u);
+}
+
+// The UI hears of every show that replaced the open one (EditorUi::projectReplaced),
+// once, and never of a load that failed.
+TEST_F(ProjectSessionTest, ProjectReplacedRunsOnceForEachNewLoadAndRestore) {
+    openAs(file("show.qmap"));
+    ASSERT_TRUE(ProjectSerializer::save(project_, dir_ / "saved.qmap"));
+
+    es_.pendingFileAction = FileAction::New;
+    session_->processPendingFileAction();
+    EXPECT_EQ(replaced_, 1) << "New";
+
+    es_.pendingLoadPath = file("saved.qmap");
+    es_.pendingFileAction = FileAction::Load;
+    session_->processPendingFileAction();
+    EXPECT_EQ(replaced_, 2) << "Load";
+
+    es_.recoveryFilePath = file("saved.qmap");
+    es_.recoveryProjectPath = file("show.qmap");
+    es_.pendingFileAction = FileAction::RestoreRecovery;
+    session_->processPendingFileAction();
+    EXPECT_EQ(replaced_, 3) << "Restore";
+
+    es_.discardConfirmed = true;  // the restored work is unsaved
+    es_.pendingLoadPath = file("missing.qmap");
+    es_.pendingFileAction = FileAction::Load;
+    session_->processPendingFileAction();
+    EXPECT_EQ(replaced_, 3) << "a failed Load replaced nothing";
+}
+
+// The Missing Media window closes itself once the show that had missing files is gone:
+// after New, nothing is missing (MissingMediaWindow::tick).
+TEST_F(ProjectSessionTest, MissingMediaWindowClosesAfterTheShowIsReplaced) {
+    openAs(file("show.qmap"));
+    Project::SourceData gone;
+    gone.id = UUID::generate();
+    gone.kind = "video";
+    gone.path = file("gone.mp4");
+    gone.missing = true;
+    es_.missingSources.emplace(gone.id, gone);
+    es_.activeScene().getQuadManager().getQuads()[0]->getTexture().mediaId = gone.id;
+
+    MissingMediaWindow window;
+    window.visible = true;
+    EditorContext ctx{es_, &project_, nullptr, &sources_, nullptr, nullptr, nullptr};
+    window.tick(ctx);
+    ASSERT_TRUE(window.visible) << "a file is still missing";
+
+    es_.discardConfirmed = true;
+    es_.pendingFileAction = FileAction::New;
+    session_->processPendingFileAction();
+    ASSERT_EQ(replaced_, 1);
+
+    window.tick(ctx);
+    EXPECT_FALSE(window.visible);
 }

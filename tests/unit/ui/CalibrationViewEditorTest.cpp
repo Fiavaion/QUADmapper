@@ -137,7 +137,7 @@ std::vector<ViewCase> viewCases() {
 struct CalibrationViewRig {
     GLFWwindow* win;
     EditorState es;
-    ViewportEditor viewport;  // owned by EditorPanels in the app (ADR-051 E3)
+    ViewportEditor viewport;  // owned by EditorUi in the app (ADR-051 E5)
     OutputManager om;
     OutputWindow* output = nullptr;
     Renderer renderer;
