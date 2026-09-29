@@ -159,6 +159,18 @@ E0 can run alongside anything. E1, E2, E3 and E5 all touch `Application.cpp`, so
   - Three lower-module tests include editor headers header-only: `OutputManagerTest` (`OutputPersistence`), `ProjectTest` (`UnsavedIndicator`) and `AudioSyncTest` (`SourceAudio`).
   - CLAUDE.md and `.claude/rules/scene-geometry.md` still name `src/app` paths for `EditorState` and `MeshEditKeys`. They are left for E8.
 
+**E7 as built (2026-09-29).** Where it differs from §4 or adds to it:
+- **State:** `editor/PerformLock.{hpp,cpp}`, a `PerformLock` member of `EditorState` (runtime only, no `.qmap` change). `lockPerform`, `requestPerformUnlock`, `confirmPerformUnlock` and `cancelPerformUnlock` are the only ways to change it, so an unlock cannot skip its confirmation.
+- **Toggle:** `perform.lock` (Show class) on Output > Perform Lock. **No chord yet:** Ctrl+Shift+L waits for the owner's sign-off; `makeAppAction` has a comment where it goes. The unlock confirmation is the "Unlock the Show?" modal in `SessionDialogs` (Esc = Stay Locked). The LOCKED badge sits in the canvas's top-right corner (`Banners`), clear of the zoom controls and the BLACKOUT banner.
+- **Calibration and slice-warp editing end on lock** (the safer of the two options: the lock always engages at once, and no editing mode stays active behind it). A warp corner drag in progress is kept as its undo step before the history turns read-only. `beginCalibration` and `beginSliceWarp` refuse while locked.
+- **Policy:** the registry refuses Edit-class actions and posts "<label> is blocked: the show is locked (Output > Perform Lock)"; the menu greys them out. File-class Save and View-class Preferences (which opens a disabled window) stay allowed.
+- **File actions:** `ProjectSession` refuses New, Open, Load, Import OBJ and Restore before the unsaved-changes prompt. Save As, Exit and Discard recovery stay allowed.
+- **Panels:** `editsShow()` is false for Resources (the tab bar only: each tab decides), Preview, Video Player, Banners and the session dialogs. Video Player disables everything but its transport (Play / Pause / Stop / ±5 s / Progress): loading, the path, Lock to master timeline, speed, loop mode, per-clip sound, Assign / Remove and Unload. Control stays disabled (MIDI learn and mappings); locking also cancels a pending learn. The Convert to HAP overlay stays disabled, since "Replace in show" edits the show.
+- **Kept outside the panels:** the menu bar's master timeline, master audio and output device, Reset Playheads, the Simple / Advanced toggle and "Send to Projector (F11)". The AI menu is greyed except One-Flash > Clear Pattern, which gives the show back; `Application::runAi` refuses the rest.
+- **Safety net (a `core` interface change):** `CommandHistory::setReadOnly(bool)` / `isReadOnly()`. While read-only, `execute`, `undo` and `redo` refuse and log; `clear()` still works.
+- **An import already parsing when the lock is taken** keeps its object when the mesh arrives, without an undo step (`MeshLoads`), since the read-only history would refuse its step.
+- **Not blocked:** files dropped from Explorer still go into the media bin, which is not show content.
+
 ### 6. Gates
 - Every slice keeps `ctest` green, including `bench_smoke`, which drives Tab + arrow nudges and 1–9 through the real GLFW key callback: the automated success-metric gate.
 - **Tests:**
