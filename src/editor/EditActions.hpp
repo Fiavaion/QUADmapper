@@ -55,7 +55,9 @@ bool quadEditing(const EditorState& es);
 
 // Undo / redo the next step, scoped by UndoRouting (TD-17). True when a step was taken.
 // A step held back by calibration or slice warp editing posts "Leave <mode> to
-// undo: <step>" on the status line.
+// undo: <step>" on the status line. The actions stay enabled while a step is held
+// back so the key can say why; the menu greys Undo / Redo out with canUndoStep /
+// canRedoStep (UndoRouting.hpp) instead of the action's enabled().
 bool undoAction(EditorState& es);
 bool redoAction(EditorState& es);
 
