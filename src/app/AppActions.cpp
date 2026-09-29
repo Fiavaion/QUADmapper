@@ -4,7 +4,6 @@
 
 #include "Application.hpp"
 #include "ProjectSession.hpp"
-#include "../control/ExternalControl.hpp"
 #include "../editor/ActionRegistry.hpp"
 #include "../editor/EditActions.hpp"
 #include "../editor/EditorState.hpp"
@@ -49,28 +48,10 @@ void Application::registerActions() {
         hasOutputs);
 
     // F11 toggles perform mode and Esc leaves it, even with a popup open: the way out of
-    // fullscreen must never take two presses (the Show guard).
-    put(action_id::PERFORM_TOGGLE, [](EditorContext& ctx) { ctx.outputManager->handleF11Key(); },
-        hasOutputs);
-
-    // Esc cancels a pending MIDI learn, in the same press. Slice warp editing takes Esc:
-    // it leaves warp editing. While calibrating, Esc belongs to calibration: it cancels a
-    // pick in progress, else leaves calibration, and never also leaves perform mode (Esc
-    // on an output window still does).
-    put(action_id::PERFORM_ESCAPE,
-        [this](EditorContext& ctx) {
-            EditorState& es = ctx.es;
-            if (m_externalControl) m_externalControl->dispatcher().cancelLearn();
-            if (!es.sliceWarpOutputId.isNull()) {
-                es.endSliceWarp();
-            } else if (es.calibratingOutputId.isNull()) {
-                if (ctx.outputManager) ctx.outputManager->handleEscapeKey();
-            } else if (es.calibration.pick != CalibrationSession::Pick::None) {
-                es.calibration.cancelPick();
-            } else {
-                es.endCalibration();
-            }
-        });
+    // fullscreen must never take two presses (the Show guard). Esc on a session modal
+    // answers only the modal (editor/PerformLock).
+    put(action_id::PERFORM_TOGGLE, performToggle, hasOutputs);
+    put(action_id::PERFORM_ESCAPE, performEscape);
 
     // The perform lock (ADR-051 §4): the toggle, and the policy that refuses the Edit
     // actions while it is on. Show-class actions (takes, blackout, F11, Esc) and Save

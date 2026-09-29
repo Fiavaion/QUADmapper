@@ -35,9 +35,10 @@ private:
     bool confirmingUnlock_ = false;
 };
 
-// Lock now. An active slice warp edit or calibration ends first (a warp corner drag in
-// progress is kept as its undo step), the grid insert tool and canvas drags are
-// dropped, and the command history turns read-only (the safety net).
+// Lock now. An active slice warp edit or calibration ends first, and every canvas drag
+// in progress (a corner, mesh vertex, grid handle, Bezier handle, warp corner or a
+// division being inserted) is kept where it is as its undo step. Then the grid insert
+// tool is disarmed and the command history turns read-only (the safety net).
 void lockPerform(EditorState& es);
 // Ask to unlock: nothing changes until confirmPerformUnlock.
 void requestPerformUnlock(EditorState& es);
@@ -52,9 +53,21 @@ bool performLockRefuses(const EditorState& es, const Action& action);
 // on the status line and returns true. False, and nothing posted, when unlocked.
 bool refusedByPerformLock(EditorState& es, const std::string& what);
 
-// The perform.lock action: locks (cancelling a pending MIDI learn), or, while locked,
-// asks for the unlock confirmation.
+// The perform.lock action: locks (cancelling a pending MIDI learn and turning the blend
+// test pattern off, so the projectors show the show), or, while locked, asks for the
+// unlock confirmation.
 void togglePerformLock(EditorContext& ctx);
+
+// The perform.escape action (Esc, which acts with a popup open). While a session modal
+// is up (Unlock the Show?, Unsaved Changes, Recover Unsaved Work) Esc answers only the
+// modal: the unlock prompt stays locked, and nothing else is left, perform mode least
+// of all. Otherwise it cancels a pending MIDI learn, then leaves slice warp editing, a
+// calibration pick, calibration, or else perform mode.
+void performEscape(EditorContext& ctx);
+
+// The perform.toggle action (F11): perform mode on or off. With no outputs F11 creates
+// "Projector 1" first; under the lock it refuses that (outputs are show content).
+void performToggle(EditorContext& ctx);
 
 // Installs the registry's lock policy: refuses what performLockRefuses says, posting
 // why on the status line. `es` must outlive the registry's use of it.

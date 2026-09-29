@@ -240,8 +240,8 @@ std::optional<Action> makeAppAction(std::string_view id, std::function<void(Edit
         action.guard = KeyGuard::Show;
         action.fixed = true;
     } else if (id == action_id::PERFORM_ESCAPE) {
-        // Cancels a MIDI learn, then leaves slice warp editing, a calibration pick,
-        // calibration, or else perform mode.
+        // Answers a session modal only; else cancels a MIDI learn, then leaves slice warp
+        // editing, a calibration pick, calibration, or else perform mode (performEscape).
         action.label = "Escape";
         action.chord = Chord{ImGuiKey_Escape, MOD_NONE};
         action.cls = ActionClass::Show;
