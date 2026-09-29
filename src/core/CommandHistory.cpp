@@ -61,6 +61,11 @@ void CommandHistory::execute(std::unique_ptr<Command> command) {
         LOG_WARNING("Attempted to execute null command");
         return;
     }
+    if (readOnly_) {
+        LOG_WARNING("Command '{}' refused: the history is read-only (perform lock)",
+                    command->getDescription());
+        return;
+    }
 
     // If we're building a compound command, add to it instead
     if (compoundCommand_) {
@@ -106,6 +111,10 @@ bool CommandHistory::undo() {
         LOG_TRACE("Nothing to undo");
         return false;
     }
+    if (readOnly_) {
+        LOG_WARNING("Undo refused: the history is read-only (perform lock)");
+        return false;
+    }
 
     --undoIndex_;
     auto& command = commands_[undoIndex_];
@@ -123,6 +132,10 @@ bool CommandHistory::undo() {
 bool CommandHistory::redo() {
     if (!canRedo()) {
         LOG_TRACE("Nothing to redo");
+        return false;
+    }
+    if (readOnly_) {
+        LOG_WARNING("Redo refused: the history is read-only (perform lock)");
         return false;
     }
 

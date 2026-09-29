@@ -86,6 +86,12 @@ public:
     const Command* peekUndo() const { return canUndo() ? commands_[undoIndex_ - 1].get() : nullptr; }
     const Command* peekRedo() const { return canRedo() ? commands_[undoIndex_].get() : nullptr; }
 
+    // Read-only (the perform lock's safety net, ADR-051 §4): execute, undo and redo
+    // refuse and log, and the stack stays as it is. clear() still works (a replaced
+    // project), and so do the media-id queries.
+    void setReadOnly(bool readOnly) { readOnly_ = readOnly; }
+    bool isReadOnly() const { return readOnly_; }
+
     // Clear all history
     void clear();
 
@@ -123,6 +129,7 @@ private:
     std::vector<std::unique_ptr<Command>> commands_;
     size_t undoIndex_ = 0;  // Points to next command to redo
     size_t maxHistory_;
+    bool readOnly_ = false;
 
     // Compound command support
     class CompoundCommand;

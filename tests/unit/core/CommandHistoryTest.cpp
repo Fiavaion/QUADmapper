@@ -265,5 +265,32 @@ TEST_F(CommandHistoryTest, HistoryChangedCallbackCalled) {
     EXPECT_EQ(callbackCount, 4);
 }
 
+// The perform lock's safety net (ADR-051 §4): read-only refuses every change, inside a
+// compound group too, and leaves the stack as it was.
+TEST_F(CommandHistoryTest, ReadOnlyRefusesExecuteUndoAndRedo) {
+    history_->execute(std::make_unique<TestCommand>(executeCount_, undoCount_, "First"));
+    history_->execute(std::make_unique<TestCommand>(executeCount_, undoCount_, "Second"));
+    history_->undo();
+    ASSERT_EQ(executeCount_, 2);
+    ASSERT_EQ(undoCount_, 1);
+
+    history_->setReadOnly(true);
+    EXPECT_TRUE(history_->isReadOnly());
+    history_->execute(std::make_unique<TestCommand>(executeCount_, undoCount_, "Refused"));
+    history_->beginCompoundCommand("Refused group");
+    history_->execute(std::make_unique<TestCommand>(executeCount_, undoCount_, "Refused too"));
+    history_->endCompoundCommand();
+    EXPECT_FALSE(history_->undo());
+    EXPECT_FALSE(history_->redo());
+    EXPECT_EQ(executeCount_, 2) << "nothing ran";
+    EXPECT_EQ(undoCount_, 1);
+    EXPECT_EQ(history_->getUndoCount(), 1u);
+    EXPECT_EQ(history_->getRedoDescription(), "Second") << "the redo step is kept";
+
+    history_->setReadOnly(false);
+    EXPECT_TRUE(history_->redo());
+    EXPECT_EQ(executeCount_, 3);
+}
+
 } // namespace test
 } // namespace quadmapper
