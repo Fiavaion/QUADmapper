@@ -1,5 +1,6 @@
 #include "AiAssist.hpp"
 #include "../editor/EditorState.hpp"
+#include "../editor/PerformLock.hpp"
 #include "../ai/SidecarClient.hpp"
 #include "../core/FileSystem.hpp"
 #include "../core/Logger.hpp"
@@ -71,6 +72,20 @@ void AiAssist::enable() {
     if (!sidecar_) return;
     sidecar_->startAsync();
     showStatus(editor_, "AI: connecting to sidecar...", 5.0f);
+}
+
+void AiAssist::run(EditorServices::AiAction action, OutputManager* outputs) {
+    using AiAction = EditorServices::AiAction;
+    if (action != AiAction::ClearPattern && refusedByPerformLock(editor_, "AI assist")) return;
+    switch (action) {
+        case AiAction::Enable:        enable(); break;
+        case AiAction::DetectSurface: detectSurface(); break;
+        case AiAction::EmitPattern:   if (outputs) emitPattern(*outputs); break;
+        case AiAction::CapturePhoto:  capturePhoto(outputs); break;
+        case AiAction::ClearPattern:  clearPattern(); break;
+        case AiAction::SolveApply:    solveAndApply(outputs); break;
+        case AiAction::Anamorphic:    anamorphic(outputs); break;
+    }
 }
 
 void AiAssist::tick(OutputManager* outputs) {

@@ -3,6 +3,7 @@
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/MediaAssign.hpp"
+#include "editor/PerformLock.hpp"
 #include "editor/SourceAudio.hpp"
 #include "audio/AudioEngine.hpp"
 #include "output/OutputManager.hpp"
@@ -115,6 +116,7 @@ void showLockedNote(const PlayableSource& video) {
 void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
     EditorState& es = ctx.es;
     if (es.videoPath[0] == '\0' || !ctx.sourceManager) return;
+    if (refusedByPerformLock(es, "Load Video")) return;
 
     // Deduped: loading a file that is already a source reuses it (one decode).
     UUID sid = ctx.sourceManager->getOrCreateVideoSource(pathFromUtf8(es.videoPath));

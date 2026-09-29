@@ -8,7 +8,6 @@
 #include "../editor/MissingMedia.hpp"
 #include "../editor/ReplaceMedia.hpp"
 #include "../editor/MeshLoads.hpp"
-#include "../editor/PerformLock.hpp"
 #include "../editor/SliceEditing.hpp"
 #include "../editor/ControlBindings.hpp"
 #include "AiAssist.hpp"
@@ -485,20 +484,7 @@ void Application::requestMissingMediaSearch() { m_session->requestMissingMediaSe
 void Application::savePreferences() { m_preferences->savePreferences(); }
 bool Application::aiActive() const { return m_aiAssist->isActive(); }
 
-void Application::runAi(AiAction action) {
-    // The perform lock (ADR-051 §4) blocks the AI assist, which warps quads and puts
-    // patterns on the projectors. Clear Pattern stays: it gives the show back.
-    if (action != AiAction::ClearPattern && refusedByPerformLock(*m_editorState, "AI assist")) return;
-    switch (action) {
-        case AiAction::Enable:        m_aiAssist->enable(); break;
-        case AiAction::DetectSurface: m_aiAssist->detectSurface(); break;
-        case AiAction::EmitPattern:   m_aiAssist->emitPattern(*m_outputManager); break;
-        case AiAction::CapturePhoto:  m_aiAssist->capturePhoto(m_outputManager.get()); break;
-        case AiAction::ClearPattern:  m_aiAssist->clearPattern(); break;
-        case AiAction::SolveApply:    m_aiAssist->solveAndApply(m_outputManager.get()); break;
-        case AiAction::Anamorphic:    m_aiAssist->anamorphic(m_outputManager.get()); break;
-    }
-}
+void Application::runAi(AiAction action) { m_aiAssist->run(action, m_outputManager.get()); }
 
 int Application::run() {
     // QM-081 H2: stress harness runs as a sibling branch, not a hijack of the UI loop.
@@ -647,12 +633,8 @@ void Application::render() {
 
 void Application::runSceneTakes(EditorContext& ctx) {
     // Scene take (US-008): the 1-9 presses queued since the last frame put scene N on
-    // air, under the Editing guard (renaming a scene, typing a number, a modal).
-    const bool keysAllowed = keyGuardAllows(KeyGuard::Editing);
-    for (int n : m_pendingSceneTakes) {
-        if (keysAllowed) m_actions->invoke(sceneTakeId(n), ctx, Source::Key);
-    }
-    m_pendingSceneTakes.clear();
+    // air, unless typed into a field or behind a popup (runSceneTakeKeys).
+    runSceneTakeKeys(*m_actions, ctx, m_pendingSceneTakes);
     // OSC/MIDI takes (ADR-048) skip that guard: it exists so keys typed into a field or
     // behind a modal do not act on the show, and an operator's controller is not
     // typing. Calibration still holds them off (takeSceneByNumber), as it does the keys.

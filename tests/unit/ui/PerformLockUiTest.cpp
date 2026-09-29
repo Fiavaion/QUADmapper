@@ -2,18 +2,29 @@
 // draws the show-editing panels disabled, and, with the real EditorUi in a hidden GL 3.3
 // window (skips without GL), Tab and the arrows do nothing on the canvas while locked
 // and work again after the unlock, and the menu's Perform Lock asks before unlocking.
+// The unlock prompt never takes the show off air (Esc, scene takes), and a video pick
+// or a media drop reaching the show without a panel is refused.
 // The editor-level rules are in editor/PerformLockTest.cpp.
 
 #include "ui/EditorUi.hpp"
 #include "ui/PanelHost.hpp"
+#include "ui/ShortcutRouter.hpp"
+#include "core/FileSystem.hpp"
 #include "editor/ActionRegistry.hpp"
 #include "editor/EditActions.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/PerformLock.hpp"
+#include "media/MediaItem.hpp"
+#include "media/MediaLibrary.hpp"
 #include "output/OutputManager.hpp"
+#include "output/OutputWindow.hpp"
+#include "scene/Quad.hpp"
+#include "scene/QuadManager.hpp"
+#include "source/SourceManager.hpp"
 #include "ui/dialogs/PreferencesDialog.hpp"
 #include "ui/panels/MainMenuBar.hpp"
+#include "ui/panels/VideoPlayerPanel.hpp"
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -24,9 +35,14 @@
 
 #include <array>
 #include <cfloat>
+#include <cstdio>
+#include <filesystem>
+#include <functional>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 using namespace quadmapper;
 
@@ -216,6 +232,45 @@ protected:
         menuFrame();
     }
 
+    void addAction(const std::string& id, std::function<void(EditorContext&)> run) {
+        std::optional<Action> action = makeAppAction(id, std::move(run));
+        ASSERT_TRUE(action) << id;
+        ASSERT_EQ(registry.add(std::move(*action)), AddResult::Added) << id;
+    }
+
+    // Lock from the menu, then ask to unlock: the "Unlock the Show?" modal is up.
+    void openUnlockPrompt() {
+        clickPerformLockItem();
+        clickPerformLockItem();
+        frame();
+        frame();
+    }
+
+    // Perform mode on `outputs`, set up on this window: one output on monitor 0,
+    // hidden again at once as the stress harness keeps them. False where no display
+    // takes it.
+    bool enterPerformMode(OutputManager& outputs) {
+        if (!outputs.initialize(window_) || outputs.getMonitorCount() == 0) return false;
+        OutputWindow* output = outputs.createOutput("Projector");
+        glfwMakeContextCurrent(window_);
+        if (!output) return false;
+        outputs.assignMonitor(*output, 0);
+        outputs.enterPerformMode(/*borderless=*/true);
+        for (const auto& o : outputs.getOutputs()) {
+            if (o->isCreated()) o->hide();
+        }
+        glfwMakeContextCurrent(window_);
+        ctx.outputManager = &outputs;
+        return outputs.isInPerformMode();
+    }
+
+    // One frame with the 1-9 presses in `queued` (as Application::runSceneTakes).
+    void takeFrame(std::vector<int>& queued) {
+        ImGui::NewFrame();
+        ui->frame(ctx, [&](EditorContext& c) { runSceneTakeKeys(registry, c, queued); });
+        ImGui::Render();
+    }
+
     GLFWwindow* window_ = nullptr;
     ImGuiContext* imgui_ = nullptr;
     EditorState es;
@@ -267,4 +322,178 @@ TEST_F(PerformLockUiTest, UnlockingFromTheMenuAsksFirst) {
     press({ImGuiKey_Escape});  // Esc answers "Stay Locked"
     EXPECT_TRUE(es.performLock.isOn());
     EXPECT_FALSE(es.performLock.isConfirmingUnlock());
+}
+
+// ---- The unlock prompt never takes the show off air -----------------------------------
+
+// perform.escape acts with a popup open (the way out of fullscreen is one press), and
+// the shortcuts run before the session modals: one Esc on the prompt must answer it
+// alone, not also leave perform mode.
+TEST_F(PerformLockUiTest, EscOnTheUnlockPromptKeepsPerformModeAndTheLock) {
+    addAction(action_id::PERFORM_ESCAPE, performEscape);
+    OutputManager outputs;
+    if (!enterPerformMode(outputs)) GTEST_SKIP() << "no display for a projector output";
+
+    openUnlockPrompt();
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    press({ImGuiKey_Escape});
+    EXPECT_TRUE(es.performLock.isOn());
+    EXPECT_FALSE(es.performLock.isConfirmingUnlock());
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr) << "Stay Locked closed the prompt";
+    EXPECT_TRUE(outputs.isInPerformMode()) << "one Esc took every projector dark";
+
+    press({ImGuiKey_Escape});
+    EXPECT_FALSE(outputs.isInPerformMode()) << "with no modal up, Esc leaves perform mode";
+}
+
+TEST_F(PerformLockUiTest, EscOnUnsavedChangesOnlyCancelsIt) {
+    addAction(action_id::PERFORM_ESCAPE, performEscape);
+    OutputManager outputs;
+    if (!enterPerformMode(outputs)) GTEST_SKIP() << "no display for a projector output";
+
+    es.unsavedPromptFor = EditorState::FileAction::Exit;
+    frame();
+    frame();
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    press({ImGuiKey_Escape});
+    EXPECT_EQ(es.unsavedPromptFor, EditorState::FileAction::None) << "Esc is Cancel";
+    EXPECT_EQ(es.pendingFileAction, EditorState::FileAction::None);
+    EXPECT_TRUE(outputs.isInPerformMode());
+}
+
+// Scene takes 1-9 are show control: the unlock prompt does not hold them off.
+TEST_F(PerformLockUiTest, SceneTakeKeysWorkWhileTheUnlockPromptIsUp) {
+    std::vector<int> taken;
+    for (int n = 1; n <= 9; ++n) {
+        addAction(sceneTakeId(n), [&taken, n](EditorContext&) { taken.push_back(n); });
+    }
+    openUnlockPrompt();
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+
+    std::vector<int> queued{2};
+    takeFrame(queued);
+    EXPECT_EQ(taken, std::vector<int>{2});
+    EXPECT_TRUE(queued.empty());
+    EXPECT_TRUE(es.performLock.isConfirmingUnlock()) << "the prompt is still up";
+}
+
+// Behind any other popup a take key is refused, and the status line says so.
+TEST_F(PerformLockUiTest, ATakeKeyHeldOffByAModalSaysSo) {
+    std::vector<int> taken;
+    addAction(sceneTakeId(3), [&taken](EditorContext&) { taken.push_back(3); });
+    es.unsavedPromptFor = EditorState::FileAction::Exit;
+    frame();
+    frame();
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+
+    std::vector<int> queued{3};
+    takeFrame(queued);
+    EXPECT_TRUE(taken.empty());
+    EXPECT_TRUE(queued.empty());
+    EXPECT_NE(std::string(es.statusMessage).find("Scene 3 not taken"), std::string::npos)
+        << es.statusMessage;
+}
+
+// ---- Edits that reach the show without a panel ----------------------------------------
+
+// The Video Player's "Load Video..." dialog is ownerless: answered after locking, the
+// pick is refused rather than bound to the selected quad and played on air.
+TEST_F(PerformLockUiTest, AVideoPickedAfterLockingIsNotLoaded) {
+    namespace fs = std::filesystem;
+    const fs::path clip = fs::path(__FILE__).parent_path().parent_path().parent_path() /
+                          "fixtures" / "videos" / "h264_closed_gop.mp4";
+    std::error_code ec;
+    if (!fs::exists(clip, ec)) GTEST_SKIP() << "no fixture clip at " << clip.string();
+    SourceManager sources;
+    ctx.sourceManager = &sources;
+    VideoPlayerPanel player;
+    snprintf(es.videoPath, sizeof(es.videoPath), "%s", utf8FromPath(clip).c_str());
+
+    lockPerform(es);
+    player.loadVideo(ctx, /*simpleMode=*/true);
+    EXPECT_TRUE(quad->getTexture().mediaId.isNull()) << "not bound to the selected quad";
+    EXPECT_TRUE(es.activeVideoSourceId.isNull()) << "not loaded";
+    EXPECT_NE(std::string(es.statusMessage).find("the show is locked"), std::string::npos)
+        << es.statusMessage;
+
+    requestPerformUnlock(es);
+    ASSERT_TRUE(confirmPerformUnlock(es));
+    player.loadVideo(ctx, /*simpleMode=*/true);
+    EXPECT_FALSE(quad->getTexture().mediaId.isNull()) << "unlocked, the pick loads onto the quad";
+    ctx.sourceManager = nullptr;
+}
+
+// A media item dragged from the bin and dropped on a quad on the canvas is ignored while
+// locked (and assigned once unlocked).
+TEST_F(PerformLockUiTest, MediaDroppedOnTheCanvasIsIgnoredWhileLocked) {
+    MediaLibrary library;
+    auto pattern = std::make_unique<MediaItem>();
+    pattern->setType(MediaType::PROCEDURAL);
+    pattern->setName("Pattern");
+    const UUID sourceId = UUID::generate();
+    pattern->setSourceId(sourceId);
+    const UUID mediaId = library.addItem(std::move(pattern))->getId();
+    SourceManager sources;
+    ctx.mediaLibrary = &library;
+    ctx.sourceManager = &sources;
+
+    frame();
+    frame();  // the canvas region and its view transform
+    ASSERT_GT(es.canvasRegionSize.x, 1.0f);
+    ASSERT_NE(es.lastViewScale.x, 0.0f);
+    // The screen point of the selected quad's centre, and the quad on top there.
+    Vec2 centre(0.0f);
+    for (const Vec2& c : quad->getGeometry().getCorners()) centre += c * 0.25f;
+    const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+    const ImVec2 target(
+        origin.x + es.canvasRegionPos.x + (centre.x * es.lastViewScale.x + es.lastViewOffset.x) * es.canvasRegionSize.x,
+        origin.y + es.canvasRegionPos.y + (centre.y * es.lastViewScale.y + es.lastViewOffset.y) * es.canvasRegionSize.y);
+    Quad* onTop = es.quadManager().quadAtPoint(centre);
+    ASSERT_NE(onTop, nullptr);
+
+    // Drag the item out of a bin-like window and release it at `target`.
+    const auto dragAndDrop = [&] {
+        ImGuiIO& io = ImGui::GetIO();
+        ImVec2 button;
+        const auto dragFrame = [&] {
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos(ImVec2(20.0f, 480.0f));
+            ImGui::SetNextWindowSize(ImVec2(140.0f, 80.0f));
+            ImGui::Begin("Bin");
+            ImGui::Button("Pattern");
+            const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+            button = ImVec2((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+            if (ImGui::BeginDragDropSource()) {
+                ImGui::SetDragDropPayload("MEDIA_ITEM_ID", &mediaId, sizeof(UUID));
+                ImGui::EndDragDropSource();
+            }
+            ImGui::End();
+            ui->frame(ctx, {});
+            ImGui::Render();
+        };
+        dragFrame();
+        io.AddMousePosEvent(button.x, button.y);
+        dragFrame();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        dragFrame();
+        io.AddMousePosEvent(button.x + 30.0f, button.y - 30.0f);
+        dragFrame();
+        io.AddMousePosEvent(target.x, target.y);
+        dragFrame();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        dragFrame();
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+        dragFrame();
+    };
+
+    lockPerform(es);
+    dragAndDrop();
+    EXPECT_TRUE(onTop->getTexture().mediaId.isNull()) << "the drop was ignored";
+
+    requestPerformUnlock(es);
+    ASSERT_TRUE(confirmPerformUnlock(es));
+    dragAndDrop();
+    EXPECT_EQ(onTop->getTexture().mediaId, sourceId) << "unlocked, the same drop assigns";
+    ctx.mediaLibrary = nullptr;
+    ctx.sourceManager = nullptr;
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../editor/EditorServices.hpp"
+
 #include <array>
 #include <memory>
 #include <string>
@@ -35,6 +37,11 @@ public:
     // AI menu: connect off the UI thread (TD-10) so the menu never freezes 1-3s;
     // tick() reports the outcome.
     void enable();
+
+    // An AI menu item. The perform lock (ADR-051 §4) refuses every one but Clear
+    // Pattern, which gives the show back: the rest warp quads or put patterns on the
+    // projectors. `outputs` may be null (Emit Pattern then does nothing).
+    void run(EditorServices::AiAction action, OutputManager* outputs);
 
     // Once per interactive frame, after the frame is presented: posts a one-shot
     // status when an async connect resolves (TD-10), and runs the QM_AI_SELFTEST

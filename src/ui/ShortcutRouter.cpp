@@ -1,5 +1,10 @@
 #include "ShortcutRouter.hpp"
 
+#include "editor/EditActions.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/StatusLine.hpp"
+
 #include <imgui.h>
 
 namespace quadmapper {
@@ -49,6 +54,24 @@ std::vector<std::string> routeShortcuts(ActionRegistry& registry, EditorContext&
     // Invoke after the scan: an action may add to the registry.
     for (const std::string& id : invoked) registry.invoke(id, ctx, Source::Key);
     return invoked;
+}
+
+void runSceneTakeKeys(ActionRegistry& registry, EditorContext& ctx, std::vector<int>& numbers) {
+    const bool typing = ImGui::GetIO().WantTextInput;
+    // The unlock prompt is opened from the top level, which closes every other popup,
+    // so while it is asked for it is the only one.
+    const bool heldOff = !typing && !ctx.es.performLock.isConfirmingUnlock() &&
+                         !keyGuardAllows(KeyGuard::Editing);
+    for (int n : numbers) {
+        if (typing) continue;
+        if (heldOff) {
+            postStatus(ctx.es, "Scene " + std::to_string(n) +
+                                   " not taken: close the open menu or dialog first");
+            continue;
+        }
+        registry.invoke(sceneTakeId(n), ctx, Source::Key);
+    }
+    numbers.clear();
 }
 
 }  // namespace quadmapper

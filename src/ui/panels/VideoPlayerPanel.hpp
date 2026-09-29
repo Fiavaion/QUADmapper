@@ -24,11 +24,13 @@ public:
     void tick(EditorContext& ctx) override;
     void drawContent(EditorContext& ctx) override;
 
-private:
     // Load es.videoPath as the active video (deduped). In Simple mode it is also
-    // bound to the selected quad and started.
+    // bound to the selected quad and started. The "Load Video..." pick lands here when
+    // its dialog closes; under the perform lock it is refused (the button is disabled
+    // then, but the dialog is ownerless and may be answered after locking).
     void loadVideo(EditorContext& ctx, bool simpleMode);
 
+private:
     // The "Load Video..." browser runs off the render thread (QM-088).
     AsyncFileDialog loadDialog_;
     bool loadDialogSimpleMode_ = false;  // UI mode the dialog was opened from

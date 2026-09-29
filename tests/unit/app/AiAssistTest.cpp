@@ -4,6 +4,7 @@
 
 #include "app/AiAssist.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
 #include "ai/SidecarClient.hpp"
 
 #include <gtest/gtest.h>
@@ -69,6 +70,29 @@ TEST(AiAssistTest, ClearPatternReportsIt) {
     ai.clearPattern();
     EXPECT_STREQ(es.statusMessage, "One-Flash: pattern cleared");
     EXPECT_EQ(es.statusTimer, 4.0f);
+}
+
+// The perform lock (ADR-051 §4) refuses every AI menu item but Clear Pattern, which
+// gives the show back.
+TEST(AiAssistTest, ThePerformLockRefusesAllButClearPattern) {
+    using AiAction = EditorServices::AiAction;
+    EditorState es;
+    Quad* quad = es.quadManager().createQuad("A");
+    es.quadManager().selectQuad(quad->getId());
+    const auto before = quad->getGeometry().getCorners();
+    AiAssist ai(es, stoppedSidecar());
+    lockPerform(es);
+    for (AiAction action : {AiAction::Enable, AiAction::DetectSurface, AiAction::EmitPattern,
+                            AiAction::CapturePhoto, AiAction::SolveApply, AiAction::Anamorphic}) {
+        es.statusMessage[0] = '\0';
+        ai.run(action, nullptr);
+        EXPECT_STREQ(es.statusMessage,
+                     "AI assist is blocked: the show is locked (Output > Perform Lock)");
+    }
+    EXPECT_EQ(quad->getGeometry().getCorners(), before);
+
+    ai.run(AiAction::ClearPattern, nullptr);
+    EXPECT_STREQ(es.statusMessage, "One-Flash: pattern cleared");
 }
 
 TEST(AiAssistTest, TickWithAnIdleSidecarPostsNothing) {
