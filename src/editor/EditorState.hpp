@@ -307,7 +307,6 @@ struct EditorState {
     // Missing Media window relocates them. A 3D object's missing mesh needs no entry:
     // it is an object with a mesh path and no mesh.
     std::unordered_map<UUID, Project::SourceData> missingSources;
-    bool showMissingMedia = false;  // the Missing Media window is open
     std::unordered_map<std::string, std::string> missingMediaErrors;  // path -> last relocate error
     // Drawn in place of a missing source (MissingMediaLook.hpp), created once on first
     // use: the checker in the editor and previews, black on projector outputs.
@@ -374,13 +373,14 @@ struct EditorState {
     // quads and sources by live id; load remaps the saved ids.
     std::vector<control::MidiMapping> midiMappings;
 
-    // Panel visibility toggles
-    bool showQuadList = true;
-    bool showProperties = true;
-    bool showResources = true;
-    bool showVideoPlayer = true;
-    bool showControl = false;  // Window > Control (OSC / MIDI)
-    bool showPreferences = false;  // Edit > Preferences... (Ctrl+,)
+    // Windows editor code wants opened, by panel id (the Missing Media window after a
+    // load, Preferences on Ctrl+,). The panels own their visibility; the ui's PanelHost
+    // drains these once a frame (ADR-051 §2).
+    std::vector<std::string> panelOpenRequests;
+    void requestPanelOpen(std::string panelId) { panelOpenRequests.push_back(std::move(panelId)); }
+    // The Missing Media window's panel id (its ImGui window name). It closes itself
+    // once nothing is missing.
+    static constexpr const char* MISSING_MEDIA_PANEL_ID = "Missing Media##relocate";
 
     // Current selection
     SelectionType currentSelectionType = SelectionType::Quad;

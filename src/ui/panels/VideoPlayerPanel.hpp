@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Panel.hpp"
 #include "core/UUID.hpp"
 #include "ui/AsyncFileDialog.hpp"
 
@@ -7,19 +8,19 @@ namespace quadmapper {
 
 struct EditorContext;
 
-// Renders the "Video Player" dockable window (load/unload, play/pause/stop,
-// skip ±5s, progress seek, time/frame display, speed + 1x, loop toggle,
-// and assign/remove video to the selected quad). Visibility is controlled by
-// ctx.es.showVideoPlayer; when false, render() returns immediately.
-//
-// Does NOT inherit from Panel — matches the QuadListPanel / MainMenuBar pattern
-// where EditorContext is required per frame.
-class VideoPlayerPanel {
+// The "Video Player" dockable window (load/unload, play/pause/stop, skip ±5s,
+// progress seek, time/frame display, speed + 1x, loop toggle, and assign/remove video
+// to the selected quad).
+class VideoPlayerPanel : public Panel {
 public:
+    static constexpr const char* ID = "Video Player";
+
     VideoPlayerPanel() = default;
 
-    // Call once per frame inside the ImGui frame, after the dockspace.
-    void render(EditorContext& ctx);
+    const char* id() const override { return ID; }
+    // Collects a finished "Load Video..." pick and follows the selection, shown or not.
+    void tick(EditorContext& ctx) override;
+    void drawContent(EditorContext& ctx) override;
 
 private:
     // Load es.videoPath as the active video (deduped). In Simple mode it is also

@@ -340,7 +340,6 @@ TEST(ClearProjectContentTest, ReleasesTheOldProjectsMediaAndRecordsButKeepsTheBi
     missing.id = UUID::generate();
     missing.path = "C:/show/gone.mp4";
     fx.es.missingSources.emplace(missing.id, missing);
-    fx.es.showMissingMedia = true;
 
     clearProjectContent(fx.es, &fx.sm, nullptr, &library);
 
@@ -354,7 +353,6 @@ TEST(ClearProjectContentTest, ReleasesTheOldProjectsMediaAndRecordsButKeepsTheBi
     EXPECT_TRUE(fx.es.sourcesPausedWhileUnseen.empty());
     EXPECT_TRUE(fx.es.releasedTransports.empty());
     EXPECT_TRUE(fx.es.missingSources.empty());
-    EXPECT_FALSE(fx.es.showMissingMedia);
 }
 
 // The media bin's hover preview is an open clip no quad is bound to: it survives the

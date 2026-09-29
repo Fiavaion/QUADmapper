@@ -85,6 +85,11 @@ CalibrationPanel::~CalibrationPanel() = default;
 
 void CalibrationPanel::releaseGlResources() { modelView_.reset(); }
 
+void CalibrationPanel::drawContent(EditorContext& ctx) {
+    render(ctx);
+    drawCanvasOverlay(ctx);
+}
+
 void CalibrationPanel::render(EditorContext& ctx) {
     EditorState& es = ctx.es;
     if (es.calibratingOutputId.isNull()) {

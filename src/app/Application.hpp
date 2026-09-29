@@ -2,6 +2,8 @@
 
 #include "Bench.hpp"
 #include "StressHarness.hpp"
+#include "../editor/EditorContext.hpp"
+#include "../editor/EditorServices.hpp"
 
 #include <chrono>
 #include <functional>
@@ -23,16 +25,18 @@ class ThumbnailCache;
 class SourceManager;
 class AudioEngine;
 struct EditorState;
-struct EditorPanels;
+class EditorUi;
 class PreferencesDialog;
 class ProjectSession;
 class AiAssist;
 namespace control { class ExternalControl; }
 
-class Application {
+// Also the editor's services (ADR-051 §1): the panels reach the session, the
+// preferences file and the AI assist through EditorContext::services.
+class Application : private EditorServices {
 public:
     Application();
-    ~Application();
+    ~Application() override;
 
     // Non-copyable
     Application(const Application&) = delete;
@@ -90,12 +94,23 @@ private:
     void presentFrame(FrameMarks* marks = nullptr);
 
     void render();
+    // This frame's view of the editor and the components, for the UI (ADR-051 §2).
+    EditorContext editorContext();
 
-    // Project lifecycle requests from Ctrl+S and the Resources>Project tab. They only
-    // queue a deferred EditorState::FileAction (as the File menu does); the work runs
-    // in processPendingFileAction() at the next frame boundary (ADR-046).
+    // ---- EditorServices ------------------------------------------------------------
+    bool unsavedLabelShown() override;
+    bool isSearchingMedia() const override;
+    bool isFileDialogBusy() const override;
+    std::string mediaSearchFolder() const override;
+    void requestLocateMissingMedia(const MissingMediaItem& item) override;
+    void requestMissingMediaSearch() override;
+    void savePreferences() override;
+    bool aiActive() const override;
+    void runAi(AiAction action) override;
+
+    // Ctrl+S: only queues a deferred EditorState::FileAction (as the File menu does);
+    // the work runs in processPendingFileAction() at the next frame boundary (ADR-046).
     void saveProject();   // Save; an untitled project asks for a path
-    void loadProject();   // Load the path typed in the Project tab
 
     // Live-show scene take, fading over `fadeSeconds` (nullopt = the Preferences
     // default, ADR-047 §5); ignored while calibrating.
@@ -114,21 +129,12 @@ private:
     // applied on the main thread, before render() takes any scene references.
     void initializeExternalControl();
     void processExternalControl();
-    void saveControlPreferences();
-    void saveUiModePreference();  // the mode last used is the next session's (ADR-042)
-    void drawBlackoutBanner();  // inside the ImGui frame, over the canvas
-    void drawBlendTestPatternBanner();  // likewise, while the blend test pattern is on
 
     // ---- Show-safe session (ADR-046 §4, ProjectSession) ---------------------------
     // Runs once per frame between glfwPollEvents() and render(): establishes the
     // clean baseline, offers startup recovery, runs any pending file action, autosaves.
     void runFrameBoundaryTasks();
     void fitProjectorsToOutputs();
-    // Unsaved-changes and recovery modals; called inside the ImGui frame.
-    void renderSessionDialogs();
-    // Missing media (PRD §4.1.8, MissingMedia.hpp): the window lists the files a loaded
-    // project could not open; Locate and Search Folder go to the session.
-    void renderMissingMediaDialog();
 
     // Draw every output's frame (its routed scene, or the armed One-Flash pattern)
     // into the OutputManager's render targets (ADR-054). Called from render() after
@@ -170,8 +176,9 @@ private:
 
     // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
     std::unique_ptr<EditorState> m_editorState;
-    // The editor's panels (ADR-051 §1); they refer to m_editorState, so go before it.
-    std::unique_ptr<EditorPanels> m_editorPanels;
+    // The editor's UI (ADR-051 §2): canvas, dock layout, menu and panels. Its panels
+    // refer to m_editorState and m_preferences, so it goes before them.
+    std::unique_ptr<EditorUi> m_ui;
     std::vector<int> m_pendingSceneTakes;  // scene numbers pressed since the last frame
     // Scene takes asked for by OSC/MIDI since the last frame (ADR-048). Kept apart from
     // the key presses because they skip the typing/popup guard (see render()).
@@ -185,15 +192,14 @@ private:
     std::unique_ptr<control::ExternalControl> m_externalControl;
 
     // The machine preferences (loaded at startup, saved on every change) and the
-    // Edit > Preferences window that edits them. The Control window and the menu
-    // bar's audio device list change the same copy.
+    // Edit > Preferences window that edits them, which EditorUi draws. The Control
+    // window and the menu bar's audio device list change the same copy.
     std::unique_ptr<PreferencesDialog> m_preferences;
 
     // Sound from video sources (ADR-050 §2): the output device, mixer and each video's
     // audio. The stress harness runs it on miniaudio's silent null device.
     std::unique_ptr<AudioEngine> m_audioEngine;
     void syncAudio();                // each video's sound onto its clock, once per frame
-    void saveAudioDevicePreference();
 
     // State
     bool m_running = false;

@@ -1,5 +1,7 @@
 #include "MediaBinPanel.hpp"
+#include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/ReplaceMedia.hpp"
 #include "core/FileSystem.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
@@ -36,7 +38,7 @@ static const char* getProceduralTypeName(ProceduralType type) {
     }
 }
 
-MediaBinPanel::MediaBinPanel(EditorState& es) : Panel("Media Bin"), es_(es) {
+MediaBinPanel::MediaBinPanel() {
     contextMenuItemId_ = UUID::null();
 }
 
@@ -73,16 +75,27 @@ Texture* MediaBinPanel::getVideoThumbnail(const std::filesystem::path& path) {
     return raw;
 }
 
-void MediaBinPanel::render() {
-    if (!visible_) return;
+void MediaBinPanel::onAttach(EditorContext& ctx) {
+    es_ = &ctx.es;
+    mediaLibrary_ = ctx.mediaLibrary;
+    sourceManager_ = ctx.sourceManager;
+    thumbnailCache_ = ctx.thumbnails;
+}
 
-    ImGui::Begin(title_.c_str(), &visible_);
+void MediaBinPanel::drawContent(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    const UUID prevMediaSelection = es.selectedMediaId;
     renderContent();
-    ImGui::End();
+    // Switch to Media properties if a media item was just selected
+    if (!es.selectedMediaId.isNull() && es.selectedMediaId != prevMediaSelection) {
+        es.currentSelectionType = EditorState::SelectionType::Media;
+        es.quadManager().deselectAll();
+        es.selectedOutputId = UUID();
+    }
 }
 
 void MediaBinPanel::renderContent() {
-    if (!mediaLibrary_) {
+    if (!mediaLibrary_ || !es_) {
         ImGui::TextDisabled("No media library connected");
         return;
     }
@@ -244,14 +257,14 @@ void MediaBinPanel::renderThumbnailGrid() {
 void MediaBinPanel::updateHoverPreview() {
     if (!sourceManager_) return;
     // Only act when the hovered video changes (avoid per-frame decoder churn).
-    if (hoveredVideoThisFrame_ == es_.previewSourcePath) return;
+    if (hoveredVideoThisFrame_ == es_->previewSourcePath) return;
 
     // Retire the previous preview decoder; the frame boundary removes it unless
     // something bound it meanwhile (releaseUnusedSources).
-    if (!es_.previewSourceId.isNull()) {
-        es_.endedPreviews.push_back(es_.previewSourceId);
-        es_.previewSourceId = UUID();
-        es_.previewSourcePath.clear();
+    if (!es_->previewSourceId.isNull()) {
+        es_->endedPreviews.push_back(es_->previewSourceId);
+        es_->previewSourceId = UUID();
+        es_->previewSourcePath.clear();
     }
 
     // Spin up a dedicated decoder for the newly-hovered video and play it. This is a
@@ -260,8 +273,8 @@ void MediaBinPanel::updateHoverPreview() {
     if (!hoveredVideoThisFrame_.empty()) {
         UUID sid = sourceManager_->createVideoSource(pathFromUtf8(hoveredVideoThisFrame_));
         if (!sid.isNull()) {
-            es_.previewSourceId = sid;
-            es_.previewSourcePath = hoveredVideoThisFrame_;
+            es_->previewSourceId = sid;
+            es_->previewSourcePath = hoveredVideoThisFrame_;
             if (auto* v = sourceManager_->getSourceAs<PlayableSource>(sid)) v->play();
         }
     }
@@ -270,7 +283,7 @@ void MediaBinPanel::updateHoverPreview() {
 void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
     ImGui::PushID(index);
 
-    bool isSelected = (item->getId() == es_.selectedMediaId);
+    bool isSelected = (item->getId() == es_->selectedMediaId);
     ImVec2 size(thumbnailSize_, thumbnailSize_);
 
     // Create a button-like area for the thumbnail
@@ -293,12 +306,12 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
 
     // Handle selection on click
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-        es_.selectedMediaId = item->getId();
+        es_->selectedMediaId = item->getId();
     }
 
     // Handle right-click for context menu
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-        es_.selectedMediaId = item->getId();
+        es_->selectedMediaId = item->getId();
         contextMenuItemId_ = item->getId();
         ImGui::OpenPopup("MediaItemContextMenu");
     }
@@ -378,8 +391,8 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
         if (ImGui::IsItemHovered()) hoveredVideoThisFrame_ = path;
 
         Texture* drawTex = nullptr;
-        if (path == es_.previewSourcePath && sourceManager_ && !es_.previewSourceId.isNull()) {
-            drawTex = sourceManager_->getTexture(es_.previewSourceId);  // live preview
+        if (path == es_->previewSourcePath && sourceManager_ && !es_->previewSourceId.isNull()) {
+            drawTex = sourceManager_->getTexture(es_->previewSourceId);  // live preview
         }
         if (!drawTex || !drawTex->isValid()) {
             drawTex = getVideoThumbnail(item->getPath());           // static first frame
@@ -490,8 +503,8 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
         }
 
         if (ImGui::MenuItem("Remove from Library")) {
-            if (es_.selectedMediaId == item->getId()) {
-                es_.selectedMediaId = UUID::null();
+            if (es_->selectedMediaId == item->getId()) {
+                es_->selectedMediaId = UUID::null();
             }
             // Also remove the source from SourceManager if it exists
             if (sourceManager_ && item->hasSource()) {
@@ -546,7 +559,10 @@ void MediaBinPanel::renderConversions() {
         [this](const std::filesystem::path& converted) {
             if (mediaLibrary_) mediaLibrary_->addItem(converted);  // null if already there
         },
-        replaceInShowCallback_);
+        [this](const std::filesystem::path& original, const std::filesystem::path& converted) {
+            if (!sourceManager_ || !es_) return std::string("Media cannot be loaded right now.");
+            return replaceClipInShow(*es_, *sourceManager_, original, converted);
+        });
 }
 
 void MediaBinPanel::handleImport() {
@@ -675,7 +691,7 @@ void MediaBinPanel::createProcedural(ProceduralType type) {
     mediaLibrary_->addItem(std::move(item));
 
     // Select the newly created item
-    es_.selectedMediaId = itemId;
+    es_->selectedMediaId = itemId;
 
     // Optionally open editor for the new procedural
     if (proceduralEditCallback_) {

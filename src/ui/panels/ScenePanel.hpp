@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Panel.hpp"
 #include "core/UUID.hpp"
 
 namespace quadmapper {
@@ -12,15 +13,19 @@ struct EditorContext;
 // assign each scene to an output window. Scenes 1-9 show their take hotkey. The viewport, Quad List and Inspector all edit the active
 // scene (EditorState::activeScene()), so switching here makes them follow.
 //
-// Rendered as a tab inside the Resources panel via renderContent(ctx); it owns
-// no scene state itself — that lives in EditorState, reached through the
-// per-frame EditorContext. Only transient rename UI state is local.
-class ScenePanel {
+// The Scenes tab of the Resources window (Advanced mode); it owns no scene state
+// itself — that lives in EditorState, reached through the per-frame EditorContext.
+// Only transient rename UI state is local.
+class ScenePanel : public Panel {
 public:
+    static constexpr const char* ID = "Scenes";
+
     ScenePanel() = default;
 
-    // Render the panel body (no window wrapper) for embedding in a tab.
-    void renderContent(EditorContext& ctx);
+    const char* id() const override { return ID; }
+    PanelKind kind() const override { return PanelKind::Tab; }
+    bool available(const EditorContext& ctx) const override;
+    void drawContent(EditorContext& ctx) override;
 
 private:
     void renderActionButtons(EditorContext& ctx);

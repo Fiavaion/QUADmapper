@@ -38,13 +38,9 @@
 
 namespace quadmapper {
 
-void InspectorPanel::render(EditorContext& ctx) {
+void InspectorPanel::drawContent(EditorContext& ctx) {
     EditorState& es = ctx.es;
     using SelectionType = EditorState::SelectionType;
-
-    if (!es.showProperties) return;
-
-    ImGui::Begin("Properties");
 
     // Show header indicating current selection type
     switch (es.currentSelectionType) {
@@ -79,8 +75,6 @@ void InspectorPanel::render(EditorContext& ctx) {
         ImGui::TextDisabled("Nothing selected");
         ImGui::TextDisabled("Select a quad, output, or media item");
     }
-
-    ImGui::End();
 }
 
 // ============================================================
@@ -1090,9 +1084,9 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
         ImGui::TextWrapped("File: %s", object->getSourcePath().c_str());
     }
 
-    bool visible = object->isVisible();
-    if (ImGui::Checkbox("Visible", &visible)) {
-        es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(*object), visible));
+    bool objectVisible = object->isVisible();
+    if (ImGui::Checkbox("Visible", &objectVisible)) {
+        es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(*object), objectVisible));
     }
     float opacity = object->getOpacity();
     if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {

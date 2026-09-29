@@ -6,38 +6,31 @@
 
 namespace quadmapper {
 
+struct EditorContext;
 struct EditorState;
 class OutputManager;
 class OutputWindow;
 
 /**
- * OutputPanel provides UI for managing output windows.
- * Users can add/remove outputs, configure resolution/monitor settings,
- * and enter/exit perform mode.
+ * The Outputs tab of the Resources window (Advanced mode): add/remove outputs,
+ * configure resolution/monitor settings, and enter/exit perform mode. The selected
+ * output lives in EditorState::selectedOutputId.
  */
 class OutputPanel : public Panel {
 public:
-    // The selected output lives in `es` (EditorState::selectedOutputId), which
-    // outlives the panel.
-    explicit OutputPanel(EditorState& es);
+    static constexpr const char* ID = "Outputs";
 
-    /**
-     * Set the output manager.
-     */
-    void setOutputManager(OutputManager* manager) { outputManager_ = manager; }
-
-    /**
-     * Render the panel.
-     */
-    void render() override;
-
-    /**
-     * Render just the panel content (without window wrapper).
-     * Useful for embedding in tabs.
-     */
-    void renderContent();
+    const char* id() const override { return ID; }
+    PanelKind kind() const override { return PanelKind::Tab; }
+    bool available(const EditorContext& ctx) const override;
+    // Keeps the editor state and the output manager.
+    void onAttach(EditorContext& ctx) override;
+    // Selecting an output shows it in the Properties window.
+    void drawContent(EditorContext& ctx) override;
 
 private:
+    void renderContent();
+
     bool hasSelection() const;
 
     // Render the perform mode section
@@ -64,7 +57,7 @@ private:
     // Render rotation controls
     void renderRotationControls(OutputWindow* output);
 
-    EditorState& es_;
+    EditorState* es_ = nullptr;
     OutputManager* outputManager_ = nullptr;
 
     // State for renaming

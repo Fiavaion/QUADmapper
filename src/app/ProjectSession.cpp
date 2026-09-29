@@ -167,6 +167,10 @@ void ProjectSession::dropQueuedSceneTakes() {
     if (m_services.dropQueuedSceneTakes) m_services.dropQueuedSceneTakes();
 }
 
+void ProjectSession::projectReplaced() {
+    if (m_services.projectReplaced) m_services.projectReplaced();
+}
+
 void ProjectSession::openProjectDialog(bool save, std::function<void(const std::string&)> onChosen) {
     if (!m_projectDialog) m_projectDialog = std::make_unique<AsyncFileDialog>();
     if (m_projectDialog->open(projectFileRequest(save, m_editor.projectPath))) {
@@ -310,6 +314,7 @@ void ProjectSession::performNewProject() {
     es.projectPath[0] = '\0';
     markProjectClean();
     postStatus(es, "New project created");
+    projectReplaced();
 }
 
 bool ProjectSession::performLoadProject(const std::string& path) {
@@ -329,9 +334,10 @@ bool ProjectSession::performLoadProject(const std::string& path) {
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
     markProjectClean();
     const size_t missing = collectMissingMedia(es).size();
-    es.showMissingMedia = missing > 0;
+    if (missing > 0) es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
     postStatus(es, "Project loaded: " + path + missingMediaNote(missing));
     offerRecovery(path);
+    projectReplaced();
     return true;
 }
 
@@ -398,8 +404,9 @@ void ProjectSession::performRestoreRecovery() {
     m_savedSnapshot.clear();
     m_unsavedLabel.invalidate();
     const size_t missing = collectMissingMedia(es).size();
-    es.showMissingMedia = missing > 0;
+    if (missing > 0) es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
     postStatus(es, "Restored unsaved work from " + file + missingMediaNote(missing));
+    projectReplaced();
 }
 
 void ProjectSession::buildEditorProject(Project& out) {

@@ -4,6 +4,7 @@
 #include "editor/Preferences.hpp"
 #include "ui/AsyncFileDialog.hpp"
 #include "ui/panels/ControlPanel.hpp"
+#include "ui/panels/Panel.hpp"
 
 #include <filesystem>
 #include <string>
@@ -25,15 +26,22 @@ namespace control { class ExternalControl; }
  * same ControlPreferences as the Control window, and the Audio tab switches the same
  * engine as the menu bar's device list, so all of them always agree.
  */
-class PreferencesDialog {
+class PreferencesDialog : public Panel {
 public:
-    PreferencesDialog() = default;
+    static constexpr const char* ID = "Preferences";
 
-    /**
-     * Render the window while ctx.es.showPreferences is set. `control` may be null
-     * (no external control in the stress and bench harnesses), as may ctx.audio.
-     */
-    void render(EditorContext& ctx, control::ExternalControl* control);
+    PreferencesDialog() { visible = false; }
+
+    // A Window panel opened from Edit > Preferences... and Ctrl+, (not in the Window
+    // menu). ctx.control may be null (no external control in the stress and bench
+    // harnesses), as may ctx.audio.
+    const char* id() const override { return ID; }
+    const char* menuLabel() const override { return nullptr; }
+    int windowFlags() const override;
+    void beforeBegin(EditorContext& ctx) override;
+    // A folder chosen in Browse lands even if the window was closed meanwhile.
+    void tick(EditorContext& ctx) override;
+    void drawContent(EditorContext& ctx) override;
 
     const AppPreferences& getPreferences() const { return preferences_; }
     AppPreferences& getPreferences() { return preferences_; }

@@ -1,6 +1,7 @@
 #include "MainMenuBar.hpp"
 
 #include "editor/EditorContext.hpp"
+#include "editor/EditorServices.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/MissingMedia.hpp"
 #include "editor/UndoRouting.hpp"
@@ -12,6 +13,8 @@
 #include "output/OutputWindow.hpp"
 #include "source/SourceManager.hpp"
 #include "audio/AudioEngine.hpp"
+#include "ui/PanelHost.hpp"
+#include "ui/dialogs/PreferencesDialog.hpp"
 
 #include <imgui.h>
 
@@ -105,7 +108,7 @@ void MainMenuBar::renderAudioStrip(AudioEngine& audio) {
                                   : "Output device for sound (saved in the preferences)");
 }
 
-void MainMenuBar::render(EditorContext& ctx) {
+void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
     EditorState& es = ctx.es;
 
     if (!ImGui::BeginMainMenuBar()) {
@@ -135,7 +138,7 @@ void MainMenuBar::render(EditorContext& ctx) {
         }
         if (ImGui::MenuItem("Relocate Missing Media...", nullptr, false,
                             !collectMissingMedia(es).empty())) {
-            es.showMissingMedia = true;
+            es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4")) {
@@ -184,23 +187,12 @@ void MainMenuBar::render(EditorContext& ctx) {
             }
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Preferences...", "Ctrl+,")) es.showPreferences = true;
+        if (ImGui::MenuItem("Preferences...", "Ctrl+,")) es.requestPanelOpen(PreferencesDialog::ID);
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Window")) {
-        ImGui::MenuItem("Quad List",    nullptr, &es.showQuadList);
-        ImGui::MenuItem("Properties",   nullptr, &es.showProperties);
-        ImGui::MenuItem("Resources",    nullptr, &es.showResources);
-        ImGui::MenuItem("Video Player", nullptr, &es.showVideoPlayer);
-        ImGui::MenuItem("Control (OSC / MIDI)", nullptr, &es.showControl);
-        ImGui::Separator();
-        if (ImGui::MenuItem("Reset Layout")) {
-            es.showQuadList    = true;
-            es.showProperties  = true;
-            es.showResources   = true;
-            es.showVideoPlayer = true;
-        }
+        panels.drawWindowMenuItems();
         ImGui::EndMenu();
     }
 
@@ -233,36 +225,26 @@ void MainMenuBar::render(EditorContext& ctx) {
     }
 
     if (ImGui::BeginMenu("AI")) {
-        const bool active = aiActiveQuery_ && aiActiveQuery_();
-        if (active) {
-            if (ImGui::MenuItem("Detect Surface (stub)")) {
-                if (onDetectSurface_) onDetectSurface_();
-            }
+        using AiAction = EditorServices::AiAction;
+        EditorServices* services = ctx.services;
+        auto run = [services](AiAction action) {
+            if (services) services->runAi(action);
+        };
+        if (services && services->aiActive()) {
+            if (ImGui::MenuItem("Detect Surface (stub)")) run(AiAction::DetectSurface);
             ImGui::Separator();
             if (ImGui::BeginMenu("One-Flash")) {
-                if (ImGui::MenuItem("Emit Pattern")) {
-                    if (onEmitPattern_) onEmitPattern_();
-                }
-                if (ImGui::MenuItem("Capture Photo")) {
-                    if (onCapturePhoto_) onCapturePhoto_();
-                }
-                if (ImGui::MenuItem("Solve & Apply")) {
-                    if (onSolveApply_) onSolveApply_();
-                }
-                if (ImGui::MenuItem("Anamorphic Warp")) {
-                    if (onAnamorphic_) onAnamorphic_();
-                }
-                if (ImGui::MenuItem("Clear Pattern")) {
-                    if (onClearPattern_) onClearPattern_();
-                }
+                if (ImGui::MenuItem("Emit Pattern")) run(AiAction::EmitPattern);
+                if (ImGui::MenuItem("Capture Photo")) run(AiAction::CapturePhoto);
+                if (ImGui::MenuItem("Solve & Apply")) run(AiAction::SolveApply);
+                if (ImGui::MenuItem("Anamorphic Warp")) run(AiAction::Anamorphic);
+                if (ImGui::MenuItem("Clear Pattern")) run(AiAction::ClearPattern);
                 ImGui::EndMenu();
             }
             ImGui::Separator();
             ImGui::TextDisabled("Sidecar connected");
         } else {
-            if (ImGui::MenuItem("Enable AI Assist")) {
-                if (onEnableAi_) onEnableAi_();
-            }
+            if (ImGui::MenuItem("Enable AI Assist")) run(AiAction::Enable);
             ImGui::Separator();
             ImGui::TextDisabled("Sidecar not running");
         }

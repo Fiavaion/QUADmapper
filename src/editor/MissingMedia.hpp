@@ -202,11 +202,11 @@ inline int relocateMissingFromIndex(EditorState& es, SourceManager* sm,
     return resolved;
 }
 
-// The project is being replaced (New, Load, recovery): forget its missing files.
+// The project is being replaced (New, Load, recovery): forget its missing files. The
+// Missing Media window, left with nothing to list, closes itself.
 inline void clearMissingMedia(EditorState& es) {
     es.missingSources.clear();
     es.missingMediaErrors.clear();
-    es.showMissingMedia = false;
 }
 
 }  // namespace quadmapper

@@ -144,7 +144,7 @@ void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
 // the PlayableSource interface; "Assign" binds the source to a quad by mediaId — and
 // because mediaId is just a reference, the SAME video can be assigned to many
 // quads (each with its own crop) and decodes/uploads exactly once.
-void VideoPlayerPanel::render(EditorContext& ctx) {
+void VideoPlayerPanel::tick(EditorContext& ctx) {
     EditorState& es = ctx.es;
 
     // Collect a finished "Load Video..." pick even while the window is hidden.
@@ -166,11 +166,10 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
             es.activeVideoSourceId = mediaId;
         }
     }
+}
 
-    if (!es.showVideoPlayer) return;
-
-    ImGui::Begin("Video Player");
-
+void VideoPlayerPanel::drawContent(EditorContext& ctx) {
+    EditorState& es = ctx.es;
     const bool simpleMode = es.uiMode == EditorState::UiMode::Simple;
     auto loadButton = [&](const char* tooltip) {
         ImGui::BeginDisabled(loadDialog_.isBusy());
@@ -218,8 +217,6 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         } else {
             ImGui::TextDisabled("No video loaded");
         }
-
-        ImGui::End();
         return;
     }
 
@@ -368,8 +365,6 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         ImGui::TextDisabled("No video loaded");
         ImGui::TextDisabled("Click \"Load Video...\" to browse for a file");
     }
-
-    ImGui::End();
 }
 
 }  // namespace quadmapper

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Panel.hpp"
 #include "SliceEditor.hpp"
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
@@ -14,23 +15,16 @@ struct EditorContext;
 struct TextureBinding;
 class Quad;
 
-// Renders the context-sensitive "Properties" dockable window.
-// When ctx.es.showProperties is false, render() returns immediately.
-// Dispatches to one of three sub-renderers based on ctx.es.currentSelectionType:
-//   Quad    -> renderQuadProperties
-//   Output  -> renderOutputProperties
-//   Media   -> renderMediaProperties
-//
-// Does NOT inherit from Panel — the Panel::render() signature takes no arguments
-// and this panel requires a per-frame EditorContext (same approach as MainMenuBar
-// and QuadListPanel). The three static char buffers from the original inline block
-// are promoted to member variables to eliminate function-static state.
-class InspectorPanel {
+// The context-sensitive "Properties" dockable window. Dispatches on
+// ctx.es.currentSelectionType to the quad, output, media or object properties.
+class InspectorPanel : public Panel {
 public:
+    static constexpr const char* ID = "Properties";
+
     InspectorPanel() = default;
 
-    // Call once per frame inside the ImGui frame, after the dockspace.
-    void render(EditorContext& ctx);
+    const char* id() const override { return ID; }
+    void drawContent(EditorContext& ctx) override;
 
 private:
     void renderQuadProperties(EditorContext& ctx);

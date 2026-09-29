@@ -1,4 +1,5 @@
 #include "OutputPanel.hpp"
+#include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
@@ -7,20 +8,31 @@
 
 namespace quadmapper {
 
-OutputPanel::OutputPanel(EditorState& es) : Panel("Outputs"), es_(es) {}
+bool OutputPanel::hasSelection() const { return !es_->selectedOutputId.isNull(); }
 
-bool OutputPanel::hasSelection() const { return !es_.selectedOutputId.isNull(); }
+bool OutputPanel::available(const EditorContext& ctx) const {
+    return ctx.es.uiMode == EditorState::UiMode::Advanced;
+}
 
-void OutputPanel::render() {
-    if (!visible_) return;
+void OutputPanel::onAttach(EditorContext& ctx) {
+    es_ = &ctx.es;
+    outputManager_ = ctx.outputManager;
+}
 
-    ImGui::Begin(title_.c_str(), &visible_);
+void OutputPanel::drawContent(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    const UUID prevOutputSelection = es.selectedOutputId;
     renderContent();
-    ImGui::End();
+    // Switch to Output properties if an output was just selected
+    if (!es.selectedOutputId.isNull() && es.selectedOutputId != prevOutputSelection) {
+        es.currentSelectionType = EditorState::SelectionType::Output;
+        es.quadManager().deselectAll();
+        es.selectedMediaId = UUID();
+    }
 }
 
 void OutputPanel::renderContent() {
-    if (!outputManager_) {
+    if (!outputManager_ || !es_) {
         ImGui::TextDisabled("No output manager connected");
         return;
     }
@@ -83,7 +95,7 @@ void OutputPanel::renderActionButtons() {
     if (ImGui::Button("Add Output")) {
         OutputWindow* newOutput = outputManager_->createOutput();
         if (newOutput) {
-            es_.selectedOutputId = newOutput->getId();
+            es_->selectedOutputId = newOutput->getId();
         }
     }
     if (ImGui::IsItemHovered()) {
@@ -96,13 +108,13 @@ void OutputPanel::renderActionButtons() {
     ImGui::BeginDisabled(!hasSelection() || outputManager_->getOutputCount() <= 1);
     if (ImGui::Button("Remove Output")) {
         if (hasSelection()) {
-            outputManager_->deleteOutput(es_.selectedOutputId);
-            es_.selectedOutputId = UUID::null();
+            outputManager_->deleteOutput(es_->selectedOutputId);
+            es_->selectedOutputId = UUID::null();
 
             // Select first remaining output
             const auto& outputs = outputManager_->getOutputs();
             if (!outputs.empty()) {
-                es_.selectedOutputId = outputs[0]->getId();
+                es_->selectedOutputId = outputs[0]->getId();
             }
         }
     }
@@ -148,7 +160,7 @@ void OutputPanel::renderOutputList() {
 void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
     ImGui::PushID(index);
 
-    bool isSelected = (output->getId() == es_.selectedOutputId);
+    bool isSelected = (output->getId() == es_->selectedOutputId);
 
     // Enabled checkbox
     bool enabled = output->isEnabled();
@@ -181,7 +193,7 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
 
         ImGuiSelectableFlags flags = ImGuiSelectableFlags_AllowDoubleClick;
         if (ImGui::Selectable(output->getName().c_str(), isSelected, flags)) {
-            es_.selectedOutputId = output->getId();
+            es_->selectedOutputId = output->getId();
 
             if (ImGui::IsMouseDoubleClicked(0)) {
                 isRenaming_ = true;
@@ -221,8 +233,8 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
         ImGui::BeginDisabled(!canDelete);
         if (ImGui::MenuItem("Delete")) {
             outputManager_->deleteOutput(output->getId());
-            if (es_.selectedOutputId == output->getId()) {
-                es_.selectedOutputId = UUID::null();
+            if (es_->selectedOutputId == output->getId()) {
+                es_->selectedOutputId = UUID::null();
             }
         }
         ImGui::EndDisabled();
@@ -234,9 +246,9 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
 }
 
 void OutputPanel::renderOutputProperties() {
-    OutputWindow* output = outputManager_->getOutput(es_.selectedOutputId);
+    OutputWindow* output = outputManager_->getOutput(es_->selectedOutputId);
     if (!output) {
-        es_.selectedOutputId = UUID::null();
+        es_->selectedOutputId = UUID::null();
         return;
     }
 

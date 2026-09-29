@@ -36,7 +36,7 @@
 #include "../output/OutputWindow.hpp"
 #include "../input/VertexKeyboard.hpp"
 #include "../ui/Theme.hpp"
-#include "../ui/EditorPanels.hpp"
+#include "../ui/EditorUi.hpp"
 #include "../ui/dialogs/PreferencesDialog.hpp"
 #include "../audio/AudioEngine.hpp"
 #include "../audio/AudioMixer.hpp"
@@ -51,7 +51,6 @@
 #include <chrono>
 #include <cstring>
 #include <optional>
-#include <imgui_internal.h>  // For DockBuilder API
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
@@ -314,7 +313,6 @@ bool Application::initializeComponents() {
 
     // Per-session editor/scene state (replaces render()'s function-statics; see ADR-031 TD-02)
     m_editorState = std::make_unique<EditorState>();
-    m_editorPanels = std::make_unique<EditorPanels>(*m_editorState);
 
     // Create media library
     m_mediaLibrary = std::make_unique<MediaLibrary>();
@@ -417,6 +415,10 @@ bool Application::initializeComponents() {
         services.audio = m_audioEngine.get();
         services.library = m_mediaLibrary.get();
         services.dropQueuedSceneTakes = [this]() { dropQueuedSceneTakes(); };
+        services.projectReplaced = [this]() {
+            EditorContext ctx = editorContext();
+            m_ui->projectReplaced(ctx);
+        };
         services.confirmExit = [this]() {
             m_exitConfirmed = true;
             glfwSetWindowShouldClose(m_window, GLFW_TRUE);
@@ -443,8 +445,51 @@ bool Application::initializeComponents() {
         }
     }
 
+    // The editor's UI (ADR-051 §2): its panels take what they need from the context.
+    m_ui = std::make_unique<EditorUi>(*m_preferences);
+    {
+        EditorContext ctx = editorContext();
+        m_ui->attach(ctx);
+    }
+
     Logger::debug("All components initialized");
     return true;
+}
+
+EditorContext Application::editorContext() {
+    EditorContext ctx{*m_editorState, m_project.get(), m_mediaLibrary.get(),
+                      m_sourceManager.get(), m_outputManager.get(), m_renderer.get(), m_window};
+    ctx.audio = m_audioEngine.get();
+    ctx.thumbnails = m_thumbnailCache.get();
+    ctx.control = m_externalControl.get();
+    ctx.prefs = &m_preferences->getPreferences();
+    ctx.services = this;
+    return ctx;
+}
+
+// ---- EditorServices: what the panels ask of the app --------------------------------
+
+bool Application::unsavedLabelShown() { return m_session->unsavedLabelShown(glfwGetTime()); }
+bool Application::isSearchingMedia() const { return m_session->isSearchingMedia(); }
+bool Application::isFileDialogBusy() const { return m_session->isFileDialogBusy(); }
+std::string Application::mediaSearchFolder() const { return m_session->mediaSearchFolder(); }
+void Application::requestLocateMissingMedia(const MissingMediaItem& item) {
+    m_session->requestLocateMissingMedia(item);
+}
+void Application::requestMissingMediaSearch() { m_session->requestMissingMediaSearch(); }
+void Application::savePreferences() { m_preferences->savePreferences(); }
+bool Application::aiActive() const { return m_aiAssist->isActive(); }
+
+void Application::runAi(AiAction action) {
+    switch (action) {
+        case AiAction::Enable:        m_aiAssist->enable(); break;
+        case AiAction::DetectSurface: m_aiAssist->detectSurface(); break;
+        case AiAction::EmitPattern:   m_aiAssist->emitPattern(*m_outputManager); break;
+        case AiAction::CapturePhoto:  m_aiAssist->capturePhoto(m_outputManager.get()); break;
+        case AiAction::ClearPattern:  m_aiAssist->clearPattern(); break;
+        case AiAction::SolveApply:    m_aiAssist->solveAndApply(m_outputManager.get()); break;
+        case AiAction::Anamorphic:    m_aiAssist->anamorphic(m_outputManager.get()); break;
+    }
 }
 
 int Application::run() {
@@ -523,38 +568,17 @@ void Application::render() {
     // Clear the framebuffer
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Per-session editor state now lives in m_editorState (owned member; see ADR-031 TD-02).
-    // Each field is aliased to a same-named local reference so the body below is unchanged.
+    // Per-session editor state lives in m_editorState (ADR-031 TD-02).
     EditorState& es = *m_editorState;
-    using SelectionType = EditorState::SelectionType;
     auto& quadManager = es.quadManager();
-    auto& projectPath = es.projectPath;
-    auto& statusMessage = es.statusMessage;
-    auto& statusTimer = es.statusTimer;
-    auto& initialized = es.initialized;
-
-    // Corner/mesh/snap editing state moved into ViewportEditor (ADR-0034). Video is
-    // now a SourceManager source updated by updateAll() below (ADR-040 P3) — no manual
-    // decode/upload here.
-
-    EditorPanels& panels = *m_editorPanels;
-    auto& mediaBinPanel = panels.mediaBinPanel;
-    auto& mediaBinInitialized = panels.mediaBinInitialized;
-
-    auto& outputPanel = panels.outputPanel;
-    auto& outputPanelInitialized = panels.outputPanelInitialized;
-
-    auto& showResources = es.showResources;
-
-    auto& currentSelectionType = es.currentSelectionType;
 
     // Initialize with one default quad
-    if (!initialized) {
+    if (!es.initialized) {
         quadManager.createQuad("Quad 1");
         if (quadManager.getQuadCount() > 0) {
             quadManager.selectQuad(quadManager.getQuads()[0]->getId());
         }
-        initialized = true;
+        es.initialized = true;
     }
 
     // UV test-grid (#2): apply the colored UV reference grid once to any quad we
@@ -566,42 +590,6 @@ void Application::render() {
         if (es.seenQuadIds.insert(id).second && es.uvGridOnNewQuads) {
             assignUvTestGrid(es.quadTextures, es.quadTexturePaths, id, 1024, 8);
         }
-    }
-
-    // Initialize Media Bin Panel
-    if (!mediaBinInitialized && m_mediaLibrary) {
-        mediaBinPanel.setMediaLibrary(m_mediaLibrary.get());
-        mediaBinPanel.setThumbnailCache(m_thumbnailCache.get());
-        mediaBinPanel.setSourceManager(m_sourceManager.get());
-        mediaBinPanel.setReplaceInShowCallback(
-            [this](const std::filesystem::path& original, const std::filesystem::path& converted) {
-                if (!m_sourceManager) return std::string("Media cannot be loaded right now.");
-                std::string error = replaceClipInShow(*m_editorState, *m_sourceManager, original, converted);
-                return error;
-            });
-        mediaBinPanel.setVisible(true);  // Make visible by default
-        mediaBinInitialized = true;
-    }
-
-    // Initialize Output Panel
-    if (!outputPanelInitialized && m_outputManager) {
-        outputPanel.setOutputManager(m_outputManager.get());
-        outputPanelInitialized = true;
-    }
-
-    // Initialize Main Menu Bar callbacks (set once; lambdas capture this). File items
-    // queue es.pendingFileAction directly (ADR-046), so they need no callbacks.
-    if (!panels.mainMenuBarInitialized) {
-        // AI pre-show assist (ADR-035): every item no-ops gracefully without a sidecar.
-        panels.mainMenuBar.setAiActiveQuery([this]() { return m_aiAssist->isActive(); });
-        panels.mainMenuBar.setOnEnableAi([this]()     { m_aiAssist->enable(); });
-        panels.mainMenuBar.setOnDetectSurface([this]() { m_aiAssist->detectSurface(); });
-        panels.mainMenuBar.setOnEmitPattern([this]()  { m_aiAssist->emitPattern(*m_outputManager); });
-        panels.mainMenuBar.setOnCapturePhoto([this]() { m_aiAssist->capturePhoto(m_outputManager.get()); });
-        panels.mainMenuBar.setOnClearPattern([this]() { m_aiAssist->clearPattern(); });
-        panels.mainMenuBar.setOnSolveApply([this]()   { m_aiAssist->solveAndApply(m_outputManager.get()); });
-        panels.mainMenuBar.setOnAnamorphic([this]()   { m_aiAssist->anamorphic(m_outputManager.get()); });
-        panels.mainMenuBarInitialized = true;
     }
 
     float deltaTime = ImGui::GetIO().DeltaTime;
@@ -618,195 +606,13 @@ void Application::render() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
-    // The canvas takes Tab/arrows for the selected quad's vertices or, while
-    // calibrating the projector it shows, for the calibration points (ADR-052), or,
-    // while a slice warp is edited, for its corners (ADR-047).
-    claimCanvasEditingKeys(canvasKeyOwner(es, m_outputManager.get()) != CanvasKeyOwner::None);
 
-    // On-canvas viewport: the corner-pin / mesh-edit warp interaction, then every
-    // quad drawn to the main GL framebuffer. Runs right after NewFrame(), ahead of
-    // every panel, so it acts on this frame's input first (the success-metric
-    // vertex-warp UX) and a nudge shows in the very next presented frame (TD-21).
-    // See ADR-0034 / ViewportEditor.
-    {
-        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                          m_sourceManager.get(), m_outputManager.get(),
-                          m_renderer.get(), m_window};
-        panels.viewportEditor.render(ctx);
-    }
-
-    // Create dockspace over the entire viewport
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::SetNextWindowViewport(viewport->ID);
-
-    ImGuiWindowFlags dockspaceFlags =
-        ImGuiWindowFlags_NoDocking |
-        ImGuiWindowFlags_NoTitleBar |
-        ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoNavFocus |
-        ImGuiWindowFlags_NoBackground;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-
-    ImGui::Begin("DockSpace", nullptr, dockspaceFlags);
-    ImGui::PopStyleVar(3);
-
-    // Create the dockspace
-    ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
-    ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
-
-    // Set up default dock layout on first run
-    static bool dockLayoutInitialized = false;
-    if (!dockLayoutInitialized) {
-        dockLayoutInitialized = true;
-
-        // Clear any existing layout
-        ImGui::DockBuilderRemoveNode(dockspaceId);
-        ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-        ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
-
-        // Split the dockspace into regions
-        ImGuiID dockLeft, dockRight, dockCenter, dockBottom;
-
-        // First split: left panel (20% width)
-        ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.20f, &dockLeft, &dockCenter);
-
-        // Second split: right panel from center (25% of remaining)
-        ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Right, 0.30f, &dockRight, &dockCenter);
-
-        // Third split: bottom panel from center (25% height)
-        ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, 0.25f, &dockBottom, &dockCenter);
-
-        // Dock windows to their respective nodes
-        ImGui::DockBuilderDockWindow("Quad List", dockLeft);
-        ImGui::DockBuilderDockWindow("Video Player", dockLeft);  // Tabbed with Quad List
-        ImGui::DockBuilderDockWindow("Properties", dockRight);
-        ImGui::DockBuilderDockWindow("Calibration", dockRight);  // Tabbed with Properties
-        ImGui::DockBuilderDockWindow("Control", dockRight);      // Tabbed with Properties (ADR-048)
-        ImGui::DockBuilderDockWindow("Resources", dockBottom);  // Tabbed panel with Project, Media, Outputs
-
-        // Finish the layout
-        ImGui::DockBuilderFinish(dockspaceId);
-    }
-
-    // Capture the central node rect (the transparent canvas region between panels)
-    // for next frame's ViewportEditor view transform (ADR-041). Convert from ImGui
-    // screen space to window-local coords so it matches glfwGetCursorPos.
-    if (ImGuiDockNode* centralNode = ImGui::DockBuilderGetCentralNode(dockspaceId)) {
-        const ImVec2 vpPos = viewport->Pos;
-        es.canvasRegionPos = Vec2(centralNode->Pos.x - vpPos.x,
-                                  centralNode->Pos.y - vpPos.y);
-        es.canvasRegionSize = Vec2(centralNode->Size.x, centralNode->Size.y);
-    }
-
-    ImGui::End();
+    // Canvas keys, the canvas itself (straight after NewFrame, TD-21), the dockspace,
+    // the menu bar and the canvas overlay (EditorUi).
+    EditorContext ctx = editorContext();
+    m_ui->beginFrame(ctx);
 
     ImGuiIO& io = ImGui::GetIO();
-
-    // Main menu bar
-    {
-        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                          m_sourceManager.get(), m_outputManager.get(),
-                          m_renderer.get(), m_window};
-        ctx.audio = m_audioEngine.get();
-        panels.mainMenuBar.render(ctx);
-        saveAudioDevicePreference();
-    }
-    saveUiModePreference();
-
-    // Viewport zoom/pan overlay + input (ADR-041). The central node is a passthrough
-    // hole, so the mouse is over the canvas (not a panel) exactly when it is in the
-    // region and no ImGui window has capture. Mutates canvasZoom/canvasPan, which the
-    // next frame's ViewportEditor consumes; anchored zoom reuses last frame's view.
-    if (es.canvasRegionSize.x > 1.0f && es.canvasRegionSize.y > 1.0f) {
-        const ImVec2 vpPos = ImGui::GetMainViewport()->Pos;
-        const ImVec2 regionAbs(es.canvasRegionPos.x + vpPos.x,
-                               es.canvasRegionPos.y + vpPos.y);
-        const ImVec2 regionSz(es.canvasRegionSize.x, es.canvasRegionSize.y);
-        const ImVec2 mouse = ImGui::GetMousePos();
-        const bool overRegion =
-            mouse.x >= regionAbs.x && mouse.x <= regionAbs.x + regionSz.x &&
-            mouse.y >= regionAbs.y && mouse.y <= regionAbs.y + regionSz.y;
-
-        // Scroll-wheel zoom, anchored on the cursor (uses last frame's transform).
-        if (overRegion && !io.WantCaptureMouse && io.MouseWheel != 0.0f &&
-            es.lastViewScale.x != 0.0f && es.lastViewScale.y != 0.0f) {
-            const float oldZoom = es.canvasZoom;
-            float newZoom = oldZoom * (1.0f + 0.12f * io.MouseWheel);
-            newZoom = std::min(12.0f, std::max(0.1f, newZoom));
-            const float cx = (mouse.x - regionAbs.x) / regionSz.x;
-            const float cy = (mouse.y - regionAbs.y) / regionSz.y;
-            const float px = (cx - es.lastViewOffset.x) / es.lastViewScale.x;
-            const float py = (cy - es.lastViewOffset.y) / es.lastViewScale.y;
-            const float nsx = es.lastViewScale.x * (newZoom / oldZoom);
-            const float nsy = es.lastViewScale.y * (newZoom / oldZoom);
-            es.canvasPan.x = (cx - px * nsx) - (1.0f - nsx) * 0.5f;
-            es.canvasPan.y = (cy - py * nsy) - (1.0f - nsy) * 0.5f;
-            es.canvasZoom = newZoom;
-        }
-
-        // Middle-drag pan (per-frame delta in region-normalized units).
-        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
-            const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Middle);
-            ImGui::ResetMouseDragDelta(ImGuiMouseButton_Middle);
-            es.canvasPan.x += d.x / regionSz.x;
-            es.canvasPan.y += d.y / regionSz.y;
-        }
-
-        // Compact controls overlay in the top-left corner of the canvas region.
-        ImGui::SetNextWindowPos(ImVec2(regionAbs.x + 8.0f, regionAbs.y + 8.0f), ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.55f);
-        const ImGuiWindowFlags overlayFlags =
-            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking |
-            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-            ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
-        if (ImGui::Begin("##ViewportZoom", nullptr, overlayFlags)) {
-            if (ImGui::SmallButton("Fit")) { es.canvasZoom = 1.0f; es.canvasPan = Vec2(0.0f, 0.0f); }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("-")) es.canvasZoom = std::max(0.1f, es.canvasZoom / 1.12f);
-            ImGui::SameLine();
-            ImGui::Text("%3.0f%%", es.canvasZoom * 100.0f);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("+")) es.canvasZoom = std::min(12.0f, es.canvasZoom * 1.12f);
-        }
-        ImGui::End();
-
-        // Drop media onto the quad under the cursor (ADR-042). A custom ImGui drop
-        // target can't register over the passthrough central node (no window is hovered
-        // there), so detect the drop manually: while a MEDIA_ITEM_ID drag is active,
-        // on left-release over the canvas, assign to the topmost quad under the cursor.
-        const ImGuiPayload* drag = ImGui::GetDragDropPayload();
-        if (drag && drag->IsDataType("MEDIA_ITEM_ID") &&
-            ImGui::IsMouseReleased(ImGuiMouseButton_Left) && overRegion &&
-            es.lastViewScale.x != 0.0f && es.lastViewScale.y != 0.0f) {
-            UUID mediaId = *(const UUID*)drag->Data;
-            MediaItem* item = m_mediaLibrary ? m_mediaLibrary->getItem(mediaId) : nullptr;
-            if (item) {
-                const float cx = (mouse.x - regionAbs.x) / regionSz.x;
-                const float cy = (mouse.y - regionAbs.y) / regionSz.y;
-                const Vec2 canvasPt((cx - es.lastViewOffset.x) / es.lastViewScale.x,
-                                    (cy - es.lastViewOffset.y) / es.lastViewScale.y);
-                if (Quad* target = es.quadManager().quadAtPoint(canvasPt)) {
-                    UUID sid = assignMediaToQuad(es, m_sourceManager.get(),
-                                                 *target, *item);
-                    if (!sid.isNull()) {
-                        es.quadManager().selectQuad(target->getId());
-                        snprintf(es.statusMessage, sizeof(es.statusMessage),
-                                 "Assigned '%s' to %s", item->getName().c_str(),
-                                 target->getName().c_str());
-                        es.statusTimer = 3.0f;
-                    }
-                }
-            }
-        }
-    }
 
     // Handle keyboard shortcuts. Editing shortcuts stay off while text is typed or a
     // popup/modal is open (e.g. the unsaved-changes prompt: Delete must not delete
@@ -844,7 +650,7 @@ void Application::render() {
     // Edit > Preferences. Ctrl+, is no other shortcut's key.
     if (editingKeys && io.KeyCtrl && !io.KeyShift && !io.KeyAlt &&
         ImGui::IsKeyPressed(ImGuiKey_Comma, false)) {
-        es.showPreferences = true;
+        es.requestPanelOpen(PreferencesDialog::ID);
     }
 
     if (editingKeys && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
@@ -984,158 +790,10 @@ void Application::render() {
         }
     }
 
-    // ============ Quad List Panel ============
-    {
-        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                          m_sourceManager.get(), m_outputManager.get(),
-                          m_renderer.get(), m_window};
-        panels.quadListPanel.render(ctx);
-    }
-
-    // ============ Properties Panel (Context-Sensitive) ============
-    {
-        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                          m_sourceManager.get(), m_outputManager.get(),
-                          m_renderer.get(), m_window};
-        panels.inspectorPanel.render(ctx);
-    }
-
-    // ============ Calibration Panel (only while calibrating, ADR-052) ============
-    {
-        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                          m_sourceManager.get(), m_outputManager.get(),
-                          m_renderer.get(), m_window};
-        panels.calibrationPanel.render(ctx);
-        panels.calibrationPanel.drawCanvasOverlay(ctx);
-    }
-
-    // ============ Resources Panel (Tabbed: Project, Media, Outputs) ============
-    if (showResources) {
-    ImGui::Begin("Resources");
-
-    if (ImGui::BeginTabBar("ResourcesTabs")) {
-        // Simple mode (ADR-042) shows only the Media bin; Project/Scenes/Preview/
-        // Outputs are Advanced-only (single-projector output is auto + the F11 button).
-        const bool advanced = (es.uiMode == EditorState::UiMode::Advanced);
-
-        // -------- Project Tab --------
-        if (advanced && ImGui::BeginTabItem("Project")) {
-            ImGui::Text("Project: %s", m_project->getName().c_str());
-            if (m_session->unsavedLabelShown(glfwGetTime())) {
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "(modified)");
-            }
-            ImGui::Separator();
-
-            ImGui::Text("File Path:");
-            ImGui::InputText("##projectpath", projectPath, sizeof(projectPath));
-            ImGui::SameLine();
-            if (ImGui::Button("Save")) {
-                saveProject();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Load")) {
-                loadProject();
-            }
-
-            // Status message display
-            if (statusTimer > 0.0f) {
-                ImGui::Separator();
-                ImGui::TextWrapped("%s", statusMessage);
-                statusTimer -= ImGui::GetIO().DeltaTime;
-            }
-
-            ImGui::EndTabItem();
-        }
-
-        // -------- Media Bin Tab --------
-        if (ImGui::BeginTabItem("Media")) {
-            UUID prevMediaSelection = es.selectedMediaId;
-            mediaBinPanel.renderContent();
-            // Switch to Media properties if a media item was just selected
-            if (!es.selectedMediaId.isNull() && es.selectedMediaId != prevMediaSelection) {
-                currentSelectionType = SelectionType::Media;
-                quadManager.deselectAll();
-                es.selectedOutputId = UUID();
-            }
-            ImGui::EndTabItem();
-        }
-
-        // -------- Scenes Tab --------
-        if (advanced && ImGui::BeginTabItem("Scenes")) {
-            EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                              m_sourceManager.get(), m_outputManager.get(),
-                              m_renderer.get(), m_window};
-            panels.scenePanel.renderContent(ctx);
-            ImGui::EndTabItem();
-        }
-
-        // -------- Preview Tab --------
-        if (advanced && ImGui::BeginTabItem("Preview")) {
-            EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                              m_sourceManager.get(), m_outputManager.get(),
-                              m_renderer.get(), m_window};
-            panels.outputPreviewPanel.renderContent(ctx);
-            ImGui::EndTabItem();
-        }
-
-        // -------- Outputs Tab --------
-        if (advanced && ImGui::BeginTabItem("Outputs")) {
-            UUID prevOutputSelection = es.selectedOutputId;
-            outputPanel.renderContent();
-            // Switch to Output properties if an output was just selected
-            if (!es.selectedOutputId.isNull() && es.selectedOutputId != prevOutputSelection) {
-                currentSelectionType = SelectionType::Output;
-                quadManager.deselectAll();
-                es.selectedMediaId = UUID();
-            }
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
-    }
-
-    ImGui::End();
-    } // end showResources
-
-    // ============ Video Player Panel ============
-    {
-        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                          m_sourceManager.get(), m_outputManager.get(),
-                          m_renderer.get(), m_window};
-        ctx.audio = m_audioEngine.get();
-        panels.videoPlayerPanel.render(ctx);
-    }
-
-    // ============ Control Panel (OSC / MIDI, ADR-048) ============
-    if (m_externalControl) {
-        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                          m_sourceManager.get(), m_outputManager.get(),
-                          m_renderer.get(), m_window};
-        if (panels.controlPanel.render(ctx, *m_externalControl, m_preferences->getPreferences().control,
-                                   glfwGetTime())) {
-            saveControlPreferences();
-        }
-    }
-
-    // ============ Preferences (Edit > Preferences..., Ctrl+,) ============
-    {
-        EditorContext ctx{es, m_project.get(), m_mediaLibrary.get(),
-                          m_sourceManager.get(), m_outputManager.get(),
-                          m_renderer.get(), m_window};
-        ctx.audio = m_audioEngine.get();
-        m_preferences->render(ctx, m_externalControl.get());
-        saveAudioDevicePreference();  // a device picked in the Audio tab
-        saveUiModePreference();       // a mode picked in the General tab
-    }
-
-    if (m_outputManager && m_outputManager->isBlackout()) drawBlackoutBanner();
-    if (m_outputManager && m_outputManager->isBlendTestPattern()) drawBlendTestPatternBanner();
-
-    renderMissingMediaDialog();
-    panels.mediaBinPanel.renderConversions();  // Convert to HAP progress (QM-082)
-    // Unsaved-changes / recovery modals (ADR-046); drawn last so they sit on top.
-    renderSessionDialogs();
+    // Every panel after the shortcuts and scene takes, so they show this frame's
+    // state; then calibration, the banners and the session modals on top.
+    m_ui->drawPanels(ctx);
+    m_ui->drawOverlays(ctx);
 
     if (m_benchInFrameEdit) m_benchInFrameEdit();
 
@@ -1233,81 +891,16 @@ void Application::processExternalControl() {
     const double now = glfwGetTime();
     m_externalControl->maintainMidi(now);
     // Names and ids can change with any edit; re-read them when something will use them.
-    if (m_externalControl->hasPendingEvents() || es.showControl || m_externalControl->feedbackDue(now)) {
+    const bool controlShown = m_ui && m_ui->panels().isVisible(ControlPanel::ID);
+    if (m_externalControl->hasPendingEvents() || controlShown || m_externalControl->feedbackDue(now)) {
         refreshControlEntities(m_externalControl->registry(), es.scenes, m_sourceManager.get());
     }
     m_externalControl->processEvents(es.midiMappings, now);
     m_externalControl->updateFeedback(now);
 }
 
-void Application::saveControlPreferences() {
-    m_preferences->savePreferences();
-}
-
-void Application::saveUiModePreference() {
-    const int mode = m_editorState->uiMode == EditorState::UiMode::Advanced ? 1 : 0;
-    int& saved = m_preferences->getPreferences().general.uiMode;
-    if (mode == saved) return;
-    saved = mode;
-    m_preferences->savePreferences();
-}
-
-void Application::drawBlackoutBanner() {
-    const EditorState& es = *m_editorState;
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const bool haveCanvas = es.canvasRegionSize.x > 1.0f && es.canvasRegionSize.y > 1.0f;
-    // Across the top of the canvas, just below the zoom controls so they stay usable.
-    const float top = haveCanvas ? es.canvasRegionPos.y : viewport->WorkPos.y - viewport->Pos.y;
-    const ImVec2 origin(viewport->Pos.x + (haveCanvas ? es.canvasRegionPos.x : 0.0f),
-                        viewport->Pos.y + top + ImGui::GetFrameHeight() + 16.0f);
-    const float width = haveCanvas ? es.canvasRegionSize.x : viewport->WorkSize.x;
-
-    ImFont* font = ImGui::GetFont();
-    const float size = ImGui::GetFontSize() * 2.2f;
-    const char* title = "BLACKOUT";
-    const char* detail = "every projector output is black  -  Ctrl+B or Output > Blackout to restore";
-    const ImVec2 titleSize = font->CalcTextSizeA(size, FLT_MAX, 0.0f, title);
-    const ImVec2 detailSize = ImGui::CalcTextSize(detail);
-    const float height = titleSize.y + detailSize.y + 16.0f;
-
-    ImDrawList* draw = ImGui::GetForegroundDrawList(viewport);
-    draw->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + height), IM_COL32(200, 20, 20, 235));
-    draw->AddRect(origin, ImVec2(origin.x + width, origin.y + height), IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
-    draw->AddText(font, size, ImVec2(origin.x + (width - titleSize.x) * 0.5f, origin.y + 4.0f),
-                  IM_COL32(255, 255, 255, 255), title);
-    draw->AddText(ImVec2(origin.x + (width - detailSize.x) * 0.5f, origin.y + 8.0f + titleSize.y),
-                  IM_COL32(255, 255, 255, 255), detail);
-}
-
-// While the blend test pattern is on (ADR-047 §3), a banner across the bottom of the
-// canvas says so: the projectors show the pattern, not the show.
-void Application::drawBlendTestPatternBanner() {
-    const EditorState& es = *m_editorState;
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const bool haveCanvas = es.canvasRegionSize.x > 1.0f && es.canvasRegionSize.y > 1.0f;
-    const char* text = "BLEND TEST PATTERN ON  -  the projectors show the test pattern, not the show";
-    const ImVec2 textSize = ImGui::CalcTextSize(text);
-    const float height = textSize.y + 12.0f;
-    const float width = haveCanvas ? es.canvasRegionSize.x : viewport->WorkSize.x;
-    const float bottom = haveCanvas ? es.canvasRegionPos.y + es.canvasRegionSize.y
-                                    : viewport->WorkPos.y - viewport->Pos.y + viewport->WorkSize.y;
-    const ImVec2 origin(viewport->Pos.x + (haveCanvas ? es.canvasRegionPos.x : 0.0f),
-                        viewport->Pos.y + bottom - height - 8.0f);
-
-    ImDrawList* draw = ImGui::GetForegroundDrawList(viewport);
-    draw->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + height), IM_COL32(230, 150, 0, 235));
-    draw->AddRect(origin, ImVec2(origin.x + width, origin.y + height), IM_COL32(0, 0, 0, 255), 0.0f, 0, 2.0f);
-    draw->AddText(ImVec2(origin.x + (width - textSize.x) * 0.5f, origin.y + 6.0f),
-                  IM_COL32(0, 0, 0, 255), text);
-}
-
 void Application::saveProject() {
     m_editorState->pendingFileAction = EditorState::FileAction::Save;
-}
-
-void Application::loadProject() {
-    m_editorState->pendingLoadPath = m_editorState->projectPath;
-    m_editorState->pendingFileAction = EditorState::FileAction::Load;
 }
 
 void Application::requestExit() {
@@ -1352,160 +945,6 @@ void Application::syncAudio() {
     const EditorState& es = *m_editorState;
     syncSourceAudio(*m_audioEngine, *m_sourceManager,
                     heardSourceGains(es.scenes, es.activeSceneId, *m_outputManager));
-}
-
-// The output device is a machine preference (ADR-050 §5): written when the user picks
-// another one in the menu bar's audio menu or the Preferences window.
-void Application::saveAudioDevicePreference() {
-    std::string& saved = m_preferences->getPreferences().performance.audioDevice;
-    if (!m_audioEngine || m_audioEngine->preferredDevice() == saved) return;
-    saved = m_audioEngine->preferredDevice();
-    m_preferences->savePreferences();
-}
-
-void Application::renderSessionDialogs() {
-    using FileAction = EditorState::FileAction;
-    EditorState& es = *m_editorState;
-
-    constexpr const char* kUnsavedPopup = "Unsaved Changes##session";
-    if (es.unsavedPromptFor != FileAction::None && !ImGui::IsPopupOpen(kUnsavedPopup)) {
-        ImGui::OpenPopup(kUnsavedPopup);
-    }
-    if (ImGui::BeginPopupModal(kUnsavedPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("This project has unsaved changes.");
-        ImGui::TextUnformatted("Save them before continuing?");
-        ImGui::Spacing();
-        const FileAction deferred = es.unsavedPromptFor;
-        if (ImGui::Button("Save")) {
-            es.saveBeforeAction = true;
-            es.pendingFileAction = deferred;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Don't Save")) {
-            es.discardConfirmed = true;
-            es.pendingFileAction = deferred;
-        }
-        ImGui::SameLine();
-        const bool cancel = ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
-        if (es.pendingFileAction != FileAction::None || cancel) {
-            es.unsavedPromptFor = FileAction::None;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
-    constexpr const char* kRecoveryPopup = "Recover Unsaved Work##session";
-    if (!es.recoveryFilePath.empty() && !ImGui::IsPopupOpen(kRecoveryPopup)) {
-        ImGui::OpenPopup(kRecoveryPopup);
-    }
-    if (ImGui::BeginPopupModal(kRecoveryPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted(es.recoveryProjectPath.empty()
-            ? "QUADmapper found unsaved work from an untitled project."
-            : "QUADmapper found unsaved work newer than this project file.");
-        ImGui::TextDisabled("%s", es.recoveryFilePath.c_str());
-        ImGui::Spacing();
-        if (ImGui::Button("Restore")) {
-            es.pendingFileAction = FileAction::RestoreRecovery;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Discard")) {
-            es.pendingFileAction = FileAction::DiscardRecovery;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-}
-
-// A plain window, not a modal: the unsaved-changes and recovery modals can open over
-// it, and closed it draws nothing, so it never holds the canvas keys.
-void Application::renderMissingMediaDialog() {
-    EditorState& es = *m_editorState;
-    if (!es.showMissingMedia) return;
-    const std::vector<MissingMediaItem> items = collectMissingMedia(es);
-    const bool searching = m_session->isSearchingMedia();
-    if (items.empty() && !searching) {
-        es.showMissingMedia = false;  // all found, or the project that had them is gone
-        return;
-    }
-
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(720.0f, 380.0f), ImGuiCond_Appearing);
-    bool open = true;
-    if (ImGui::Begin("Missing Media##relocate", &open,
-                     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
-        ImGui::TextWrapped("%zu file%s used by this project could not be opened. What uses them "
-                           "shows a magenta checker here and black on the projectors until the "
-                           "file is found. Saving keeps the original paths, so nothing is lost "
-                           "if you skip this.",
-                           items.size(), items.size() == 1 ? "" : "s");
-        const bool busy = searching || m_session->isFileDialogBusy();
-        if (searching) ImGui::TextDisabled("Searching %s ...", m_session->mediaSearchFolder().c_str());
-        ImGui::Spacing();
-
-        const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
-        constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
-                                               ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp;
-        if (ImGui::BeginTable("##missing", 3, tableFlags, ImVec2(0.0f, -footer))) {
-            ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthStretch, 3.0f);
-            ImGui::TableSetupColumn("Used by", ImGuiTableColumnFlags_WidthStretch, 1.2f);
-            ImGui::TableSetupColumn("##action", ImGuiTableColumnFlags_WidthFixed);
-            ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableHeadersRow();
-            for (size_t i = 0; i < items.size(); ++i) {
-                const MissingMediaItem& item = items[i];
-                ImGui::PushID(static_cast<int>(i));
-                ImGui::TableNextRow();
-
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(utf8FromPath(pathFromUtf8(item.path).filename()).c_str());
-                ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextDisabled("%s", item.path.c_str());
-                auto error = es.missingMediaErrors.find(item.path);
-                if (error != es.missingMediaErrors.end()) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", error->second.c_str());
-                }
-                ImGui::PopTextWrapPos();
-
-                ImGui::TableNextColumn();
-                std::string usedBy;
-                if (item.quadUses > 0) {
-                    usedBy = std::to_string(item.quadUses) + (item.quadUses == 1 ? " quad" : " quads");
-                }
-                if (item.objectUses > 0) {
-                    if (!usedBy.empty()) usedBy += ", ";
-                    usedBy += std::to_string(item.objectUses) +
-                              (item.objectUses == 1 ? " 3D object" : " 3D objects");
-                }
-                if (item.kind == MissingMediaItem::Kind::Mesh) usedBy += " (mesh)";
-                ImGui::TextUnformatted(usedBy.c_str());
-
-                ImGui::TableNextColumn();
-                ImGui::BeginDisabled(busy);
-                if (ImGui::Button("Locate...")) m_session->requestLocateMissingMedia(item);
-                ImGui::EndDisabled();
-                ImGui::PopID();
-            }
-            ImGui::EndTable();
-        }
-
-        ImGui::BeginDisabled(busy);
-        if (ImGui::Button("Search Folder...")) m_session->requestMissingMediaSearch();
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            ImGui::SetTooltip("Pick a folder: every missing file with the same name in it,\n"
-                              "or in any folder below it, is relocated.");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Skip")) open = false;
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Keep working without these files. File > Relocate Missing Media...\n"
-                              "reopens this window.");
-        }
-    }
-    ImGui::End();
-    if (!open) es.showMissingMedia = false;
 }
 
 void Application::emergencySave() noexcept {
@@ -1559,7 +998,7 @@ void Application::shutdown() {
     m_aiAssist.reset();  // the One-Flash pattern texture; holds an EditorState&, so goes first
     // Media-bin thumbnails and the calibration view, then quad textures and the
     // missing-media looks (the panels refer to the editor state, so go first).
-    m_editorPanels.reset();
+    m_ui.reset();
     m_editorState.reset();
     m_renderer.reset();
     m_folderWatcher.reset();  // Stop watching before destroying media library

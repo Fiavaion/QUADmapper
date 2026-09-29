@@ -1,12 +1,14 @@
 #include "ControlPanel.hpp"
 
 #include "editor/EditorContext.hpp"
+#include "editor/EditorServices.hpp"
 #include "editor/EditorState.hpp"
 #include "control/ExternalControl.hpp"
 #include "output/OutputManager.hpp"
 #include "project/Project.hpp"
 #include "editor/Preferences.hpp"
 
+#include <GLFW/glfw3.h>
 #include <imgui.h>
 
 #include <algorithm>
@@ -100,16 +102,15 @@ control::OscFeedbackSettings ControlSettingsEditor::feedbackSettings(const Contr
     return s;
 }
 
-bool ControlPanel::render(EditorContext& ctx, control::ExternalControl& control,
-                          ControlPreferences& prefs, double now) {
-    EditorState& es = ctx.es;
-    if (!es.showControl) return false;
+bool ControlPanel::available(const EditorContext& ctx) const {
+    return ctx.control && ctx.prefs;
+}
 
+void ControlPanel::drawContent(EditorContext& ctx) {
+    control::ExternalControl& control = *ctx.control;
+    ControlPreferences& prefs = ctx.prefs->control;
+    const double now = glfwGetTime();  // the clock the dispatcher records activity with
     bool changed = false;
-    if (!ImGui::Begin("Control", &es.showControl)) {
-        ImGui::End();
-        return false;
-    }
 
     if (ctx.outputManager) {
         const bool on = ctx.outputManager->isBlackout();
@@ -130,8 +131,7 @@ bool ControlPanel::render(EditorContext& ctx, control::ExternalControl& control,
     if (ImGui::CollapsingHeader("MIDI Learn", ImGuiTreeNodeFlags_DefaultOpen)) renderTargets(control, now);
     if (ImGui::CollapsingHeader("MIDI Mappings", ImGuiTreeNodeFlags_DefaultOpen)) renderMappings(ctx, control, now);
 
-    ImGui::End();
-    return changed;
+    if (changed && ctx.services) ctx.services->savePreferences();
 }
 
 void ControlSettingsEditor::syncEdits(const ControlPreferences& prefs) {

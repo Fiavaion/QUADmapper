@@ -16,7 +16,11 @@
 
 namespace quadmapper {
 
-void ScenePanel::renderContent(EditorContext& ctx) {
+bool ScenePanel::available(const EditorContext& ctx) const {
+    return ctx.es.uiMode == EditorState::UiMode::Advanced;
+}
+
+void ScenePanel::drawContent(EditorContext& ctx) {
     renderActionButtons(ctx);
     renderCanvasControls(ctx);
     ImGui::Separator();

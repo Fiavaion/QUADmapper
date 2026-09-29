@@ -44,6 +44,8 @@ public:
         const MediaLibrary* library = nullptr;
         // New, Load and Restore drop scene takes still queued for the replaced show.
         std::function<void()> dropQueuedSceneTakes;
+        // New, Load and Restore replaced the show (after the new one is in place).
+        std::function<void()> projectReplaced;
         // Exit passed the unsaved-changes check: close the editor.
         std::function<void()> confirmExit;
     };
@@ -115,6 +117,7 @@ private:
     // Offer a recovery file for `projectPath` ("" = untitled) newer than the project.
     void offerRecovery(const std::string& projectPath);
     void dropQueuedSceneTakes();
+    void projectReplaced();
 
     // The headless bench switches autosave and the startup baseline off.
     friend class BenchRunner;

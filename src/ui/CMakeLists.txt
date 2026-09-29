@@ -7,8 +7,15 @@ add_library(quadmapper_ui STATIC
     AsyncFileDialog.cpp
     ShortcutRouter.hpp
     ShortcutRouter.cpp
-    EditorPanels.hpp
+    EditorUi.hpp
+    EditorUi.cpp
+    PanelHost.hpp
+    PanelHost.cpp
     panels/Panel.hpp
+    panels/ResourcesPanel.hpp
+    panels/ResourcesPanel.cpp
+    panels/Banners.hpp
+    panels/Banners.cpp
     panels/InspectorPanel.hpp
     panels/InspectorPanel.cpp
     panels/ViewportEditor.hpp
@@ -37,6 +44,10 @@ add_library(quadmapper_ui STATIC
     dialogs/PreferencesDialog.cpp
     dialogs/HapConvertWindow.hpp
     dialogs/HapConvertWindow.cpp
+    dialogs/MissingMediaWindow.hpp
+    dialogs/MissingMediaWindow.cpp
+    dialogs/SessionDialogs.hpp
+    dialogs/SessionDialogs.cpp
 )
 
 target_include_directories(quadmapper_ui

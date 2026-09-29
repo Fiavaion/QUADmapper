@@ -23,30 +23,29 @@ void appliesNote(const char* text) {
 
 // ---- Window -------------------------------------------------------------------
 
-void PreferencesDialog::render(EditorContext& ctx, control::ExternalControl* control) {
-    // A folder chosen in Browse lands even if the window was closed meanwhile.
-    std::vector<std::string> chosen;
-    if (folderDialog_.takeResult(chosen) && !chosen.empty()) {
-        preferences_.general.defaultMediaFolder = chosen.front();
-        save();
-    }
+int PreferencesDialog::windowFlags() const {
+    return ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
+}
 
-    bool& open = ctx.es.showPreferences;
-    if (!open) {
-        audioTabOpen_ = false;
-        return;
-    }
-
+void PreferencesDialog::beforeBegin(EditorContext& /*ctx*/) {
     // Sized in font units so it fits its hints at any display scale.
     const float em = ImGui::GetFontSize();
     ImGui::SetNextWindowSize(ImVec2(46.0f * em, 34.0f * em), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver,
                             ImVec2(0.5f, 0.5f));
-    if (!ImGui::Begin("Preferences", &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking)) {
-        ImGui::End();
-        return;
-    }
+}
 
+void PreferencesDialog::tick(EditorContext& /*ctx*/) {
+    std::vector<std::string> chosen;
+    if (folderDialog_.takeResult(chosen) && !chosen.empty()) {
+        preferences_.general.defaultMediaFolder = chosen.front();
+        save();
+    }
+    if (!visible) audioTabOpen_ = false;
+}
+
+void PreferencesDialog::drawContent(EditorContext& ctx) {
+    control::ExternalControl* control = ctx.control;
     bool changed = false;
     bool audioTab = false;
     if (ImGui::BeginTabBar("PreferenceTabs")) {
@@ -74,7 +73,6 @@ void PreferencesDialog::render(EditorContext& ctx, control::ExternalControl* con
         ImGui::TextWrapped("Preferences could not be saved: %s", saveError_.c_str());
         ImGui::PopStyleColor();
     }
-    ImGui::End();
 }
 
 bool PreferencesDialog::renderGeneralTab(EditorContext& ctx) {

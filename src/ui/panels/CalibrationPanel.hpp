@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Panel.hpp"
 #include "core/UUID.hpp"
 
 #include <memory>
@@ -15,13 +16,22 @@ class Framebuffer;
 // position. The canvas side (placing, dragging and nudging each point's pixel) is in
 // ViewportEditor; the rules live in scene/CalibrationSession.
 //
-// Does NOT inherit from Panel: like InspectorPanel it needs the per-frame EditorContext.
-class CalibrationPanel {
+// An Overlay panel: its window exists only while calibrating (leaving calibration closes
+// it, and closing it leaves calibration), so it opens and closes that window itself.
+class CalibrationPanel : public Panel {
 public:
+    static constexpr const char* ID = "Calibration";
+
     CalibrationPanel();
-    ~CalibrationPanel();
+    ~CalibrationPanel() override;
     CalibrationPanel(const CalibrationPanel&) = delete;
     CalibrationPanel& operator=(const CalibrationPanel&) = delete;
+
+    const char* id() const override { return ID; }
+    const char* menuLabel() const override { return nullptr; }  // Edit > Calibrate Projector...
+    PanelKind kind() const override { return PanelKind::Overlay; }
+    // The window, then the canvas markers (drawCanvasOverlay).
+    void drawContent(EditorContext& ctx) override;
 
     // Once a frame inside the ImGui frame. Also runs the live solve (at most once a
     // frame), after this frame's canvas and panel edits.

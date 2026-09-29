@@ -10,7 +10,11 @@
 
 namespace quadmapper {
 
-void OutputPreviewPanel::renderContent(EditorContext& ctx) {
+bool OutputPreviewPanel::available(const EditorContext& ctx) const {
+    return ctx.es.uiMode == EditorState::UiMode::Advanced;
+}
+
+void OutputPreviewPanel::drawContent(EditorContext& ctx) {
     OutputManager* om = ctx.outputManager;
     if (!om) {
         ImGui::TextDisabled("No output manager.");

@@ -263,7 +263,7 @@ inline void adoptObjectMeshes(EditorState& es, OutputManager* om) {
             postStatus(es, (done.objectId.isNull() ? "Could not use " + done.name
                                                    : "3D object '" + done.name + "': mesh not loaded") +
                                " (" + done.error + ")");
-            es.showMissingMedia = true;
+            es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
             continue;
         }
         if (!done.ok) {

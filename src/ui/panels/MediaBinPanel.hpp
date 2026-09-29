@@ -14,6 +14,7 @@
 
 namespace quadmapper {
 
+struct EditorContext;
 struct EditorState;
 class MediaLibrary;
 class MediaItem;
@@ -23,45 +24,24 @@ class ThumbnailCache;
 class Texture;
 
 /**
- * MediaBinPanel displays imported media items in a thumbnail grid.
+ * The Media tab of the Resources window: imported media items in a thumbnail grid.
  * Users can import, remove, and drag media items to assign them to quads.
- * Also supports creating procedural texture sources.
+ * Also supports creating procedural texture sources. The selected item and the hover
+ * preview live in EditorState (selectedMediaId, previewSourceId).
  */
 class MediaBinPanel : public Panel {
 public:
-    // The selected item and the hover preview live in `es` (EditorState::selectedMediaId,
-    // previewSourceId), which outlives the panel.
-    explicit MediaBinPanel(EditorState& es);
-    ~MediaBinPanel();  // defined in .cpp (owns unique_ptr<Texture> video thumbnails)
+    static constexpr const char* ID = "Media";
 
-    /**
-     * Set the media library to display.
-     * @param library Pointer to the media library
-     */
-    void setMediaLibrary(MediaLibrary* library) { mediaLibrary_ = library; }
+    MediaBinPanel();
+    ~MediaBinPanel() override;  // defined in .cpp (owns unique_ptr<Texture> video thumbnails)
 
-    /**
-     * Set the source manager for creating procedural sources.
-     * @param manager Pointer to the source manager
-     */
-    void setSourceManager(SourceManager* manager) { sourceManager_ = manager; }
-
-    /**
-     * Set the thumbnail cache for rendering media thumbnails.
-     * @param cache Pointer to the thumbnail cache
-     */
-    void setThumbnailCache(ThumbnailCache* cache) { thumbnailCache_ = cache; }
-
-    /**
-     * Render the panel.
-     */
-    void render() override;
-
-    /**
-     * Render just the panel content (without window wrapper).
-     * Useful for embedding in tabs.
-     */
-    void renderContent();
+    const char* id() const override { return ID; }
+    PanelKind kind() const override { return PanelKind::Tab; }
+    // Keeps the editor state, the media library, the sources and the thumbnail cache.
+    void onAttach(EditorContext& ctx) override;
+    // Selecting an item shows it in the Properties window.
+    void drawContent(EditorContext& ctx) override;
 
     // Thumbnail size settings
     float getThumbnailSize() const { return thumbnailSize_; }
@@ -72,16 +52,13 @@ public:
     void setProceduralEditCallback(ProceduralEditCallback callback) { proceduralEditCallback_ = std::move(callback); }
 
     // Convert to HAP (QM-082): the progress window for conversions started from the
-    // context menu. Drawn every frame, whichever tab is showing.
+    // context menu, with "Replace in show" on a finished one. Drawn every frame,
+    // whichever tab is showing (EditorUi draws it as an overlay).
     void renderConversions();
 
-    // "Replace in show" on a finished conversion: moves what shows the original clip
-    // onto the converted file. Returns why not, or empty.
-    using ReplaceInShowCallback = std::function<std::string(const std::filesystem::path& original,
-                                                            const std::filesystem::path& converted)>;
-    void setReplaceInShowCallback(ReplaceInShowCallback callback) { replaceInShowCallback_ = std::move(callback); }
-
 private:
+    void renderContent();
+
     // Render the import button and controls
     void renderControls();
 
@@ -123,7 +100,7 @@ private:
     // preview decoder so the video under the cursor plays (and reverts when you leave).
     void updateHoverPreview();
 
-    EditorState& es_;
+    EditorState* es_ = nullptr;
     MediaLibrary* mediaLibrary_ = nullptr;
     SourceManager* sourceManager_ = nullptr;
     ThumbnailCache* thumbnailCache_ = nullptr;
@@ -143,7 +120,6 @@ private:
 
     // Convert to HAP conversions and their window (created on first use)
     std::unique_ptr<HapConvertWindow> hapConvert_;
-    ReplaceInShowCallback replaceInShowCallback_;
 
     // Search and filter state
     char searchFilter_[256] = "";

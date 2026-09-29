@@ -9,6 +9,7 @@ add_library(quadmapper_editor STATIC
     ActionRegistry.cpp
     EditActions.hpp
     EditActions.cpp
+    EditorServices.hpp
     ControlBindings.hpp
     GridUndo.hpp
     MediaAssign.hpp

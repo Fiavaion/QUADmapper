@@ -2,6 +2,7 @@
 // ImGui. The preferences file itself is tested in editor/PreferencesTest.cpp.
 
 #include "ui/dialogs/PreferencesDialog.hpp"
+#include "ui/PanelHost.hpp"
 #include "core/UUID.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
@@ -38,7 +39,8 @@ struct TempPrefsFile {
 
 }  // namespace
 
-// The window against real (headless) ImGui: shown only while es.showPreferences is set,
+// The window against real (headless) ImGui, drawn by a PanelHost: shown only while it is
+// visible (Edit > Preferences... opens it),
 // and its General tab edits the editor's UI mode directly (Application saves it).
 TEST(PreferencesWindowTest, RendersOnlyWhenOpenAndShowsTheEditorsMode) {
     ImGuiContext* imgui = ImGui::CreateContext();
@@ -53,21 +55,23 @@ TEST(PreferencesWindowTest, RendersOnlyWhenOpenAndShowsTheEditorsMode) {
     EditorState es;
     EditorContext ctx{es, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     PreferencesDialog dialog;
+    PanelHost host;
+    host.add(dialog);
     auto frame = [&] {
         ImGui::NewFrame();
-        dialog.render(ctx, nullptr);
+        host.drawWindows(ctx);
         const bool shown = ImGui::FindWindowByName("Preferences") != nullptr &&
                            ImGui::FindWindowByName("Preferences")->Active;
         ImGui::Render();
         return shown;
     };
     EXPECT_FALSE(frame()) << "closed by default";
-    es.showPreferences = true;
+    es.requestPanelOpen(PreferencesDialog::ID);
     es.uiMode = EditorState::UiMode::Advanced;
     EXPECT_TRUE(frame());
     EXPECT_TRUE(frame());
     EXPECT_EQ(es.uiMode, EditorState::UiMode::Advanced) << "rendering alone changes nothing";
-    es.showPreferences = false;
+    dialog.visible = false;
     EXPECT_FALSE(frame());
     ImGui::DestroyContext(imgui);
 }
@@ -86,14 +90,16 @@ TEST(PreferencesWindowTest, DraggingTheAutosaveSliderSavesOnceOnRelease) {
     io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
 
     EditorState es;
-    es.showPreferences = true;
     EditorContext ctx{es, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     PreferencesDialog dialog;
+    dialog.visible = true;
+    PanelHost host;
+    host.add(dialog);
     dialog.setConfigPath(file.path);
     const int& interval = dialog.getPreferences().general.autoSaveIntervalMinutes;
     auto frame = [&] {
         ImGui::NewFrame();
-        dialog.render(ctx, nullptr);
+        host.drawWindows(ctx);
         ImGui::Render();
     };
     frame();

@@ -26,12 +26,8 @@
 
 namespace quadmapper {
 
-void QuadListPanel::render(EditorContext& ctx) {
+void QuadListPanel::drawContent(EditorContext& ctx) {
     EditorState& es = ctx.es;
-
-    if (!es.showQuadList) return;
-
-    ImGui::Begin("Quad List");
 
     ImGuiIO& io = ImGui::GetIO();
 
@@ -132,11 +128,11 @@ void QuadListPanel::render(EditorContext& ctx) {
         ImGui::SameLine();
 
         // Visibility checkbox
-        bool visible = quad->isVisible();
-        if (ImGui::Checkbox("##visible", &visible)) {
+        bool quadVisible = quad->isVisible();
+        if (ImGui::Checkbox("##visible", &quadVisible)) {
             Quad* mutableQuad = quadManager.getQuad(quad->getId());
             if (mutableQuad) {
-                mutableQuad->setVisible(visible);
+                mutableQuad->setVisible(quadVisible);
             }
         }
         if (ImGui::IsItemHovered()) {
@@ -420,8 +416,6 @@ void QuadListPanel::render(EditorContext& ctx) {
     }
 
     renderObjects(ctx);
-
-    ImGui::End();
 }
 
 // The active scene's 3D objects (ADR-052): select, rename, show/hide and delete, each
@@ -441,9 +435,9 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
         MeshObject& object = *objectPtr;
         ImGui::PushID(object.getId().toString().c_str());
 
-        bool visible = object.isVisible();
-        if (ImGui::Checkbox("##objVisible", &visible)) {
-            es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(object), visible));
+        bool objectVisible = object.isVisible();
+        if (ImGui::Checkbox("##objVisible", &objectVisible)) {
+            es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(object), objectVisible));
         }
         ImGui::SetItemTooltip("Visible");
         ImGui::SameLine();
