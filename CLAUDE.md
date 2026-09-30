@@ -222,10 +222,14 @@ See `.claude/agent-state/spawn-rules.json` for full configuration.
 ### Adding a New Keyboard Shortcut
 
 - **Editor-wide shortcuts** are actions in the `ActionRegistry` (`src/editor/ActionRegistry.hpp`):
-  editor-only ones in `src/editor/EditActions.cpp`, ones needing app services in
-  `src/app/AppActions.cpp`. Give the action a chord, a class (Show/Edit/File/View) and a guard;
-  `ShortcutRouter` fires it and the menu shows its label and chord. Modifiers match exactly.
-  The registry refuses chords on Tab, the arrows and H. New bindings need the owner's sign-off.
+  ids and default chords in `src/editor/EditActions.cpp`, registered in `src/app/AppActions.cpp`.
+  Give the action default chords (several allowed; the first shows in the menu), a class
+  (Show/Edit/File/View) and a guard. `ShortcutRouter` fires it on any chord with exact modifiers;
+  the menu uses `actionMenuItem`. Never hand-write key checks for editor-wide keys.
+- **Users rebind** in Edit > Preferences > Keyboard; overrides live in `preferences.json` under
+  `"keyboard"` and are applied at startup. The registry refuses Tab, the arrows and H (any
+  modifiers), another action's chord, and bare keys other than F1–F24 and Delete; F11, Esc and
+  Ctrl+B are fixed. A new *default* chord needs the owner's sign-off.
 - **Canvas editing keys** (vertex select and nudge) live in `ViewportEditor.cpp` and
   `src/input/VertexKeyboard.hpp`, which claim the keys with `SetKeyOwner`. Never let a new
   shortcut take Tab, the arrows, Shift or Alt from the canvas.
