@@ -92,6 +92,9 @@ private:
         const char* id() const override { return "Convert to HAP##hapconvert"; }
         const char* menuLabel() const override { return nullptr; }
         PanelKind kind() const override { return PanelKind::Overlay; }
+        // Cancel stays usable under the perform lock; the window disables "Replace in
+        // show" itself (HapConvertWindow::render).
+        bool editsShow() const override { return false; }
         void drawContent(EditorContext&) override { bin_.renderConversions(); }
 
     private:

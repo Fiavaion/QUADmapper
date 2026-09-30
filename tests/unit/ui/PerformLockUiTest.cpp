@@ -22,9 +22,13 @@
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "source/SourceManager.hpp"
+#include "core/UUID.hpp"
+#include "ui/dialogs/HapConvertWindow.hpp"
 #include "ui/dialogs/PreferencesDialog.hpp"
 #include "ui/panels/MainMenuBar.hpp"
+#include "ui/panels/ResourcesPanel.hpp"
 #include "ui/panels/VideoPlayerPanel.hpp"
+#include "video/HapExport.hpp"
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -35,6 +39,7 @@
 
 #include <array>
 #include <cfloat>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -42,6 +47,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace quadmapper;
@@ -123,6 +129,168 @@ TEST_F(PerformLockPanelTest, ShowEditingPanelsAreDrawnDisabledOnlyWhileLocked) {
     frame();
     EXPECT_FALSE(editor.drawnDisabled);
     EXPECT_FALSE(overlay.drawnDisabled);
+}
+
+namespace {
+
+// Hovers down `window` until `id` is under the mouse, drawing a frame per point.
+bool hoverItem(const char* windowName, ImGuiID id, const std::function<void()>& frame) {
+    ImGuiWindow* window = ImGui::FindWindowByName(windowName);
+    if (!window) return false;
+    ImGuiIO& io = ImGui::GetIO();
+    for (float y = window->Pos.y; y < window->Pos.y + window->Size.y; y += 4.0f) {
+        for (float x = window->Pos.x + 4.0f; x < window->Pos.x + window->Size.x; x += 16.0f) {
+            io.AddMousePosEvent(x, y);
+            frame();
+            if (ImGui::GetCurrentContext()->HoveredId == id) return true;
+        }
+    }
+    return false;
+}
+
+void clickHere(const std::function<void()>& frame) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    frame();
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    frame();
+}
+
+}  // namespace
+
+// The Project tab under the lock (owner's decision, 2026-09-30): Save works, while the
+// path field and Load, which would replace the show, stay disabled.
+TEST_F(PerformLockPanelTest, TheProjectTabSavesUnderTheLockButDoesNotLoad) {
+    PanelHost resourcesHost;
+    ResourcesPanel resources(resourcesHost);
+    ProjectTab projectTab;
+    resourcesHost.add(resources);
+    resourcesHost.add(projectTab);
+    es.uiMode = EditorState::UiMode::Advanced;
+    const auto draw = [&] {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(20.0f, 20.0f));
+        ImGui::SetNextWindowSize(ImVec2(700.0f, 200.0f));
+        resourcesHost.drawWindows(ctx);
+        ImGui::Render();
+    };
+    lockPerform(es);
+    draw();
+    draw();
+    ImGuiWindow* window = ImGui::FindWindowByName(ResourcesPanel::ID);
+    ASSERT_NE(window, nullptr);
+    ImGuiTabBar* tabs = ImGui::GetCurrentContext()->TabBars.GetByKey(window->GetID("ResourcesTabs"));
+    ASSERT_NE(tabs, nullptr);
+    const ImGuiID tab = tabs->VisibleTabId;
+    ASSERT_EQ(tab, ImHashStr(ProjectTab::ID, 0, tabs->ID));
+
+    ASSERT_TRUE(hoverItem(ResourcesPanel::ID, ImHashStr("Load", 0, tab), draw));
+    EXPECT_TRUE(ImGui::GetCurrentContext()->HoveredIdIsDisabled) << "Load is disabled";
+    clickHere(draw);
+    EXPECT_EQ(es.pendingFileAction, EditorState::FileAction::None);
+    ASSERT_TRUE(hoverItem(ResourcesPanel::ID, ImHashStr("##projectpath", 0, tab), draw));
+    EXPECT_TRUE(ImGui::GetCurrentContext()->HoveredIdIsDisabled) << "the path is disabled";
+
+    ASSERT_TRUE(hoverItem(ResourcesPanel::ID, ImHashStr("Save", 0, tab), draw));
+    EXPECT_FALSE(ImGui::GetCurrentContext()->HoveredIdIsDisabled) << "Save works";
+    clickHere(draw);
+    EXPECT_EQ(es.pendingFileAction, EditorState::FileAction::Save);
+}
+
+namespace {
+
+// A copy of the fixture clip in a folder of its own: a conversion writes beside it.
+struct TempClip {
+    std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                ("qm_hap_lock_" + UUID::generate().toString());
+    std::filesystem::path clip = dir / "clip.mp4";
+    bool ok = false;
+    TempClip() {
+        namespace fs = std::filesystem;
+        const fs::path fixture = fs::path(__FILE__).parent_path().parent_path().parent_path() /
+                                 "fixtures" / "videos" / "h264_closed_gop.mp4";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        ok = !ec && fs::copy_file(fixture, clip, ec) && !ec;
+    }
+    ~TempClip() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+constexpr const char* HAP_WINDOW = "Convert to HAP##hapconvert";
+
+}  // namespace
+
+// Convert to HAP under the lock (owner's decision, 2026-09-30): Cancel stops a running
+// conversion; "Replace in show" on a finished one stays refused.
+TEST_F(PerformLockPanelTest, ConvertToHapCancelsUnderTheLockButDoesNotReplace) {
+    TempClip source;
+    if (!source.ok) GTEST_SKIP() << "no fixture clip";
+    lockPerform(es);
+    HapConvertWindow conversions;
+    int replaced = 0;
+    const auto draw = [&] {
+        ImGui::NewFrame();
+        conversions.render({}, [&replaced](const std::filesystem::path&, const std::filesystem::path&) {
+            ++replaced;
+            return std::string();
+        }, es.performLock.isOn());
+        ImGui::Render();
+    };
+
+    // Cancel: the first row's button, beside the 440 px progress bar.
+    conversions.start(source.clip, hap::HapVariant::Hap);
+    draw();
+    draw();  // an auto-sized window is placed on its second frame
+    ImGuiWindow* window = ImGui::FindWindowByName(HAP_WINDOW);
+    ASSERT_NE(window, nullptr);
+    const int row = 0;
+    const ImGuiID cancel = ImHashStr("Cancel", 0, ImHashData(&row, sizeof(row), window->ID));
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 start = window->DC.CursorStartPos;
+    ImGui::GetIO().AddMousePosEvent(start.x + 440.0f + style.ItemSpacing.x + 8.0f,
+                                    start.y + ImGui::GetTextLineHeight() + style.ItemSpacing.y +
+                                        ImGui::GetFrameHeight() * 0.5f);
+    draw();
+    if (!conversions.isConverting(source.clip, hap::HapVariant::Hap)) {
+        GTEST_SKIP() << "the conversion finished before Cancel could be pressed";
+    }
+    ASSERT_EQ(ImGui::GetCurrentContext()->HoveredId, cancel) << "Cancel is not where expected";
+    EXPECT_FALSE(ImGui::GetCurrentContext()->HoveredIdIsDisabled) << "Cancel works under the lock";
+    clickHere(draw);
+    for (int i = 0; i < 2000 && conversions.isConverting(source.clip, hap::HapVariant::Hap); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        draw();
+    }
+    ASSERT_FALSE(conversions.isConverting(source.clip, hap::HapVariant::Hap));
+    const std::filesystem::path output = hapOutputPath(source.clip, hap::HapVariant::Hap);
+    if (std::filesystem::exists(output)) {
+        GTEST_SKIP() << "the conversion finished before the Cancel click landed";
+    }
+
+    // Replace in show: a finished conversion, disabled while locked.
+    conversions.start(source.clip, hap::HapVariant::HapQ);
+    for (int i = 0; i < 2000 && conversions.isConverting(source.clip, hap::HapVariant::HapQ); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        draw();
+    }
+    draw();
+    const int second = 1;
+    const ImGuiID replace =
+        ImHashStr("Replace in show", 0, ImHashData(&second, sizeof(second), window->ID));
+    if (!hoverItem(HAP_WINDOW, replace, draw)) GTEST_SKIP() << "the HAP Q conversion did not finish";
+    EXPECT_TRUE(ImGui::GetCurrentContext()->HoveredIdIsDisabled) << "Replace in show is disabled";
+    clickHere(draw);
+    EXPECT_EQ(replaced, 0);
+
+    requestPerformUnlock(es);
+    ASSERT_TRUE(confirmPerformUnlock(es));
+    ASSERT_TRUE(hoverItem(HAP_WINDOW, replace, draw));
+    EXPECT_FALSE(ImGui::GetCurrentContext()->HoveredIdIsDisabled);
+    clickHere(draw);
+    EXPECT_EQ(replaced, 1) << "unlocked, it replaces";
 }
 
 namespace {
@@ -301,6 +469,20 @@ TEST_F(PerformLockUiTest, TabAndArrowsDoNothingWhileLockedAndWorkAfterUnlock) {
     ASSERT_TRUE(confirmPerformUnlock(es));
     EXPECT_TRUE(tabAndNudge()) << "the success-metric nudge works again";
     EXPECT_EQ(es.cornerSelectedVertex, 0);
+}
+
+// In the real EditorUi, the Project tab and the Convert to HAP overlay are not drawn
+// disabled by the host under the lock: each disables only what edits the show.
+TEST_F(PerformLockUiTest, TheProjectTabAndConvertToHapKeepTheirOwnControls) {
+    int found = 0;
+    for (const Panel* panel : ui->panels().panels()) {
+        const std::string id = panel->id();
+        if (id == ProjectTab::ID || id == "Convert to HAP##hapconvert") {
+            EXPECT_FALSE(panel->editsShow()) << id;
+            ++found;
+        }
+    }
+    EXPECT_EQ(found, 2);
 }
 
 // The menu item on a locked show only asks: the "Unlock the Show?" modal opens, and

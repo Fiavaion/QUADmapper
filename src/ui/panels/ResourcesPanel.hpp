@@ -32,6 +32,8 @@ public:
 
     const char* id() const override { return ID; }
     PanelKind kind() const override { return PanelKind::Tab; }
+    // Save works under the perform lock; the tab disables its path and Load itself.
+    bool editsShow() const override { return false; }
     bool available(const EditorContext& ctx) const override;
     void drawContent(EditorContext& ctx) override;
 };

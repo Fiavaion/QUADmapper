@@ -1,6 +1,7 @@
 #include "MediaBinPanel.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
 #include "editor/ReplaceMedia.hpp"
 #include "core/FileSystem.hpp"
 #include "media/MediaLibrary.hpp"
@@ -561,8 +562,12 @@ void MediaBinPanel::renderConversions() {
         },
         [this](const std::filesystem::path& original, const std::filesystem::path& converted) {
             if (!sourceManager_ || !es_) return std::string("Media cannot be loaded right now.");
+            if (refusedByPerformLock(*es_, "Replace in show")) {
+                return std::string("The show is locked (Output > Perform Lock).");
+            }
             return replaceClipInShow(*es_, *sourceManager_, original, converted);
-        });
+        },
+        es_ && es_->performLock.isOn());
 }
 
 void MediaBinPanel::handleImport() {
