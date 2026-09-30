@@ -1,11 +1,10 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-09-29 (ADR-051 E0–E8)
+Last Updated: 2026-09-30 (ADR-051 shortcut amendment)
 
 ## Quick Status
 - In Progress: 0
-- Todo: ADR-051 owner sign-off on the pending chords and the GUI check of the perform lock
-  (QM-122), TD-12 present threads (hardware), TD-14b, TD-29 running-app check
+- Todo: the GUI check of the perform lock and the Keyboard preferences (QM-122), TD-12 present threads (hardware), TD-14b, TD-29 running-app check
   (calibration on sliced outputs, done in code), TD-32/33 (pre-existing loop bugs), dev→master
   PR #2, 🚩 QM-061
 - Done: Session 22 added QM-083..QM-099; Session 23 added QM-100..QM-109 (PRD MVP gaps + control);
@@ -17,13 +16,17 @@ Last Updated: 2026-09-29 (ADR-051 E0–E8)
 
 ## 2026-09-28/29 — ADR-051 editor architecture
 
-- **QM-122 DONE (code and tests; GUI check pending)** — ADR-051 E0–E8: dead stubs gone, `AiAssist` and
+- **QM-122 DONE (code and tests; GUI check pending)** — ADR-051 E0–E8 and the shortcut amendment: dead stubs gone, `AiAssist` and
   `ProjectSession` out of `Application.cpp`, the `quadmapper_editor` library with
   `layering_check`, `Panel` / `PanelHost` / `EditorUi`, `ActionRegistry` and the shortcut
   router, and the perform lock (E7) with its review fixes. `Application.cpp` went from 878 to 860 lines over the review fixes and E8. The
-  lower modules' tests no longer include editor code (E8). Pending owner decisions (new
-  bindings, ADR-051 §3): Ctrl+Shift+L for the perform lock; Ctrl+N / Ctrl+O / Ctrl+Shift+S;
-  Ctrl+Shift+Z for redo. Pending by hand: the ADR-051 §6 manual gate, the lock included.
+  lower modules' tests no longer include editor code (E8). The owner's decisions
+  (2026-09-30, ADR-051 "Amendment: shortcuts and rebinding") are built: Ctrl+Shift+L for the
+  perform lock; Ctrl+N / Ctrl+O / Ctrl+Shift+S for New / Open / Save As; Ctrl+Shift+Z beside
+  Ctrl+Y for redo; several chords per action; user rebinding in Edit > Preferences > Keyboard
+  (saved under "keyboard" in preferences.json); under the lock the Project tab's Save and
+  Convert to HAP's Cancel stay usable. Pending by hand: the ADR-051 §6 manual gate, the lock
+  and the Keyboard preferences included.
 
 ## Session 24 (2026-09-27) — ADR-047 scene canvas → output slices
 

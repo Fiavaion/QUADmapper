@@ -104,7 +104,7 @@ enum class Outcome { Ran, Disabled, Locked, Unknown };
 - **In the registry:**
   - with the looser `Show` guard and not rebindable: F11, Esc (the perform/calibration/learn chain) and Ctrl+B;
   - with the `Editing` guard: Delete, Ctrl+Z/Y/A/,/S, Ctrl+[/] (±Shift), Ctrl+M, Alt+=/−/R.
-- **No new bindings.** New menu chords such as Ctrl+N/Ctrl+O/Ctrl+Shift+S need the owner's sign-off first. Rebinding and a keymap file are deferred.
+- **No new bindings.** New menu chords such as Ctrl+N/Ctrl+O/Ctrl+Shift+S need the owner's sign-off first. Rebinding and a keymap file are deferred. *(Superseded by the 2026-09-30 amendment below: the chords are approved, an action has a list of chords, and the user can rebind them.)*
 - **OSC/MIDI (ADR-048) keeps its own `ControlRegistry`.** Only `Show`-class actions may ever be exported to external control.
 
 ### 4. Perform lock
@@ -128,7 +128,7 @@ enum class Outcome { Ran, Disabled, Locked, Unknown };
   - canvas zoom, pan and viewing;
   - Exit, which still confirms.
 - **Toggle:**
-  - Output > Perform Lock, and `perform.lock` on Ctrl+Shift+L, which is currently unused (a new binding: listed for the owner's sign-off before E7 ships).
+  - Output > Perform Lock, and `perform.lock` on Ctrl+Shift+L, which is currently unused (a new binding: listed for the owner's sign-off before E7 ships; approved 2026-09-30, see the amendment).
   - Locking is immediate. Unlocking asks for confirmation.
   - A persistent LOCKED banner shows while it is on.
 - **Persistence:** runtime state, like blackout. It is not saved, and there is no `.qmap` change.
@@ -176,6 +176,27 @@ E0 can run alongside anything. E1, E2, E3 and E5 all touch `Application.cpp`, so
 - **Not blocked:** files dropped from Explorer still go into the media bin, which is not show content.
 
 **E8 as built (2026-09-29).** CLAUDE.md and the agent and rule files follow the layers. The three lower-module tests that used editor headers moved to `test_editor`: `OutputPersistenceTest` (from `OutputManagerTest`), `UnsavedIndicatorTest` (from `ProjectTest`) and `AudioSyncTest`, whole, whose `test_audio_sync` target is removed. `Application.cpp` is 860 lines. Chords still waiting for the owner's sign-off: Ctrl+Shift+L (perform lock), Ctrl+N / Ctrl+O / Ctrl+Shift+S and Ctrl+Shift+Z (redo).
+
+**Amendment: shortcuts and rebinding (owner's approval, 2026-09-30).** The owner approved the pending chords and asked that "shortcuts can be changed in the app". This supersedes the "No new bindings" bullet of §3, which deferred rebinding and a keymap file.
+- **New defaults:**
+  - `perform.lock` on Ctrl+Shift+L (Show class, as before).
+  - `file.new` Ctrl+N, `file.open` Ctrl+O, `file.saveAs` Ctrl+Shift+S: File-class actions (`registerFileActions`, editor/EditActions) that queue the same `pendingFileAction` as the File menu did. The File menu now invokes them, so it shows their chords.
+  - `edit.redo` on Ctrl+Y and Ctrl+Shift+Z.
+- **Several chords per action.** `Action::chords` is a list; the first is the one the menu shows (`actionMenuItem`), and the router fires the action on any of them. `add()` checks every chord (key, canvas keys, clashes with other actions and within the list) and records it as `defaultChords`.
+- **Lock policy.** `performLockRefuses` refuses the Edit class and, by id, `file.new` and `file.open`. Save and Save As stay allowed; the menu greys New and Open through the same predicate.
+- **Rebinding (Edit > Preferences > Keyboard).** Every registered action is listed with its chords. Change captures the next chord with its modifiers (Esc cancels); Add captures a second chord and Remove drops the extra ones; Reset and Reset All restore the defaults. `ActionRegistry::setChords` refuses, with an inline message in the window:
+  - the canvas keys (Tab, the arrows, H) with any modifiers;
+  - a chord another action has, naming it ("Ctrl+S is already used by Save Project.");
+  - a bare key other than F1–F24 and Delete: a bare letter would fire while typing outside a text field, and 1–9 stay the scene takes;
+  - `fixed` actions (F11, Esc, Ctrl+B), which are listed as "Fixed" with no buttons.
+
+  While a chord is captured, `EditorState::capturingChord` keeps the router and the scene take keys off the key, and the window asks ImGui for the keyboard so the canvas ignores it. Closing the window, leaving the tab or locking the show ends the capture. The window is drawn disabled under the lock, as before.
+- **Storage.** `AppPreferences::keyBindings`, saved as an additive `"keyboard"` object in `preferences.json`: action id → list of chords as text (`{"perform.lock": ["Ctrl+Shift+K"]}`), only for actions off their defaults. A file without it loads unchanged. Entries of the wrong shape are skipped at load; at apply (`applyKeyBindings`, at startup after the actions are registered) an unknown id, a fixed action, an unparseable chord or a chord `setChords` refuses is skipped with a log line and the action keeps its default. Overridden actions let go of their chords before the overrides are applied, so two actions can swap chords. The Keyboard tab changes the registry at once and saves the overrides.
+- **Chord text** (`chordText`, `parseChord`) moved from `ui/ShortcutRouter` to `editor/ActionRegistry`, with its own key-name table, so the editor still makes no ImGui calls.
+- **Lock tweaks:**
+  - The Project tab is no longer drawn disabled as a whole (`editsShow` false): its Save works under the lock, while its path field and Load stay disabled.
+  - The Convert to HAP overlay is no longer drawn disabled as a whole: Cancel (and Dismiss) work under the lock; "Replace in show" stays disabled, and its callback refuses under the lock as well.
+  - Save As, the audio device and master volume, and the Simple/Advanced toggle stay available, as before.
 
 ### 6. Gates
 - Every slice keeps `ctest` green, including `bench_smoke`, which drives Tab + arrow nudges and 1–9 through the real GLFW key callback: the automated success-metric gate.
