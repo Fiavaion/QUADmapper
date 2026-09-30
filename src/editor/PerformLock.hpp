@@ -46,7 +46,8 @@ void requestPerformUnlock(EditorState& es);
 bool confirmPerformUnlock(EditorState& es);
 void cancelPerformUnlock(EditorState& es);
 
-// Whether the lock refuses this registered action now: the Edit class while it is on.
+// Whether the lock refuses this registered action now: while it is on, the Edit class
+// and File > New and Open (Save and Save As stay allowed).
 bool performLockRefuses(const EditorState& es, const Action& action);
 
 // While locked, posts "<what> is blocked: the show is locked (Output > Perform Lock)"

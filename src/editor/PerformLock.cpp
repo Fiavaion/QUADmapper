@@ -1,6 +1,7 @@
 #include "PerformLock.hpp"
 
 #include "ActionRegistry.hpp"
+#include "EditActions.hpp"
 #include "EditorContext.hpp"
 #include "EditorState.hpp"
 #include "GridUndo.hpp"
@@ -105,7 +106,10 @@ bool confirmPerformUnlock(EditorState& es) {
 void cancelPerformUnlock(EditorState& es) { es.performLock.confirmingUnlock_ = false; }
 
 bool performLockRefuses(const EditorState& es, const Action& action) {
-    return es.performLock.isOn() && action.cls == ActionClass::Edit;
+    if (!es.performLock.isOn()) return false;
+    // New and Open would replace the show on air; Save and Save As keep it.
+    return action.cls == ActionClass::Edit || action.id == action_id::NEW_PROJECT ||
+           action.id == action_id::OPEN_PROJECT;
 }
 
 bool refusedByPerformLock(EditorState& es, const std::string& what) {

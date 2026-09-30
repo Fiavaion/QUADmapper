@@ -62,7 +62,8 @@ const char* outputProblem(const AudioEngine& audio) {
 void actionMenuItem(EditorContext& ctx, const char* id, bool selected, std::optional<bool> enabled) {
     const Action* action = ctx.actions ? ctx.actions->find(id) : nullptr;
     if (!action) return;
-    const std::string chord = action->chord ? chordText(*action->chord) : std::string();
+    // The first chord: the menu shows one, the others work as well.
+    const std::string chord = action->chords.empty() ? std::string() : chordText(action->chords.front());
     const bool canRun = (enabled ? *enabled : (!action->enabled || action->enabled(ctx))) &&
                         !performLockRefuses(ctx.es, *action);
     if (ImGui::MenuItem(action->label.c_str(), chord.empty() ? nullptr : chord.c_str(), selected,
@@ -140,17 +141,11 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
     // boundary, after the unsaved-changes check (ADR-046).
     if (ImGui::BeginMenu("File")) {
         using FileAction = EditorState::FileAction;
-        if (ImGui::MenuItem("New Project", nullptr, false, !locked)) {
-            es.pendingFileAction = FileAction::New;
-        }
-        if (ImGui::MenuItem("Open Project...", nullptr, false, !locked)) {
-            es.pendingFileAction = FileAction::Open;
-        }
+        actionMenuItem(ctx, action_id::NEW_PROJECT);
+        actionMenuItem(ctx, action_id::OPEN_PROJECT);
         ImGui::Separator();
         actionMenuItem(ctx, action_id::SAVE);
-        if (ImGui::MenuItem("Save Project As...")) {
-            es.pendingFileAction = FileAction::SaveAs;
-        }
+        actionMenuItem(ctx, action_id::SAVE_AS);
         ImGui::Separator();
         if (ImGui::MenuItem("Import 3D Object (OBJ)...", nullptr, false, !locked)) {
             es.pendingFileAction = FileAction::ImportObject;

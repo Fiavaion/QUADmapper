@@ -22,16 +22,15 @@ uint8_t currentChordMods();
 // popup is open. Show: no text field is active.
 bool keyGuardAllows(KeyGuard guard);
 
-// The chord as the menu shows it: "Ctrl+Shift+]", "Alt+=", "Delete".
-std::string chordText(const Chord& chord);
-
-// The router. Call once per frame, after the canvas has read its keys. Returns the ids
-// of the actions invoked this frame (whatever their Outcome).
+// The router. Call once per frame, after the canvas has read its keys. An action fires
+// on any of its chords. Nothing fires while EditorState::capturingChord is set (the
+// Keyboard preferences take that key). Returns the ids of the actions invoked this
+// frame (whatever their Outcome). The menu's chord text is chordText (ActionRegistry).
 std::vector<std::string> routeShortcuts(ActionRegistry& registry, EditorContext& ctx);
 
 // The scene take keys 1-9 pressed since the last frame (physical keys, queued outside
 // ImGui, US-008), then cleared. Each is invoked (Source::Key) unless a text field is
-// active (the digit was typed there) or a popup is open. The "Unlock the Show?" prompt
+// active (the digit was typed there), a chord is being captured, or a popup is open. The "Unlock the Show?" prompt
 // lets them through: the show stays live while it asks. A take a popup holds off is
 // not dropped silently: the status line says so.
 void runSceneTakeKeys(ActionRegistry& registry, EditorContext& ctx, std::vector<int>& numbers);

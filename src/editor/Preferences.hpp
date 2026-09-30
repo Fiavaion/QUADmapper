@@ -3,6 +3,7 @@
 // The application's preferences and their file (ADR-051 D2). The Edit > Preferences
 // window that edits them is ui/dialogs/PreferencesDialog.
 
+#include "ActionRegistry.hpp"  // KeyBindings
 #include "core/Result.hpp"
 
 #include <filesystem>
@@ -67,6 +68,10 @@ struct AppPreferences {
     GeneralPreferences general;
     PerformancePreferences performance;
     ControlPreferences control;
+    // The rebound keys (Edit > Preferences > Keyboard): action id -> chords as text,
+    // "Ctrl+Shift+L". Only the actions off their defaults; applyKeyBindings checks them.
+    // Stored under "keyboard"; a file without it keeps every default.
+    KeyBindings keyBindings;
 
     // <Roaming AppData>/QUADmapper/preferences.json (XDG config elsewhere), built as a
     // wide path so a user name outside the ANSI code page works. Creates the folder.

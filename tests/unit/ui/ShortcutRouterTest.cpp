@@ -6,6 +6,7 @@
 #include "editor/EditActions.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
 #include "input/VertexKeyboard.hpp"
 
 #include <imgui.h>
@@ -36,10 +37,13 @@ public:
         io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
 
         registerEditActions(registry);
+        registerFileActions(registry);
         auto blackout = makeAppAction(action_id::BLACKOUT, [this](EditorContext&) { ++blackouts; });
         registry.add(*blackout);
         auto save = makeAppAction(action_id::SAVE, [this](EditorContext&) { ++saves; });
         registry.add(*save);
+        registry.add(*makeAppAction(action_id::PERFORM_LOCK, togglePerformLock));
+        installPerformLockPolicy(registry, es);
 
         quad = es.quadManager().createQuad("A");
         es.quadManager().createQuad("B");
@@ -188,8 +192,10 @@ TEST(ShortcutRouterTest, AnUnknownChordDoesNothing) {
 
 TEST(ShortcutRouterTest, ModifiersMatchExactly) {
     RouterRig rig;
-    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_S}), NOTHING);
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_S}),
+              std::vector<std::string>{action_id::SAVE_AS});
     EXPECT_EQ(rig.saves, 0) << "Ctrl+Shift+S is not Save";
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiMod_Alt, ImGuiKey_S}), NOTHING);
     EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_S}), std::vector<std::string>{action_id::SAVE});
     EXPECT_EQ(rig.saves, 1);
 
@@ -217,6 +223,108 @@ TEST(ShortcutRouterTest, TheMenuAndTheKeyHaveTheSameEffect) {
               std::vector<std::string>{action_id::SELECT_ALL});
     EXPECT_EQ(rig.registry.invoke(action_id::SELECT_ALL, rig.ctx, Source::Menu), Outcome::Disabled);
     EXPECT_FALSE(rig.es.quadManager().hasSelection());
+}
+
+// ---- The owner's chords (2026-09-30) ---------------------------------------------------
+
+// Redo on both Ctrl+Y and Ctrl+Shift+Z.
+TEST(ShortcutRouterTest, CtrlShiftZRedoesAsCtrlYDoes) {
+    RouterRig rig;
+    rig.es.quadManager().selectQuad(rig.quad->getId());
+    rig.press({ImGuiKey_Delete});
+    ASSERT_EQ(rig.es.quadManager().getQuadCount(), 1u);
+
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_Z}), std::vector<std::string>{action_id::UNDO});
+    EXPECT_EQ(rig.es.quadManager().getQuadCount(), 2u);
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_Z}),
+              std::vector<std::string>{action_id::REDO});
+    EXPECT_EQ(rig.es.quadManager().getQuadCount(), 1u) << "Ctrl+Shift+Z redid the delete";
+
+    rig.press({ImGuiMod_Ctrl, ImGuiKey_Z});
+    ASSERT_EQ(rig.es.quadManager().getQuadCount(), 2u);
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_Y}), std::vector<std::string>{action_id::REDO});
+    EXPECT_EQ(rig.es.quadManager().getQuadCount(), 1u) << "Ctrl+Y still redoes";
+}
+
+TEST(ShortcutRouterTest, CtrlNOAndShiftSQueueNewOpenAndSaveAs) {
+    RouterRig rig;
+    using FileAction = EditorState::FileAction;
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_N}), std::vector<std::string>{action_id::NEW_PROJECT});
+    EXPECT_EQ(rig.es.pendingFileAction, FileAction::New);
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_O}), std::vector<std::string>{action_id::OPEN_PROJECT});
+    EXPECT_EQ(rig.es.pendingFileAction, FileAction::Open);
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_S}),
+              std::vector<std::string>{action_id::SAVE_AS});
+    EXPECT_EQ(rig.es.pendingFileAction, FileAction::SaveAs);
+
+    // The menu items invoke the same actions.
+    rig.es.pendingFileAction = FileAction::None;
+    EXPECT_EQ(rig.registry.invoke(action_id::OPEN_PROJECT, rig.ctx, Source::Menu), Outcome::Ran);
+    EXPECT_EQ(rig.es.pendingFileAction, FileAction::Open);
+}
+
+TEST(ShortcutRouterTest, UnderTheLockNewAndOpenAreRefusedAndSaveAsIsNot) {
+    RouterRig rig;
+    using FileAction = EditorState::FileAction;
+    rig.press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_L});
+    ASSERT_TRUE(rig.es.performLock.isOn());
+
+    rig.press({ImGuiMod_Ctrl, ImGuiKey_N});
+    rig.press({ImGuiMod_Ctrl, ImGuiKey_O});
+    EXPECT_EQ(rig.es.pendingFileAction, FileAction::None);
+    EXPECT_NE(std::string(rig.es.statusMessage).find("the show is locked"), std::string::npos)
+        << rig.es.statusMessage;
+    rig.press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_S});
+    EXPECT_EQ(rig.es.pendingFileAction, FileAction::SaveAs);
+    rig.press({ImGuiMod_Ctrl, ImGuiKey_S});
+    EXPECT_EQ(rig.saves, 1);
+}
+
+// Ctrl+Shift+L locks at once; pressed again it only asks (the unlock prompt).
+TEST(ShortcutRouterTest, CtrlShiftLLocksAndAgainAsksToUnlock) {
+    RouterRig rig;
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_L}),
+              std::vector<std::string>{action_id::PERFORM_LOCK});
+    EXPECT_TRUE(rig.es.performLock.isOn());
+    EXPECT_FALSE(rig.es.performLock.isConfirmingUnlock());
+
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_L}),
+              std::vector<std::string>{action_id::PERFORM_LOCK});
+    EXPECT_TRUE(rig.es.performLock.isOn()) << "unlocking waits for the confirmation";
+    EXPECT_TRUE(rig.es.performLock.isConfirmingUnlock());
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_L}), NOTHING) << "Ctrl+L is not the lock";
+}
+
+// A rebound action fires on its new chord and no longer on the old one.
+TEST(ShortcutRouterTest, AReboundChordIsWhatFires) {
+    RouterRig rig;
+    ASSERT_EQ(rig.registry.setChords(action_id::SAVE, {Chord{ImGuiKey_F5, MOD_NONE}}).result,
+              RebindResult::Changed);
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_S}), NOTHING);
+    EXPECT_EQ(rig.press({ImGuiKey_F5}), std::vector<std::string>{action_id::SAVE});
+    EXPECT_EQ(rig.saves, 1);
+}
+
+// While the Keyboard preferences capture a chord, no shortcut and no take key acts.
+TEST(ShortcutRouterTest, NothingFiresWhileAChordIsCaptured) {
+    RouterRig rig;
+    rig.es.capturingChord = true;
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_S}), NOTHING);
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_B}), NOTHING) << "not even the Show keys";
+    EXPECT_EQ(rig.saves, 0);
+    EXPECT_EQ(rig.blackouts, 0);
+
+    int taken = 0;
+    rig.registry.add(*makeAppAction(sceneTakeId(1), [&taken](EditorContext&) { ++taken; }));
+    std::vector<int> queued{1};
+    ImGui::NewFrame();
+    runSceneTakeKeys(rig.registry, rig.ctx, queued);
+    ImGui::Render();
+    EXPECT_EQ(taken, 0);
+    EXPECT_TRUE(queued.empty());
+
+    rig.es.capturingChord = false;
+    EXPECT_EQ(rig.press({ImGuiMod_Ctrl, ImGuiKey_S}), std::vector<std::string>{action_id::SAVE});
 }
 
 TEST(ShortcutRouterTest, ChordTextIsWhatTheMenuShows) {

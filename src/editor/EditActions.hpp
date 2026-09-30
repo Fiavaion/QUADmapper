@@ -3,7 +3,7 @@
 // The edit.* actions (ADR-051 §3): the editor-wide editing keys, with the behaviour and
 // guards they had in Application::render()'s shortcut block. Each is a function over
 // EditorState, tested on its own (EditActionsTest), and registerEditActions() puts them
-// in the registry on their existing chords. The ids and chords of the actions the app
+// in the registry on their default chords. The ids and chords of the actions the app
 // registers (AppActions: they need app services) are defined here too, so every chord
 // lives in one place.
 
@@ -34,6 +34,10 @@ inline constexpr const char* TOGGLE_MESH_EDIT = "edit.toggleMeshEdit";
 inline constexpr const char* MESH_FINER = "edit.meshFiner";
 inline constexpr const char* MESH_COARSER = "edit.meshCoarser";
 inline constexpr const char* RESET_MESH = "edit.resetMesh";
+// File actions (registerFileActions): they queue the File menu's request.
+inline constexpr const char* NEW_PROJECT = "file.new";
+inline constexpr const char* OPEN_PROJECT = "file.open";
+inline constexpr const char* SAVE_AS = "file.saveAs";
 // App actions (makeAppAction).
 inline constexpr const char* SAVE = "file.save";
 inline constexpr const char* PREFERENCES = "prefs.open";
@@ -88,6 +92,12 @@ void resetMeshAction(EditorState& es);
 // Register every edit action on its chord. `historyChanged` runs after an undo or redo
 // took a step (the app refreshes its unsaved-changes label).
 void registerEditActions(ActionRegistry& registry, std::function<void()> historyChanged = {});
+
+// Register New (Ctrl+N), Open (Ctrl+O) and Save As (Ctrl+Shift+S), File class. Each
+// queues its EditorState::pendingFileAction, as the File menu did; the app runs it at
+// the next frame boundary after the unsaved-changes check (ADR-046). The perform lock
+// refuses New and Open (performLockRefuses) and allows Save As.
+void registerFileActions(ActionRegistry& registry);
 
 // The app action with this id (action_id::SAVE ... PERFORM_LOCK, sceneTakeId(n)),
 // with its label, chord, class and guard, running `run`. nullopt for any other id.

@@ -1,8 +1,10 @@
 #include "PreferencesDialog.hpp"
+#include "editor/ActionRegistry.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "audio/AudioEngine.hpp"
 #include "scene/SceneFade.hpp"
+#include "ui/ShortcutRouter.hpp"  // currentChordMods
 
 #include <imgui.h>
 
@@ -35,19 +37,22 @@ void PreferencesDialog::beforeBegin(EditorContext& /*ctx*/) {
                             ImVec2(0.5f, 0.5f));
 }
 
-void PreferencesDialog::tick(EditorContext& /*ctx*/) {
+void PreferencesDialog::tick(EditorContext& ctx) {
     std::vector<std::string> chosen;
     if (folderDialog_.takeResult(chosen) && !chosen.empty()) {
         preferences_.general.defaultMediaFolder = chosen.front();
         save();
     }
     if (!visible) audioTabOpen_ = false;
+    // A closed window or a locked show ends a capture: the keys go back to the shortcuts.
+    if (!captureId_.empty() && (!visible || ctx.es.performLock.isOn())) endChordCapture(ctx);
 }
 
 void PreferencesDialog::drawContent(EditorContext& ctx) {
     control::ExternalControl* control = ctx.control;
     bool changed = false;
     bool audioTab = false;
+    bool keyboardTab = false;
     if (ImGui::BeginTabBar("PreferenceTabs")) {
         if (ImGui::BeginTabItem("General")) {
             changed |= renderGeneralTab(ctx);
@@ -62,9 +67,15 @@ void PreferencesDialog::drawContent(EditorContext& ctx) {
             changed |= renderControlTab(control);
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Keyboard")) {
+            keyboardTab = true;
+            changed |= renderKeyboardTab(ctx);
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
     audioTabOpen_ = audioTab;
+    if (!keyboardTab && !captureId_.empty()) endChordCapture(ctx);
     if (changed) save();
 
     if (!saveError_.empty()) {
@@ -187,6 +198,137 @@ bool PreferencesDialog::renderControlTab(control::ExternalControl* control) {
     changed |= controlSettings_.renderMidiDevices(*control, preferences_.control);
     appliesNote("Applies now. Mappings and learning are in Window > Control.");
     return changed;
+}
+
+bool PreferencesDialog::renderKeyboardTab(EditorContext& ctx) {
+    if (!ctx.actions) {
+        ImGui::TextDisabled("Shortcuts are not available in this session.");
+        return false;
+    }
+    ActionRegistry& registry = *ctx.actions;
+    bool changed = pollChordCapture(ctx);
+
+    appliesNote("Applies now. Tab, the arrows and H stay with the canvas, and 1-9 take scenes.");
+    appliesNote("A shortcut needs Ctrl, Shift, Alt or Super, except F1-F24 and Delete.");
+    const bool anyRebound = !keyBindingsOf(registry).empty();
+    ImGui::BeginDisabled(!anyRebound || !captureId_.empty());
+    if (ImGui::Button("Reset All")) {
+        registry.resetAllChords();
+        keyMessage_.clear();
+        changed = true;
+    }
+    ImGui::EndDisabled();
+
+    const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
+                                  ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("Shortcuts", 3, flags)) {
+        ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableSetupColumn("Keys", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("##edit", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+        ImGui::TableHeadersRow();
+        for (const Action& action : registry.actions()) {
+            ImGui::PushID(action.id.c_str());
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(action.label.c_str());
+
+            ImGui::TableNextColumn();
+            const bool capturing = captureId_ == action.id;
+            if (capturing) {
+                ImGui::TextUnformatted("Press a key chord (Esc cancels)");
+            } else if (action.chords.empty()) {
+                ImGui::TextDisabled("(none)");
+            } else {
+                ImGui::TextUnformatted(chordsText(action.chords).c_str());
+            }
+            if (keyMessageId_ == action.id && !keyMessage_.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, kSaveError);
+                ImGui::TextWrapped("%s", keyMessage_.c_str());
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::TableNextColumn();
+            if (action.fixed) {
+                ImGui::TextDisabled("Fixed");
+            } else if (capturing) {
+                if (ImGui::SmallButton("Cancel")) endChordCapture(ctx);
+            } else {
+                ImGui::BeginDisabled(!captureId_.empty());
+                if (ImGui::SmallButton(action.chords.empty() ? "Set" : "Change")) {
+                    beginChordCapture(ctx, action.id, 0);
+                }
+                if (action.chords.size() == 1) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Add")) beginChordCapture(ctx, action.id, 1);
+                } else if (action.chords.size() > 1) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove")) {
+                        // The later chords go; the first, the one the menu shows, stays.
+                        registry.setChords(action.id, {action.chords.front()});
+                        changed = true;
+                    }
+                }
+                if (action.chords != action.defaultChords) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reset")) {
+                        registry.resetChords(action.id);
+                        keyMessage_.clear();
+                        changed = true;
+                    }
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (changed) preferences_.keyBindings = keyBindingsOf(registry);
+    return changed;
+}
+
+bool PreferencesDialog::pollChordCapture(EditorContext& ctx) {
+    if (captureId_.empty()) return false;
+    // The canvas leaves the keys alone too: it acts only while ImGui does not want them.
+    ImGui::SetNextFrameWantCaptureKeyboard(true);
+    for (int key = ImGuiKey_NamedKey_BEGIN; key < ImGuiKey_NamedKey_END; ++key) {
+        if (!ImGui::IsKeyPressed(static_cast<ImGuiKey>(key), false)) continue;
+        if (key == ImGuiKey_Escape) {
+            endChordCapture(ctx);
+            return false;
+        }
+        if (!isChordKey(key)) continue;  // a modifier on its own, the mouse, a gamepad
+
+        const Action* action = ctx.actions->find(captureId_);
+        if (!action) {
+            endChordCapture(ctx);
+            return false;
+        }
+        std::vector<Chord> chords = action->chords;
+        const Chord chord{key, currentChordMods()};
+        if (captureSlot_ < chords.size()) {
+            chords[captureSlot_] = chord;
+        } else {
+            chords.push_back(chord);
+        }
+        const RebindCheck check = ctx.actions->setChords(captureId_, std::move(chords));
+        keyMessageId_ = captureId_;
+        keyMessage_ = rebindRefusal(check);
+        endChordCapture(ctx);
+        return check.result == RebindResult::Changed;
+    }
+    return false;
+}
+
+void PreferencesDialog::beginChordCapture(EditorContext& ctx, const std::string& id, size_t slot) {
+    captureId_ = id;
+    captureSlot_ = slot;
+    keyMessage_.clear();
+    ctx.es.capturingChord = true;
+}
+
+void PreferencesDialog::endChordCapture(EditorContext& ctx) {
+    captureId_.clear();
+    ctx.es.capturingChord = false;
 }
 
 void PreferencesDialog::save() {

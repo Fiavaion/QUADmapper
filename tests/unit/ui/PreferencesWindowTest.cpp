@@ -4,8 +4,11 @@
 #include "ui/dialogs/PreferencesDialog.hpp"
 #include "ui/PanelHost.hpp"
 #include "core/UUID.hpp"
+#include "editor/ActionRegistry.hpp"
+#include "editor/EditActions.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -15,6 +18,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
+#include <vector>
 
 using namespace quadmapper;
 
@@ -150,4 +155,176 @@ TEST(PreferencesWindowTest, DraggingTheAutosaveSliderSavesOnceOnRelease) {
     ImGui::DestroyContext(imgui);
     std::error_code ec;
     std::filesystem::remove(std::filesystem::path(file.path) += ".bak", ec);
+}
+
+// ---- Keyboard: rebinding (owner's decision, 2026-09-30) --------------------------------
+
+namespace {
+
+// The Preferences window in a PanelHost on headless ImGui, with a small registry, and
+// the mouse and keys driven through io events.
+class KeyboardTabTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        imgui_ = ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2(1280.0f, 800.0f);
+        io.DeltaTime = 1.0f / 60.0f;
+        io.IniFilename = nullptr;
+        io.ConfigInputTrickleEventQueue = false;
+        unsigned char* pixels = nullptr;
+        int w = 0, h = 0;
+        io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
+
+        const auto noop = [](EditorContext&) {};
+        for (const char* id : {action_id::SAVE, action_id::BLACKOUT, action_id::PERFORM_LOCK}) {
+            ASSERT_EQ(registry.add(*makeAppAction(id, noop)), AddResult::Added) << id;
+        }
+        ctx.actions = &registry;
+        dialog.visible = true;
+        dialog.setConfigPath(file.path);
+        host.add(dialog);
+        frame();
+        frame();
+        window = ImGui::FindWindowByName("Preferences");
+        ASSERT_NE(window, nullptr);
+        tabs = ImGui::GetCurrentContext()->TabBars.GetByKey(window->GetID("PreferenceTabs"));
+        ASSERT_NE(tabs, nullptr);
+        keyboardTab = ImHashStr("Keyboard", 0, tabs->ID);
+    }
+
+    void TearDown() override {
+        ImGui::DestroyContext(imgui_);
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(file.path) += ".bak", ec);
+    }
+
+    void frame() {
+        ImGui::NewFrame();
+        host.drawWindows(ctx);
+        ImGui::Render();
+    }
+
+    // Hovers down the window until `id` is under the mouse. False if it never is.
+    bool hover(ImGuiID id) {
+        ImGuiIO& io = ImGui::GetIO();
+        for (float y = window->Pos.y; y < window->Pos.y + window->Size.y; y += 4.0f) {
+            for (float x = window->Pos.x + 4.0f; x < window->Pos.x + window->Size.x; x += 16.0f) {
+                io.AddMousePosEvent(x, y);
+                frame();
+                if (ImGui::GetCurrentContext()->HoveredId == id) return true;
+            }
+        }
+        return false;
+    }
+
+    bool click(ImGuiID id) {
+        if (!hover(id)) return false;
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        frame();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        frame();
+        return true;
+    }
+
+    // Press `keys` together for one frame, then release them.
+    void press(std::initializer_list<ImGuiKey> keys) {
+        ImGuiIO& io = ImGui::GetIO();
+        for (ImGuiKey key : keys) io.AddKeyEvent(key, true);
+        frame();
+        for (ImGuiKey key : keys) io.AddKeyEvent(key, false);
+        frame();
+    }
+
+    // A button in an action's row of the Keyboard table.
+    ImGuiID rowButton(const char* actionId, const char* button) const {
+        const ImGuiID table = ImHashStr("Shortcuts", 0, keyboardTab);
+        return ImHashStr(button, 0, ImHashStr(actionId, 0, table));
+    }
+
+    std::vector<Chord> chordsOf(const char* id) const { return registry.find(id)->chords; }
+
+    TempPrefsFile file;
+    ImGuiContext* imgui_ = nullptr;
+    EditorState es;
+    EditorContext ctx{es, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    ActionRegistry registry;
+    PreferencesDialog dialog;
+    PanelHost host;
+    ImGuiWindow* window = nullptr;
+    ImGuiTabBar* tabs = nullptr;
+    ImGuiID keyboardTab = 0;
+};
+
+const Chord CTRL_SHIFT_L{ImGuiKey_L, MOD_CTRL | MOD_SHIFT};
+const Chord CTRL_SHIFT_K{ImGuiKey_K, MOD_CTRL | MOD_SHIFT};
+
+}  // namespace
+
+// Change captures the next chord: it is bound, saved in the preferences file as text,
+// and Reset puts the default back (and takes it out of the file).
+TEST_F(KeyboardTabTest, ChangeCapturesTheNextChordAndSavesIt) {
+    ASSERT_TRUE(click(keyboardTab));
+    ASSERT_EQ(tabs->VisibleTabId, keyboardTab);
+
+    ASSERT_TRUE(click(rowButton(action_id::PERFORM_LOCK, "Change")));
+    EXPECT_TRUE(es.capturingChord) << "the shortcuts leave the next key alone";
+    press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_K});
+    EXPECT_FALSE(es.capturingChord);
+    EXPECT_EQ(chordsOf(action_id::PERFORM_LOCK), std::vector<Chord>{CTRL_SHIFT_K});
+    ASSERT_TRUE(std::filesystem::exists(file.path));
+    EXPECT_EQ(file.read()["keyboard"][action_id::PERFORM_LOCK], nlohmann::json::array({"Ctrl+Shift+K"}));
+    EXPECT_EQ(dialog.getPreferences().keyBindings,
+              (KeyBindings{{action_id::PERFORM_LOCK, {"Ctrl+Shift+K"}}}));
+
+    ASSERT_TRUE(click(rowButton(action_id::PERFORM_LOCK, "Reset")));
+    EXPECT_EQ(chordsOf(action_id::PERFORM_LOCK), std::vector<Chord>{CTRL_SHIFT_L});
+    EXPECT_TRUE(file.read()["keyboard"].empty());
+}
+
+// Add captures a second chord; Remove drops it again.
+TEST_F(KeyboardTabTest, AddAndRemoveASecondChord) {
+    ASSERT_TRUE(click(keyboardTab));
+    ASSERT_TRUE(click(rowButton(action_id::PERFORM_LOCK, "Add")));
+    press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_K});
+    EXPECT_EQ(chordsOf(action_id::PERFORM_LOCK), (std::vector<Chord>{CTRL_SHIFT_L, CTRL_SHIFT_K}));
+
+    ASSERT_TRUE(click(rowButton(action_id::PERFORM_LOCK, "Remove")));
+    EXPECT_EQ(chordsOf(action_id::PERFORM_LOCK), std::vector<Chord>{CTRL_SHIFT_L});
+}
+
+// Refused chords change nothing: another action's (Save's), a canvas key, a bare
+// letter. Esc cancels a capture, and so does locking the show.
+TEST_F(KeyboardTabTest, RefusedChordsAndEscChangeNothing) {
+    ASSERT_TRUE(click(keyboardTab));
+    for (std::initializer_list<ImGuiKey> keys :
+         {std::initializer_list<ImGuiKey>{ImGuiMod_Ctrl, ImGuiKey_S},
+          std::initializer_list<ImGuiKey>{ImGuiMod_Ctrl, ImGuiKey_Tab},
+          std::initializer_list<ImGuiKey>{ImGuiKey_Q},
+          std::initializer_list<ImGuiKey>{ImGuiKey_Escape}}) {
+        ASSERT_TRUE(click(rowButton(action_id::PERFORM_LOCK, "Change")));
+        ASSERT_TRUE(es.capturingChord);
+        press(keys);
+        EXPECT_FALSE(es.capturingChord);
+        EXPECT_EQ(chordsOf(action_id::PERFORM_LOCK), std::vector<Chord>{CTRL_SHIFT_L});
+    }
+    EXPECT_EQ(chordsOf(action_id::SAVE), std::vector<Chord>{(Chord{ImGuiKey_S, MOD_CTRL})});
+    EXPECT_FALSE(std::filesystem::exists(file.path)) << "nothing changed, nothing saved";
+
+    ASSERT_TRUE(click(rowButton(action_id::PERFORM_LOCK, "Change")));
+    ASSERT_TRUE(es.capturingChord);
+    lockPerform(es);
+    frame();
+    EXPECT_FALSE(es.capturingChord) << "the lock ends the capture";
+    press({ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiKey_K});
+    EXPECT_EQ(chordsOf(action_id::PERFORM_LOCK), std::vector<Chord>{CTRL_SHIFT_L});
+}
+
+// The fixed keys (Ctrl+B here) are listed but have no Change.
+TEST_F(KeyboardTabTest, FixedKeysCannotBeChanged) {
+    ASSERT_TRUE(click(keyboardTab));
+    EXPECT_TRUE(hover(rowButton(action_id::SAVE, "Change"))) << "a rebindable row";
+    EXPECT_FALSE(hover(rowButton(action_id::BLACKOUT, "Change")));
+    EXPECT_FALSE(es.capturingChord);
 }

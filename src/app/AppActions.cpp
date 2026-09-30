@@ -21,7 +21,7 @@ void Application::registerActions() {
     m_actions = std::make_unique<ActionRegistry>();
     ActionRegistry& registry = *m_actions;
 
-    // Every id is an app action with a fixed, distinct chord: a failure is a bug.
+    // Every id is an app action with a distinct default chord: a failure is a bug.
     const auto put = [&registry](const std::string& id, std::function<void(EditorContext&)> run,
                                  std::function<bool(const EditorContext&)> enabled = {}) {
         std::optional<Action> action = makeAppAction(id, std::move(run));
@@ -37,6 +37,7 @@ void Application::registerActions() {
     // In the order the old shortcut block ran them, since several chords can fire in
     // one frame: Save, the edit keys, Preferences, Blackout, F11, Esc.
     put(action_id::SAVE, [this](EditorContext&) { saveProject(); });
+    registerFileActions(registry);  // New, Open, Save As
 
     registerEditActions(registry, [this]() { m_session->invalidateUnsavedLabel(); });
 
@@ -66,6 +67,9 @@ void Application::registerActions() {
         put(sceneTakeId(n), [this, n](EditorContext&) { takeSceneByNumber(n, m_controlTakeFade); },
             hasOutputs);
     }
+
+    // The user's rebound keys (Edit > Preferences > Keyboard), over the defaults above.
+    applyKeyBindings(registry, m_preferences->getPreferences().keyBindings);
 }
 
 }  // namespace quadmapper

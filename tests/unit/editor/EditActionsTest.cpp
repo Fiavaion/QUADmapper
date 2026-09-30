@@ -234,7 +234,8 @@ TEST(EditActionsTest, MeshKeysActOnThePrimarySelectedQuad) {
     EXPECT_EQ(geo.getMeshMode(), MeshMode::CORNERS_ONLY);
 }
 
-// The chords are the ones the key block used, unchanged (no new bindings).
+// The first chords are the ones the key block used; Redo also has Ctrl+Shift+Z (the
+// owner's decision, 2026-09-30).
 TEST(EditActionsTest, EditActionsKeepTheirChords) {
     Rig rig;
     struct Expect { const char* id; int key; uint8_t mods; };
@@ -255,13 +256,16 @@ TEST(EditActionsTest, EditActionsKeepTheirChords) {
     for (const Expect& e : expected) {
         const Action* action = rig.registry.find(e.id);
         ASSERT_NE(action, nullptr) << e.id;
-        ASSERT_TRUE(action->chord.has_value()) << e.id;
-        EXPECT_EQ(action->chord->key, e.key) << e.id;
-        EXPECT_EQ(action->chord->mods, e.mods) << e.id;
+        ASSERT_FALSE(action->chords.empty()) << e.id;
+        EXPECT_EQ(action->chords.front().key, e.key) << e.id;
+        EXPECT_EQ(action->chords.front().mods, e.mods) << e.id;
+        EXPECT_EQ(action->chords.size(), e.id == std::string(action_id::REDO) ? 2u : 1u) << e.id;
         EXPECT_EQ(action->cls, ActionClass::Edit) << e.id;
         EXPECT_EQ(action->guard, KeyGuard::Editing) << e.id;
     }
+    EXPECT_EQ(rig.registry.find(action_id::REDO)->chords.back(),
+              (Chord{ImGuiKey_Z, MOD_CTRL | MOD_SHIFT}));
     ASSERT_NE(rig.registry.find(action_id::DESELECT_ALL), nullptr);
-    EXPECT_FALSE(rig.registry.find(action_id::DESELECT_ALL)->chord.has_value())
+    EXPECT_TRUE(rig.registry.find(action_id::DESELECT_ALL)->chords.empty())
         << "Esc is the perform chain, not Deselect All";
 }

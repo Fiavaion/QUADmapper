@@ -3,6 +3,10 @@
 
 #include "editor/Preferences.hpp"
 #include "core/UUID.hpp"
+#include "editor/ActionRegistry.hpp"
+#include "editor/EditActions.hpp"
+
+#include <imgui.h>  // ImGuiKey values
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -260,6 +264,86 @@ TEST(PreferencesFileTest, SettingsThisVersionDroppedAreIgnoredAndNotWrittenBack)
                         "general.autoSaveIntervalMinutes", "general.defaultMediaFolder",
                         "general.recursiveFolderScan", "general.sceneFadeSeconds", "general.uiMode",
                         "performance.audioDevice"}));
+}
+
+// ---- Rebound keys ("keyboard", owner's decision 2026-09-30) ----------------------------
+
+namespace {
+
+ActionRegistry shippedRegistry() {
+    ActionRegistry registry;
+    registerEditActions(registry);
+    registerFileActions(registry);
+    const auto noop = [](EditorContext&) {};
+    for (const char* id : {action_id::SAVE, action_id::BLACKOUT, action_id::PERFORM_LOCK}) {
+        registry.add(*makeAppAction(id, noop));
+    }
+    return registry;
+}
+
+}  // namespace
+
+// Rebound in the registry, saved, loaded and applied to a fresh registry: the same keys.
+TEST(PreferencesFileTest, ReboundKeysRoundTripAndApplyToTheRegistry) {
+    TempPrefsFile file;
+    {
+        ActionRegistry registry = shippedRegistry();
+        ASSERT_EQ(registry.setChords(action_id::PERFORM_LOCK, {Chord{ImGuiKey_K, MOD_CTRL | MOD_SHIFT}}).result,
+                  RebindResult::Changed);
+        ASSERT_EQ(registry.setChords(action_id::REDO, {Chord{ImGuiKey_Y, MOD_CTRL}}).result,
+                  RebindResult::Changed);
+        AppPreferences prefs;
+        prefs.keyBindings = keyBindingsOf(registry);
+        ASSERT_TRUE(prefs.saveToFile(file.path));
+    }
+    const nlohmann::json saved = file.read();
+    EXPECT_EQ(saved["keyboard"][action_id::PERFORM_LOCK], nlohmann::json::array({"Ctrl+Shift+K"}))
+        << "readable text in the file";
+
+    AppPreferences loaded;
+    ASSERT_TRUE(loaded.loadFromFile(file.path));
+    EXPECT_EQ(loaded.keyBindings, (KeyBindings{{action_id::PERFORM_LOCK, {"Ctrl+Shift+K"}},
+                                               {action_id::REDO, {"Ctrl+Y"}}}));
+    ActionRegistry registry = shippedRegistry();
+    EXPECT_TRUE(applyKeyBindings(registry, loaded.keyBindings).empty());
+    EXPECT_EQ(registry.findByChord(Chord{ImGuiKey_K, MOD_CTRL | MOD_SHIFT})->id, action_id::PERFORM_LOCK);
+    EXPECT_EQ(registry.findByChord(Chord{ImGuiKey_L, MOD_CTRL | MOD_SHIFT}), nullptr);
+    EXPECT_EQ(registry.findByChord(Chord{ImGuiKey_Z, MOD_CTRL | MOD_SHIFT}), nullptr);
+
+    // Reset: the action goes back to its default and leaves the file's list.
+    ASSERT_TRUE(registry.resetChords(action_id::PERFORM_LOCK));
+    EXPECT_EQ(registry.findByChord(Chord{ImGuiKey_L, MOD_CTRL | MOD_SHIFT})->id, action_id::PERFORM_LOCK);
+    EXPECT_EQ(keyBindingsOf(registry), (KeyBindings{{action_id::REDO, {"Ctrl+Y"}}}));
+}
+
+// A file from before rebinding (no "keyboard") loads unchanged; entries of the wrong
+// shape are skipped at load, and bad ids or chords at apply, each with a log line.
+TEST(PreferencesFileTest, AFileWithoutKeysOrWithBadOnesKeepsTheDefaults) {
+    TempPrefsFile file;
+    file.write(R"({"version": "1.0", "general": {"uiMode": 1}})");
+    AppPreferences old;
+    ASSERT_TRUE(old.loadFromFile(file.path));
+    EXPECT_TRUE(old.keyBindings.empty());
+    EXPECT_EQ(old.general.uiMode, 1);
+
+    file.write(R"({"version": "1.0", "keyboard": {
+        "perform.lock": "Ctrl+Shift+K", "edit.redo": [7], "edit.undo": ["Ctrl+Nope"],
+        "edit.noSuchAction": ["Ctrl+J"], "edit.selectAll": ["Alt+A"]}})");
+    AppPreferences bad;
+    ASSERT_TRUE(bad.loadFromFile(file.path));
+    EXPECT_EQ(bad.keyBindings, (KeyBindings{{"edit.undo", {"Ctrl+Nope"}},
+                                            {"edit.noSuchAction", {"Ctrl+J"}},
+                                            {"edit.selectAll", {"Alt+A"}}}))
+        << "a string or a number where a list of chords belongs is skipped";
+    ActionRegistry registry = shippedRegistry();
+    EXPECT_EQ(applyKeyBindings(registry, bad.keyBindings).size(), 2u);
+    EXPECT_EQ(registry.findByChord(Chord{ImGuiKey_Z, MOD_CTRL})->id, action_id::UNDO);
+    EXPECT_EQ(registry.findByChord(Chord{ImGuiKey_A, MOD_ALT})->id, action_id::SELECT_ALL);
+
+    file.write(R"({"version": "1.0", "keyboard": 3})");
+    AppPreferences notAnObject;
+    ASSERT_TRUE(notAnObject.loadFromFile(file.path));
+    EXPECT_TRUE(notAnObject.keyBindings.empty());
 }
 
 TEST(PreferencesFileTest, WrongTypesAndOutOfRangeValuesKeepDefaults) {

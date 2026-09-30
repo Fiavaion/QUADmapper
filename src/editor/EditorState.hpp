@@ -517,6 +517,10 @@ struct EditorState {
     // it is on, commandHistory is read-only.
     PerformLock performLock;
 
+    // Edit > Preferences > Keyboard is waiting for the key chord to bind: the next key
+    // is the chord's, so no shortcut or scene take key acts on it (ShortcutRouter).
+    bool capturingChord = false;
+
     // Undo/redo for quad and 3D-object edits, deletes and duplicates. Commands hold
     // (scene id, quad or object id) and resolve through quadResolver, so a target or
     // scene destroyed while its commands are queued makes those steps safe no-ops.

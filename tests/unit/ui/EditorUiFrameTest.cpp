@@ -106,7 +106,7 @@ protected:
         Action probe;  // stands in for any editor-wide chord
         probe.id = "test.probe";
         probe.label = "Probe";
-        probe.chord = Chord{ImGuiKey_F5, MOD_NONE};
+        probe.chords = {Chord{ImGuiKey_F5, MOD_NONE}};
         probe.run = [this](EditorContext&) { log.push_back("shortcut"); };
         ASSERT_EQ(registry.add(probe), AddResult::Added);
 

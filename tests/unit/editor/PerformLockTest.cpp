@@ -126,6 +126,22 @@ TEST_F(PerformLockTest, SaveBlackoutAndSceneTakesStillRun) {
     EXPECT_EQ(output->getSceneId(), es.scenes.front()->getId());
 }
 
+// File > New and Open would replace the show on air: refused, the menu greys them.
+// Save As keeps it: allowed.
+TEST_F(PerformLockTest, NewAndOpenAreLockedAndSaveAsIsNot) {
+    registerFileActions(registry);
+    lock();
+    for (const char* id : {action_id::NEW_PROJECT, action_id::OPEN_PROJECT}) {
+        EXPECT_EQ(invoke(id), Outcome::Locked) << id;
+        EXPECT_EQ(invoke(id, Source::Menu), Outcome::Locked) << id;
+        EXPECT_TRUE(performLockRefuses(es, *registry.find(id))) << id;
+        EXPECT_EQ(es.pendingFileAction, EditorState::FileAction::None) << id;
+    }
+    EXPECT_FALSE(performLockRefuses(es, *registry.find(action_id::SAVE_AS)));
+    EXPECT_EQ(invoke(action_id::SAVE_AS), Outcome::Ran);
+    EXPECT_EQ(es.pendingFileAction, EditorState::FileAction::SaveAs);
+}
+
 TEST_F(PerformLockTest, AFadedTakeStillRuns) {
     lock();
     const SceneTake take = es.takeScene(2, om, /*fadeSeconds=*/0.5);

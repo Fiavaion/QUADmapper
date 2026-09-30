@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 
 #ifdef _WIN32
@@ -129,6 +130,23 @@ Result<void, Error> AppPreferences::loadFromFile(const std::filesystem::path& pa
         readBool(*ctl, "oscFeedbackUseIds", control.oscFeedbackUseIds);
     }
 
+    // Rebound keys: id -> ["Ctrl+Shift+L", ...]. Whether the ids and chords are valid is
+    // checked where they are applied (applyKeyBindings).
+    if (const json* keys = sectionOf(root, "keyboard")) {
+        keyBindings.clear();
+        for (const auto& [id, chords] : keys->items()) {
+            const bool strings = chords.is_array() &&
+                                 std::all_of(chords.begin(), chords.end(),
+                                             [](const json& chord) { return chord.is_string(); });
+            if (!strings) {
+                Logger::warning("Preferences: ignored the keys of \"{}\": not a list of key chords", id);
+                continue;
+            }
+            std::vector<std::string>& texts = keyBindings[id];
+            for (const json& chord : chords) texts.push_back(chord.get<std::string>());
+        }
+    }
+
     Logger::info("Loaded preferences from {}", path.u8string());
     return Result<void, Error>::success();
 }
@@ -161,6 +179,10 @@ Result<void, Error> AppPreferences::saveToFile(const std::filesystem::path& path
     ctl["oscFeedbackPort"] = control.oscFeedbackPort;
     ctl["oscFeedbackUseIds"] = control.oscFeedbackUseIds;
     root["control"] = ctl;
+
+    json keys = json::object();
+    for (const auto& [id, chords] : keyBindings) keys[id] = chords;
+    root["keyboard"] = keys;
 
     // Atomic: a crash or full disk mid-write leaves the previous file, never half of one.
     auto result = FileSystem::writeFileAtomic(path, root.dump(2));

@@ -25,31 +25,18 @@ bool keyGuardAllows(KeyGuard guard) {
     return !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 }
 
-std::string chordText(const Chord& chord) {
-    std::string text;
-    if (chord.mods & MOD_CTRL) text += "Ctrl+";
-    if (chord.mods & MOD_SHIFT) text += "Shift+";
-    if (chord.mods & MOD_ALT) text += "Alt+";
-    if (chord.mods & MOD_SUPER) text += "Super+";
-    switch (chord.key) {
-        case ImGuiKey_Comma:        text += ","; break;
-        case ImGuiKey_LeftBracket:  text += "["; break;
-        case ImGuiKey_RightBracket: text += "]"; break;
-        case ImGuiKey_Equal:        text += "="; break;
-        case ImGuiKey_Minus:        text += "-"; break;
-        default: text += ImGui::GetKeyName(static_cast<ImGuiKey>(chord.key)); break;
-    }
-    return text;
-}
-
 std::vector<std::string> routeShortcuts(ActionRegistry& registry, EditorContext& ctx) {
     std::vector<std::string> invoked;
+    // The Keyboard preferences are capturing a chord: the key is theirs.
+    if (ctx.es.capturingChord) return invoked;
     const uint8_t mods = currentChordMods();
     for (const Action& action : registry.actions()) {
-        if (!action.chord || action.chord->mods != mods) continue;
-        if (!ImGui::IsKeyPressed(static_cast<ImGuiKey>(action.chord->key), false)) continue;
-        if (!keyGuardAllows(action.guard)) continue;
-        invoked.push_back(action.id);
+        for (const Chord& chord : action.chords) {
+            if (chord.mods != mods) continue;
+            if (!ImGui::IsKeyPressed(static_cast<ImGuiKey>(chord.key), false)) continue;
+            if (keyGuardAllows(action.guard)) invoked.push_back(action.id);
+            break;
+        }
     }
     // Invoke after the scan: an action may add to the registry.
     for (const std::string& id : invoked) registry.invoke(id, ctx, Source::Key);
@@ -57,7 +44,8 @@ std::vector<std::string> routeShortcuts(ActionRegistry& registry, EditorContext&
 }
 
 void runSceneTakeKeys(ActionRegistry& registry, EditorContext& ctx, std::vector<int>& numbers) {
-    const bool typing = ImGui::GetIO().WantTextInput;
+    // A digit typed into a text field, or pressed as a chord being captured, is not a take.
+    const bool typing = ImGui::GetIO().WantTextInput || ctx.es.capturingChord;
     // The unlock prompt is opened from the top level, which closes every other popup,
     // so while it is asked for it is the only one.
     const bool heldOff = !typing && !ctx.es.performLock.isConfirmingUnlock() &&

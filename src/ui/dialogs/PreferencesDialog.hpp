@@ -24,7 +24,9 @@ namespace control { class ExternalControl; }
  * release, not on every frame of the drag); the media-library
  * settings are read at startup, which the window says. The Control tab edits the
  * same ControlPreferences as the Control window, and the Audio tab switches the same
- * engine as the menu bar's device list, so all of them always agree.
+ * engine as the menu bar's device list, so all of them always agree. The Keyboard tab
+ * rebinds the registry's actions (ctx.actions) at once and saves the overrides as
+ * AppPreferences::keyBindings; the app applies them to the registry at startup.
  */
 class PreferencesDialog : public Panel {
 public:
@@ -58,6 +60,13 @@ private:
     bool renderGeneralTab(EditorContext& ctx);
     bool renderAudioTab(AudioEngine* audio);
     bool renderControlTab(control::ExternalControl* control);
+    // Every registered action with its chords: Change / Add / Remove / Reset, Reset All.
+    bool renderKeyboardTab(EditorContext& ctx);
+    // While a chord is captured: the key pressed this frame, if any. True when the
+    // action's chords changed.
+    bool pollChordCapture(EditorContext& ctx);
+    void beginChordCapture(EditorContext& ctx, const std::string& id, size_t slot);
+    void endChordCapture(EditorContext& ctx);
     void save();
     std::filesystem::path configPath() const;
 
@@ -69,6 +78,14 @@ private:
     std::vector<std::string> audioDevices_;     // enumerated when the Audio tab opens
     bool audioTabOpen_ = false;
     std::string saveError_;                     // shown while the last save failed
+
+    // Keyboard tab. A capture replaces chord `captureSlot_` of action `captureId_` (or
+    // adds one when the slot is past the end); EditorState::capturingChord keeps the
+    // shortcuts and scene take keys off the key meanwhile.
+    std::string captureId_;                     // empty = not capturing
+    size_t captureSlot_ = 0;
+    std::string keyMessageId_;                  // the row the refusal below belongs to
+    std::string keyMessage_;
 };
 
 } // namespace quadmapper
