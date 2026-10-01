@@ -321,6 +321,32 @@ TEST_F(ProjectSessionTest, PerformLockRefusesNewAndLoadButSaves) {
     EXPECT_FALSE(session_->isProjectDirty());
 }
 
+// TD-34: an Unsaved Changes prompt for New opened before locking and answered "Don't
+// Save" after it. New is refused, and the answer goes with it: Exit (allowed under the
+// lock) still asks about the unsaved changes instead of closing without them.
+TEST_F(ProjectSessionTest, ADontSaveAnsweredAfterLockingIsNotKeptForExit) {
+    openAs(file("show.qmap"));
+    es_.activeScene().getQuadManager().createQuad("Quad 2");  // unsaved
+    lockPerform(es_);
+
+    es_.discardConfirmed = true;  // the prompt's "Don't Save"
+    es_.pendingFileAction = FileAction::New;
+    session_->processPendingFileAction();
+    EXPECT_EQ(quadCount(), 2u) << "New refused";
+
+    es_.pendingFileAction = FileAction::Exit;
+    session_->processPendingFileAction();
+    EXPECT_FALSE(exitConfirmed_) << "closed without asking about the unsaved changes";
+    EXPECT_EQ(es_.unsavedPromptFor, FileAction::Exit);
+
+    // "Save" answered after locking does not save before the next Exit by itself.
+    es_.unsavedPromptFor = FileAction::None;
+    es_.saveBeforeAction = true;
+    es_.pendingFileAction = FileAction::New;
+    session_->processPendingFileAction();
+    EXPECT_FALSE(es_.saveBeforeAction);
+}
+
 // ---- Pickers answered after the lock was taken (ADR-051 §4) --------------------------
 // The file dialogs are ownerless, so the menu stays usable while one is open, and it
 // can be answered after locking. The answer is refused, with a status.

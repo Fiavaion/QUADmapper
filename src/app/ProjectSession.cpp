@@ -211,6 +211,10 @@ void ProjectSession::processPendingFileAction() {
     }
     if (locked && refusedByPerformLock(es, locked)) {
         if (action == FileAction::Load) es.pendingLoadPath.clear();
+        // An Unsaved Changes prompt opened before locking and answered after it: its
+        // answer goes with the refused action, or a later Exit would skip its prompt.
+        es.saveBeforeAction = false;
+        es.discardConfirmed = false;
         return;
     }
 
