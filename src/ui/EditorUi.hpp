@@ -6,9 +6,10 @@
 // NewFrame -> ui.frame(ctx, takes) -> [bench hook, projector frames, ImGui::Render].
 // frame() runs, in this order (FrameStep):
 //
-//   canvas keys claimed -> canvas (ViewportEditor) -> dockspace -> menu bar
-//   -> canvas overlay -> shortcuts (ShortcutRouter) -> the app's queued scene takes
-//   -> panels -> overlays (calibration, banners, session modals)
+//   [locked: a held drag let go] -> canvas keys claimed -> canvas (ViewportEditor)
+//   -> dockspace -> menu bar -> canvas overlay -> shortcuts (ShortcutRouter)
+//   -> the app's queued scene takes -> panels -> overlays (calibration, banners,
+//   session modals)
 //
 // The canvas runs straight after NewFrame, ahead of every panel, so a vertex nudge acts
 // on this frame's input and shows in the next presented frame (TD-21). The shortcuts

@@ -49,6 +49,13 @@ void EditorUi::attach(EditorContext& ctx) { host_.attach(ctx); }
 void EditorUi::projectReplaced(EditorContext& ctx) { host_.projectReplaced(ctx); }
 
 void EditorUi::frame(EditorContext& ctx, const std::function<void(EditorContext&)>& sceneTakes) {
+    // The perform lock (ADR-051 §4) takes no drop. Every in-app drag edits the show
+    // where it lands (a bin clip on a quad, a quad row onto another or into a group, a
+    // scene row), and the drop targets work on disabled panels too, so a drag held when
+    // the lock was taken is let go here, ahead of the canvas and every panel. The bin
+    // and the lists, disabled, cannot start another.
+    if (ctx.es.performLock.isOn() && ImGui::GetDragDropPayload()) ImGui::ClearDragDrop();
+
     // The canvas takes Tab/arrows for the selected quad's vertices or, while
     // calibrating the projector it shows, for the calibration points (ADR-052), or,
     // while a slice warp is edited, for its corners (ADR-047).
@@ -226,9 +233,9 @@ void EditorUi::drawCanvasOverlay(EditorContext& ctx) {
     // target can't register over the passthrough central node (no window is hovered
     // there), so detect the drop manually: while a MEDIA_ITEM_ID drag is active,
     // on left-release over the canvas, assign to the topmost quad under the cursor.
-    // Not under the perform lock (ADR-051 §4).
+    // Under the perform lock frame() has let go of the drag already.
     const ImGuiPayload* drag = ImGui::GetDragDropPayload();
-    if (drag && drag->IsDataType("MEDIA_ITEM_ID") && !es.performLock.isOn() &&
+    if (drag && drag->IsDataType("MEDIA_ITEM_ID") &&
         ImGui::IsMouseReleased(ImGuiMouseButton_Left) && overRegion &&
         es.lastViewScale.x != 0.0f && es.lastViewScale.y != 0.0f) {
         UUID mediaId = *(const UUID*)drag->Data;

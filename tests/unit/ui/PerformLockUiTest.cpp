@@ -3,7 +3,8 @@
 // window (skips without GL), Tab and the arrows do nothing on the canvas while locked
 // and work again after the unlock, and the menu's Perform Lock asks before unlocking.
 // The unlock prompt never takes the show off air (Esc, scene takes), and a video pick
-// or a media drop reaching the show without a panel is refused.
+// or a media drop reaching the show without a panel, or through a panel's drop target,
+// is refused.
 // The editor-level rules are in editor/PerformLockTest.cpp.
 
 #include "ui/EditorUi.hpp"
@@ -26,6 +27,7 @@
 #include "ui/dialogs/HapConvertWindow.hpp"
 #include "ui/dialogs/PreferencesDialog.hpp"
 #include "ui/panels/MainMenuBar.hpp"
+#include "ui/panels/QuadListPanel.hpp"
 #include "ui/panels/ResourcesPanel.hpp"
 #include "ui/panels/VideoPlayerPanel.hpp"
 #include "video/HapExport.hpp"
@@ -37,6 +39,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cfloat>
 #include <chrono>
@@ -676,6 +679,97 @@ TEST_F(PerformLockUiTest, MediaDroppedOnTheCanvasIsIgnoredWhileLocked) {
     ASSERT_TRUE(confirmPerformUnlock(es));
     dragAndDrop();
     EXPECT_EQ(onTop->getTexture().mediaId, sourceId) << "unlocked, the same drop assigns";
+    ctx.mediaLibrary = nullptr;
+    ctx.sourceManager = nullptr;
+}
+
+// TD-34: the drop targets of the panels (a Quad List row, the Properties texture slot,
+// a group, a scene row) accept drops on a disabled panel, so a drag held when the lock
+// was taken reached the show through them. The editor frame now lets go of any drag
+// while locked: a clip dropped on every item of the Quad List assigns nothing, and the
+// same drops assign once unlocked.
+TEST_F(PerformLockUiTest, ADragHeldWhenLockingDropsOnNoPanel) {
+    MediaLibrary library;
+    auto pattern = std::make_unique<MediaItem>();
+    pattern->setType(MediaType::PROCEDURAL);
+    pattern->setName("Pattern");
+    pattern->setSourceId(UUID::generate());
+    const UUID mediaId = library.addItem(std::move(pattern))->getId();
+    SourceManager sources;
+    ctx.mediaLibrary = &library;
+    ctx.sourceManager = &sources;
+    Panel* quadList = ui->panels().find(QuadListPanel::ID);
+    ASSERT_NE(quadList, nullptr);
+    quadList->visible = true;
+    ImGui::GetIO().DisplaySize = ImVec2(1600.0f, 1000.0f);  // a Quad List wide enough for its rows
+
+    ImVec2 button;
+    const auto dragFrame = [&] {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(300.0f, 300.0f));  // over the canvas
+        ImGui::SetNextWindowSize(ImVec2(140.0f, 80.0f));
+        ImGui::Begin("Bin", nullptr, ImGuiWindowFlags_NoDocking);
+        ImGui::Button("Pattern");
+        const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+        button = ImVec2((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+        if (ImGui::BeginDragDropSource()) {
+            ImGui::SetDragDropPayload("MEDIA_ITEM_ID", &mediaId, sizeof(UUID));
+            ImGui::EndDragDropSource();
+        }
+        ImGui::End();
+        ui->frame(ctx, {});
+        ImGui::Render();
+    };
+    dragFrame();
+    dragFrame();
+    ImGuiWindow* window = ImGui::FindWindowByName(QuadListPanel::ID);
+    ASSERT_NE(window, nullptr);
+    // Every item of the Quad List, found by hovering it.
+    std::vector<ImVec2> items;
+    std::vector<ImGuiID> seen;
+    ImGuiIO& io = ImGui::GetIO();
+    const ImRect area = window->InnerClipRect;
+    for (float y = area.Min.y + 2.0f; y < area.Max.y; y += 5.0f) {
+        for (float x = area.Min.x + 3.0f; x < area.Max.x; x += 20.0f) {
+            io.AddMousePosEvent(x, y);
+            dragFrame();
+            const ImGuiID id = ImGui::GetCurrentContext()->HoveredId;
+            if (id && std::find(seen.begin(), seen.end(), id) == seen.end()) {
+                seen.push_back(id);
+                items.push_back(ImVec2(x, y));
+            }
+        }
+    }
+    ASSERT_FALSE(items.empty());
+    const auto dropOn = [&](ImVec2 target) {
+        io.AddMousePosEvent(button.x, button.y);
+        dragFrame();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        dragFrame();
+        io.AddMousePosEvent(button.x - 30.0f, button.y - 30.0f);
+        dragFrame();
+        io.AddMousePosEvent(target.x, target.y);
+        dragFrame();
+        dragFrame();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        dragFrame();
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+        dragFrame();
+    };
+    const auto assigned = [&] {
+        int count = 0;
+        for (const auto& q : es.quadManager().getQuads()) count += q->getTexture().mediaId.isNull() ? 0 : 1;
+        return count;
+    };
+
+    lockPerform(es);
+    for (const ImVec2& item : items) dropOn(item);
+    EXPECT_EQ(assigned(), 0) << "a drop reached a quad under the lock";
+
+    requestPerformUnlock(es);
+    ASSERT_TRUE(confirmPerformUnlock(es));
+    for (const ImVec2& item : items) dropOn(item);
+    EXPECT_GT(assigned(), 0) << "unlocked, the same drops assign: the targets were hit";
     ctx.mediaLibrary = nullptr;
     ctx.sourceManager = nullptr;
 }
