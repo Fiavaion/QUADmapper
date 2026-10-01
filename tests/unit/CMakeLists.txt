@@ -225,11 +225,14 @@ target_link_libraries(test_ui PRIVATE quadmapper_ui glfw)
 
 # The project session (app/ProjectSession.cpp, compiled in here because the app is an
 # executable, TD-14). It opens files through ui/AsyncFileDialog. No GL context needed.
+# The perform lock sweep (TD-34) drives the real EditorUi with the session in a hidden
+# GL window (skips without GL).
 add_quadmapper_test(test_app
     app/ProjectSessionTest.cpp
+    app/PerformLockSweepTest.cpp
     ${CMAKE_SOURCE_DIR}/src/app/ProjectSession.cpp
 )
-target_link_libraries(test_app PRIVATE quadmapper_ui quadmapper_editor)
+target_link_libraries(test_app PRIVATE quadmapper_ui quadmapper_editor glfw)
 
 # The AI assist's status paths (app/AiAssist.cpp, compiled in here because the app is an
 # executable, TD-14) without a sidecar, camera or GL context.
