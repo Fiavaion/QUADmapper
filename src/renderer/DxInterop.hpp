@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -104,6 +105,18 @@ public:
     const std::string& unavailableReason() const { return unavailableReason_; }
 
     /**
+     * @brief Create the interop D3D11 device ahead of the first frame (TD-35)
+     * @param decoderDevice The decoders' ID3D11Device (VideoDecoder::sharedD3dDevice())
+     *
+     * The D3D11 device on the decoders' adapter and its plane copy shader, the slow part
+     * of the first zero-copy frame (up to 3.1 s under load, on the main thread). The first
+     * stage() then only opens it for OpenGL (which needs the GL context). Any thread;
+     * does nothing once a device is prepared or open, or if `decoderDevice` is null. A
+     * failure here is not final: stage() tries again on the main thread and reports it.
+     */
+    void prepare(void* decoderDevice);
+
+    /**
      * @brief Queue a GPU frame for `dest`, through `target`'s shared planes
      * @param key Handed back to finish()'s failure callback
      * @param why Set when the frame cannot take this path (the source should fall back)
@@ -130,9 +143,15 @@ private:
         void* key = nullptr;
     };
 
-    bool openDevice(const GpuSurface& surface, std::string& why);
+    bool openDevice(void* source, std::string& why);  // source: the decoders' ID3D11Device
 
     std::shared_ptr<InteropDevice> device_;
+    // prepare()'s device, until the main thread opens it for OpenGL. Once openDevice()
+    // ran (haveDevice_), prepare() makes no more.
+    std::mutex prepareMutex_;
+    std::shared_ptr<InteropDevice> prepared_;
+    bool preparing_ = false;
+    bool haveDevice_ = false;
     std::vector<Pending> pending_;
     // finish()'s working lists, kept so a frame allocates nothing.
     std::vector<Pending> delivering_;

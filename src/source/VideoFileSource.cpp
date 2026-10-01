@@ -20,9 +20,27 @@ bool VideoFileSource::initialize() {
     if (ready_) {
         return true;
     }
+    beginOpen();
+    return finishOpen(openDecoder(path_, options_));
+}
 
-    if (!player_->load(path_, options_)) {
+std::unique_ptr<VideoDecoder> VideoFileSource::openDecoder(const std::filesystem::path& path,
+                                                          const DecodeOptions& options) {
+    auto decoder = std::make_unique<VideoDecoder>();
+    if (!decoder->open(path, options)) return nullptr;
+    return decoder;
+}
+
+void VideoFileSource::beginOpen() {
+    openFailed_ = false;
+    player_->beginOpen(path_);
+}
+
+bool VideoFileSource::finishOpen(std::unique_ptr<VideoDecoder> decoder) {
+    if (!player_->finishOpen(std::move(decoder))) {
         Logger::error("VideoFileSource: Failed to load '{}'", utf8FromPath(path_));
+        player_->unload();
+        openFailed_ = true;
         return false;
     }
 
@@ -34,6 +52,10 @@ bool VideoFileSource::initialize() {
                   name_, info.width, info.height, info.duration, info.frameRate);
 
     return true;
+}
+
+bool VideoFileSource::isOpening() const {
+    return player_ && player_->isOpening();
 }
 
 void VideoFileSource::shutdown() {
@@ -219,6 +241,7 @@ PlaybackTimePoint VideoFileSource::getClockNow() const {
 }
 
 std::string VideoFileSource::getErrorMessage() const {
+    if (openFailed_) return "The video file could not be opened.";
     return player_ ? player_->getErrorMessage() : std::string();
 }
 

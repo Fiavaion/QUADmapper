@@ -1150,14 +1150,37 @@ public:
 
     // --- Planned playback (ADR-050) ---
 
+    // Hands the plan to the decode thread (started if need be), which positions itself
+    // there; the caller never waits for it (TD-35: joining the thread to reposition
+    // blocked the render thread up to 1.7 s). Frames of the previous plan are dropped
+    // here and any still being decoded are never queued: the replan flag is raised under
+    // the lock the decode thread queues frames under.
     void startPlayback(const DecodePlan& plan, size_t bufferSize) {
-        stopBackgroundDecoding();  // also empties the frame buffer
         if (!isOpen_) return;
-        releaseReverse();
         {
             std::lock_guard<std::mutex> lock(bufferMutex_);
+            pendingPlan_ = plan;
+            replan_ = true;
+            atEnd_ = false;  // the new plan starts somewhere to decode
+            maxBufferSize_ = bufferSize;
+            std::queue<VideoFrame> empty;
+            std::swap(frameBuffer_, empty);
+            lastError_.clear();
             reverseError_.clear();
         }
+        bufferCondition_.notify_all();
+        startBackgroundDecoding(bufferSize);
+    }
+
+    // Decode thread: position the decoder at the latest plan startPlayback() handed over.
+    void applyPendingPlan() {
+        DecodePlan plan;
+        {
+            std::lock_guard<std::mutex> lock(bufferMutex_);
+            plan = pendingPlan_;
+            replan_ = false;
+        }
+        releaseReverse();
         plan_ = plan;
         planned_ = true;
         planStalled_ = false;
@@ -1173,7 +1196,6 @@ public:
             // Mid reverse leg: first show the frame holding the position, then earlier ones.
             beginReverse(clip.position + FRAME_DUE_EPSILON);
         }
-        startBackgroundDecoding(bufferSize);
     }
 
     std::string checkReverse(size_t cacheBytes) const {
@@ -1243,6 +1265,7 @@ public:
         std::queue<VideoFrame> empty;
         std::swap(frameBuffer_, empty);
         lastError_.clear();
+        replan_ = false;  // a plan the thread never took is dropped with it
     }
 
     VideoFrame getBufferedFrame() {
@@ -1309,11 +1332,11 @@ private:
 
         bool got = false;
         for (;;) {
-            // Skipping to a seek target can decode seconds of video. VideoPlayer joins
-            // this thread on the UI thread before every seek (a scrub seeks each frame),
-            // so give up promptly when asked to stop; the next seek() resets the skip
-            // and a plain resume carries on from where it stopped.
-            if (stopDecoding_) break;
+            // Skipping to a seek target can decode seconds of video, and a scrub hands
+            // over a new plan each frame: give up promptly when asked to stop or start
+            // over; the next seek() resets the skip and a plain resume carries on from
+            // where it stopped.
+            if (interrupted()) break;
 
             int receiveResult = avcodec_receive_frame(codecCtx_, frame_);
             if (receiveResult == AVERROR_EOF && checkFirstFrame_ && retrySeekEarlier()) {
@@ -1700,7 +1723,7 @@ private:
         return true;
     }
 
-    // --- Planned playback: legs (decode thread, or startPlayback with it stopped) ---
+    // --- Planned playback: legs (decode thread) ---
 
     bool planLoops() const {
         return plan_.loopMode != LoopMode::ONCE && plan_.duration >= MIN_WRAP_DURATION;
@@ -1875,7 +1898,7 @@ private:
     // The next frame in timeline order, or an invalid frame when there is none yet
     // (end of a Once clip, a read error, a stop request, or a stalled plan).
     VideoFrame producePlanned() {
-        while (!stopDecoding_ && !planStalled_) {
+        while (!interrupted() && !planStalled_) {
             if (phase_ == Phase::Forward) {
                 if (decodeNextRaw()) {
                     if (testStripNextSplicePts_ && splicePending_ && lastForwardPts_ &&
@@ -1932,7 +1955,7 @@ private:
                     emptyLegs_ = 0;
                     return emitReverse();
                 }
-                if (planStalled_ || stopDecoding_ || !building_.legEnd) return VideoFrame{};
+                if (planStalled_ || interrupted() || !building_.legEnd) return VideoFrame{};
             } else {
                 return VideoFrame{};
             }
@@ -2020,7 +2043,7 @@ private:
                 reversePeakBytes_ = std::max(reversePeakBytes_.load(), reverseBytes());
             }
         } else {
-            if (stopDecoding_) return;
+            if (interrupted()) return;
             chunk.hitEnd = atEnd_;
             if (!atEnd_) LOG_WARNING("Reverse playback: decode stopped early before {} s", chunk.bound);
             atEnd_ = false;  // the end of the file is not the end of a looping clip
@@ -2044,7 +2067,7 @@ private:
     // Finish the group being built and make it the one emitted. False when the leg is
     // over (building_.legEnd), the plan stalled, or a stop was requested.
     bool buildChunk() {
-        while (!building_.complete && !planStalled_ && !stopDecoding_) stepBuild();
+        while (!building_.complete && !planStalled_ && !interrupted()) stepBuild();
         if (!building_.complete || building_.frames.empty()) return false;
 
         ReverseChunk& chunk = building_;
@@ -2090,13 +2113,21 @@ private:
         releaseReverse();
         releaseTail();
         std::lock_guard<std::mutex> lock(bufferMutex_);
+        if (replan_) return;  // the plan that stalled was already replaced: not its error
         if (reverseError_.empty()) LOG_WARNING("Ping-Pong cannot play backwards: {}", reason);
         reverseError_ = reason;
     }
 
+    // Asked to stop, or to start over at a new plan: decoding toward the old one is moot.
+    bool interrupted() const { return stopDecoding_ || replan_; }
+
     void backgroundDecodingLoop() {
         DecodeBackoff backoff;
         while (!stopDecoding_) {
+            if (replan_) {
+                applyPendingPlan();
+                backoff = DecodeBackoff{};
+            }
 #ifdef _WIN32
             leaveGpu();
 #endif
@@ -2107,13 +2138,13 @@ private:
                     room = frameBuffer_.size() < maxBufferSize_;
                 } else {
                     bufferCondition_.wait(lock, [this]() {
-                        return stopDecoding_ || frameBuffer_.size() < maxBufferSize_ || mustLeaveGpu();
+                        return stopDecoding_ || replan_ || frameBuffer_.size() < maxBufferSize_ || mustLeaveGpu();
                     });
                 }
             }
 
             if (stopDecoding_) break;
-            if (mustLeaveGpu()) continue;
+            if (replan_ || mustLeaveGpu()) continue;
             if (!room) {
                 stepBuild();  // the buffer is full: decode the next reverse group meanwhile
                 continue;
@@ -2121,6 +2152,7 @@ private:
 
             VideoFrame frame = planned_ ? producePlanned() : decodeNextFrame();
             if (stopDecoding_) break;  // interrupted mid-skip: not a decode failure
+            if (replan_) continue;     // decoded for the plan just replaced: dropped
             if (!frame.isValid()) {
                 std::chrono::milliseconds delay{10};  // at end of stream: idle until seek/stop
                 if (!atEnd_ && !planStalled_) {
@@ -2128,13 +2160,14 @@ private:
                     if (backoff.failing()) recordFailure();
                 }
                 std::unique_lock<std::mutex> lock(bufferMutex_);
-                bufferCondition_.wait_for(lock, delay, [this]() { return stopDecoding_.load(); });
+                bufferCondition_.wait_for(lock, delay, [this]() { return interrupted(); });
                 continue;
             }
 
             backoff.onSuccess();
             {
                 std::lock_guard<std::mutex> lock(bufferMutex_);
+                if (replan_) continue;  // raised since the check above, with the queue emptied
                 lastError_.clear();
                 frameBuffer_.push(std::move(frame));
             }
@@ -2232,7 +2265,7 @@ private:
     std::atomic<size_t> reversePeakBytes_{0};
     std::atomic<uint64_t> restarts_{0};     // avcodec_flush_buffers calls (decoderRestarts)
 
-    // Planned playback (decode thread; startPlayback sets it up with the thread stopped)
+    // Planned playback (decode thread: applyPendingPlan sets it up)
     bool planned_ = false;
     DecodePlan plan_;
     PlaybackLeg leg_;
@@ -2261,7 +2294,9 @@ private:
     std::queue<VideoFrame> frameBuffer_;
     std::string lastError_;     // guarded by bufferMutex_
     std::atomic<bool> stopDecoding_{false};
-    size_t maxBufferSize_ = 8;
+    std::atomic<bool> replan_{false};  // pendingPlan_ waits for the decode thread
+    DecodePlan pendingPlan_;            // guarded by bufferMutex_
+    size_t maxBufferSize_ = 8;          // guarded by bufferMutex_ while the thread runs
 };
 
 #else // !QUADMAPPER_HAS_FFMPEG
@@ -2356,6 +2391,15 @@ int VideoDecoder::hardwareDevicesCreated() {
     return shared.created;
 #else
     return 0;
+#endif
+}
+
+void* VideoDecoder::sharedD3dDevice() {
+#if defined(QUADMAPPER_HAS_FFMPEG) && defined(_WIN32)
+    const AVD3D11VADeviceContext* d3d = sharedD3d();
+    return d3d ? d3d->device : nullptr;
+#else
+    return nullptr;
 #endif
 }
 

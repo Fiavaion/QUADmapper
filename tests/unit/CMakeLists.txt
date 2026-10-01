@@ -87,7 +87,8 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
         video/VideoPlayerPlaybackTest.cpp
         video/LoopSpliceSafetyTest.cpp    # TD-30/TD-31 review: splice-safety regressions
         source/HapPlaybackTest.cpp
-        video/HapExportTest.cpp           # QM-082 Convert to HAP, end to end
+        source/AsyncSourceLifecycleTest.cpp  # TD-35: opening and freeing sources off the main thread
+        video/HapExportTest.cpp          # QM-082 Convert to HAP, end to end
         video/RealMediaPlaybackBench.cpp  # opt-in (DISABLED_), needs local media
         video/HardwareDecodeTest.cpp      # ADR-055; needs local media + a D3D11 video decoder
         video/ColourBarsPlaybackTest.cpp  # ADR-055 colour gate; needs a GL 3.3 context

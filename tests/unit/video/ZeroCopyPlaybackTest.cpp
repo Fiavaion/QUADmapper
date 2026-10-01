@@ -254,6 +254,7 @@ TEST(ZeroCopyPlayback, EveryFrameMatchesItsOwnDownloadAcrossPoolWraps) {
     SourceManager sm;
     const UUID id = sm.createVideoSource(H264_CLIP);
     ASSERT_FALSE(id.isNull());
+    sm.finishBackgroundWork();  // opened off the main thread (TD-35)
     auto* video = sm.getSourceAs<VideoFileSource>(id);
     ASSERT_NE(video, nullptr);
     if (!video->isHardwareDecoding()) GTEST_SKIP() << "no GPU decoding here: " << video->getDecodeNote();
@@ -291,6 +292,7 @@ TEST(ZeroCopyPlayback, LockFailureMidStreamFallsBackWithoutABlackFrame) {
         SourceManager sm;
         const UUID id = sm.createVideoSource(H264_CLIP);
         ASSERT_FALSE(id.isNull());
+        sm.finishBackgroundWork();  // opened off the main thread (TD-35)
         auto* video = sm.getSourceAs<VideoFileSource>(id);
         ASSERT_NE(video, nullptr);
         if (!video->isHardwareDecoding()) {
@@ -340,6 +342,7 @@ TEST(ZeroCopyPlayback, OneSourcesLockFailureLeavesTheOthersOnZeroCopy) {
         for (int s = 0; s < STREAMS; ++s) {
             ids.push_back(sm.createVideoSource(H264_CLIP));  // not deduplicated, unlike getOrCreate
             ASSERT_FALSE(ids.back().isNull());
+            sm.finishBackgroundWork();  // opened off the main thread (TD-35)
             videos.push_back(sm.getSourceAs<VideoFileSource>(ids.back()));
             ASSERT_NE(videos.back(), nullptr);
             if (!videos.back()->isHardwareDecoding()) GTEST_SKIP() << "no GPU decoding here";

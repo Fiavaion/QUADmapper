@@ -219,8 +219,9 @@ public:
      * @param plan Timeline position, clip duration and loop mode to produce frames for
      * @param bufferSize Number of frames to buffer ahead
      *
-     * Stops the thread, discards buffered frames and positions the decoder at the
-     * frame the plan's timeline instant shows. Frames then carry VideoFrame::due.
+     * Discards buffered frames and hands the plan to the decode thread (starting it if
+     * need be), which positions itself at the frame the plan's timeline instant shows;
+     * returns without waiting for it (TD-35). Frames then carry VideoFrame::due.
      */
     void startPlayback(const DecodePlan& plan, size_t bufferSize = 8);
 
@@ -322,6 +323,14 @@ public:
      * the app exits (ADR-055).
      */
     static int hardwareDevicesCreated();
+
+    /**
+     * @brief The shared decode device (an ID3D11Device*), or null before the first
+     *        hardware decoder opened or where there is none
+     *
+     * Frames left on the GPU carry it as GpuSurface::device. Any thread.
+     */
+    static void* sharedD3dDevice();
 
     // --- Zero-copy frames (ADR-056) ---
 

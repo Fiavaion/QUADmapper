@@ -583,6 +583,54 @@ INSTANTIATE_TEST_SUITE_P(Containers, VideoDecoderLoopSeam,
                                          ClipSpec{".mp4", 300}),
                          clipName);
 
+// --- Repositioning never waits for the decode thread (TD-35) ---
+
+// startPlayback() hands the plan to the decode thread and returns: a storm of
+// repositions (a scrub, or many sources resyncing after a stall) never joins it, as
+// one did for up to 1.7 s on the render thread. Whatever the thread was decoding for
+// an earlier plan is dropped: the frames queued afterwards are the last plan's, in order.
+TEST(VideoDecoderReposition, AStormNeverWaitsAndOnlyTheLastPlanIsQueued) {
+    const fs::path path = clipPath("clip", ".mp4");
+    if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";
+    VideoDecoder decoder;
+    ASSERT_TRUE(decoder.open(path));
+    DecodePlan plan;
+    plan.duration = DURATION;
+    plan.loopMode = LoopMode::LOOP;
+    constexpr size_t QUEUE = 4;
+
+    using Clock = std::chrono::steady_clock;
+    double slowest = 0.0;
+    for (int i = 0; i < 400; ++i) {
+        plan.timeline = double((i * 7) % (3 * FRAMES)) / FPS;  // all over three passes
+        const auto start = Clock::now();
+        decoder.startPlayback(plan, QUEUE);
+        slowest = std::max(slowest, std::chrono::duration<double>(Clock::now() - start).count());
+        // Now and then let the thread get into a seek or a decode before the next plan.
+        if (i % 40 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    constexpr int LAST = 37;  // frame 37 of the second pass
+    plan.timeline = DURATION + double(LAST) / FPS;
+    decoder.startPlayback(plan, QUEUE);
+    // A handover takes a lock and a notify, never a join or a seek. Generous for a loaded
+    // machine; a join that waits out a decode would take far longer on a stalled one.
+    EXPECT_LT(slowest, 0.1) << "a startPlayback() call took " << slowest * 1000.0 << " ms";
+
+    const auto deadline = Clock::now() + WAIT_LIMIT;
+    while (decoder.getBufferedFrameCount() < QUEUE && Clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(decoder.getBufferedFrameCount(), QUEUE);
+    for (size_t i = 0; i < QUEUE; ++i) {
+        const VideoFrame frame = decoder.getBufferedFrame();
+        EXPECT_EQ(frameIndex(frame), LAST + static_cast<int>(i)) << "queued frame " << i;
+        EXPECT_NEAR(frame.due, plan.timeline + double(i) / FPS, DUE_TOLERANCE) << "queued frame " << i;
+    }
+    decoder.close();
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
 // The media bin lists .mp4/.mov files as videos and asks each for a thumbnail; one that
 // holds only sound is not an error (it used to log "[ERROR] No video stream found").
 TEST(VideoDecoderOpen, AudioOnlyFileIsNotAnError) {

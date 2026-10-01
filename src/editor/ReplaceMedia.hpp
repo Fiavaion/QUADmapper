@@ -212,6 +212,8 @@ inline std::string replaceClipInShow(EditorState& es, SourceManager& sm, const s
         const double position = before->getCurrentTime();
         applySavedTransport(sm, toId, transportOf(*before));
         if (!after->isTimelineLocked()) after->seek(position);
+        // It opens off the main thread: its surfaces show the original until its first frame.
+        sm.setStandIn(toId, transportFrom);
     }
     return {};
 }

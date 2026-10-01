@@ -17,6 +17,7 @@
 #include "../core/Logger.hpp"
 #include "../core/FileSystem.hpp"
 #include "../core/GlObjectStats.hpp"
+#include "../core/MainThreadTimings.hpp"
 #include "../project/Project.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/Quad.hpp"
@@ -118,6 +119,7 @@ Application& Application::instance() {
 }
 
 bool Application::initialize(int argc, char* argv[]) {
+    MainThreadTimings::markMainThread();
     // Headless harness flags: --stress (QM-081) and --bench (PRD §5 benchmark).
     for (int i = 1; i < argc; ++i) {
         if (!parseStressArg(argv[i], m_stressConfig)) {
@@ -323,6 +325,7 @@ bool Application::initializeComponents() {
 
     // Create source manager for texture sources (procedural, video, image)
     m_sourceManager = std::make_unique<SourceManager>();
+    m_sourceManager->prepareGpu();
 
     // Sound (ADR-050 §2): the preferred output device, else the system default. A
     // device that will not open is logged and the app runs silent. The stress harness
@@ -771,6 +774,7 @@ void Application::fitProjectorsToOutputs() {
 // scene and of scenes on enabled outputs, cross-faded with the picture during a scene
 // fade (ADR-047 §5); the rest are gated silent, still in step.
 void Application::syncAudio() {
+    ScopedMainThreadTiming timing("syncAudio");
     if (!m_audioEngine || !m_sourceManager || !m_editorState || !m_outputManager) return;
     const EditorState& es = *m_editorState;
     syncSourceAudio(*m_audioEngine, *m_sourceManager,

@@ -82,6 +82,8 @@ public:
     YuvConverter(const YuvConverter&) = delete;
     YuvConverter& operator=(const YuvConverter&) = delete;
 
+    // Build the shader and GL objects now instead of at the first frame (TD-35). GL context current.
+    bool prepare();
     void begin();
     // Upload `picture` and write it into `target`, which must be an RGBA texture of the
     // picture's size (the caller allocates it). Returns false if the GL objects could

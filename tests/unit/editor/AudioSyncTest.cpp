@@ -916,6 +916,37 @@ TEST(AudioSyncTest, AttachmentsComeAndGoWhileTheDeviceRuns) {
     engine.retainOnly({});
     EXPECT_EQ(engine.attachmentCount(), 0u);
     EXPECT_EQ(engine.mixer().getSourceCount(), 0u);
+    engine.finishReleasing();
+}
+
+// TD-35: a released attachment leaves the mix at once, on the control thread; its decode
+// thread is joined and its decoder freed on a worker, so the frame never waits for them.
+TEST(AudioSyncTest, AReleasedAttachmentLeavesTheMixAtOnceAndIsFreedOffTheControlThread) {
+    const auto clip = audio_test::mediaPath(SYNC_CLIP);
+    if (clip.empty()) GTEST_SKIP() << "test media not present";
+    AudioEngine engine(AudioEngine::Options{true});
+    ASSERT_TRUE(engine.open(""));
+    PlaybackClock clock;
+    const Clock::time_point base = Clock::now();
+    clock.setDuration(CLIP_DURATION, base);
+    clock.setLoopMode(LoopMode::LOOP, base);
+    clock.play(base);
+    const UUID id = UUID::generate();
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    while (engine.mixer().getSourceCount() == 0 && Clock::now() < deadline) {
+        engine.sync(id, clip, audioTransportOf(clock, Clock::now()));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_EQ(engine.mixer().getSourceCount(), 1u) << "the attachment never joined the mix";
+
+    engine.retainOnly({});
+    EXPECT_EQ(engine.attachmentCount(), 0u);
+    EXPECT_EQ(engine.mixer().getSourceCount(), 0u);  // out of the mix before retainOnly returns
+    engine.finishReleasing();
+
+    // The same source synced again gets a fresh attachment.
+    engine.sync(id, clip, audioTransportOf(clock, Clock::now()));
+    EXPECT_EQ(engine.attachmentCount(), 1u);
 }
 
 TEST(AudioSyncTest, AVideoWithoutAudioReportsNoAudio) {
@@ -1317,6 +1348,7 @@ TEST(SceneAudioFadeTest, SyncAppliesTheSceneGainToTheMixerInput) {
     ASSERT_FALSE(clipA.isNull());
     ASSERT_FALSE(clipB.isNull());
     ASSERT_NE(clipA, clipB);
+    sources.finishBackgroundWork();  // opened off the main thread (TD-35)
     ASSERT_TRUE(sources.getSource(clipA)->isReady());
     ASSERT_TRUE(sources.getSource(clipB)->isReady());
 

@@ -9,6 +9,7 @@
 #include "../audio/AudioMixer.hpp"
 #include "../core/GlObjectStats.hpp"
 #include "../core/Logger.hpp"
+#include "../core/MainThreadTimings.hpp"
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
 #include "../renderer/DxInterop.hpp"
@@ -382,6 +383,8 @@ int Application::runStress(const StressConfig& cfg) {
             Logger::error("[STRESS] STRESS FAIL (wedge) — warm-up cycle exceeded {}ms budget.",
                           cfg.cycleTimeoutMs);
         }
+        MainThreadTimings::dumpSamples();
+        Logger::info("[STRESS] Main-thread time per call (TD-35):\n{}", MainThreadTimings::report());
         return 1;
     }
 
@@ -444,6 +447,8 @@ int Application::runStress(const StressConfig& cfg) {
     }
 
     // ---- 5. Report ----------------------------------------------------------
+    MainThreadTimings::dumpSamples();
+    Logger::info("[STRESS] Main-thread time per call (TD-35):\n{}", MainThreadTimings::report());
     Logger::info("[STRESS] Worst-case GL diff vs baseline:");
     Logger::info("{}", worst.diff(baseline));
 
@@ -501,6 +506,8 @@ int Application::runStress(const StressConfig& cfg) {
         const bool zeroCopy = video && video->isZeroCopy();
         m_sourceManager->removeSource(sourceId);
         quad->getTexture().mediaId = UUID();
+        // Its decoder and shared planes are freed off the main thread and over frames (TD-35).
+        m_sourceManager->finishBackgroundWork();
         const long interopObjects = DxInterop::liveObjects();
         const long interopDevices = DxInterop::liveDevices();
         const long gpuFrames = VideoDecoder::liveGpuFrames();

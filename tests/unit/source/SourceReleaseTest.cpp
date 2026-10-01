@@ -61,6 +61,7 @@ TEST(SourceRelease, ReleasesOnlyUnreferencedMediaSources) {
     const size_t released = sm.releaseUnreferenced({boundVideo, binProcedural, boundCamera});
 
     EXPECT_EQ(released, 4u);
+    sm.finishBackgroundWork();  // videos are shut down off the main thread (TD-35)
     EXPECT_EQ(shutdowns, 4);  // each released source was shut down (decode thread joined)
     EXPECT_TRUE(sm.hasSource(boundVideo));
     EXPECT_FALSE(sm.hasSource(orphanVideo));

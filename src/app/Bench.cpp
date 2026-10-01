@@ -12,6 +12,7 @@
 #include "StressHarness.hpp"
 #include "../core/GlObjectStats.hpp"
 #include "../core/Logger.hpp"
+#include "../core/MainThreadTimings.hpp"
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
 #include "../renderer/Framebuffer.hpp"
@@ -577,8 +578,6 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
         media.push_back(t.id);
         tracks.push_back(t);
     }
-    for (auto& t : tracks) t.playable->play();  // start together
-
     // One scene per output showing the same video wall (one decode feeds both).
     std::vector<UUID> sceneIds;
     for (int o = 0; o < cfg_.outputs; ++o) {
@@ -589,6 +588,19 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
         sceneIds.push_back(scene.getId());
     }
     es().setActiveScene(sceneIds.front());
+
+    // Bound to quads (so the frame-boundary release keeps them), every file open (off the
+    // main thread, TD-35) and showing its first frame: the sources start together with
+    // their decoders primed, as when each opened in turn on the main thread. Otherwise 16
+    // cold decoders start at once and lag the clock for seconds.
+    sources().finishBackgroundWork();
+    const Clock::time_point primeDeadline = Clock::now() + std::chrono::seconds(10);
+    auto primed = [&tracks]() {
+        return std::all_of(tracks.begin(), tracks.end(),
+                           [](const Track& t) { return t.source->getCurrentFrame() != nullptr; });
+    };
+    while (!primed() && Clock::now() < primeDeadline && !aborted_) step();
+    for (auto& t : tracks) t.playable->play();  // start together
 
     step();
     applyVsync();
@@ -881,6 +893,7 @@ json BenchRunner::runDrift() {
     if (!showOutputs(1)) return json{{"name", "drift"}, {"error", "output creation failed"}};
 
     const UUID id = sources().createVideoSource(cfg_.media);
+    sources().finishBackgroundWork();  // open (off the main thread, TD-35), so its duration is known
     TextureSource* source = sources().getSource(id);
     PlayableSource* playable = sources().getSourceAs<PlayableSource>(id);
     if (!playable) {
@@ -1250,7 +1263,18 @@ int BenchRunner::run() {
     const std::size_t wsBefore = processWorkingSetBytes();
 
     json scenarios = json::array();
+    MainThreadTimings::reset();
     auto record = [&](json result) {
+        // Main-thread time per call of the operations that can stall outputs (TD-35),
+        // over this scenario's setup, warm-up and measurement.
+        json timings = json::object();
+        for (const MainThreadTimings::Summary& s : MainThreadTimings::summarize()) {
+            timings[s.op] = json{{"count", s.count}, {"p50_ms", round3(s.p50Ms)},
+                                 {"p99_ms", round3(s.p99Ms)}, {"max_ms", round3(s.maxMs)}};
+        }
+        MainThreadTimings::dumpSamples();
+        MainThreadTimings::reset();
+        result["main_thread_ms"] = timings;
         Logger::info("[BENCH] {}", result.dump());
         scenarios.push_back(std::move(result));
     };

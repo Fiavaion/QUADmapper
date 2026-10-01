@@ -84,9 +84,15 @@ AudioAttachment::AudioAttachment(std::filesystem::path path, AudioMixer& mixer)
     thread_ = std::thread(&AudioAttachment::decodeLoop, this);
 }
 
+void AudioAttachment::leaveMix() {
+    if (registered_) mixer_.removeSource(source_->getId());
+    registered_ = false;
+    left_ = true;
+}
+
 AudioAttachment::~AudioAttachment() {
     // 1. Out of the mix: once removeSource() returns no callback can reach source_.
-    if (registered_) mixer_.removeSource(source_->getId());
+    leaveMix();
     // 2. Stop the decode thread, the only other user of buffer_ and the decoder.
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -143,6 +149,7 @@ void AudioAttachment::requestResync(double timeline, double clip, const AudioTra
 }
 
 void AudioAttachment::update(const AudioTransport& transport) {
+    if (left_) return;
     // Mute first: a callback between the two stores then never hears a gated source
     // at a volume raised for it.
     source_->setMuted(transport.muted || transport.gated);

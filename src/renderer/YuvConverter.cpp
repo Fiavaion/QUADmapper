@@ -2,6 +2,7 @@
 #include "Texture.hpp"
 #include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
+#include "core/MainThreadTimings.hpp"
 
 #include <glad/glad.h>
 
@@ -249,9 +250,16 @@ YuvConverter::Coefficients YuvConverter::coefficients(YuvMatrix matrix, bool ful
     return c;
 }
 
+bool YuvConverter::prepare() {
+    const bool ok = ensureObjects();
+    glUseProgram(0);  // ensureObjects() bound the program; outside begin()/end() nothing restores it
+    return ok;
+}
+
 bool YuvConverter::ensureObjects() {
     if (failed_) return false;
     if (program_.isValid()) return true;
+    ScopedMainThreadTiming timing("yuvShaderBuild");
 
     if (!program_.create(VERTEX_SOURCE, FRAGMENT_SOURCE)) {
         Logger::error("YuvConverter: the YUV -> RGBA shader failed to build; video stays black");

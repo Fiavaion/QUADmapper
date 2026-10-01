@@ -59,6 +59,7 @@ TEST(VideoSourcePipeline, LoadsAdvancesAndUploads) {
     // Load + register: a non-null id proves initialize() (file open) + the id fix.
     UUID id = sm.createVideoSource(video);
     ASSERT_FALSE(id.isNull());
+    sm.finishBackgroundWork();  // opened off the main thread (TD-35)
 
     auto* v = sm.getSourceAs<VideoFileSource>(id);
     ASSERT_NE(v, nullptr);

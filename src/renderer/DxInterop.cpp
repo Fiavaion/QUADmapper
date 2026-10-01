@@ -3,6 +3,7 @@
 #include "YuvConverter.hpp"
 #include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
+#include "core/MainThreadTimings.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -150,6 +151,8 @@ struct InteropDevice {
 
     HMODULE library = nullptr;                    // d3d11.dll, held while the device lives
     void* source = nullptr;                       // the decoders' device frames come from
+    bool haveLuid = false;
+    uint64_t luid = 0;                            // the decoders' adapter, when known
     ID3D11Device* device = nullptr;               // owned
     ID3D11DeviceContext* context = nullptr;       // owned
     ID3D11ComputeShader* planeCopy = nullptr;     // owned
@@ -420,45 +423,32 @@ bool DxInterop::glAdapterLuid(uint64_t& luid, std::string& why) {
 #endif
 }
 
-bool DxInterop::openDevice(const GpuSurface& surface, std::string& why) {
 #ifdef _WIN32
+namespace {
+
+// The D3D11 half of opening the interop device, no GL: a device on the adapter of the
+// decoders' device `source`, and the plane copy shader. Null, with `why`, on failure.
+std::shared_ptr<InteropDevice> createInteropDevice(void* source, std::string& why) {
     auto device = std::make_shared<InteropDevice>();
-    auto load = [](const char* name) { return glfwGetProcAddress(name); };
-    device->openDevice = reinterpret_cast<PFNWGLDXOPENDEVICENVPROC>(load("wglDXOpenDeviceNV"));
-    device->closeDevice = reinterpret_cast<PFNWGLDXCLOSEDEVICENVPROC>(load("wglDXCloseDeviceNV"));
-    device->registerObject = reinterpret_cast<PFNWGLDXREGISTEROBJECTNVPROC>(load("wglDXRegisterObjectNV"));
-    device->unregisterObject = reinterpret_cast<PFNWGLDXUNREGISTEROBJECTNVPROC>(load("wglDXUnregisterObjectNV"));
-    device->lockObjects = reinterpret_cast<PFNWGLDXLOCKOBJECTSNVPROC>(load("wglDXLockObjectsNV"));
-    device->unlockObjects = reinterpret_cast<PFNWGLDXUNLOCKOBJECTSNVPROC>(load("wglDXUnlockObjectsNV"));
-    device->source = surface.device;
+    device->source = source;
 
     // The decoders' adapter: the shared frames live in its memory.
     IDXGIAdapter* adapter = nullptr;
-    if (auto* source = static_cast<ID3D11Device*>(surface.device)) {
+    if (auto* decoders = static_cast<ID3D11Device*>(source)) {
         IDXGIDevice* dxgi = nullptr;
-        if (SUCCEEDED(source->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgi)))) {
+        if (SUCCEEDED(decoders->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgi)))) {
             dxgi->GetAdapter(&adapter);
             dxgi->Release();
         }
     }
-    // On a hybrid laptop GL may render on one GPU while the decoders use the other. The
-    // extension does not promise sharing between two GPUs (a driver may refuse it or copy
-    // through system memory), so compare the adapters where GL names its own.
-    bool otherAdapter = testHooks().adapterMismatch;
+    if (!adapter) {
+        why = "the frame carries no shared D3D11 texture";
+        return nullptr;
+    }
     DXGI_ADAPTER_DESC adapterDesc{};
-    if (!otherAdapter && adapter && SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
-        uint64_t decoderLuid = 0;
-        std::memcpy(&decoderLuid, &adapterDesc.AdapterLuid, sizeof(decoderLuid));
-        uint64_t glLuid = 0;
-        std::string luidWhy;
-        if (glAdapterLuid(glLuid, luidWhy)) {
-            otherAdapter = glLuid != decoderLuid;
-            Logger::info("Zero-copy video: OpenGL renders on GPU {} and the video decoders on GPU {}{}", glLuid,
-                         decoderLuid, otherAdapter ? " (different GPUs)" : " (the same GPU)");
-        } else {
-            Logger::info("Zero-copy video: the OpenGL driver does not say which GPU it renders on ({}), "
-                         "so it is assumed to be the video decoders' GPU", luidWhy);
-        }
+    if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+        std::memcpy(&device->luid, &adapterDesc.AdapterLuid, sizeof(device->luid));
+        device->haveLuid = true;
     }
     using Create = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT,
                                     UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
@@ -466,38 +456,109 @@ bool DxInterop::openDevice(const GpuSurface& surface, std::string& why) {
     auto create = device->library ? reinterpret_cast<Create>(GetProcAddress(device->library, "D3D11CreateDevice"))
                                   : nullptr;
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-
-    if (!device->openDevice || !device->closeDevice || !device->registerObject ||
-        !device->unregisterObject || !device->lockObjects || !device->unlockObjects) {
-        why = "the WGL_NV_DX_interop2 entry points are missing";
-    } else if (!adapter || !surface.shared) {
-        why = "the frame carries no shared D3D11 texture";
-    } else if (otherAdapter) {
-        why = std::string("OpenGL renders on another GPU than the video decoders") +
-              (testHooks().adapterMismatch ? " (test)" : "");
-    } else if (!create || FAILED(create(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, levels,
-                                        static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &device->device,
-                                        nullptr, &device->context))) {
+    const bool created = create && SUCCEEDED(create(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, levels,
+                                                    static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION,
+                                                    &device->device, nullptr, &device->context));
+    adapter->Release();
+    if (!created) {
         device->device = nullptr;
         device->context = nullptr;
         why = "a D3D11 device (feature level 11) could not be created for sharing";
-    } else if ((device->planeCopy = compilePlaneCopy(device->device, why)) != nullptr) {
-        device->handle = device->openDevice(device->device);
-        if (device->handle) {
-            adapter->Release();
-            device_ = std::move(device);
-            return true;
-        }
-        why = "OpenGL could not open the D3D11 device for sharing";
+        return nullptr;
     }
-    if (adapter) adapter->Release();
+    device->planeCopy = compilePlaneCopy(device->device, why);
+    if (!device->planeCopy) return nullptr;
+    return device;
+}
+
+}  // namespace
+#endif
+
+void DxInterop::prepare(void* decoderDevice) {
+#ifdef _WIN32
+    if (!decoderDevice) return;
+    {
+        std::lock_guard<std::mutex> lock(prepareMutex_);
+        if (haveDevice_ || prepared_ || preparing_) return;
+        preparing_ = true;
+    }
+    // Not under the lock: the main thread never waits for this. If it needs a device
+    // first, it makes its own and this one is dropped below.
+    std::string why;
+    std::shared_ptr<InteropDevice> device = createInteropDevice(decoderDevice, why);
+    if (!device) Logger::info("Zero-copy video: preparing the interop device failed ({}); trying at the first frame", why);
+    std::lock_guard<std::mutex> lock(prepareMutex_);
+    preparing_ = false;
+    if (!haveDevice_) prepared_ = std::move(device);
+#else
+    (void)decoderDevice;
+#endif
+}
+
+bool DxInterop::openDevice(void* source, std::string& why) {
+#ifdef _WIN32
+    ScopedMainThreadTiming timing("zeroCopyDeviceOpen");
+    std::shared_ptr<InteropDevice> device;
+    {
+        // From here on prepare() makes none; one it made for another decode device is
+        // of no use.
+        std::lock_guard<std::mutex> lock(prepareMutex_);
+        haveDevice_ = true;
+        if (prepared_ && prepared_->source == source) device = std::move(prepared_);
+        prepared_.reset();
+    }
+    auto load = [](const char* name) { return glfwGetProcAddress(name); };
+    const auto openDevice = reinterpret_cast<PFNWGLDXOPENDEVICENVPROC>(load("wglDXOpenDeviceNV"));
+    const auto closeDevice = reinterpret_cast<PFNWGLDXCLOSEDEVICENVPROC>(load("wglDXCloseDeviceNV"));
+    const auto registerObject = reinterpret_cast<PFNWGLDXREGISTEROBJECTNVPROC>(load("wglDXRegisterObjectNV"));
+    const auto unregisterObject = reinterpret_cast<PFNWGLDXUNREGISTEROBJECTNVPROC>(load("wglDXUnregisterObjectNV"));
+    const auto lockObjects = reinterpret_cast<PFNWGLDXLOCKOBJECTSNVPROC>(load("wglDXLockObjectsNV"));
+    const auto unlockObjects = reinterpret_cast<PFNWGLDXUNLOCKOBJECTSNVPROC>(load("wglDXUnlockObjectsNV"));
+
+    if (!openDevice || !closeDevice || !registerObject || !unregisterObject || !lockObjects || !unlockObjects) {
+        why = "the WGL_NV_DX_interop2 entry points are missing";
+    } else if (device || (device = createInteropDevice(source, why))) {
+        // On a hybrid laptop GL may render on one GPU while the decoders use the other. The
+        // extension does not promise sharing between two GPUs (a driver may refuse it or
+        // copy through system memory), so compare the adapters where GL names its own.
+        bool otherAdapter = testHooks().adapterMismatch;
+        if (!otherAdapter && device->haveLuid) {
+            uint64_t glLuid = 0;
+            std::string luidWhy;
+            if (glAdapterLuid(glLuid, luidWhy)) {
+                otherAdapter = glLuid != device->luid;
+                Logger::info("Zero-copy video: OpenGL renders on GPU {} and the video decoders on GPU {}{}", glLuid,
+                             device->luid, otherAdapter ? " (different GPUs)" : " (the same GPU)");
+            } else {
+                Logger::info("Zero-copy video: the OpenGL driver does not say which GPU it renders on ({}), "
+                             "so it is assumed to be the video decoders' GPU", luidWhy);
+            }
+        }
+        if (otherAdapter) {
+            why = std::string("OpenGL renders on another GPU than the video decoders") +
+                  (testHooks().adapterMismatch ? " (test)" : "");
+        } else {
+            device->openDevice = openDevice;
+            device->closeDevice = closeDevice;
+            device->registerObject = registerObject;
+            device->unregisterObject = unregisterObject;
+            device->lockObjects = lockObjects;
+            device->unlockObjects = unlockObjects;
+            device->handle = openDevice(device->device);
+            if (device->handle) {
+                device_ = std::move(device);
+                return true;
+            }
+            why = "OpenGL could not open the D3D11 device for sharing";
+        }
+    }
     // Every stream would fail the same way: stop offering zero-copy.
     available_ = false;
     unavailableReason_ = why;
     Logger::warning("Zero-copy video unavailable ({}); hardware frames are copied through memory", why);
     return false;
 #else
-    (void)surface;
+    (void)source;
     why = "zero-copy video needs Windows";
     return false;
 #endif
@@ -506,6 +567,7 @@ bool DxInterop::openDevice(const GpuSurface& surface, std::string& why) {
 bool DxInterop::stage(const YuvPicture& picture, DxInteropTarget& target, Texture& dest, void* key,
                       std::string& why) {
 #ifdef _WIN32
+    ScopedMainThreadTiming timing("zeroCopyStage");
     if (!picture.onGpu()) {
         why = "the frame is not on the GPU";
         return false;
@@ -514,7 +576,11 @@ bool DxInterop::stage(const YuvPicture& picture, DxInteropTarget& target, Textur
         why = unavailableReason_;
         return false;
     }
-    if (!device_ && !openDevice(picture.gpu, why)) return false;
+    if (!picture.gpu.shared) {
+        why = "the frame carries no shared D3D11 texture";
+        return false;
+    }
+    if (!device_ && !openDevice(picture.gpu.device, why)) return false;
     if (picture.gpu.device != device_->source || !picture.gpu.shared) {
         why = "the frame comes from another D3D11 device";
         return false;
@@ -525,6 +591,7 @@ bool DxInterop::stage(const YuvPicture& picture, DxInteropTarget& target, Textur
     static_cast<ID3D11Texture2D*>(picture.gpu.texture)->GetDesc(&inputDesc);
     const bool rebuild = !t.planes[0].texture || t.width != picture.width || t.height != picture.height ||
                          t.inputFormat != inputDesc.Format || t.device != device_;
+    ScopedMainThreadTiming buildTiming(rebuild ? "zeroCopyTargetBuild" : "zeroCopyTargetReuse");
     if (rebuild && !t.build(device_, picture, inputDesc.Format, why)) {
         t.releaseObjects();
         return false;
@@ -540,6 +607,7 @@ bool DxInterop::stage(const YuvPicture& picture, DxInteropTarget& target, Textur
 
 void DxInterop::finish(YuvConverter& converter, const Failure& onFailure) {
     if (pending_.empty()) return;
+    ScopedMainThreadTiming timing("zeroCopyFinish");
     // The failure callback may destroy a failed source's target, and stage() must find
     // pending_ empty afterwards: the batch is delivered from delivering_.
     delivering_.swap(pending_);
