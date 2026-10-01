@@ -157,8 +157,17 @@ void PlaybackClock::setDirection(int direction, PlaybackTimePoint now) {
 void PlaybackClock::setDuration(double duration, PlaybackTimePoint now) {
     if (!(duration >= 0.0)) duration = 0.0;
     const ClipPosition before = mapTimeline(timeline(now), duration_, loopMode_);
+    const bool wasUnknown = !durationKnown(duration_);
     reanchor(now);
     duration_ = duration;
+    if (wasUnknown && wraps(duration_, loopMode_)) {
+        // The clip's length arrives (a file that opened off the main thread, TD-35): the
+        // time it ran meanwhile is timeline, which Loop and Ping-Pong wrap onto the clip
+        // as if it had been known from the start, never cut at its end.
+        anchorLeg_ = legIndex(anchorTimeline_);
+        if (mapTimeline(anchorTimeline_, duration_, loopMode_).position != before.position) ++jumps_;
+        return;
+    }
     if (following_) {
         // The timeline is the master's: only the mapping changes.
         anchorLeg_ = legIndex(anchorTimeline_);

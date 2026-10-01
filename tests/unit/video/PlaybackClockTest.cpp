@@ -303,6 +303,31 @@ TEST(PlaybackClock, DurationChangeKeepsThePosition) {
     EXPECT_LE(clock.position(at(4.5)), 0.25);
 }
 
+// A clip played while its file opens (TD-35) runs with no duration; when the length
+// arrives longer ago than the clip lasts, Loop and Ping-Pong carry on where they would
+// have been had it been known from the start, not from the clip's end or its start.
+TEST(PlaybackClock, ADurationArrivingLateWrapsTheTimeRunMeanwhile) {
+    PlaybackClock loop = clockWith(0.0, LoopMode::LOOP);
+    loop.play(T0);
+    loop.setDuration(2.0, at(4.5));
+    EXPECT_NEAR(loop.position(at(4.5)), 0.5, EXACT);
+    EXPECT_EQ(loop.direction(at(4.5)), 1);
+    EXPECT_NEAR(loop.position(at(5.0)), 1.0, EXACT);
+
+    PlaybackClock pingPong = clockWith(0.0, LoopMode::PING_PONG);
+    pingPong.play(T0);
+    pingPong.setDuration(2.0, at(3.0));  // one second into the first reverse leg
+    EXPECT_NEAR(pingPong.position(at(3.0)), 1.0, EXACT);
+    EXPECT_EQ(pingPong.direction(at(3.0)), -1);
+    EXPECT_NEAR(pingPong.position(at(3.5)), 0.5, EXACT);
+
+    PlaybackClock once = clockWith(0.0, LoopMode::ONCE);  // Once still stops at the end
+    once.play(T0);
+    once.setDuration(2.0, at(4.5));
+    EXPECT_NEAR(once.position(at(4.5)), 2.0, EXACT);
+    EXPECT_TRUE(once.sample(at(4.5)).ended);
+}
+
 // --- Discontinuities ---
 
 TEST(PlaybackClock, DiscontinuityCountsSeeksWrapsAndReflections) {
