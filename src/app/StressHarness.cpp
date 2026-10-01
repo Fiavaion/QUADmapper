@@ -215,9 +215,22 @@ int Application::runStress(const StressConfig& cfg) {
     bool measurePacing = false;
     double pacingSeconds = 0.0;
     long pacingFrames = 0;
+    // A media source is up once it has shown a frame (so its textures, zero-copy
+    // planes included, exist) and its audio is settled: no audio track, or an
+    // attachment that has joined the mix. Its decoders start on their own threads, so
+    // how many frames that takes depends on the machine's load; each cycle runs until
+    // it is up, so every snapshot sees the source in the same state and every churned
+    // source really builds its decoder thread and mixer input before it is freed.
+    auto sourceUp = [&]() -> bool {
+        const TextureSource* source = m_sourceManager->getSource(sourceId);
+        if (!source || !source->getCurrentFrame()) return false;
+        if (!m_audioEngine) return true;
+        const SourceAudioStatus audio = m_audioEngine->status(sourceId);
+        return audio == SourceAudioStatus::NoAudio ||
+               (audio == SourceAudioStatus::Ready && m_audioEngine->mixer().getSourceCount() > 0);
+    };
     auto runCycle = [&]() -> bool {
-        const double cycleStart = glfwGetTime();
-        const double budgetSec  = cfg.cycleTimeoutMs / 1000.0;
+        const double budgetSec = cfg.cycleTimeoutMs / 1000.0;
 
         // Audio churn: a fresh video source (and so a fresh audio attachment) per cycle.
         // The first sync after the removal frees the old attachment.
@@ -233,6 +246,11 @@ int Application::runStress(const StressConfig& cfg) {
             quad->getTexture().mediaId = sourceId;
         }
 
+        // The wedge watchdog times the cycle from here. Opening a file and its hardware
+        // decoder, above, took over 3 s while other GPU tests started (ctest -j 4): slow
+        // under contention, not wedged. A call that never returns was never caught here
+        // (the check runs between frames); the ctest TIMEOUT catches it.
+        const double cycleStart = glfwGetTime();
         if (cfg.hidden) {
             // --hidden: call the same enter/exit path, but keep windows hidden.
             // enterPerformMode normally shows + fullscreens each window; hiding
@@ -259,12 +277,19 @@ int Application::runStress(const StressConfig& cfg) {
 
         double t = glfwGetTime();
         const double loopStart = t;
-        for (int f = 0; f < cfg.framesPerCycle; ++f) {
-            // Wedge check: abort if we've been in this cycle too long.
+        int frames = 0;
+        for (int f = 0; f < cfg.framesPerCycle || (needsMedia && !sourceUp()); ++f) {
+            // Wedge check: abort if we've been in this cycle too long, which includes a
+            // media source that never comes up.
             if ((glfwGetTime() - cycleStart) > budgetSec) {
+                if (needsMedia && !sourceUp()) {
+                    Logger::error("[STRESS] The media source was not up (a frame shown, its audio in "
+                                  "the mix) {} ms into the cycle.", cfg.cycleTimeoutMs);
+                }
                 m_outputManager->exitPerformMode();
                 return false;
             }
+            ++frames;
 
             glfwPollEvents();
 
@@ -330,7 +355,7 @@ int Application::runStress(const StressConfig& cfg) {
         }
         if (measurePacing) {
             pacingSeconds += glfwGetTime() - loopStart;
-            pacingFrames += cfg.framesPerCycle;
+            pacingFrames += frames;
         }
 
         m_outputManager->exitPerformMode();
