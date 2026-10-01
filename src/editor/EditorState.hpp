@@ -516,6 +516,10 @@ struct EditorState {
     // The perform lock (ADR-051 §4, PerformLock.hpp): runtime only, never saved. While
     // it is on, commandHistory is read-only.
     PerformLock performLock;
+    // Output id -> the scene its projector camera was last fitted for
+    // (fitProjectorsToOutputs): under the lock an output keeps the framing of the scene
+    // it already shows, and a take onto another scene frames that scene.
+    std::unordered_map<UUID, UUID> projectorFramedScenes;
 
     // Edit > Preferences > Keyboard is waiting for the key chord to bind: the next key
     // is the chord's, so no shortcut or scene take key acts on it (ShortcutRouter).

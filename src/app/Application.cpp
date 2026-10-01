@@ -6,6 +6,7 @@
 #include "../editor/TextureResolve.hpp"
 #include "../editor/MediaAssign.hpp"
 #include "../editor/MissingMedia.hpp"
+#include "../editor/ProjectorFit.hpp"
 #include "../editor/ReplaceMedia.hpp"
 #include "../editor/MeshLoads.hpp"
 #include "../editor/SliceEditing.hpp"
@@ -756,21 +757,9 @@ void Application::runFrameBoundaryTasks() {
     m_session->autosaveIfDue();
 }
 
-// Keep each output's projector camera matched to what it shows now (ADR-052): its
-// current rotation-aware size and, while uncalibrated, framed on its scene's objects.
-// Every render and calibration path then reads a camera that is already right.
+// See editor/ProjectorFit.hpp (kept framing under the perform lock, TD-36).
 void Application::fitProjectorsToOutputs() {
-    if (!m_outputManager) return;
-    m_outputManager->followOutputSizes(m_editorState->scenes);
-    for (const auto& output : m_outputManager->getOutputs()) {
-        if (!output) continue;
-        const IVec2 size = output->getEffectiveResolution();
-        const Scene* scene = OutputManager::sceneForOutput(m_editorState->scenes, *output);
-        Vec3 lo, hi;
-        const bool framed = scene && scene->visibleObjectBounds(lo, hi);
-        output->getProjector() = ProjectorCamera::fitToOutput(
-            output->getProjector(), size.x, size.y, framed ? &lo : nullptr, framed ? &hi : nullptr);
-    }
+    if (m_outputManager) quadmapper::fitProjectorsToOutputs(*m_editorState, *m_outputManager);
 }
 
 // Once per frame after the sources advance (ADR-050 §2). Heard: sources of the active

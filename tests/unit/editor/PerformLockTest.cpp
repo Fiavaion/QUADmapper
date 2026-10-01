@@ -13,7 +13,10 @@
 #include "editor/EditorState.hpp"
 #include "editor/GridUndo.hpp"
 #include "editor/MeshEditKeys.hpp"
+#include "editor/ProjectorFit.hpp"
 #include "editor/SliceEditing.hpp"
+#include "scene/MeshObject.hpp"
+#include "scene/ProjectorCamera.hpp"
 #include "control/ControlDispatcher.hpp"
 #include "control/ExternalControl.hpp"
 
@@ -415,4 +418,57 @@ TEST_F(PerformLockTest, EscOnASessionModalOnlyAnswersIt) {
 
     performEscape(ctx);
     EXPECT_FALSE(control.dispatcher().isLearning()) << "with no modal up, Esc cancels the learn";
+}
+
+namespace {
+
+// A box `half` across each way around `centre`, as an imported mesh lands.
+void addBox(Scene& scene, const Vec3& centre, float half) {
+    MeshObject* box = scene.createObject("Box");
+    MeshData& data = box->editMesh();
+    for (int c = 0; c < 8; ++c) {
+        data.positions.push_back(centre + Vec3((c & 1) ? half : -half, (c & 2) ? half : -half,
+                                               (c & 4) ? half : -half));
+    }
+    data.indices = {0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5};
+}
+
+// Where an uncalibrated projector stands framed on `scene`'s objects.
+Vec3 framedOn(const Scene& scene, const ProjectorCamera& camera) {
+    Vec3 lo, hi;
+    EXPECT_TRUE(scene.visibleObjectBounds(lo, hi));
+    return ProjectorCamera::framing(lo, hi, camera.intrinsics).position();
+}
+
+}  // namespace
+
+// TD-36: an OBJ import landing after locking changes the bounds of the scene on air,
+// and the per-frame fit re-framed the uncalibrated projector on them, moving every 3D
+// object on the projectors. Locked, the output keeps its framing; after the unlock it
+// follows the bounds again; a take onto another scene, locked, still frames that scene.
+TEST_F(PerformLockTest, AnImportLandingUnderTheLockDoesNotMoveTheProjector) {
+    Scene& shown = *es.scenes.front();
+    addBox(shown, Vec3(0.0f), 0.2f);
+    addBox(*second, Vec3(4.0f, -1.0f, 0.5f), 0.6f);
+    fitProjectorsToOutputs(es, om);
+    const Vec3 before = output->getProjector().position();
+    ASSERT_LT(glm::length(before - framedOn(shown, output->getProjector())), 1e-4f) << "not framed at all";
+
+    lock();
+    addBox(shown, Vec3(3.0f, 1.0f, -0.5f), 0.4f);  // the import lands
+    fitProjectorsToOutputs(es, om);
+    fitProjectorsToOutputs(es, om);
+    EXPECT_LT(glm::length(output->getProjector().position() - before), 1e-6f) << "the objects moved on air";
+
+    requestPerformUnlock(es);
+    ASSERT_TRUE(confirmPerformUnlock(es));
+    fitProjectorsToOutputs(es, om);
+    EXPECT_LT(glm::length(output->getProjector().position() - framedOn(shown, output->getProjector())), 1e-4f);
+    EXPECT_GT(glm::length(output->getProjector().position() - before), 0.1f) << "unlocked, it follows the bounds";
+
+    lock();
+    ASSERT_EQ(invoke(sceneTakeId(2)), Outcome::Ran);
+    fitProjectorsToOutputs(es, om);
+    EXPECT_LT(glm::length(output->getProjector().position() - framedOn(*second, output->getProjector())), 1e-4f)
+        << "a take frames the scene it puts on air";
 }

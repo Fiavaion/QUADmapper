@@ -44,6 +44,7 @@
 #include "editor/MeshLoads.hpp"
 #include "editor/MissingMedia.hpp"
 #include "editor/PerformLock.hpp"
+#include "editor/ProjectorFit.hpp"
 #include "editor/Preferences.hpp"
 #include "editor/ProjectMapping.hpp"
 #include "editor/SliceEditing.hpp"
@@ -150,7 +151,11 @@ std::string showFingerprint(EditorState& es, OutputManager& om, SourceManager* s
         }
     }
     if (allow & ALLOW_TAKES) {
-        for (Project::OutputData& output : project.getOutputs()) output.sceneId = UUID();
+        // A take also frames an uncalibrated projector on the scene it puts on air (TD-36).
+        for (Project::OutputData& output : project.getOutputs()) {
+            output.sceneId = UUID();
+            if (!output.projector.calibrated) output.projector = ProjectorCamera{};
+        }
     }
     std::string text = ProjectSerializer().serialize(project);
     // On the projectors, not in the file.
@@ -547,8 +552,9 @@ protected:
     }
 
     // The application's frame boundary (Application::runFrameBoundaryTasks): the
-    // session's file actions, OBJ adoption, the folder search. Save As would open the
-    // native Save dialog: it is allowed under the lock, so it is counted, not shown.
+    // session's file actions, OBJ adoption, the folder search, the projector fit. Save
+    // As would open the native Save dialog: it is allowed under the lock, so it is
+    // counted, not shown.
     void boundary() {
         if (es_.pendingFileAction == EditorState::FileAction::SaveAs) {
             es_.pendingFileAction = EditorState::FileAction::None;
@@ -557,6 +563,7 @@ protected:
         session_->processPendingFileAction();
         adoptObjectMeshes(es_, &om_);
         session_->pollMissingMediaSearch();
+        fitProjectorsToOutputs(es_, om_);
         // Unlocking asks first; the sweep never answers "Unlock".
         if (es_.performLock.isConfirmingUnlock()) cancelPerformUnlock(es_);
     }
