@@ -22,6 +22,7 @@ add_library(quadmapper_editor STATIC
     Preferences.hpp
     Preferences.cpp
     ProjectMapping.hpp
+    ProjectorFit.hpp
     ProjectMapping.cpp
     ProjectReplace.hpp
     QuadSelection.hpp
