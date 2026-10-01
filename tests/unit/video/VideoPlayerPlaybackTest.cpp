@@ -15,6 +15,7 @@
 #include "TestClips.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -626,6 +627,96 @@ TEST(VideoDecoderReposition, AStormNeverWaitsAndOnlyTheLastPlanIsQueued) {
         EXPECT_EQ(frameIndex(frame), LAST + static_cast<int>(i)) << "queued frame " << i;
         EXPECT_NEAR(frame.due, plan.timeline + double(i) / FPS, DUE_TOLERANCE) << "queued frame " << i;
     }
+    decoder.close();
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
+namespace {
+
+// Wait (real time, bounded) until `ready` holds; false if it never did.
+template <typename Ready>
+bool waitUntil(Ready ready) {
+    const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+    while (!ready()) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+// The frames queued now are `count` frames of `plan` from clip frame `first` on.
+void expectQueuedFrom(VideoDecoder& decoder, const DecodePlan& plan, int first, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        const VideoFrame frame = decoder.getBufferedFrame();
+        EXPECT_EQ(frameIndex(frame), first + static_cast<int>(i)) << "queued frame " << i;
+        EXPECT_NEAR(frame.due, plan.timeline + double(i) / FPS, DUE_TOLERANCE) << "queued frame " << i;
+    }
+}
+
+}  // namespace
+
+// A reposition that lands after a decoded frame passed the decode thread's replan check
+// and before the frame is queued (TD-35 review): the frame belongs to the plan just
+// replaced and is dropped under the queue's lock, so the new plan's first frame is the
+// first one queued.
+TEST(VideoDecoderReposition, AFrameDecodedForAReplacedPlanIsNeverQueued) {
+    const fs::path path = clipPath("clip", ".mp4");
+    if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";
+    constexpr size_t QUEUE = 4;
+    constexpr int LAST = 37;
+    DecodePlan plan;
+    plan.duration = DURATION;
+    plan.loopMode = LoopMode::LOOP;
+    DecodePlan next = plan;
+    next.timeline = double(LAST) / FPS;
+
+    VideoDecoder decoder;
+    std::atomic<bool> armed{true};
+    DecodeOptions options;
+    // The first frame decoded for `plan` meets the reposition right before the queue.
+    options.testBeforeQueueFrame = [&] {
+        if (armed.exchange(false)) decoder.startPlayback(next, QUEUE);
+    };
+    ASSERT_TRUE(decoder.open(path, options));
+    decoder.startPlayback(plan, QUEUE);
+    ASSERT_TRUE(waitUntil([&] { return !armed && decoder.getBufferedFrameCount() == QUEUE; }));
+    expectQueuedFrom(decoder, next, LAST, QUEUE);
+    decoder.close();
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
+// The zero-copy fallback takes the queued frames out to copy them to memory on the
+// decode thread (ADR-056). A reposition handed over meanwhile empties the queue: the
+// frames taken out are the replaced plan's and are dropped, not put back in front of
+// the new plan's, where they held its frames back and froze the clip on a wrong frame
+// (TD-35 review: 30 of 30 tries on a 4K clip). Software decoding goes through the same
+// hand-back; the hook lands the reposition while the frames are out.
+TEST(VideoDecoderReposition, ARepositionDuringTheZeroCopyFallbackDropsTheOldPlansFrames) {
+    const fs::path path = clipPath("clip", ".mp4");
+    if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";
+    constexpr size_t QUEUE = 4;
+    constexpr int LAST = 37;
+    DecodePlan plan;
+    plan.duration = DURATION;
+    plan.loopMode = LoopMode::LOOP;
+    DecodePlan next = plan;
+    next.timeline = double(LAST) / FPS;
+
+    VideoDecoder decoder;
+    std::atomic<bool> repositioned{false};
+    DecodeOptions options;
+    options.testDuringLeaveGpu = [&] {
+        decoder.startPlayback(next, QUEUE);
+        repositioned = true;
+    };
+    ASSERT_TRUE(decoder.open(path, options));
+    decoder.startPlayback(plan, QUEUE);
+    ASSERT_TRUE(waitUntil([&] { return decoder.getBufferedFrameCount() == QUEUE; }));
+    decoder.stopZeroCopy("test");
+    ASSERT_TRUE(waitUntil([&] { return repositioned && decoder.getBufferedFrameCount() == QUEUE; }));
+    expectQueuedFrom(decoder, next, LAST, QUEUE);
     decoder.close();
     std::error_code ec;
     fs::remove(path, ec);

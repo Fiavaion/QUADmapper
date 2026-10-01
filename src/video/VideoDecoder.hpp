@@ -81,6 +81,13 @@ struct DecodeOptions {
     // flags. Each retry consumes one count; 0 disables (the real check runs instead).
     int testForceSeekLandsLateFrames = 0;
     int testForceSeekLandsOffKeyFrames = 0;
+    // Test hooks (TD-35 review): run on the decode thread at the two points where a
+    // startPlayback() from another thread can land between a check and the queue: after
+    // the zero-copy fallback took the queued frames out to copy them to memory and before
+    // it puts them back, and after a decoded frame passed the replan check and before it
+    // is queued. A hook may call startPlayback() itself to land a reposition right there.
+    std::function<void()> testDuringLeaveGpu;
+    std::function<void()> testBeforeQueueFrame;
 };
 
 // Memory the backward GOP decoder may hold for Ping-Pong's reverse leg (ADR-050 §4).

@@ -976,6 +976,9 @@ public:
     // textures go as the frames holding them do), and the frames queued on the GPU are
     // copied to memory here, not on the main thread, which keeps showing its last frame
     // meanwhile. The queue is taken out while they are copied; only this thread adds to it.
+    // A reposition handed over meanwhile (startPlayback) empties the queue: the frames
+    // taken out belong to the plan it replaced and are dropped, not put back in front of
+    // the new plan's (they would hold its frames back and freeze the clip on a wrong one).
     void leaveGpu() {
         if (!zeroCopyStopped_ || leftGpu_) return;
         leftGpu_ = true;
@@ -995,8 +998,10 @@ public:
             VideoFrame copied = frameInMemory(frame);
             if (copied.isValid()) inMemory.push(std::move(copied));
         }
+        if (options_.testDuringLeaveGpu) options_.testDuringLeaveGpu();
         {
             std::lock_guard<std::mutex> lock(bufferMutex_);
+            if (replan_) inMemory = std::queue<VideoFrame>();
             for (; !frameBuffer_.empty(); frameBuffer_.pop()) inMemory.push(std::move(frameBuffer_.front()));
             std::swap(frameBuffer_, inMemory);
         }
@@ -2165,6 +2170,7 @@ private:
             }
 
             backoff.onSuccess();
+            if (options_.testBeforeQueueFrame) options_.testBeforeQueueFrame();
             {
                 std::lock_guard<std::mutex> lock(bufferMutex_);
                 if (replan_) continue;  // raised since the check above, with the queue emptied
