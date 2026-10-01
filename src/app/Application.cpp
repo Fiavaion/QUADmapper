@@ -119,13 +119,15 @@ Application& Application::instance() {
 }
 
 bool Application::initialize(int argc, char* argv[]) {
-    MainThreadTimings::markMainThread();
     // Headless harness flags: --stress (QM-081) and --bench (PRD §5 benchmark).
     for (int i = 1; i < argc; ++i) {
         if (!parseStressArg(argv[i], m_stressConfig)) {
             parseBenchArg(argv[i], m_benchConfig);
         }
     }
+    // Only the harnesses measure the main thread (TD-35): a show never pays for the
+    // samples' lock and allocations, nor keeps them for its whole run.
+    if (m_stressConfig || m_benchConfig) MainThreadTimings::markMainThread();
     if (m_benchConfig) {
         // stdout carries only the JSON report; the log goes to a file beside it.
         Logger::setConsoleOutput(false);

@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include "core/PerformanceMonitor.hpp"
+#include "core/MainThreadTimings.hpp"
 #include <thread>
 #include <chrono>
+#include <vector>
 
 namespace quadmapper {
 namespace test {
@@ -155,6 +157,25 @@ TEST_F(PerformanceMonitorTest, SectionTimingRecorded) {
     EXPECT_NEAR(monitor_->getCurrentStats().renderTimeMs, 5.0, 1e-6);
     EXPECT_NEAR(monitor_->getCurrentStats().uiTimeMs, 2.0, 1e-6);
     EXPECT_NEAR(monitor_->getCurrentStats().frameTimeMs, 7.0, 1e-6);
+}
+
+// The TD-35 main-thread timings record nothing until a harness marks the main thread
+// (the app does only under --stress and --bench), and never on another thread, so a
+// show takes no lock and keeps no samples. Marking is for the life of the process: the
+// marking steps run last, in this one test.
+TEST(MainThreadTimingsTest, NothingIsRecordedUntilTheMainThreadIsMarked) {
+    MainThreadTimings::reset();
+    { ScopedMainThreadTiming timing("unmarked"); }
+    EXPECT_TRUE(MainThreadTimings::summarize().empty()) << "recorded with timings off";
+
+    MainThreadTimings::markMainThread();
+    std::thread([] { ScopedMainThreadTiming timing("worker"); }).join();
+    { ScopedMainThreadTiming timing("marked"); }
+    const std::vector<MainThreadTimings::Summary> recorded = MainThreadTimings::summarize();
+    ASSERT_EQ(recorded.size(), 1u);
+    EXPECT_EQ(recorded.front().op, "marked");
+    EXPECT_EQ(recorded.front().count, 1u);
+    MainThreadTimings::reset();
 }
 
 } // namespace test

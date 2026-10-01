@@ -5,7 +5,8 @@
 // source update. The stress harness and the bench report p50/p99/max per operation.
 // Header-only; recording is two clock reads and a push_back, and calls made on any
 // thread other than the one markMainThread() named (decode or open workers, unit tests
-// that never mark one) are not recorded.
+// that never mark one) are not recorded. The app marks its main thread only under
+// --stress and --bench: in a show nothing is recorded, nothing locked or allocated.
 
 #include <algorithm>
 #include <atomic>
