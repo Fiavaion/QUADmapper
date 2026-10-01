@@ -7,16 +7,27 @@
 
 #include "editor/MissingMedia.hpp"
 #include "editor/PerformLock.hpp"
+#include "editor/ProjectMapping.hpp"
 #include "editor/ProjectReplace.hpp"
+#include "editor/TextureResolve.hpp"
 #include "editor/UndoRouting.hpp"
+#include "project/ProjectSerializer.hpp"
+#include "renderer/Framebuffer.hpp"
+#include "renderer/Renderer.hpp"
+#include "renderer/Texture.hpp"
 #include "FakePlayable.hpp"
 
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -164,6 +175,61 @@ TEST(MissingMediaTest, RelocateRefusesWhatItCannotUse) {
               "The file could not be loaded.");
     EXPECT_EQ(fx.es.missingSources.count(fx.missingId), 1u) << "still missing after a refusal";
     EXPECT_EQ(fx.a->getTexture().mediaId, fx.missingId);
+}
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// A file named like a video that holds bytes no container format reads.
+fs::path writeJunkVideo(const std::string& name) {
+    const fs::path path = fs::temp_directory_path() / name;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    for (int i = 0; i < 4096; ++i) out.put(static_cast<char>((i * 131) & 0xff));
+    return path;
+}
+
+// A WAV file named .mp4: a container FFmpeg reads, with sound and no video.
+fs::path writeSoundOnlyVideo(const std::string& name) {
+    const fs::path path = fs::temp_directory_path() / name;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const auto u32 = [&out](uint32_t v) { for (int i = 0; i < 4; ++i) out.put(static_cast<char>((v >> (8 * i)) & 0xff)); };
+    const auto u16 = [&out](uint16_t v) { out.put(static_cast<char>(v & 0xff)); out.put(static_cast<char>(v >> 8)); };
+    const uint32_t samples = 8000, rate = 8000;
+    out.write("RIFF", 4);
+    u32(36 + samples * 2);
+    out.write("WAVEfmt ", 8);
+    u32(16);
+    u16(1);  // PCM
+    u16(1);  // mono
+    u32(rate);
+    u32(rate * 2);
+    u16(2);
+    u16(16);
+    out.write("data", 4);
+    u32(samples * 2);
+    for (uint32_t i = 0; i < samples; ++i) u16(static_cast<uint16_t>((i * 97) & 0x3fff));
+    return path;
+}
+
+}  // namespace
+
+// A file that exists but is not a video (TD-35 review): relocation refuses it, as
+// "accepted only if it loads" promises, rather than binding the quads to a source that
+// will never show anything.
+TEST(MissingMediaTest, RelocateRefusesAFileThatIsNotAVideo) {
+    MissingFixture fx;
+    SourceManager sm;
+    const fs::path junk = writeJunkVideo("qm_relocate_not_a_video.mp4");
+    const fs::path sound = writeSoundOnlyVideo("qm_relocate_sound_only.mp4");
+    EXPECT_EQ(relocateMissingSource(fx.es, sm, fx.missingId, junk), "The file could not be loaded.");
+    EXPECT_EQ(relocateMissingSource(fx.es, sm, fx.missingId, sound), "The file could not be loaded.");
+    EXPECT_EQ(fx.es.missingSources.count(fx.missingId), 1u) << "still missing after a refusal";
+    EXPECT_EQ(fx.a->getTexture().mediaId, fx.missingId);
+    EXPECT_EQ(sm.getSourceCount(), 0u);
+    std::error_code ec;
+    fs::remove(junk, ec);
+    fs::remove(sound, ec);
 }
 
 TEST(SavedTransportTest, LockedClipSavedPausedComesBackLockedAndPaused) {
@@ -900,4 +966,168 @@ TEST(DeleteKeyTest, LeavesObjectsAloneWhenTheyAreNotTheSelection) {
     scene.deleteObject(id);
     EXPECT_FALSE(es.deleteSelectedObject());
     EXPECT_FALSE(es.commandHistory.canUndo());
+}
+
+// ---- Clips opening off the main thread (TD-35 review) --------------------------------
+
+namespace {
+
+// Hidden-window GL 3.3 context, RAII; ok == false means no GL (the tests skip).
+struct HiddenGl {
+    GLFWwindow* win = nullptr;
+    bool ok = false;
+    HiddenGl() {
+        if (!glfwInit()) return;
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        win = glfwCreateWindow(64, 64, "missing-media-test", nullptr, nullptr);
+        glfwDefaultWindowHints();
+        if (!win) { glfwTerminate(); return; }
+        glfwMakeContextCurrent(win);
+        if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress))) {
+            glfwDestroyWindow(win); win = nullptr; glfwTerminate(); return;
+        }
+        ok = true;
+    }
+    ~HiddenGl() { if (win) { glfwDestroyWindow(win); glfwTerminate(); } }
+    HiddenGl(const HiddenGl&) = delete;
+    HiddenGl& operator=(const HiddenGl&) = delete;
+};
+
+// A real H.264 clip (a checked-in fixture), copied so the test owns its file.
+fs::path copyFixtureClip(const std::string& name) {
+    const fs::path from = fs::path(QM_PROJECT_FIXTURES_DIR) / ".." / "videos" / "h264_closed_gop.mp4";
+    const fs::path to = fs::temp_directory_path() / name;
+    std::error_code ec;
+    fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+    return ec ? fs::path() : to;
+}
+
+// One scene with one quad over the whole canvas.
+Quad* addFullQuad(EditorState& es) {
+    auto scene = std::make_unique<Scene>();
+    Quad* quad = scene->getQuadManager().createQuad("Q");
+    quad->getGeometry().setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)});
+    es.scenes.push_back(std::move(scene));
+    return quad;
+}
+
+// What the renderer draws in the middle of a 16x16 frame for `quad` with `texture`
+// (null: none resolved), on a grey background.
+std::array<int, 3> renderedCentre(Renderer& renderer, const Quad& quad, const Texture* texture) {
+    Framebuffer frame;
+    EXPECT_TRUE(frame.resize(16, 16));
+    frame.bind();
+    glViewport(0, 0, 16, 16);
+    glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    renderer.renderQuad(quad, texture);
+    unsigned char px[4] = {0, 0, 0, 0};
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    Framebuffer::unbind();
+    return {px[0], px[1], px[2]};
+}
+
+}  // namespace
+
+// A clip still opening has no picture yet (0x0, no texture). Its quads drew the
+// renderer's white default texture, so every video surface glowed white on the
+// projectors for as long as the opens took (seconds at a project load). They are black.
+TEST(OpeningMediaTest, AQuadOnAClipStillOpeningRendersBlackNeverWhite) {
+    HiddenGl gl;
+    if (!gl.ok) GTEST_SKIP() << "no GL 3.3 context";
+    const fs::path clip = copyFixtureClip("qm_opening_clip.mp4");
+    ASSERT_FALSE(clip.empty());
+    EditorState es;
+    Quad* quad = addFullQuad(es);
+    SourceManager sm;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+
+    const UUID id = sm.createVideoSource(clip);
+    ASSERT_FALSE(id.isNull());
+    quad->getTexture().mediaId = id;
+    ASSERT_FALSE(sm.getSource(id)->isReady()) << "opening until updateAll() adopts its decoder";
+    for (SurfaceView view : {SurfaceView::Output, SurfaceView::Editor}) {
+        const auto map = buildQuadTextureMap(es, &sm, view);
+        const auto it = map.find(quad->getId());
+        const std::array<int, 3> rgb = renderedCentre(renderer, *quad, it != map.end() ? it->second : nullptr);
+        const char* where = view == SurfaceView::Output ? "output" : "editor";
+        EXPECT_LE(rgb[0] + rgb[1] + rgb[2], 6) << where << ": " << rgb[0] << "," << rgb[1] << "," << rgb[2];
+    }
+    sm.finishBackgroundWork();
+    std::error_code ec;
+    fs::remove(clip, ec);
+}
+
+// A clip that passed the header probe but whose decoder failed off the main thread (an
+// exception here, standing in for a codec FFmpeg cannot open) is missing media: black
+// on outputs, listed in Missing Media, and saved -> loaded -> saved with the transport
+// it was given (it was written back stopped: the failed open reset it).
+TEST(UndecodableMediaTest, AClipThatFailsToOpenBecomesMissingMediaAndKeepsItsTransport) {
+    HiddenGl gl;
+    if (!gl.ok) GTEST_SKIP() << "no GL 3.3 context";
+    const fs::path clip = copyFixtureClip("qm_undecodable_clip.mp4");
+    ASSERT_FALSE(clip.empty());
+    EditorState es;
+    Quad* quad = addFullQuad(es);
+    SourceManager sm;
+    sm.setOpenHookForTesting([](const fs::path&) { throw std::runtime_error("no decoder for this stream"); });
+
+    const UUID id = sm.getOrCreateVideoSource(clip);
+    ASSERT_FALSE(id.isNull());
+    quad->getTexture().mediaId = id;
+    es.quadTexturePaths[quad->getId()] = utf8FromPath(clip);
+    Project::TransportData saved;
+    saved.playing = true;
+    saved.loopMode = LoopMode::PING_PONG;
+    saved.speed = 1.5f;
+    applySavedTransport(sm, id, saved);
+    sm.finishBackgroundWork();
+    adoptFailedOpens(es, sm);
+
+    EXPECT_FALSE(sm.hasSource(id)) << "its empty source is removed";
+    ASSERT_EQ(es.missingSources.count(id), 1u);
+    const std::vector<MissingMediaItem> items = collectMissingMedia(es);
+    ASSERT_EQ(items.size(), 1u) << "the Missing Media window lists it";
+    EXPECT_EQ(items.front().sourceId, id);
+    EXPECT_EQ(items.front().quadUses, 1);
+    const auto map = buildQuadTextureMap(es, &sm, SurfaceView::Output);
+    ASSERT_EQ(map.count(quad->getId()), 1u);
+    EXPECT_EQ(map.at(quad->getId()), es.missingBlackTexture.get()) << "black on the projectors";
+    EXPECT_TRUE(sm.takeFailedOpens().empty());
+
+    const auto expectSaved = [&saved](const Project& project, const char* when) {
+        ASSERT_EQ(project.getSources().size(), 1u) << when;
+        const Project::SourceData& source = project.getSources().front();
+        EXPECT_EQ(source.kind, "video") << when;
+        ASSERT_TRUE(source.transport.has_value()) << when;
+        EXPECT_EQ(source.transport->playing, saved.playing) << when;
+        EXPECT_EQ(source.transport->loopMode, saved.loopMode) << when;
+        EXPECT_FLOAT_EQ(source.transport->speed, saved.speed) << when;
+    };
+    Project first;
+    syncEditorToProject(es, nullptr, &sm, first);
+    expectSaved(first, "first save");
+    const fs::path file = fs::temp_directory_path() / "qm_undecodable_roundtrip.qmap";
+    ASSERT_TRUE(ProjectSerializer::save(first, file));
+    auto reloaded = ProjectSerializer::load(file);
+    ASSERT_TRUE(reloaded);
+    EditorState loaded;
+    SourceManager loadedSources;  // the file exists, so it is tried again: still undecodable
+    loadedSources.setOpenHookForTesting([](const fs::path&) { throw std::runtime_error("no decoder for this stream"); });
+    syncProjectToEditor(loaded, nullptr, reloaded.value(), &loadedSources, nullptr);
+    loadedSources.finishBackgroundWork();
+    adoptFailedOpens(loaded, loadedSources);
+    EXPECT_EQ(collectMissingMedia(loaded).size(), 1u);
+    Project second;
+    syncEditorToProject(loaded, nullptr, &loadedSources, second);
+    expectSaved(second, "save after load");
+
+    std::error_code ec;
+    fs::remove(file, ec);
+    fs::remove(clip, ec);
 }

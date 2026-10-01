@@ -17,10 +17,13 @@
 #include "video/VideoDecoder.hpp"
 #include "../video/TestClips.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -224,29 +227,99 @@ TEST_F(AsyncSourceLifecycle, AStandInShowsUntilTheFirstFrame) {
     EXPECT_GT(sm.getTexture(replacement)->getWidth(), 0);
 }
 
-// A file that exists but is not a video: the source stays, empty, and says why (a missing
-// file is still refused outright, so it can be kept as missing media).
-TEST_F(AsyncSourceLifecycle, AFileThatCannotBeDecodedLeavesAnEmptySourceThatSaysWhy) {
+// A file that exists but cannot be a video is refused outright, as a missing one is, so
+// the caller keeps it as missing media (TD-35 review: it became a source that never
+// showed anything): bytes no container reads, and a container with sound and no video.
+TEST_F(AsyncSourceLifecycle, AFileThatIsNotAVideoIsRefusedOutright) {
     const fs::path junk = fs::temp_directory_path() / "qm_async_not_a_video.mp4";
     {
         std::ofstream out(junk, std::ios::binary | std::ios::trunc);
         for (int i = 0; i < 4096; ++i) out.put(static_cast<char>((i * 131) & 0xff));
     }
+    const fs::path sound = fs::temp_directory_path() / "qm_async_sound_only.mp4";
+    {
+        std::ofstream out(sound, std::ios::binary | std::ios::trunc);
+        const auto u32 = [&out](uint32_t v) { for (int i = 0; i < 4; ++i) out.put(static_cast<char>((v >> (8 * i)) & 0xff)); };
+        const auto u16 = [&out](uint16_t v) { out.put(static_cast<char>(v & 0xff)); out.put(static_cast<char>(v >> 8)); };
+        const uint32_t samples = 8000;
+        out.write("RIFF", 4);
+        u32(36 + samples * 2);
+        out.write("WAVEfmt ", 8);
+        u32(16);
+        u16(1);  // PCM, mono, 8 kHz, 16-bit
+        u16(1);
+        u32(8000);
+        u32(16000);
+        u16(2);
+        u16(16);
+        out.write("data", 4);
+        u32(samples * 2);
+        for (uint32_t i = 0; i < samples; ++i) u16(static_cast<uint16_t>((i * 97) & 0x3fff));
+    }
     SourceManager sm;
     EXPECT_TRUE(sm.createVideoSource(fs::temp_directory_path() / "qm_async_no_such_file.mp4").isNull());
-    const UUID id = sm.createVideoSource(junk);
-    ASSERT_FALSE(id.isNull());
-    sm.finishBackgroundWork();
-    auto* playable = sm.getSourceAs<PlayableSource>(id);
-    ASSERT_NE(playable, nullptr);
-    EXPECT_FALSE(sm.getSource(id)->isReady());
-    EXPECT_FALSE(playable->getErrorMessage().empty());
-    for (int i = 0; i < 3; ++i) sm.updateAll(1.0 / 60.0);
-    EXPECT_EQ(sm.getSource(id)->getCurrentFrame(), nullptr);
-    sm.removeSource(id);
-    sm.finishBackgroundWork();
+    EXPECT_TRUE(sm.createVideoSource(junk).isNull());
+    EXPECT_TRUE(sm.getOrCreateVideoSource(sound).isNull());
+    EXPECT_EQ(sm.getSourceCount(), 0u);
+    EXPECT_EQ(sm.getOpeningCount(), 0u);
     std::error_code ec;
     fs::remove(junk, ec);
+    fs::remove(sound, ec);
+}
+
+// A file that passed the probe but whose open fails on the opener thread, here by an
+// exception (TD-35 review: one left the source opening forever, getOpeningCount never
+// drained): the open finishes as failed, the source stays empty, says why, keeps the
+// transport it was given and is listed once by takeFailedOpens().
+TEST_F(AsyncSourceLifecycle, AnOpenThatFailsLeavesAnEmptySourceThatKeepsItsTransport) {
+    SourceManager sm;
+    sm.setOpenHookForTesting([](const fs::path&) { throw std::runtime_error("cannot open this stream"); });
+    const UUID id = sm.createVideoSource(clip_);
+    ASSERT_FALSE(id.isNull());
+    auto* playable = sm.getSourceAs<PlayableSource>(id);
+    ASSERT_NE(playable, nullptr);
+    playable->setLoopMode(LoopMode::PING_PONG);
+    playable->play();
+
+    sm.finishBackgroundWork();
+    EXPECT_EQ(sm.getOpeningCount(), 0u) << "the open never finished";
+    EXPECT_FALSE(sm.getSource(id)->isReady());
+    EXPECT_FALSE(sm.getSourceAs<VideoFileSource>(id)->isOpening());
+    EXPECT_FALSE(playable->getErrorMessage().empty());
+    EXPECT_EQ(playable->getPlaybackState(), PlaybackState::PLAYING) << "the failed open reset the transport";
+    EXPECT_EQ(playable->getLoopMode(), LoopMode::PING_PONG);
+    EXPECT_EQ(sm.takeFailedOpens(), std::vector<UUID>{id});
+    EXPECT_TRUE(sm.takeFailedOpens().empty());
+    for (int i = 0; i < 3; ++i) sm.updateAll(1.0 / 60.0);
+    EXPECT_EQ(sm.getSource(id)->getCurrentFrame(), nullptr);
+    EXPECT_FALSE(sm.getTexture(id)->isValid());
+    sm.removeSource(id);
+    sm.finishBackgroundWork();
+}
+
+// A source removed while its open waits behind another on the opener thread is never
+// opened: retire() cancels it (TD-35 review: no test noticed when the cancel was gone).
+TEST_F(AsyncSourceLifecycle, ASourceRemovedBeforeItsOpenStartsIsNeverOpened) {
+    SourceManager sm;
+    std::atomic<int> opens{0};
+    std::atomic<bool> release{false};
+    sm.setOpenHookForTesting([&](const fs::path&) {
+        if (opens.fetch_add(1) != 0) return;
+        while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));  // the first open waits
+    });
+    const UUID first = sm.createVideoSource(clip_);
+    const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+    while (opens == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const UUID queued = sm.createVideoSource(clip_);  // waits behind the first
+    sm.removeSource(queued);
+    release = true;
+    sm.finishBackgroundWork();
+    EXPECT_EQ(opens, 1) << "the removed source's file was opened anyway";
+    EXPECT_FALSE(sm.hasSource(queued));
+    EXPECT_TRUE(sm.getSource(first)->isReady());
+    EXPECT_EQ(sm.getOpeningCount(), 0u);
 }
 
 // Zero-copy (ADR-056): the opener prepares the interop device, so the first frame only

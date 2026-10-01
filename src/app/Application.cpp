@@ -595,6 +595,7 @@ void Application::render() {
     // main thread / main GL context, once per frame, before any quad is drawn.
     if (m_sourceManager) {
         m_sourceManager->updateAll(static_cast<double>(deltaTime));
+        adoptFailedOpens(*m_editorState, *m_sourceManager);  // undecodable clips: missing media
         // Each video's sound follows the clock it just advanced (ADR-050 §2).
         syncAudio();
     }

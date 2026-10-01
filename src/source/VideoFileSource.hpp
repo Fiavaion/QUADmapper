@@ -121,7 +121,8 @@ public:
     static std::unique_ptr<VideoDecoder> openDecoder(const std::filesystem::path& path,
                                                      const DecodeOptions& options);  // any thread
     void beginOpen();
-    // False (logged; getErrorMessage() says so) when `decoder` is null or not open.
+    // False (logged; getErrorMessage() says so) when `decoder` is null or not open; the
+    // source stays empty and keeps the transport it was given.
     bool finishOpen(std::unique_ptr<VideoDecoder> decoder);
     bool isOpening() const;
     const DecodeOptions& getDecodeOptions() const { return options_; }

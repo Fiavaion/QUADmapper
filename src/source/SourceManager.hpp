@@ -98,12 +98,14 @@ public:
     /**
      * @brief Create a video file source
      * @param path Path to video file
-     * @return UUID of created source, or null UUID when the file does not exist
+     * @return UUID of created source, or null UUID when the file does not exist, is not
+     *         a container FFmpeg can read or holds no video (a cheap header probe)
      *
      * A clip decoded through FFmpeg is opened off the main thread (TD-35): the source is
      * registered at once, not ready, and its transport (play, seek, loop, ...) already
-     * works; updateAll() makes it ready once its decoder is open, or leaves it empty with
-     * getErrorMessage() set when the file cannot be decoded. A HAP clip opens here.
+     * works; updateAll() makes it ready once its decoder is open, or, when its video
+     * cannot be decoded after all, leaves it empty with getErrorMessage() set, its
+     * transport kept, and lists it in takeFailedOpens(). A HAP clip opens here.
      */
     UUID createVideoSource(const std::filesystem::path& path);
 
@@ -171,6 +173,21 @@ public:
      * @brief Sources still opening off the main thread
      */
     size_t getOpeningCount() const { return opening_.size(); }
+
+    /**
+     * @brief Video sources whose open off the main thread failed since the last call
+     *
+     * Each is still registered, empty and not ready, with getErrorMessage() set and the
+     * transport it was given kept; the caller decides what becomes of it (the editor
+     * turns it into missing media). Main thread.
+     */
+    std::vector<UUID> takeFailedOpens();
+
+    /**
+     * @brief Test hook: run on the opener thread before each video file is opened
+     *        (sources created from now on); it may block or throw
+     */
+    void setOpenHookForTesting(std::function<void(const std::filesystem::path&)> hook);
 
     /**
      * @brief Show `standIn`'s texture for `id` until `id` has a frame of its own
@@ -360,6 +377,8 @@ private:
     // TD-35: video files open on opener_ and removed videos are freed on reaper_, so
     // neither blocks the main thread. Both started on first use, joined by the destructor.
     std::vector<std::shared_ptr<PendingOpen>> opening_;
+    std::vector<UUID> failedOpens_;     // see takeFailedOpens()
+    std::function<void(const std::filesystem::path&)> openHookForTesting_;
     std::vector<RetiredGl> retiredGl_;  // freed one a frame, oldest first
     std::unique_ptr<BackgroundWorker> opener_;
     std::unique_ptr<BackgroundWorker> reaper_;

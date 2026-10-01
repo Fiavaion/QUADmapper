@@ -41,7 +41,10 @@ inline Texture* missingMediaTexture(EditorState& es, SurfaceView view) {
 // SourceManager — the single media model the renderer reads. Anything without a
 // live source falls back to the legacy quadTextures map (UV test grid + any
 // not-yet-migrated assignment). A surface bound to a missing media file gets the
-// missing look for `view`: black on projector outputs, a checker in the editor.
+// missing look for `view`: black on projector outputs, a checker in the editor. A
+// surface whose source has nothing to show yet (a clip still opening off the main
+// thread, TD-35) is black in every view: never the renderer's white default texture,
+// which would glow on the projectors for as long as the open takes.
 //
 // Every scene's quads and 3D objects are included (the map is keyed by globally-unique id),
 // so the editor viewport, the per-output render, and the preview FBOs can all
@@ -51,6 +54,7 @@ buildQuadTextureMap(EditorState& es, SourceManager* sm, SurfaceView view) {
     std::unordered_map<UUID, Texture*> map;
     auto resolve = [&](const UUID& mediaId, Texture* fallback) -> Texture* {
         Texture* tex = (sm && !mediaId.isNull()) ? sm->getTexture(mediaId) : nullptr;
+        if (tex && !tex->isValid()) return missingMediaTexture(es, SurfaceView::Output);  // black
         if (!tex) tex = fallback;
         const bool missing = !mediaId.isNull() && es.missingSources.count(mediaId) > 0;
         switch (chooseSurfaceDraw(tex != nullptr, missing, view)) {

@@ -46,8 +46,9 @@ void VideoPlayer::beginOpen(const std::filesystem::path& path) {
 }
 
 bool VideoPlayer::finishOpen(std::unique_ptr<VideoDecoder> decoder) {
-    if (!opening_ || !decoder || !decoder->isOpen()) return false;
+    if (!opening_) return false;
     opening_ = false;
+    if (!decoder || !decoder->isOpen()) return false;
     decoder_ = std::move(decoder);  // the unopened one it replaces holds no thread or file
     // Play, pause, seek, speed, loop and lock given while the file opened already moved
     // the clock: keep its position and state, now with the clip's duration.

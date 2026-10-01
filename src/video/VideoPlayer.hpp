@@ -42,8 +42,10 @@ public:
      * beginOpen() unloads and names the file; the transport (play, pause, seek, speed,
      * loop, lock) works from then on and its clock runs, while a worker opens a
      * VideoDecoder on the file. finishOpen() takes that decoder and starts decoding
-     * wherever the clock is by then. False (nothing changed) if no open was begun or
-     * the decoder is not open; the player then stays empty until unload().
+     * wherever the clock is by then. False if no open was begun, or if the decoder is
+     * not open: the player is then no longer opening and stays empty, but its transport
+     * state (playing, loop, speed, lock) is kept, so a project saved now writes the clip
+     * back as it was asked to play.
      */
     void beginOpen(const std::filesystem::path& path);
     bool finishOpen(std::unique_ptr<VideoDecoder> decoder);

@@ -39,8 +39,7 @@ void VideoFileSource::beginOpen() {
 bool VideoFileSource::finishOpen(std::unique_ptr<VideoDecoder> decoder) {
     if (!player_->finishOpen(std::move(decoder))) {
         Logger::error("VideoFileSource: Failed to load '{}'", utf8FromPath(path_));
-        player_->unload();
-        openFailed_ = true;
+        openFailed_ = true;  // the transport it was given is kept, for the project to save
         return false;
     }
 

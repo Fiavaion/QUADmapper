@@ -17,6 +17,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <exception>
+#include <utility>
 
 #ifdef QUADMAPPER_HAS_FFMPEG
 extern "C" {
@@ -29,40 +31,52 @@ namespace quadmapper {
 
 namespace {
 
-// Cheap codec probe: open the container, check whether its video stream is HAP,
-// close. FFmpeg stays behind this .cpp (ADR-011); routes HAP clips to the
-// demux-only HapFileSource instead of the FFmpeg-decode VideoFileSource (ADR-044).
-// Runs on the main thread, so it reads the container header only: HAP lives in
-// containers (QuickTime, AVI, Matroska) whose header names the codec. The streams are
-// probed (avformat_find_stream_info decodes frames) only when the header does not.
-bool isHapContainer(const std::filesystem::path& path) {
+// What a cheap probe of a video file's container finds.
+enum class ContainerKind {
+    Unreadable,  // FFmpeg cannot open it as a container: it cannot be decoded
+    NoVideo,     // it opens, but holds no video stream (sound only, for example)
+    Hap,         // its video stream is HAP
+    Video,       // any other video stream
+};
+
+// Cheap codec probe: open the container, look at its streams, close. FFmpeg stays
+// behind this .cpp (ADR-011); routes HAP clips to the demux-only HapFileSource instead
+// of the FFmpeg-decode VideoFileSource (ADR-044), and refuses a file that cannot be a
+// video before its source exists. Runs on the main thread, so it reads the container
+// header only: HAP lives in containers (QuickTime, AVI, Matroska) whose header names
+// the codec. The streams are probed (avformat_find_stream_info decodes frames) only
+// when the header does not.
+ContainerKind probeContainer(const std::filesystem::path& path) {
 #ifdef QUADMAPPER_HAS_FFMPEG
     AVFormatContext* ctx = nullptr;
     const std::string pathStr = utf8FromPath(path);  // FFmpeg file names are UTF-8
     if (avformat_open_input(&ctx, pathStr.c_str(), nullptr, nullptr) < 0) {
-        return false;
+        return ContainerKind::Unreadable;
     }
 
     auto scan = [ctx](bool& unknown) {
         unknown = false;
+        bool video = false;
         for (unsigned int i = 0; i < ctx->nb_streams; ++i) {
             const AVCodecParameters* cp = ctx->streams[i]->codecpar;
-            if (cp->codec_id == AV_CODEC_ID_HAP) return true;
-            if (cp->codec_id == AV_CODEC_ID_NONE) unknown = true;
+            if (cp->codec_id == AV_CODEC_ID_HAP) return ContainerKind::Hap;
+            if (cp->codec_type == AVMEDIA_TYPE_VIDEO) video = true;
+            if (cp->codec_id == AV_CODEC_ID_NONE || cp->codec_type == AVMEDIA_TYPE_UNKNOWN) unknown = true;
         }
-        return false;
+        return video ? ContainerKind::Video : ContainerKind::NoVideo;
     };
     bool unknown = false;
-    bool isHap = scan(unknown);
-    if (!isHap && (unknown || ctx->nb_streams == 0) && avformat_find_stream_info(ctx, nullptr) >= 0) {
-        isHap = scan(unknown);
+    ContainerKind kind = scan(unknown);
+    if (kind != ContainerKind::Hap && (unknown || ctx->nb_streams == 0) &&
+        avformat_find_stream_info(ctx, nullptr) >= 0) {
+        kind = scan(unknown);
     }
 
     avformat_close_input(&ctx);
-    return isHap;
+    return kind;
 #else
     (void)path;
-    return false;
+    return ContainerKind::Video;
 #endif
 }
 
@@ -163,12 +177,17 @@ UUID SourceManager::createVideoSource(const std::filesystem::path& path) {
         Logger::error("SourceManager: Failed to create video source for '{}': no such file", utf8FromPath(path));
         return UUID();
     }
-    bool hap = false;
+    ContainerKind kind = ContainerKind::Video;
     {
         ScopedMainThreadTiming probeTiming("videoProbe");
-        hap = isHapContainer(path);
+        kind = probeContainer(path);
     }
-    if (hap) {
+    if (kind == ContainerKind::Unreadable || kind == ContainerKind::NoVideo) {
+        Logger::error("SourceManager: Failed to create video source for '{}': {}", utf8FromPath(path),
+                      kind == ContainerKind::Unreadable ? "not a file FFmpeg can read" : "it holds no video");
+        return UUID();
+    }
+    if (kind == ContainerKind::Hap) {
         Logger::debug("SourceManager: '{}' is HAP — using HapFileSource", utf8FromPath(path.filename()));
         const UUID id = registerSource(std::make_unique<HapFileSource>(path));
         if (id.isNull()) Logger::error("SourceManager: Failed to create video source for '{}'", utf8FromPath(path));
@@ -192,13 +211,22 @@ UUID SourceManager::createVideoSource(const std::filesystem::path& path) {
     pending->options = options;
     opening_.push_back(pending);
     if (!opener_) opener_ = std::make_unique<BackgroundWorker>("Video opener");
-    opener_->post([pending, interop = dxInterop_.get()] {
+    // Whatever happens in the open, `done` is set: an exception fails the open (the
+    // source then goes the way of a file that cannot be decoded), never leaves it opening.
+    opener_->post([pending, interop = dxInterop_.get(), hook = openHookForTesting_] {
         if (!pending->cancelled) {
-            std::unique_ptr<VideoDecoder> decoder = VideoFileSource::openDecoder(pending->path, pending->options);
-            if (decoder && decoder->isZeroCopy() && !pending->cancelled) {
-                interop->prepare(VideoDecoder::sharedD3dDevice());
+            try {
+                if (hook) hook(pending->path);
+                std::unique_ptr<VideoDecoder> decoder = VideoFileSource::openDecoder(pending->path, pending->options);
+                if (decoder && decoder->isZeroCopy() && !pending->cancelled) {
+                    interop->prepare(VideoDecoder::sharedD3dDevice());
+                }
+                pending->decoder = std::move(decoder);
+            } catch (const std::exception& e) {
+                Logger::error("SourceManager: Opening '{}' failed: {}", utf8FromPath(pending->path), e.what());
+            } catch (...) {
+                Logger::error("SourceManager: Opening '{}' failed", utf8FromPath(pending->path));
             }
-            pending->decoder = std::move(decoder);
         }
         pending->done.store(true, std::memory_order_release);
     });
@@ -345,7 +373,7 @@ void SourceManager::adoptOpenedSources() {
         auto* video = entry != sources_.end() ? dynamic_cast<VideoFileSource*>(entry->second.source.get()) : nullptr;
         if (video && video->isOpening()) {
             ScopedMainThreadTiming timing("finishOpen");
-            video->finishOpen(std::move(decoder));
+            if (!video->finishOpen(std::move(decoder))) failedOpens_.push_back(pending.id);
         }
         if (decoder) retireDecoder(std::move(decoder));  // its source was removed meanwhile
         it = opening_.erase(it);
@@ -362,6 +390,14 @@ void SourceManager::finishBackgroundWork() {
     adoptOpenedSources();
     if (reaper_) reaper_->drain();
     retiredGl_.clear();
+}
+
+std::vector<UUID> SourceManager::takeFailedOpens() {
+    return std::exchange(failedOpens_, {});
+}
+
+void SourceManager::setOpenHookForTesting(std::function<void(const std::filesystem::path&)> hook) {
+    openHookForTesting_ = std::move(hook);
 }
 
 void SourceManager::setStandIn(const UUID& id, const UUID& standIn) {
@@ -431,10 +467,13 @@ Texture* SourceManager::getTexture(const UUID& id) {
 
     SourceEntry& entry = it->second;
 
-    // A replacement still opening shows the source it replaces (setStandIn).
+    // A replacement still opening shows the source it replaces (setStandIn), when that
+    // has a picture to show.
     if (!entry.hasFrame && !entry.standIn.isNull()) {
         auto standIn = sources_.find(entry.standIn);
-        if (standIn != sources_.end() && standIn->second.texture) return standIn->second.texture.get();
+        if (standIn != sources_.end() && standIn->second.texture && standIn->second.texture->isValid()) {
+            return standIn->second.texture.get();
+        }
     }
 
     // For GPU-native sources, the texture wraps the source's native texture

@@ -137,7 +137,14 @@ void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
             video->play();
         }
     }
-    snprintf(es.statusMessage, sizeof(es.statusMessage), "Video loaded: %s", es.videoPath);
+    // A clip opens off the main thread (TD-35); one that cannot be decoded is reported
+    // when its open fails (adoptFailedOpens).
+    const TextureSource* source = ctx.sourceManager->getSource(sid);
+    if (source && source->isReady()) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Video loaded: %s", es.videoPath);
+    } else {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Opening video: %s", es.videoPath);
+    }
     es.statusTimer = 3.0f;
 }
 

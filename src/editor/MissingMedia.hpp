@@ -11,6 +11,7 @@
 #include "EditorState.hpp"
 #include "MediaAssign.hpp"
 #include "MeshLoads.hpp"
+#include "StatusLine.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
@@ -120,9 +121,38 @@ inline void rebindMissingSource(EditorState& es, const UUID& missingId, const st
     es.missingSources.erase(missingId);
 }
 
+// A clip whose file opened off the main thread but could not be decoded (TD-35) becomes
+// missing media under its own id, as a file gone at load does: its quads and objects
+// stay bound (black on projectors, a checker in the editor), the Missing Media window
+// lists it, a relocation must load, and saving writes it back with the transport it was
+// given. Its empty source is removed. Main thread, once a frame after the sources update.
+inline void adoptFailedOpens(EditorState& es, SourceManager& sm) {
+    bool listed = false;
+    for (const UUID& id : sm.takeFailedOpens()) {
+        const auto* playable = sm.getSourceAs<PlayableSource>(id);
+        if (!playable) continue;  // removed meanwhile
+        const std::filesystem::path file = sm.getSourcePath(id);
+        Project::SourceData missing;
+        missing.id = id;
+        missing.kind = "video";
+        missing.path = absolutePathString(file);
+        missing.transport = transportOf(*playable);
+        missing.missing = true;
+        es.missingSources[id] = std::move(missing);
+        if (es.activeVideoSourceId == id) es.activeVideoSourceId = UUID();
+        sm.removeSource(id);
+        postStatus(es, "Could not open video: " + utf8FromPath(file.filename()));
+        listed = true;
+    }
+    if (listed && !collectMissingMedia(es).empty()) es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
+}
+
 // Load newPath in place of a missing source and rebind everything that used it.
 // Returns why the file was not accepted, or empty once it was. The file may have
-// another extension or type than the one it replaces; it is accepted only if it loads.
+// another extension or type than the one it replaces; it is accepted only if it loads:
+// an image is decoded here, a video must hold a video stream FFmpeg can read (checked
+// here), and one whose decoding then fails off the main thread comes back as missing
+// (adoptFailedOpens).
 inline std::string relocateMissingSource(EditorState& es, SourceManager& sm, const UUID& missingId,
                                          const std::filesystem::path& newPath) {
     auto missing = es.missingSources.find(missingId);
