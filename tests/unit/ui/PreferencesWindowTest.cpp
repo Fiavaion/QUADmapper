@@ -328,3 +328,28 @@ TEST_F(KeyboardTabTest, FixedKeysCannotBeChanged) {
     EXPECT_FALSE(hover(rowButton(action_id::BLACKOUT, "Change")));
     EXPECT_FALSE(es.capturingChord);
 }
+
+// TD-34: Browse's folder dialog has no owner, so it can be answered after the perform
+// lock was taken. The answer is refused (ADR-051 §4 blocks Preferences edits), and
+// nothing is saved; unlocked, the same answer is taken and saved.
+TEST(PreferencesWindowTest, AMediaFolderPickedAfterLockingIsRefused) {
+    TempPrefsFile file;
+    PreferencesDialog dialog;
+    dialog.setConfigPath(file.path);
+    EditorState es;
+    EditorContext ctx{es, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    const std::string folder = std::filesystem::temp_directory_path().string();
+
+    lockPerform(es);
+    dialog.mediaFolderChosen(ctx, folder);
+    EXPECT_TRUE(dialog.getPreferences().general.defaultMediaFolder.empty());
+    EXPECT_FALSE(std::filesystem::exists(file.path)) << "nothing saved";
+    EXPECT_NE(std::string(es.statusMessage).find("the show is locked"), std::string::npos)
+        << es.statusMessage;
+
+    requestPerformUnlock(es);
+    ASSERT_TRUE(confirmPerformUnlock(es));
+    dialog.mediaFolderChosen(ctx, folder);
+    EXPECT_EQ(dialog.getPreferences().general.defaultMediaFolder, folder);
+    EXPECT_EQ(file.read()["general"]["defaultMediaFolder"], folder);
+}

@@ -2,6 +2,7 @@
 #include "editor/ActionRegistry.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
 #include "audio/AudioEngine.hpp"
 #include "scene/SceneFade.hpp"
 #include "ui/ShortcutRouter.hpp"  // currentChordMods
@@ -39,13 +40,18 @@ void PreferencesDialog::beforeBegin(EditorContext& /*ctx*/) {
 
 void PreferencesDialog::tick(EditorContext& ctx) {
     std::vector<std::string> chosen;
-    if (folderDialog_.takeResult(chosen) && !chosen.empty()) {
-        preferences_.general.defaultMediaFolder = chosen.front();
-        save();
-    }
+    if (folderDialog_.takeResult(chosen) && !chosen.empty()) mediaFolderChosen(ctx, chosen.front());
     if (!visible) audioTabOpen_ = false;
     // A closed window or a locked show ends a capture: the keys go back to the shortcuts.
     if (!captureId_.empty() && (!visible || ctx.es.performLock.isOn())) endChordCapture(ctx);
+}
+
+void PreferencesDialog::mediaFolderChosen(EditorContext& ctx, const std::string& folder) {
+    // The dialog has no owner, so it can be answered after the perform lock was taken,
+    // which blocks Preferences edits (ADR-051 §4).
+    if (folder.empty() || refusedByPerformLock(ctx.es, "Changing the default media folder")) return;
+    preferences_.general.defaultMediaFolder = folder;
+    save();
 }
 
 void PreferencesDialog::drawContent(EditorContext& ctx) {

@@ -45,6 +45,11 @@ public:
     void tick(EditorContext& ctx) override;
     void drawContent(EditorContext& ctx) override;
 
+    // Browse's answer (empty = cancelled), from tick() once the dialog closes. The
+    // dialog has no owner, so it can be answered after the perform lock was taken: the
+    // answer is then refused, with a status (ADR-051 §4 blocks Preferences edits).
+    void mediaFolderChosen(EditorContext& ctx, const std::string& folder);
+
     const AppPreferences& getPreferences() const { return preferences_; }
     AppPreferences& getPreferences() { return preferences_; }
 
