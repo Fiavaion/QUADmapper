@@ -509,6 +509,28 @@ TEST_F(PerformLockUiTest, UnlockingFromTheMenuAsksFirst) {
     EXPECT_FALSE(es.performLock.isConfirmingUnlock());
 }
 
+// A stray Enter or Space on the prompt keeps the show locked: keyboard navigation
+// starts on Stay Locked, so the key answers that, never Unlock.
+TEST_F(PerformLockUiTest, EnterOrSpaceOnTheUnlockPromptStaysLocked) {
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // as the app runs
+    clickPerformLockItem();
+    ASSERT_TRUE(es.performLock.isOn());
+    for (ImGuiKey key : {ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Space}) {
+        requestPerformUnlock(es);
+        frame();  // the session dialogs open the modal
+        frame();
+        ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr) << ImGui::GetKeyName(key);
+        // A keyboard user's navigation cursor is showing (a mouse click hides it, and
+        // with it hidden Enter and Space activate nothing).
+        ImGui::SetNavCursorVisible(true);
+        press({key});
+        EXPECT_TRUE(es.performLock.isOn()) << ImGui::GetKeyName(key) << " unlocked the show";
+        EXPECT_FALSE(es.performLock.isConfirmingUnlock()) << ImGui::GetKeyName(key) << " did not answer Stay Locked";
+        frame();
+        EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr) << ImGui::GetKeyName(key);
+    }
+}
+
 // ---- The unlock prompt never takes the show off air -----------------------------------
 
 // perform.escape acts with a popup open (the way out of fullscreen is one press), and

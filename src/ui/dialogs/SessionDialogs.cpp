@@ -73,9 +73,11 @@ void SessionDialogs::drawContent(EditorContext& ctx) {
         ImGui::Spacing();
         if (ImGui::Button("Unlock")) confirmPerformUnlock(es);
         ImGui::SameLine();
-        if (ImGui::Button("Stay Locked") || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-            cancelPerformUnlock(es);
-        }
+        const bool stay = ImGui::Button("Stay Locked");
+        // Keyboard navigation starts on Stay Locked, so a stray Enter or Space keeps
+        // the show locked; unlocking takes a deliberate click or a move to Unlock.
+        ImGui::SetItemDefaultFocus();
+        if (stay || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) cancelPerformUnlock(es);
         if (!es.performLock.isConfirmingUnlock()) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }

@@ -1130,8 +1130,9 @@ TEST_F(PerformLockSweepTest, SessionModalsChangeNothing) {
         std::vector<ImGuiID> skip;
         std::set<ImGuiKey> skipKeys;
         if (target.window == "Unlock the Show?##performlock") {
-            // Unlock, by click or by Enter / Space on the button keyboard navigation
-            // puts focus on first, is the confirmation the lock asks for.
+            // Unlock, by click or by Enter / Space once the arrows or Tab have moved
+            // keyboard focus onto it (it starts on Stay Locked), is the confirmation
+            // the lock asks for.
             skip.push_back(ImHashStr("Unlock", 0, ImHashStr(target.window.c_str())));
             skipKeys = {ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Space};
         }
