@@ -47,6 +47,30 @@ namespace {
 // took 4.3 s); failing here reports it before the ctest TIMEOUT (120 s) ends the run.
 constexpr double OPEN_TIMEOUT_SECONDS = 60.0;
 
+// The warm-up cycle's wedge budget. It carries one-off, per-process set-up the later
+// cycles never repeat: the first video frame opens the GL/D3D11 interop device on the
+// main thread (zeroCopyDeviceOpen: 0.9-6.3 s measured under ctest -j 4 beside a
+// 16-video bench), and the first output frame builds its render targets. Every cycle
+// after warm-up keeps cfg.cycleTimeoutMs, so the wedge check still guards them all.
+constexpr int WARMUP_TIMEOUT_MS = 30000;
+
+// Megabytes, rounded toward zero, of a signed byte difference.
+long deltaMB(std::size_t now, std::size_t base) {
+    return static_cast<long>((static_cast<long long>(now) - static_cast<long long>(base)) / (1024 * 1024));
+}
+
+// The one-off main-thread cost of opening the zero-copy interop device (TD-35's
+// remainder), so every run reports it.
+void logZeroCopyDeviceOpen() {
+    for (const MainThreadTimings::Summary& s : MainThreadTimings::summarize()) {
+        if (s.op == "zeroCopyDeviceOpen") {
+            Logger::info("[STRESS] Zero-copy device open (once per process, main thread): {} ms", s.maxMs);
+            return;
+        }
+    }
+    Logger::info("[STRESS] Zero-copy device open: not opened in this run");
+}
+
 }  // namespace
 
 bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
@@ -98,6 +122,16 @@ std::size_t processWorkingSetBytes() {
     return pmc.WorkingSetSize;
 }
 
+std::size_t processPrivateBytes() {
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                              sizeof(pmc))) {
+        return 0;
+    }
+    return pmc.PrivateUsage;
+}
+
 // ---------------------------------------------------------------------------
 // runStress — QM-081 H2/H3 headless perform-mode stress / leak harness.
 //
@@ -106,7 +140,7 @@ std::size_t processWorkingSetBytes() {
 //      TestPattern source (no file dependency).  Built once, before the loop.
 //   2. Run ONE warm-up cycle (enter → N frames → exit) to let the output
 //      frames (ADR-054) and textures settle.
-//   3. Snapshot GlObjectStats::Snapshot::capture() + working set immediately
+//   3. Snapshot GlObjectStats::Snapshot::capture() + working set + private bytes immediately
 //      after warm-up exit — the consistent "post-exit" phase.
 //   4. Loop cfg.cycles: enter → N frames (with wedge watchdog) → exit →
 //      snapshot post-exit.  Compare every snapshot to baseline; track worst.
@@ -225,7 +259,7 @@ int Application::runStress(const StressConfig& cfg) {
     }
 
     // ---- Helper: one full cycle with wedge watchdog + pause/resume (H3/H4) --
-    // Returns false if the cycle exceeded cfg.cycleTimeoutMs or the pause/resume
+    // Returns false if the cycle exceeded budgetMs or the pause/resume
     // recovery check fails (LESSON-BUG-006 repro).
     bool pauseResumeWedge = false;
     bool audioLeak = false;  // --audio-churn: a replaced source kept its audio
@@ -254,8 +288,8 @@ int Application::runStress(const StressConfig& cfg) {
         const auto* video = m_sourceManager->getSourceAs<VideoFileSource>(sourceId);
         return video && video->isOpening();
     };
-    auto runCycle = [&]() -> bool {
-        const double budgetSec = cfg.cycleTimeoutMs / 1000.0;
+    auto runCycle = [&](int budgetMs) -> bool {
+        const double budgetSec = budgetMs / 1000.0;
 
         // Audio churn: a fresh video source (and so a fresh audio attachment) per cycle.
         // The first sync after the removal frees the old attachment.
@@ -333,7 +367,7 @@ int Application::runStress(const StressConfig& cfg) {
             if (!opening && (glfwGetTime() - cycleStart) > budgetSec) {
                 if (needsMedia && !sourceUp()) {
                     Logger::error("[STRESS] The media source was not up (a frame shown, its audio in "
-                                  "the mix) {} ms into the cycle.", cfg.cycleTimeoutMs);
+                                  "the mix) {} ms into the cycle.", budgetMs);
                 }
                 m_outputManager->exitPerformMode();
                 return false;
@@ -423,25 +457,28 @@ int Application::runStress(const StressConfig& cfg) {
     };
 
     // ---- 3. Warm-up cycle ---------------------------------------------------
-    Logger::info("[STRESS] Warm-up cycle...");
-    if (!runCycle()) {
+    const int warmupBudgetMs = std::max(cfg.cycleTimeoutMs, WARMUP_TIMEOUT_MS);
+    Logger::info("[STRESS] Warm-up cycle (budget {} ms)...", warmupBudgetMs);
+    if (!runCycle(warmupBudgetMs)) {
         if (pauseResumeWedge) {
             Logger::error("[STRESS] STRESS FAIL (pause-resume wedge) — warm-up cycle failed.");
         } else if (!audioLeak && !openFailed) {
             Logger::error("[STRESS] STRESS FAIL (wedge) — warm-up cycle exceeded {}ms budget.",
-                          cfg.cycleTimeoutMs);
+                          warmupBudgetMs);
         }
         MainThreadTimings::dumpSamples();
         Logger::info("[STRESS] Main-thread time per call (TD-35):\n{}", MainThreadTimings::report());
+        logZeroCopyDeviceOpen();
         return 1;
     }
 
     // Baseline captured immediately after warm-up exit (consistent post-exit phase).
     auto baseline   = GlObjectStats::Snapshot::capture();
     std::size_t wsBaseline = processWorkingSetBytes();
+    std::size_t privateBaseline = processPrivateBytes();
 
-    Logger::info("[STRESS] Baseline captured after warm-up.  Working set: {} MB",
-                 wsBaseline / (1024 * 1024));
+    Logger::info("[STRESS] Baseline captured after warm-up.  Working set: {} MB, private: {} MB",
+                 wsBaseline / (1024 * 1024), privateBaseline / (1024 * 1024));
     measurePacing = true;
 
     // ---- 4. Stress loop (with wedge watchdog + working-set tracking) --------
@@ -450,9 +487,10 @@ int Application::runStress(const StressConfig& cfg) {
     bool anyWedge  = false;
     bool wsExceeded = false;
     std::size_t wsMax   = wsBaseline;
+    std::size_t privateMax = privateBaseline;
 
     for (int c = 0; c < cfg.cycles; ++c) {
-        if (!runCycle()) {
+        if (!runCycle(cfg.cycleTimeoutMs)) {
             // runCycle returns false for two reasons:
             // (a) wall-clock budget exceeded (anyWedge), OR
             // (b) pause-resume recovery check failed (pauseResumeWedge, already logged).
@@ -475,37 +513,39 @@ int Application::runStress(const StressConfig& cfg) {
             worst.shaderPrograms= std::max(worst.shaderPrograms,snap.shaderPrograms);
         }
 
-        // H3: working-set sample (spec §2).
-        std::size_t wsCurrent = processWorkingSetBytes();        if (wsCurrent > wsMax) {
-            wsMax = wsCurrent;
-        }
-        long growthMB = static_cast<long>((wsCurrent - wsBaseline) / (1024 * 1024));
+        // H3: working-set sample (spec §2); private bytes are logged beside it.
+        std::size_t wsCurrent = processWorkingSetBytes();
+        std::size_t privateCurrent = processPrivateBytes();
+        wsMax = std::max(wsMax, wsCurrent);
+        privateMax = std::max(privateMax, privateCurrent);
+        const long growthMB = deltaMB(wsCurrent, wsBaseline);
+        const long privateGrowthMB = deltaMB(privateCurrent, privateBaseline);
         if (growthMB > cfg.workingSetBoundMB) {
             wsExceeded = true;
             Logger::error("[STRESS] STRESS FAIL (working-set) — cycle {} grew {} MB "
                           "(bound {} MB).", c + 1, growthMB, cfg.workingSetBoundMB);
         }
 
-        Logger::info("[STRESS] Cycle {}/{} complete — {} | WS={} MB (delta {} MB)",
+        Logger::info("[STRESS] Cycle {}/{} complete — {} | WS={} MB (delta {} MB) | private={} MB (delta {} MB)",
                      c + 1, cfg.cycles,
                      snap.isFlat(baseline) ? "flat" : "DELTA DETECTED",
-                     wsCurrent / (1024 * 1024),
-                     growthMB);
+                     wsCurrent / (1024 * 1024), growthMB,
+                     privateCurrent / (1024 * 1024), privateGrowthMB);
     }
 
     // ---- 5. Report ----------------------------------------------------------
     MainThreadTimings::dumpSamples();
     Logger::info("[STRESS] Main-thread time per call (TD-35):\n{}", MainThreadTimings::report());
+    logZeroCopyDeviceOpen();
     Logger::info("[STRESS] Worst-case GL diff vs baseline:");
     Logger::info("{}", worst.diff(baseline));
 
-    long finalGrowthMB = static_cast<long>((wsMax - wsBaseline) / (1024 * 1024));
-    Logger::info("[STRESS] Working-set: baseline={} MB  max={} MB  peak-delta={} MB  "
-                 "bound={} MB",
-                 wsBaseline / (1024 * 1024),
-                 wsMax      / (1024 * 1024),
-                 finalGrowthMB,
-                 cfg.workingSetBoundMB);
+    const long finalGrowthMB = deltaMB(wsMax, wsBaseline);
+    Logger::info("[STRESS] Working-set: baseline={} MB  max={} MB  peak-delta={} MB  bound={} MB",
+                 wsBaseline / (1024 * 1024), wsMax / (1024 * 1024), finalGrowthMB, cfg.workingSetBoundMB);
+    Logger::info("[STRESS] Private bytes (not gated): baseline={} MB  max={} MB  peak-delta={} MB",
+                 privateBaseline / (1024 * 1024), privateMax / (1024 * 1024),
+                 deltaMB(privateMax, privateBaseline));
     if (pacingFrames > 0) {
         const double frameMs = pacingSeconds * 1000.0 / pacingFrames;
         Logger::info("[STRESS] Frame pacing: {} outputs, {} frames, avg {} ms/frame "

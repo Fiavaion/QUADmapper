@@ -109,6 +109,23 @@ if(EXISTS "${QM_AUDIO_STRESS_MEDIA}")
             "--media=${QM_AUDIO_STRESS_MEDIA}"
     )
     set_tests_properties(stress_audio_smoke PROPERTIES TIMEOUT 120)
+    # stress_slow_open_smoke — TD-35: video files open on the opener thread, so a slow
+    # open must not count as a wedge. Every open here waits 6 s, longer than the 5 s
+    # cycle budget; the re-created sources' cycles must still pass.
+    add_test(
+        NAME stress_slow_open_smoke
+        COMMAND $<TARGET_FILE:QUADmapper>
+            --stress
+            --cycles=2
+            --outputs=1
+            --frames-per-cycle=30
+            --hidden
+            --source=video
+            --audio-churn
+            --open-delay-ms=6000
+            "--media=${QM_AUDIO_STRESS_MEDIA}"
+    )
+    set_tests_properties(stress_slow_open_smoke PROPERTIES TIMEOUT 120)
 endif()
 # stress_video_smoke — ADR-056: a 10-bit HEVC clip played in hardware (zero-copy where the
 # GL driver can share D3D11 textures) through perform cycles; after the source is

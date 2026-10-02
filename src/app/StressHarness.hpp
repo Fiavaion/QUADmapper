@@ -25,7 +25,8 @@ struct StressConfig {
     // exercise the output draw path or vsync pacing.
     bool hidden         = false;
     // H3: working-set bound — FAIL if post-warm-up working set grows more than
-    // this many MB across all cycles.
+    // this many MB in any cycle. Private bytes are logged beside it, not gated: under
+    // load they swing as much (up to +58 MB, then back), so they are no steadier.
     long workingSetBoundMB = 64;
     // H3: per-cycle wall-clock budget (ms). A cycle that hangs longer than this
     // is flagged as a wedge and aborts the run.
@@ -49,5 +50,9 @@ bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg);
 
 // Process working set in bytes (psapi), or 0 when it cannot be read.
 std::size_t processWorkingSetBytes();
+
+// Process private bytes (commit charge: memory the process allocated, resident or
+// paged out) in bytes (psapi), or 0 when it cannot be read.
+std::size_t processPrivateBytes();
 
 }  // namespace quadmapper
