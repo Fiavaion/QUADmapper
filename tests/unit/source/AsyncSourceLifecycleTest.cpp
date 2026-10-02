@@ -9,9 +9,12 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+#include "core/GlObjectStats.hpp"
+#include "core/MainThreadTimings.hpp"
 #include "renderer/DxInterop.hpp"
 #include "renderer/Texture.hpp"
 #include "source/FrameData.hpp"
+#include "source/HapFileSource.hpp"
 #include "source/SourceManager.hpp"
 #include "source/VideoFileSource.hpp"
 #include "video/VideoDecoder.hpp"
@@ -76,13 +79,13 @@ protected:
         fs::remove(clip_, ec);
     }
 
-    // Pump updateAll() (real time, bounded) until `id` shows a frame.
+    // Pump updateAll() (real time, bounded) until `id` shows a frame on its texture.
     static bool showsFrame(SourceManager& sm, const UUID& id) {
         const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
         while (std::chrono::steady_clock::now() < deadline) {
             sm.updateAll(1.0 / 60.0);
             const TextureSource* source = sm.getSource(id);
-            if (source && source->getCurrentFrame()) return true;
+            if (source && source->getCurrentFrame() && sm.showsCurrentFrame(id)) return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         return false;
@@ -320,6 +323,250 @@ TEST_F(AsyncSourceLifecycle, ASourceRemovedBeforeItsOpenStartsIsNeverOpened) {
     EXPECT_FALSE(sm.hasSource(queued));
     EXPECT_TRUE(sm.getSource(first)->isReady());
     EXPECT_EQ(sm.getOpeningCount(), 0u);
+}
+
+// The GL state of removed sources is freed by the frames that follow (TD-35: never all in
+// one call, never waiting on the GPU or a copy), until nothing of theirs is left, on the
+// path through memory (upload states, pixel buffers, copies in flight) and, where the
+// driver shares D3D11 textures, on the zero-copy path, where up to DxInterop::MAX_SPARES
+// sources' shared planes are kept for later sources (released by finishBackgroundWork).
+TEST_F(AsyncSourceLifecycle, RemovedSourcesGlStateIsFreedByTheFramesThatFollow) {
+    for (const bool throughMemory : {true, false}) {
+        SCOPED_TRACE(throughMemory ? "through memory" : "zero-copy where available");
+        DxInterop::testHooks().extensionMissing = throughMemory;
+        {
+            SourceManager sm;
+            const UUID first = sm.createVideoSource(clip_);
+            sm.getSourceAs<PlayableSource>(first)->play();
+            ASSERT_TRUE(showsFrame(sm, first));  // the converter's own GL objects now exist
+            for (int i = 0; i < 5; ++i) sm.updateAll(1.0 / 60.0);
+            const auto baseline = GlObjectStats::Snapshot::capture();
+
+            std::vector<UUID> ids;
+            for (size_t i = 0; i < DxInterop::MAX_SPARES + 2; ++i) ids.push_back(sm.createVideoSource(clip_));
+            for (const UUID& id : ids) {
+                sm.getSourceAs<PlayableSource>(id)->play();
+                ASSERT_TRUE(showsFrame(sm, id));
+            }
+            for (int i = 0; i < 10; ++i) sm.updateAll(1.0 / 60.0);  // copies and prefetches in flight
+            for (const UUID& id : ids) sm.removeSource(id);
+            EXPECT_FALSE(GlObjectStats::Snapshot::capture().isFlat(baseline)) << "freed inside removeSource()";
+            EXPECT_EQ(sm.getRetiredGlCount(), ids.size());
+
+            const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+            while (sm.getRetiredGlCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+                sm.updateAll(1.0 / 60.0);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            EXPECT_EQ(sm.getRetiredGlCount(), 0u);
+            if (throughMemory) {
+                const auto after = GlObjectStats::Snapshot::capture();
+                EXPECT_TRUE(after.isFlat(baseline)) << after.diff(baseline);
+            }
+            sm.finishBackgroundWork();  // also the shared planes kept for later sources
+            const auto after = GlObjectStats::Snapshot::capture();
+            EXPECT_TRUE(after.isFlat(baseline)) << after.diff(baseline);
+            EXPECT_EQ(DxInterop::liveObjects(), 0);
+            expectNothingHeld();
+        }
+    }
+    DxInterop::testHooks().extensionMissing = false;
+}
+
+// TD-35: a zero-copy clip removed and opened again (undo, a preview, Convert to HAP's
+// stand-in) takes over the shared planes the removed one kept: no plane is unregistered
+// or registered again. (ZeroCopyPlayback.AReopenedClipShowsItsOwnFramesThroughTheKeptPlanes
+// checks the frames it then shows.)
+TEST_F(AsyncSourceLifecycle, AReopenedZeroCopyClipTakesOverTheKeptSharedPlanes) {
+    const fs::path h264 = "D:/testing Videos/greenCrystals_15Sec.mp4";
+    if (!fs::exists(h264)) GTEST_SKIP() << "test media not present";
+    MainThreadTimings::markMainThread();
+    MainThreadTimings::reset();
+    auto registrations = [] {
+        for (const auto& s : MainThreadTimings::summarize()) {
+            if (s.op == "zeroCopyPlaneRegister") return s.count;
+        }
+        return size_t(0);
+    };
+    {
+        SourceManager sm;
+        const UUID first = sm.createVideoSource(h264);
+        sm.getSourceAs<PlayableSource>(first)->play();
+        ASSERT_TRUE(showsFrame(sm, first));
+        if (!sm.getSourceAs<VideoFileSource>(first)->isZeroCopy()) {
+            MainThreadTimings::reset();
+            GTEST_SKIP() << "no zero-copy here";
+        }
+        EXPECT_EQ(registrations(), 2u);
+        const long held = DxInterop::liveObjects();
+        sm.removeSource(first);
+        for (int i = 0; i < 5; ++i) sm.updateAll(1.0 / 60.0);
+        EXPECT_GT(DxInterop::liveObjects(), 0) << "the shared planes were not kept";
+
+        const UUID again = sm.createVideoSource(h264);
+        auto* video = sm.getSourceAs<VideoFileSource>(again);
+        video->seek(5.0);
+        video->play();
+        ASSERT_TRUE(showsFrame(sm, again));
+        EXPECT_EQ(registrations(), 2u) << "the planes were registered again";
+        EXPECT_LE(DxInterop::liveObjects(), held);
+        EXPECT_TRUE(video->isZeroCopy()) << video->getZeroCopyNote();
+        sm.removeSource(again);
+        sm.finishBackgroundWork();
+        EXPECT_EQ(DxInterop::liveObjects(), 0);
+    }
+    MainThreadTimings::reset();
+}
+
+// A HAP clip opens on the opener thread too (TD-35: its container took up to 18 ms on the
+// main thread). Registered at once, not ready; transport given meanwhile carries over;
+// ready once the container is open, with frames demuxed from where the clock is.
+TEST_F(AsyncSourceLifecycle, AHapClipOpensOffTheMainThreadAndKeepsItsTransport) {
+    const fs::path hap = fs::temp_directory_path() / "qm_async_hap_opens.mov";
+    if (!testclips::writeHapClip(hap, FRAMES, FPS)) GTEST_SKIP() << "FFmpeg cannot write HAP";
+    SourceManager sm;
+    std::atomic<bool> release{false};
+    std::atomic<std::thread::id> openedOn{};
+    sm.setOpenHookForTesting([&](const fs::path&) {
+        openedOn = std::this_thread::get_id();
+        while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    });
+    const UUID id = sm.createVideoSource(hap);
+    ASSERT_FALSE(id.isNull());
+    auto* source = sm.getSourceAs<HapFileSource>(id);
+    ASSERT_NE(source, nullptr);
+    EXPECT_TRUE(source->isOpening());
+    EXPECT_FALSE(source->isReady());
+    EXPECT_EQ(sm.getOpeningCount(), 1u);
+    EXPECT_EQ(sm.findVideoSourceByPath(hap), id);  // deduplicated while it opens
+    source->setLoopMode(LoopMode::LOOP);
+    source->play();
+    source->seek(1.0);
+    source->pause();  // the clock stops at 1 s: the position is exact after the open
+    for (int i = 0; i < 3; ++i) sm.updateAll(1.0 / 60.0);  // the open waits; frames go on
+    EXPECT_FALSE(source->isReady());
+    EXPECT_EQ(sm.getSource(id)->getCurrentFrame(), nullptr);
+
+    release = true;
+    ASSERT_TRUE(showsFrame(sm, id));
+    EXPECT_NE(openedOn.load(), std::this_thread::get_id());
+    EXPECT_TRUE(source->isReady());
+    EXPECT_FALSE(source->isOpening());
+    EXPECT_EQ(sm.getOpeningCount(), 0u);
+    EXPECT_EQ(source->getPlaybackState(), PlaybackState::PAUSED);
+    EXPECT_EQ(source->getLoopMode(), LoopMode::LOOP);
+    EXPECT_NEAR(source->getCurrentTime(), 1.0, 0.05) << "the seek given while it opened was lost";
+    const FrameData* frame = sm.getSource(id)->getCurrentFrame();
+    ASSERT_NE(frame, nullptr);
+    EXPECT_NEAR(static_cast<double>(frame->timestamp) / 1e6, 1.0, 1.0 / FPS + 1e-3)
+        << "the first frame shown is not the one at the clock's position";
+    EXPECT_GT(source->getWidth(), 0);
+    sm.removeSource(id);
+    sm.finishBackgroundWork();
+    std::error_code ec;
+    fs::remove(hap, ec);
+}
+
+// A HAP clip removed while its container opens: nothing comes back once the open ends,
+// and the container it opened is closed off the main thread.
+TEST_F(AsyncSourceLifecycle, AHapClipRemovedDuringItsOpen) {
+    const fs::path hap = fs::temp_directory_path() / "qm_async_hap_removed.mov";
+    if (!testclips::writeHapClip(hap, FRAMES, FPS)) GTEST_SKIP() << "FFmpeg cannot write HAP";
+    SourceManager sm;
+    std::atomic<bool> inOpen{false};
+    std::atomic<bool> release{false};
+    sm.setOpenHookForTesting([&](const fs::path&) {
+        inOpen = true;
+        while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    });
+    const UUID id = sm.createVideoSource(hap);
+    ASSERT_FALSE(id.isNull());
+    const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+    while (!inOpen && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(inOpen);
+    sm.removeSource(id);  // mid-open
+    EXPECT_FALSE(sm.hasSource(id));
+    release = true;
+    sm.finishBackgroundWork();
+    EXPECT_EQ(sm.getOpeningCount(), 0u);
+    for (int i = 0; i < 5; ++i) sm.updateAll(1.0 / 60.0);
+    EXPECT_EQ(sm.getSourceCount(), 0u);
+    EXPECT_TRUE(sm.takeFailedOpens().empty());
+    std::error_code ec;
+    fs::remove(hap, ec);
+}
+
+// A HAP clip whose open fails off the main thread is left empty, says why, keeps its
+// transport and is listed once by takeFailedOpens(), as a video's is.
+TEST_F(AsyncSourceLifecycle, AHapOpenThatFailsLeavesAnEmptySourceThatKeepsItsTransport) {
+    const fs::path hap = fs::temp_directory_path() / "qm_async_hap_fails.mov";
+    if (!testclips::writeHapClip(hap, FRAMES, FPS)) GTEST_SKIP() << "FFmpeg cannot write HAP";
+    SourceManager sm;
+    sm.setOpenHookForTesting([](const fs::path&) { throw std::runtime_error("cannot open this stream"); });
+    const UUID id = sm.createVideoSource(hap);
+    auto* source = sm.getSourceAs<HapFileSource>(id);
+    ASSERT_NE(source, nullptr);
+    source->setLoopMode(LoopMode::PING_PONG);
+    source->play();
+    sm.finishBackgroundWork();
+    EXPECT_EQ(sm.getOpeningCount(), 0u);
+    EXPECT_FALSE(source->isReady());
+    EXPECT_FALSE(source->isOpening());
+    EXPECT_FALSE(source->getErrorMessage().empty());
+    EXPECT_EQ(source->getPlaybackState(), PlaybackState::PLAYING);
+    EXPECT_EQ(source->getLoopMode(), LoopMode::PING_PONG);
+    EXPECT_EQ(sm.takeFailedOpens(), std::vector<UUID>{id});
+    sm.removeSource(id);
+    sm.finishBackgroundWork();
+    std::error_code ec;
+    fs::remove(hap, ec);
+}
+
+// TD-35: a zero-copy source's first frame costs the main thread at most one costly GL
+// call an update: the interop device the opener prepared is opened for OpenGL in one
+// update, each shared plane registered in another (their D3D11 textures made on a
+// worker); never the whole set-up in the frame that first shows the source.
+TEST_F(AsyncSourceLifecycle, AZeroCopySourcesFirstFrameIsSetUpOneGlCallAnUpdate) {
+    const fs::path h264 = "D:/testing Videos/greenCrystals_15Sec.mp4";
+    if (!fs::exists(h264)) GTEST_SKIP() << "test media not present";
+    MainThreadTimings::markMainThread();
+    MainThreadTimings::reset();
+    auto count = [](const char* op) {
+        for (const auto& s : MainThreadTimings::summarize()) {
+            if (s.op == op) return s.count;
+        }
+        return size_t(0);
+    };
+    auto glCalls = [&] { return count("zeroCopyDeviceOpen") + count("zeroCopyPlaneRegister") + count("zeroCopyTargetBuild"); };
+    {
+        SourceManager sm;
+        const UUID id = sm.createVideoSource(h264);
+        auto* video = sm.getSourceAs<VideoFileSource>(id);
+        ASSERT_NE(video, nullptr);
+        video->play();
+        const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+        size_t worst = 0;
+        while (!sm.showsCurrentFrame(id) && std::chrono::steady_clock::now() < deadline) {
+            const size_t before = glCalls();
+            sm.updateAll(1.0 / 60.0);
+            worst = std::max(worst, glCalls() - before);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        ASSERT_TRUE(sm.showsCurrentFrame(id));
+        if (!video->isZeroCopy()) {
+            MainThreadTimings::reset();
+            GTEST_SKIP() << "no zero-copy here: " << video->getZeroCopyNote();
+        }
+        EXPECT_LE(worst, 1u) << "an update made more than one costly zero-copy GL call";
+        EXPECT_EQ(count("zeroCopyDeviceOpen"), 1u);
+        EXPECT_EQ(count("zeroCopyPlaneRegister"), 2u);
+        EXPECT_EQ(count("zeroCopyTargetBuild"), 0u) << "the planes were built at once";
+        sm.removeSource(id);
+        sm.finishBackgroundWork();
+    }
+    MainThreadTimings::reset();
 }
 
 // Zero-copy (ADR-056): the opener prepares the interop device, so the first frame only

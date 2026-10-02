@@ -101,11 +101,13 @@ public:
      * @return UUID of created source, or null UUID when the file does not exist, is not
      *         a container FFmpeg can read or holds no video (a cheap header probe)
      *
-     * A clip decoded through FFmpeg is opened off the main thread (TD-35): the source is
-     * registered at once, not ready, and its transport (play, seek, loop, ...) already
-     * works; updateAll() makes it ready once its decoder is open, or, when its video
-     * cannot be decoded after all, leaves it empty with getErrorMessage() set, its
-     * transport kept, and lists it in takeFailedOpens(). A HAP clip opens here.
+     * The file is opened off the main thread (TD-35): the source is registered at once,
+     * not ready, and its transport (play, seek, loop, ...) already works; updateAll()
+     * makes it ready once its decoder (or, for a HAP clip, its container) is open, or,
+     * when its video cannot be decoded after all, leaves it empty with getErrorMessage()
+     * set, its transport kept, and lists it in takeFailedOpens(). The header probe that
+     * refuses a file and routes HAP clips stays here: callers rely on the refusal at
+     * once (Missing Media relocation), and it decides the source's type.
      */
     UUID createVideoSource(const std::filesystem::path& path);
 
@@ -138,10 +140,10 @@ public:
      * @brief Remove a source and free its resources
      * @param id Source UUID
      *
-     * Its GL objects are freed here (shared zero-copy planes one a frame, from
-     * updateAll()); a video's decode threads are joined and its FFmpeg and D3D11 objects
-     * freed on a background thread (TD-35). A source still opening is dropped when its
-     * open finishes.
+     * Its GL objects are freed by later updateAll() calls, a piece a frame, once the GPU
+     * has finished the frames that used them; a video's decode threads are joined and its
+     * FFmpeg and D3D11 objects freed on a background thread (TD-35). A source still
+     * opening is dropped when its open finishes.
      */
     void removeSource(const UUID& id);
 
@@ -152,7 +154,8 @@ public:
 
     /**
      * @brief Wait for the background work: every source still opening is opened and
-     *        made ready (or failed), and every removed source is freed
+     *        made ready (or failed), and every removed source is freed, the shared
+     *        zero-copy planes kept for later sources too (DxInterop::recycle)
      *
      * For tests, the harnesses' leak checks and the like; it blocks, so never on the
      * live path. Main thread.
@@ -173,6 +176,11 @@ public:
      * @brief Sources still opening off the main thread
      */
     size_t getOpeningCount() const { return opening_.size(); }
+
+    /**
+     * @brief Removed sources whose GL state updateAll() has not freed yet (TD-35)
+     */
+    size_t getRetiredGlCount() const { return retiredGl_.size(); }
 
     /**
      * @brief Video sources whose open off the main thread failed since the last call
@@ -254,6 +262,15 @@ public:
     size_t getSourceCount() const;
 
     // --- Texture Access ---
+
+    /**
+     * @brief Whether the source's current frame (getCurrentFrame()) is on its texture
+     *
+     * False before its first frame, and while a frame waits for its zero-copy set-up:
+     * a stream's first frame on the GPU reaches the texture a few updates after the
+     * source holds it (DxInterop::setUp, TD-35).
+     */
+    bool showsCurrentFrame(const UUID& id) const;
 
     /**
      * @brief Get the GPU texture for a source
@@ -353,19 +370,25 @@ private:
         std::unique_ptr<YuvUploadState> yuvUpload; // plane textures + PBOs of a YUV video (ADR-055)
         std::unique_ptr<CompressedUploadState> compressedUpload; // PBOs of a HAP video (ADR-044)
         std::unique_ptr<DxInteropTarget> zeroCopy; // D3D11 texture shared with GL (ADR-056)
-        bool zeroCopyFailed = false;               // this source fell back; zeroCopy is unused
-                                                   // and released at most one a frame
+        bool zeroCopyFailed = false;               // this source fell back; its zeroCopy
+                                                   // target was retired (retireGl)
         bool hasFrame = false;                     // a frame reached the texture
+        bool uploadDeferred = false;               // the current frame waits for zero-copy
+                                                   // set-up (DxInterop::setUp): offered again
         UUID standIn;                              // shown until then (setStandIn)
     };
-    struct PendingOpen;  // a video file being opened on the opener thread
-    // GL state of a removed source whose release can wait on other work: an upload
-    // waits for its in-flight frame copy, shared planes are unregistered from GL.
+    struct PendingOpen;  // a video or HAP file being opened on the opener thread
+    // GL state of a removed source (or the shared planes of one that fell back), freed
+    // by releaseRetiredGl() without waiting on this thread.
+    struct GlFenceDeleter {
+        void operator()(void* fence) const;  // glDeleteSync
+    };
     struct RetiredGl {
         std::unique_ptr<Texture> texture;
         std::unique_ptr<YuvUploadState> yuvUpload;
         std::unique_ptr<CompressedUploadState> compressedUpload;
         std::unique_ptr<DxInteropTarget> zeroCopy;
+        std::unique_ptr<void, GlFenceDeleter> fence;  // signalled once the GPU is done with it all
     };
 
     std::unordered_map<UUID, SourceEntry> sources_;
@@ -379,7 +402,7 @@ private:
     std::vector<std::shared_ptr<PendingOpen>> opening_;
     std::vector<UUID> failedOpens_;     // see takeFailedOpens()
     std::function<void(const std::filesystem::path&)> openHookForTesting_;
-    std::vector<RetiredGl> retiredGl_;  // freed one a frame, oldest first
+    std::vector<RetiredGl> retiredGl_;  // freed a piece a frame, oldest first
     std::unique_ptr<BackgroundWorker> opener_;
     std::unique_ptr<BackgroundWorker> reaper_;
 
@@ -390,7 +413,9 @@ private:
     UUID addEntry(std::unique_ptr<TextureSource> source);  // an initialized (or opening) source
     void adoptOpenedSources();
     void retire(SourceEntry& entry);
-    void retireDecoder(std::unique_ptr<VideoDecoder> decoder);
+    void retireGl(RetiredGl retired);
+    void releaseRetiredGl();
+    void retireOpened(PendingOpen& pending);
     BackgroundWorker& reaper();
     void createGPUTexture(SourceEntry& entry);
     void uploadFrameToTexture(SourceEntry& entry);

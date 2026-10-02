@@ -222,6 +222,15 @@ public:
     void startBackgroundDecoding(size_t bufferSize = 8);
 
     /**
+     * @brief Start the decode thread now, idle until startPlayback() hands it a plan
+     *
+     * Creating a thread costs the caller milliseconds on a loaded machine; a file opened
+     * off the main thread (TD-35) starts its thread there, so the main thread's first
+     * startPlayback() only hands the plan over. Any thread that owns the decoder.
+     */
+    void startIdleThread();
+
+    /**
      * @brief Restart background decoding to follow a playback clock (ADR-050)
      * @param plan Timeline position, clip duration and loop mode to produce frames for
      * @param bufferSize Number of frames to buffer ahead

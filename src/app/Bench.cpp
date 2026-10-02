@@ -595,9 +595,10 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
     // cold decoders start at once and lag the clock for seconds.
     sources().finishBackgroundWork();
     const Clock::time_point primeDeadline = Clock::now() + std::chrono::seconds(10);
-    auto primed = [&tracks]() {
-        return std::all_of(tracks.begin(), tracks.end(),
-                           [](const Track& t) { return t.source->getCurrentFrame() != nullptr; });
+    auto primed = [this, &tracks]() {
+        return std::all_of(tracks.begin(), tracks.end(), [this](const Track& t) {
+            return t.source->getCurrentFrame() != nullptr && sources().showsCurrentFrame(t.id);
+        });
     };
     while (!primed() && Clock::now() < primeDeadline && !aborted_) step();
     for (auto& t : tracks) t.playable->play();  // start together

@@ -132,6 +132,26 @@ public:
         finished_.wait(lock, [&job] { return job.done; });
     }
 
+    // Never waits: true once no copy writes into `job`'s mapping (a queued copy is
+    // dropped, it never starts), false while its copy runs.
+    bool drop(YuvUploadState::Staging& job) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (job.done) return true;
+        for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+            if (*it == &job) {
+                queue_.erase(it);
+                job.done = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static std::function<void()>& hook() {
+        static std::function<void()> h;
+        return h;
+    }
+
 private:
     void run() {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -141,6 +161,7 @@ private:
             YuvUploadState::Staging* job = queue_.front();
             queue_.pop_front();
             lock.unlock();
+            if (hook()) hook()();
             copyPlanes(*job);
             lock.lock();
             job->done = true;
@@ -181,6 +202,10 @@ YuvUploadState::~YuvUploadState() {
     }
 }
 
+bool YuvUploadState::idle() {
+    return !staging_.mapped || !copier_ || copier_->drop(staging_);
+}
+
 void YuvUploadState::settle() {
     if (staging_.mapped) {
         if (copier_) copier_->wait(staging_);
@@ -193,6 +218,10 @@ void YuvUploadState::settle() {
 }
 
 // --- YuvConverter ---
+
+void YuvConverter::setCopyHookForTesting(std::function<void()> hook) {
+    PlaneCopier::hook() = std::move(hook);
+}
 
 YuvConverter::~YuvConverter() {
     if (vao_ != 0) {

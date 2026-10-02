@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -24,6 +25,11 @@ public:
     ~CompressedUploadState();  // waits for a copy still writing into a buffer, then unmaps it
     CompressedUploadState(const CompressedUploadState&) = delete;
     CompressedUploadState& operator=(const CompressedUploadState&) = delete;
+
+    // Whether the destructor would free it at once: true once no copy writes into its
+    // buffers (a copy still queued is dropped, it never starts), false while one runs.
+    // Never waits (TD-35). Main thread.
+    bool idle();
 
     // A frame being copied into one of the pixel buffers, which stays mapped until the
     // upload. Written by the copier thread only between submit and done.
@@ -73,6 +79,10 @@ public:
     // Start copying `next`, the frame expected after the one just uploaded, into a spare
     // buffer. upload() uses it if that frame comes next, else copies anew.
     void prefetch(const std::shared_ptr<const std::vector<uint8_t>>& next, CompressedUploadState& state);
+
+    // Test hook: run on the copier thread before each frame copy (every uploader); it
+    // may block. Set it while no copy is queued.
+    static void setCopyHookForTesting(std::function<void()> hook);
 
 private:
     bool mapStaging(CompressedUploadState& state, size_t bytes);

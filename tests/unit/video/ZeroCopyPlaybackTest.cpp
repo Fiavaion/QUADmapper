@@ -119,6 +119,7 @@ public:
     void afterUpdate(SourceManager& sm, const UUID& id, VideoFileSource& video) {
         const FrameData* frame = video.getCurrentFrame();
         if (!frame || !frame->isYuv()) return;
+        if (!sm.showsCurrentFrame(id)) return;  // a first frame still being set up (TD-35)
         if (seen_ && frame->frameNumber == lastNumber_ && frame->timestamp == lastTimestamp_) return;
         seen_ = true;
         lastNumber_ = frame->frameNumber;
@@ -270,6 +271,54 @@ TEST(ZeroCopyPlayback, EveryFrameMatchesItsOwnDownloadAcrossPoolWraps) {
     EXPECT_GE(check.deliveredOnGpu, 30);
     EXPECT_EQ(check.held, 0);
     EXPECT_EQ(readbacks, 0);
+}
+
+// TD-35: a clip removed and opened again takes over the shared planes the removed source
+// kept (DxInterop::recycle). Every frame it then shows is its own, not one left in the
+// planes by the source before it: the second opens 5 s further on.
+TEST(ZeroCopyPlayback, AReopenedClipShowsItsOwnFramesThroughTheKeptPlanes) {
+    GLContext ctx;
+    const std::string skip = playbackSkip(ctx);
+    if (!skip.empty()) GTEST_SKIP() << skip;
+    DxInterop::testHooks() = DxInterop::TestHooks{};
+    long readbacks = 0;
+    {
+        SourceManager sm;
+        FrameCheck before("before the removal");
+        const UUID first = sm.createVideoSource(H264_CLIP);
+        sm.finishBackgroundWork();
+        auto* video = sm.getSourceAs<VideoFileSource>(first);
+        ASSERT_NE(video, nullptr);
+        if (!video->isHardwareDecoding()) GTEST_SKIP() << "no GPU decoding here: " << video->getDecodeNote();
+        video->play();
+        for (int i = 0; i < 5000 && before.deliveredOnGpu < 5 && !HasFatalFailure(); ++i) {
+            update(sm, readbacks);
+            before.afterUpdate(sm, first, *video);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ASSERT_GE(before.deliveredOnGpu, 5);
+        sm.removeSource(first);
+        for (int i = 0; i < 5; ++i) update(sm, readbacks);
+
+        FrameCheck after("reopened");
+        const UUID again = sm.createVideoSource(H264_CLIP);
+        sm.finishBackgroundWork();
+        video = sm.getSourceAs<VideoFileSource>(again);
+        ASSERT_NE(video, nullptr);
+        video->seek(5.0);
+        video->play();
+        for (int i = 0; i < 5000 && after.deliveredOnGpu < 20 && !HasFatalFailure(); ++i) {
+            update(sm, readbacks);
+            after.afterUpdate(sm, again, *video);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_TRUE(video->isZeroCopy()) << video->getZeroCopyNote();
+        EXPECT_GE(after.deliveredOnGpu, 20);
+        EXPECT_EQ(after.held, 0);
+        sm.removeSource(again);
+    }
+    EXPECT_EQ(readbacks, 0);
+    EXPECT_EQ(DxInterop::liveObjects(), 0);
 }
 
 // A run-time interop failure (the lock, forced after a few frames) moves that source to

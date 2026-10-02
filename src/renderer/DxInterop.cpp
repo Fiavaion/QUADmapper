@@ -1,6 +1,7 @@
 #include "DxInterop.hpp"
 #include "Texture.hpp"
 #include "YuvConverter.hpp"
+#include "core/BackgroundWorker.hpp"
 #include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
 #include "core/MainThreadTimings.hpp"
@@ -171,6 +172,84 @@ struct InteropDevice {
 #endif
 };
 
+#ifdef _WIN32
+// The D3D11 half of a source's two shared planes: textures the plane copy writes, made on
+// any thread (the D3D11 device is free-threaded). make() fills it; a worker publishes it
+// through `done`. What it holds and was not taken is released with it.
+struct MadePlanes {
+    std::shared_ptr<InteropDevice> device;
+    int width = 0;
+    int height = 0;
+    int chromaWidth = 0;
+    int chromaHeight = 0;
+    DXGI_FORMAT inputFormat = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT planeFormat[2] = {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN};
+    ID3D11Texture2D* texture[2] = {nullptr, nullptr};
+    ID3D11UnorderedAccessView* output[2] = {nullptr, nullptr};
+    bool ok = false;
+    std::string why;
+    std::atomic<bool> done{false};
+
+    MadePlanes(std::shared_ptr<InteropDevice> owner, const YuvPicture& picture, DXGI_FORMAT format)
+        : device(std::move(owner)), width(picture.width), height(picture.height),
+          chromaWidth(picture.chromaWidth()), chromaHeight(picture.chromaHeight()), inputFormat(format) {}
+    ~MadePlanes() {
+        for (int p = 0; p < 2; ++p) {
+            release(output[p]);
+            release(texture[p]);
+        }
+    }
+    MadePlanes(const MadePlanes&) = delete;
+    MadePlanes& operator=(const MadePlanes&) = delete;
+
+    bool fits(const YuvPicture& picture, DXGI_FORMAT format) const {
+        return width == picture.width && height == picture.height && inputFormat == format;
+    }
+
+    void make() {
+        ok = makePlanes();
+        done.store(true, std::memory_order_release);
+    }
+
+private:
+    bool makePlanes() {
+        const bool reject = DxInterop::testHooks().rejectFormat;
+        if (reject || !planeFormats(inputFormat, planeFormat)) {
+            why = std::string("this pixel format cannot be shared") + (reject ? " (test)" : "");
+            return false;
+        }
+        for (int p = 0; p < 2; ++p) {
+            D3D11_TEXTURE2D_DESC desc{};
+            desc.Width = static_cast<UINT>(p == 0 ? width : chromaWidth);
+            desc.Height = static_cast<UINT>(p == 0 ? height : chromaHeight);
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = planeFormat[p];
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+            // Without SHARED, NVIDIA's interop gives OpenGL a copy taken at registration:
+            // every later write stays invisible and the source shows black (measured, RTX
+            // 3080 Laptop, ADR-056 amendment).
+            desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+            if (FAILED(device->device->CreateTexture2D(&desc, nullptr, &texture[p]))) {
+                texture[p] = nullptr;
+                why = "out of video memory for the shared planes";
+                return false;
+            }
+            onCreated();
+            if (FAILED(device->device->CreateUnorderedAccessView(texture[p], nullptr, &output[p]))) {
+                output[p] = nullptr;
+                why = "the shared planes cannot be written by the GPU";
+                return false;
+            }
+            onCreated();
+        }
+        return true;
+    }
+};
+#endif
+
 // --- DxInteropTarget ---
 
 struct DxInteropTarget::Impl {
@@ -253,63 +332,63 @@ struct DxInteropTarget::Impl {
         return &inputs.back();
     }
 
-    // Make the shared planes and their registrations for `picture`, whose decoded
-    // surface has `format`. On failure the caller releases what exists.
-    bool build(const std::shared_ptr<InteropDevice>& owner, const YuvPicture& picture, DXGI_FORMAT format,
-               std::string& why) {
+    // Planes being made on DxInterop's worker for setUp() (null otherwise).
+    std::shared_ptr<MadePlanes> making;
+
+    // Whether the shared planes exist for frames of `format` like `picture`, from `owner`.
+    bool fits(const std::shared_ptr<InteropDevice>& owner, const YuvPicture& picture, DXGI_FORMAT format) const {
+        return planes[0].texture && device == owner && width == picture.width && height == picture.height &&
+               inputFormat == format;
+    }
+    bool registered() const { return planes[0].registration && planes[1].registration; }
+
+    // Take the D3D11 planes `made` made, in place of any held.
+    void adopt(MadePlanes& made) {
         releaseObjects();
-        device = owner;
-        const DxInterop::TestHooks& hooks = DxInterop::testHooks();
-        const std::string test = " (test)";
-
-        if (hooks.rejectFormat || !planeFormats(format, planeFormat)) {
-            why = "this pixel format cannot be shared" + (hooks.rejectFormat ? test : "");
-            return false;
-        }
+        device = made.device;
         for (int p = 0; p < 2; ++p) {
-            Plane& plane = planes[p];
-            D3D11_TEXTURE2D_DESC desc{};
-            desc.Width = static_cast<UINT>(p == 0 ? picture.width : picture.chromaWidth());
-            desc.Height = static_cast<UINT>(p == 0 ? picture.height : picture.chromaHeight());
-            desc.MipLevels = 1;
-            desc.ArraySize = 1;
-            desc.Format = planeFormat[p];
-            desc.SampleDesc.Count = 1;
-            desc.Usage = D3D11_USAGE_DEFAULT;
-            desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-            // Without SHARED, NVIDIA's interop gives OpenGL a copy taken at registration:
-            // every later write stays invisible and the source shows black (measured, RTX
-            // 3080 Laptop, ADR-056 amendment).
-            desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-            if (FAILED(device->device->CreateTexture2D(&desc, nullptr, &plane.texture))) {
-                plane.texture = nullptr;
-                why = "out of video memory for the shared planes";
-                return false;
-            }
-            onCreated();
-            if (FAILED(device->device->CreateUnorderedAccessView(plane.texture, nullptr, &plane.output))) {
-                plane.output = nullptr;
-                why = "the shared planes cannot be written by the GPU";
-                return false;
-            }
-            onCreated();
+            planeFormat[p] = made.planeFormat[p];
+            planes[p].texture = std::exchange(made.texture[p], nullptr);
+            planes[p].output = std::exchange(made.output[p], nullptr);
+        }
+        width = made.width;
+        height = made.height;
+        inputFormat = made.inputFormat;
+    }
 
+    // Name plane `p` in GL and register it with the interop device: GL thread.
+    bool registerPlane(int p, std::string& why) {
+        ScopedMainThreadTiming timing("zeroCopyPlaneRegister");
+        Plane& plane = planes[p];
+        const bool fail = DxInterop::testHooks().failRegistration;
+        if (plane.glTexture == 0) {
             glGenTextures(1, &plane.glTexture);
             GlObjectStats::onTextureCreated();
-            if (!hooks.failRegistration) {
-                plane.registration = device->registerObject(device->handle, plane.texture, plane.glTexture,
-                                                            GL_TEXTURE_2D, WGL_ACCESS_READ_ONLY_NV);
-            }
-            if (!plane.registration) {
-                why = "OpenGL could not register the shared planes" + (hooks.failRegistration ? test : "");
-                return false;
-            }
-            onCreated();
         }
-        width = picture.width;
-        height = picture.height;
-        inputFormat = format;
+        if (!fail) {
+            plane.registration = device->registerObject(device->handle, plane.texture, plane.glTexture,
+                                                        GL_TEXTURE_2D, WGL_ACCESS_READ_ONLY_NV);
+        }
+        if (!plane.registration) {
+            why = std::string("OpenGL could not register the shared planes") + (fail ? " (test)" : "");
+            return false;
+        }
+        onCreated();
         return true;
+    }
+
+    // Make the shared planes and their registrations for `picture`, whose decoded
+    // surface has `format`, here and now. On failure the caller releases what exists.
+    bool build(const std::shared_ptr<InteropDevice>& owner, const YuvPicture& picture, DXGI_FORMAT format,
+               std::string& why) {
+        MadePlanes made(owner, picture, format);
+        made.make();
+        if (!made.ok) {
+            why = made.why;
+            return false;
+        }
+        adopt(made);
+        return registerPlane(0, why) && registerPlane(1, why);
     }
 #endif
 
@@ -320,25 +399,55 @@ struct DxInteropTarget::Impl {
     }
 #endif
 
-    void releaseObjects() {
 #ifdef _WIN32
-        for (Plane& plane : planes) {
-            if (plane.registration) {
-                device->unregisterObject(device->handle, plane.registration);
-                plane.registration = nullptr;
-                onReleased();
-            }
-            if (plane.glTexture != 0) {
-                glDeleteTextures(1, &plane.glTexture);
-                GlObjectStats::onTextureDestroyed();
-                plane.glTexture = 0;
-            }
-            release(plane.output);
-            release(plane.texture);
+    static bool held(const Plane& plane) {
+        return plane.registration || plane.glTexture != 0 || plane.output || plane.texture;
+    }
+
+    // Unregistered from GL before either side's texture is released (ADR-056).
+    void releasePlane(Plane& plane) {
+        if (plane.registration) {
+            device->unregisterObject(device->handle, plane.registration);
+            plane.registration = nullptr;
+            onReleased();
         }
+        if (plane.glTexture != 0) {
+            glDeleteTextures(1, &plane.glTexture);
+            GlObjectStats::onTextureDestroyed();
+            plane.glTexture = 0;
+        }
+        release(plane.output);
+        release(plane.texture);
+    }
+
+    void releaseRest() {
+        making.reset();  // a worker still making planes frees them when done
         releaseInputs();
         width = height = 0;
         inputFormat = DXGI_FORMAT_UNKNOWN;
+    }
+#endif
+
+    bool releaseStep() {
+#ifdef _WIN32
+        for (Plane& plane : planes) {
+            if (held(plane)) {
+                releasePlane(plane);
+                break;
+            }
+        }
+        for (const Plane& plane : planes) {
+            if (held(plane)) return false;
+        }
+        releaseRest();
+#endif
+        return true;
+    }
+
+    void releaseObjects() {
+#ifdef _WIN32
+        for (Plane& plane : planes) releasePlane(plane);
+        releaseRest();
 #endif
     }
 
@@ -347,6 +456,10 @@ struct DxInteropTarget::Impl {
 
 DxInteropTarget::DxInteropTarget() : impl_(std::make_unique<Impl>()) {}
 DxInteropTarget::~DxInteropTarget() = default;
+
+bool DxInteropTarget::releaseStep() {
+    return impl_->releaseStep();
+}
 
 // --- DxInterop ---
 
@@ -367,7 +480,29 @@ DxInterop::DxInterop() = default;
 
 DxInterop::~DxInterop() {
     pending_.clear();
-    device_.reset();  // closed here unless a target still holds it
+    builder_.reset();  // joined first: its tasks hold the device, which must close here
+    spares_.clear();
+    device_.reset();   // closed here unless a target still holds it
+}
+
+std::unique_ptr<DxInteropTarget> DxInterop::recycle(std::unique_ptr<DxInteropTarget> target) {
+    if (!target) return nullptr;
+#ifdef _WIN32
+    DxInteropTarget::Impl& t = *target->impl_;
+    if (!device_ || t.device != device_ || !t.registered()) return target;
+    t.releaseInputs();  // the decoded frames of its old source: never seen again
+#else
+    return target;
+#endif
+    spares_.push_back(std::move(target));
+    if (spares_.size() <= MAX_SPARES) return nullptr;
+    std::unique_ptr<DxInteropTarget> oldest = std::move(spares_.front());
+    spares_.erase(spares_.begin());
+    return oldest;
+}
+
+void DxInterop::releaseSpares() {
+    spares_.clear();
 }
 
 bool DxInterop::available() {
@@ -383,6 +518,11 @@ bool DxInterop::available() {
         unavailableReason_ = "the OpenGL driver lacks WGL_NV_DX_interop2";
     } else {
         available_ = true;
+        // Which GPU GL renders on, asked now (SourceManager::prepareGpu at start-up) and
+        // not when the interop device opens: the glGet calls wait for the driver to catch
+        // up with the commands queued, up to 25 ms in a busy show (TD-35).
+        ScopedMainThreadTiming timing("glAdapterLuidQuery");
+        glLuidKnown_ = glAdapterLuid(glLuid_, glLuidWhy_);
     }
 #else
     unavailableReason_ = "zero-copy video needs Windows";
@@ -523,15 +663,13 @@ bool DxInterop::openDevice(void* source, std::string& why) {
         // copy through system memory), so compare the adapters where GL names its own.
         bool otherAdapter = testHooks().adapterMismatch;
         if (!otherAdapter && device->haveLuid) {
-            uint64_t glLuid = 0;
-            std::string luidWhy;
-            if (glAdapterLuid(glLuid, luidWhy)) {
-                otherAdapter = glLuid != device->luid;
-                Logger::info("Zero-copy video: OpenGL renders on GPU {} and the video decoders on GPU {}{}", glLuid,
+            if (glLuidKnown_) {
+                otherAdapter = glLuid_ != device->luid;
+                Logger::info("Zero-copy video: OpenGL renders on GPU {} and the video decoders on GPU {}{}", glLuid_,
                              device->luid, otherAdapter ? " (different GPUs)" : " (the same GPU)");
             } else {
                 Logger::info("Zero-copy video: the OpenGL driver does not say which GPU it renders on ({}), "
-                             "so it is assumed to be the video decoders' GPU", luidWhy);
+                             "so it is assumed to be the video decoders' GPU", glLuidWhy_);
             }
         }
         if (otherAdapter) {
@@ -589,8 +727,7 @@ bool DxInterop::stage(const YuvPicture& picture, DxInteropTarget& target, Textur
     DxInteropTarget::Impl& t = *target.impl_;
     D3D11_TEXTURE2D_DESC inputDesc{};
     static_cast<ID3D11Texture2D*>(picture.gpu.texture)->GetDesc(&inputDesc);
-    const bool rebuild = !t.planes[0].texture || t.width != picture.width || t.height != picture.height ||
-                         t.inputFormat != inputDesc.Format || t.device != device_;
+    const bool rebuild = !t.fits(device_, picture, inputDesc.Format) || !t.registered();
     ScopedMainThreadTiming buildTiming(rebuild ? "zeroCopyTargetBuild" : "zeroCopyTargetReuse");
     if (rebuild && !t.build(device_, picture, inputDesc.Format, why)) {
         t.releaseObjects();
@@ -602,6 +739,94 @@ bool DxInterop::stage(const YuvPicture& picture, DxInteropTarget& target, Textur
     (void)picture; (void)target; (void)dest; (void)key;
     why = "zero-copy video needs Windows";
     return false;
+#endif
+}
+
+void DxInterop::beginFrame() {
+    stepsLeft_ = 1;
+#ifdef _WIN32
+    // The opener prepared the device for the first stream on the GPU: open it for OpenGL
+    // now, in a frame of its own, before that stream's first frame needs it.
+    if (device_ || !checked_ || !available_) return;
+    void* source = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(prepareMutex_);
+        if (prepared_) source = prepared_->source;
+    }
+    if (!source) return;
+    --stepsLeft_;
+    std::string why;
+    openDevice(source, why);  // a failure is logged and ends zero-copy for the app
+#endif
+}
+
+DxInterop::SetUp DxInterop::setUp(const YuvPicture& picture, DxInteropTarget& target, std::string& why) {
+#ifdef _WIN32
+    if (!picture.onGpu() || !picture.gpu.shared) {
+        why = picture.onGpu() ? "the frame carries no shared D3D11 texture" : "the frame is not on the GPU";
+        return SetUp::Failed;
+    }
+    if (!available()) {
+        why = unavailableReason_;
+        return SetUp::Failed;
+    }
+    if (!device_) {
+        if (stepsLeft_ == 0) return SetUp::Later;
+        --stepsLeft_;
+        return openDevice(picture.gpu.device, why) ? SetUp::Later : SetUp::Failed;
+    }
+    if (picture.gpu.device != device_->source) {
+        why = "the frame comes from another D3D11 device";
+        return SetUp::Failed;
+    }
+
+    DxInteropTarget::Impl& t = *target.impl_;
+    D3D11_TEXTURE2D_DESC inputDesc{};
+    static_cast<ID3D11Texture2D*>(picture.gpu.texture)->GetDesc(&inputDesc);
+    if (!t.fits(device_, picture, inputDesc.Format) && !t.planes[0].texture && !t.making) {
+        // A fresh target: a kept one with planes for these frames, already registered.
+        for (auto it = spares_.begin(); it != spares_.end(); ++it) {
+            if ((*it)->impl_->fits(device_, picture, inputDesc.Format)) {
+                std::swap(target.impl_, (*it)->impl_);
+                spares_.erase(it);  // with the fresh, empty one it now holds
+                return SetUp::Ready;
+            }
+        }
+    }
+    if (!t.fits(device_, picture, inputDesc.Format)) {
+        // The D3D11 planes are made on the worker (up to 39 ms each under load, TD-35).
+        if (t.making && !t.making->done.load(std::memory_order_acquire)) return SetUp::Later;
+        if (t.making && t.making->fits(picture, inputDesc.Format) && t.making->device == device_) {
+            std::shared_ptr<MadePlanes> made = std::move(t.making);
+            if (!made->ok) {
+                why = made->why;
+                t.releaseObjects();
+                return SetUp::Failed;
+            }
+            t.adopt(*made);
+        } else {
+            t.releaseObjects();  // planes for another size or format: the stream changed
+            t.making = std::make_shared<MadePlanes>(device_, picture, inputDesc.Format);
+            if (!builder_) builder_ = std::make_unique<BackgroundWorker>("Zero-copy planes");
+            builder_->post([made = t.making] { made->make(); });
+            return SetUp::Later;
+        }
+    }
+    // One registration a frame (up to 13 ms each under load).
+    for (int p = 0; p < 2; ++p) {
+        if (t.planes[p].registration) continue;
+        if (stepsLeft_ == 0) return SetUp::Later;
+        --stepsLeft_;
+        if (!t.registerPlane(p, why)) {
+            t.releaseObjects();
+            return SetUp::Failed;
+        }
+    }
+    return SetUp::Ready;
+#else
+    (void)picture; (void)target;
+    why = "zero-copy video needs Windows";
+    return SetUp::Failed;
 #endif
 }
 

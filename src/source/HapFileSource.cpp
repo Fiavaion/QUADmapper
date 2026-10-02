@@ -17,6 +17,7 @@
 #include <queue>
 #include <string>
 #include <thread>
+#include <utility>
 
 #ifdef QUADMAPPER_HAS_FFMPEG
 
@@ -47,6 +48,75 @@ constexpr int MAX_REVERSE_RETRIES = 20;
 
 } // namespace
 
+// A HAP file's container, opened and read up to its stream facts; no thread, no decoder.
+struct HapFileSource::OpenedFile::Data {
+    AVFormatContext* formatCtx = nullptr;
+    int videoStreamIndex = -1;
+    int width = 0;
+    int height = 0;
+    double timeBase = 0.0;
+    int64_t startPts = 0;      // stream start_time, in time_base units
+    double duration = 0.0;
+    double frameSeconds = 1.0 / 30.0;
+
+    ~Data() {
+        if (formatCtx) avformat_close_input(&formatCtx);
+    }
+
+    // Reads the container's header and stream info (file I/O, up to tens of ms under
+    // load: off the main thread, TD-35). Null, logged, on failure.
+    static std::unique_ptr<Data> open(const std::filesystem::path& path) {
+        auto d = std::make_unique<Data>();
+        // FFmpeg takes UTF-8 file names on Windows; path::string() is the ANSI code page.
+        const std::string pathStr = utf8FromPath(path);
+        if (avformat_open_input(&d->formatCtx, pathStr.c_str(), nullptr, nullptr) < 0) {
+            d->formatCtx = nullptr;
+            Logger::error("HapFileSource: avformat_open_input failed for '{}'", pathStr);
+            return nullptr;
+        }
+        if (avformat_find_stream_info(d->formatCtx, nullptr) < 0) {
+            Logger::error("HapFileSource: avformat_find_stream_info failed for '{}'", pathStr);
+            return nullptr;
+        }
+
+        // Find the HAP video stream (do NOT open a decoder).
+        for (unsigned int i = 0; i < d->formatCtx->nb_streams; ++i) {
+            AVCodecParameters* cp = d->formatCtx->streams[i]->codecpar;
+            if (cp->codec_type == AVMEDIA_TYPE_VIDEO && cp->codec_id == AV_CODEC_ID_HAP) {
+                d->videoStreamIndex = static_cast<int>(i);
+                break;
+            }
+        }
+        if (d->videoStreamIndex < 0) {
+            Logger::error("HapFileSource: no HAP video stream in '{}'", pathStr);
+            return nullptr;
+        }
+
+        AVStream* stream = d->formatCtx->streams[d->videoStreamIndex];
+        d->width = stream->codecpar->width;
+        d->height = stream->codecpar->height;
+        d->timeBase = av_q2d(stream->time_base);
+        // Frame times are relative to the stream start, so pts 0 is the first frame.
+        d->startPts = stream->start_time != AV_NOPTS_VALUE ? stream->start_time : 0;
+
+        // The video stream's own duration, when recorded: the clock loops at it, and a
+        // container duration padded by audio would freeze the last frame each pass.
+        if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0) {
+            d->duration = static_cast<double>(stream->duration) * d->timeBase;
+        } else if (d->formatCtx->duration != AV_NOPTS_VALUE) {
+            d->duration = static_cast<double>(d->formatCtx->duration) / AV_TIME_BASE;
+        }
+        const AVRational rate = av_guess_frame_rate(d->formatCtx, stream, nullptr);
+        d->frameSeconds = rate.num > 0 && rate.den > 0 ? av_q2d(av_inv_q(rate)) : 1.0 / 30.0;
+
+        if (d->width <= 0 || d->height <= 0) {
+            Logger::error("HapFileSource: invalid dimensions {}x{} in '{}'", d->width, d->height, pathStr);
+            return nullptr;
+        }
+        return d;
+    }
+};
+
 /**
  * @brief FFmpeg demux + HAP parse behind the pimpl (ADR-011, ADR-044).
  *
@@ -64,76 +134,42 @@ public:
     Impl() = default;
     ~Impl() { close(); }
 
-    bool open(const std::filesystem::path& path) {
+    // Unload; from now until adopt() or failOpen() the transport is taken (its clock
+    // runs) but nothing is demuxed.
+    void beginOpen() {
         close();
+        opening_ = true;
+    }
 
-        // FFmpeg takes UTF-8 file names on Windows; path::string() is the ANSI code page.
-        const std::string pathStr = utf8FromPath(path);
-        if (avformat_open_input(&formatCtx_, pathStr.c_str(), nullptr, nullptr) < 0) {
-            Logger::error("HapFileSource: avformat_open_input failed for '{}'", pathStr);
-            return false;
-        }
-
-        if (avformat_find_stream_info(formatCtx_, nullptr) < 0) {
-            Logger::error("HapFileSource: avformat_find_stream_info failed for '{}'", pathStr);
-            close();
-            return false;
-        }
-
-        // Find the HAP video stream (do NOT open a decoder).
-        videoStreamIndex_ = -1;
-        for (unsigned int i = 0; i < formatCtx_->nb_streams; ++i) {
-            AVCodecParameters* cp = formatCtx_->streams[i]->codecpar;
-            if (cp->codec_type == AVMEDIA_TYPE_VIDEO && cp->codec_id == AV_CODEC_ID_HAP) {
-                videoStreamIndex_ = static_cast<int>(i);
-                break;
-            }
-        }
-
-        if (videoStreamIndex_ < 0) {
-            Logger::error("HapFileSource: no HAP video stream in '{}'", pathStr);
-            close();
-            return false;
-        }
-
-        AVStream* stream = formatCtx_->streams[videoStreamIndex_];
-        width_ = stream->codecpar->width;
-        height_ = stream->codecpar->height;
-        timeBase_ = av_q2d(stream->time_base);
-        // Frame times are relative to the stream start, so pts 0 is the first frame.
-        startPts_ = stream->start_time != AV_NOPTS_VALUE ? stream->start_time : 0;
-
-        // The video stream's own duration, when recorded: the clock loops at it, and a
-        // container duration padded by audio would freeze the last frame each pass.
-        if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0) {
-            duration_ = static_cast<double>(stream->duration) * timeBase_;
-        } else if (formatCtx_->duration != AV_NOPTS_VALUE) {
-            duration_ = static_cast<double>(formatCtx_->duration) / AV_TIME_BASE;
-        } else {
-            duration_ = 0.0;
-        }
-        const AVRational rate = av_guess_frame_rate(formatCtx_, stream, nullptr);
-        frameSeconds_ = rate.num > 0 && rate.den > 0 ? av_q2d(av_inv_q(rate)) : 1.0 / 30.0;
-
-        if (width_ <= 0 || height_ <= 0) {
-            Logger::error("HapFileSource: invalid dimensions {}x{} in '{}'", width_, height_, pathStr);
-            close();
-            return false;
-        }
+    // The container opened (off the main thread): start demuxing at the clock's position.
+    // Play, seek, loop, speed and lock given while it opened carry over.
+    void adopt(OpenedFile::Data& file) {
+        opening_ = false;
+        formatCtx_ = std::exchange(file.formatCtx, nullptr);
+        videoStreamIndex_ = file.videoStreamIndex;
+        width_ = file.width;
+        height_ = file.height;
+        timeBase_ = file.timeBase;
+        startPts_ = file.startPts;
+        duration_ = file.duration;
+        frameSeconds_ = file.frameSeconds;
 
         isOpen_ = true;
         atEnd_ = false;
         observedEnd_ = 0.0;
         endSeen_ = false;
         durationChecked_ = false;
-        transport_.load(duration_);
-        // Demux from the start (bounded by the staging queue) so the first frame is
-        // on screen even before play.
+        transport_.setDuration(duration_);
+        // Demux from the clock's position (bounded by the staging queue) so the first
+        // frame is on screen even before play.
         applyTransport();
-        Logger::info("HapFileSource: demuxing HAP '{}' ({}x{}, {}s)",
-                     pathStr, width_, height_, duration_);
-        return true;
+        Logger::info("HapFileSource: demuxing HAP ({}x{}, {}s)", width_, height_, duration_);
     }
+
+    // The open failed: the source stays empty with the transport it was given.
+    void failOpen() { opening_ = false; }
+
+    bool isOpening() const { return opening_; }
 
     void close() {
         stopThread();
@@ -150,6 +186,7 @@ public:
         startPts_ = 0;
         duration_ = 0.0;
         isOpen_ = false;
+        opening_ = false;
         atEnd_ = false;
         refreshPending_ = false;
     }
@@ -167,13 +204,13 @@ public:
 
     // --- Playback control (the clock lives in the transport; main thread) ---
 
-    void play() { if (isOpen_) { transport_.play(); applyTransport(); } }
-    void pause() { if (isOpen_) { transport_.pause(); applyTransport(); } }
-    void stop() { if (isOpen_) { transport_.stop(); applyTransport(); } }
+    void play() { if (takesTransport()) { transport_.play(); applyTransport(); } }
+    void pause() { if (takesTransport()) { transport_.pause(); applyTransport(); } }
+    void stop() { if (takesTransport()) { transport_.stop(); applyTransport(); } }
     void togglePlayPause() {
         if (transport_.state() == PlaybackState::PLAYING) pause(); else play();
     }
-    void seek(double timeSeconds) { if (isOpen_) { transport_.seek(timeSeconds); applyTransport(); } }
+    void seek(double timeSeconds) { if (takesTransport()) { transport_.seek(timeSeconds); applyTransport(); } }
 
     PlaybackState state() const { return transport_.state(); }
 
@@ -183,14 +220,14 @@ public:
     // HAP frames are all keyframes: Ping-Pong always runs backwards exactly.
     void setLoopMode(LoopMode mode) {
         transport_.setLoopMode(mode);
-        if (isOpen_) applyTransport();
+        if (takesTransport()) applyTransport();
     }
     LoopMode loopMode() const { return transport_.loopMode(); }
     std::string loopModeNotice() const { return transport_.loopModeNotice(); }
 
     void setTimelineLocked(bool locked, const PlaybackClock& master) {
         transport_.setTimelineLocked(locked, master);
-        if (isOpen_) applyTransport();
+        if (takesTransport()) applyTransport();
     }
     bool timelineLocked() const { return transport_.timelineLocked(); }
     void followTimeline(const PlaybackClock& master) { transport_.followTimeline(master); }
@@ -267,8 +304,12 @@ private:
     // What one demux step produced.
     enum class Step { Frame, Continue, Idle, Failed };
 
+    bool takesTransport() const { return opening_ || isOpen_; }
+
+    // While the file opens the request waits: adopt() starts demuxing wherever the clock
+    // is then.
     void applyTransport() {
-        if (transport_.takeReposition()) reposition();
+        if (isOpen_ && transport_.takeReposition()) reposition();
         position_ = transport_.clock().position(transport_.now());
     }
 
@@ -609,6 +650,7 @@ private:
     double duration_ = 0.0;
     double frameSeconds_ = 1.0 / 30.0;
     bool isOpen_ = false;
+    bool opening_ = false;  // beginOpen() ran; adopt() or failOpen() has not
 
     // Playback (main thread)
     PlaybackTransport transport_;
@@ -650,10 +692,17 @@ private:
 namespace quadmapper {
 
 // Stub when FFmpeg is unavailable — HAP playback simply never initializes.
+struct HapFileSource::OpenedFile::Data {
+    static std::unique_ptr<Data> open(const std::filesystem::path&) { return nullptr; }
+};
+
 class HapFileSource::Impl {
 public:
-    bool open(const std::filesystem::path&) { return false; }
-    void close() {}
+    void beginOpen() { opening_ = true; }
+    void adopt(OpenedFile::Data&) { opening_ = false; }
+    void failOpen() { opening_ = false; }
+    bool isOpening() const { return opening_; }
+    void close() { opening_ = false; }
     bool isOpen() const { return false; }
     int width() const { return 0; }
     int height() const { return 0; }
@@ -680,6 +729,7 @@ public:
     std::string lastError() const { return {}; }
 private:
     PlaybackClock clock_;
+    bool opening_ = false;
 };
 
 #endif // QUADMAPPER_HAS_FFMPEG
@@ -697,16 +747,44 @@ HapFileSource::~HapFileSource() {
     shutdown();
 }
 
+HapFileSource::OpenedFile::OpenedFile(std::unique_ptr<Data> data) : data_(std::move(data)) {}
+HapFileSource::OpenedFile::~OpenedFile() = default;
+
 bool HapFileSource::initialize() {
     if (ready_) {
         return true;
     }
-    if (!impl_->open(path_)) {
+    beginOpen();
+    return finishOpen(openFile(path_));
+}
+
+std::unique_ptr<HapFileSource::OpenedFile> HapFileSource::openFile(const std::filesystem::path& path) {
+    std::unique_ptr<OpenedFile::Data> data = OpenedFile::Data::open(path);
+    if (!data) return nullptr;
+    return std::make_unique<OpenedFile>(std::move(data));
+}
+
+void HapFileSource::beginOpen() {
+    openFailed_ = false;
+    ready_ = false;
+    impl_->beginOpen();
+}
+
+bool HapFileSource::finishOpen(std::unique_ptr<OpenedFile> file) {
+    if (!impl_->isOpening()) return false;
+    if (!file || !file->data_) {
+        impl_->failOpen();
         Logger::error("HapFileSource: Failed to load '{}'", utf8FromPath(path_));
+        openFailed_ = true;  // the transport it was given is kept, for the project to save
         return false;
     }
+    impl_->adopt(*file->data_);
     ready_ = true;
     return true;
+}
+
+bool HapFileSource::isOpening() const {
+    return impl_ && impl_->isOpening();
 }
 
 void HapFileSource::shutdown() {
@@ -803,6 +881,9 @@ void HapFileSource::setTimeSource(std::function<PlaybackTimePoint()> source) {
     impl_->setTimeSource(std::move(source));
 }
 
-std::string HapFileSource::getErrorMessage() const { return impl_ ? impl_->lastError() : std::string(); }
+std::string HapFileSource::getErrorMessage() const {
+    if (openFailed_) return "The video file could not be opened.";
+    return impl_ ? impl_->lastError() : std::string();
+}
 
 } // namespace quadmapper

@@ -23,7 +23,8 @@ namespace quadmapper {
  * (ADR-011); no libav* headers leak here.
  *
  * Threading: demux + parse run on a background thread; the latest decoded BCn
- * frame is staged under a mutex and handed to the main thread (no GL here).
+ * frame is staged under a mutex and handed to the main thread (no GL here). The
+ * container can be opened on another thread (openFile), see beginOpen().
  *
  * Playback follows a PlaybackClock (ADR-050); Ping-Pong plays backwards frame-exact
  * because every HAP frame is a keyframe.
@@ -102,6 +103,32 @@ public:
     // Replace the playback clock's time source (tests); default steady_clock.
     void setTimeSource(std::function<PlaybackTimePoint()> source);
 
+    // --- Opening off the main thread (TD-35) ---
+    // initialize() opens the file here and now. SourceManager instead calls beginOpen(),
+    // opens the container with openFile() on a worker, and hands it to finishOpen() on
+    // the main thread, as it does a VideoFileSource's decoder. In between the source is
+    // not ready and shows nothing, but its transport (play, pause, seek, speed, loop,
+    // lock) already works and its clock runs.
+    class OpenedFile {
+    public:
+        struct Data;  // the demuxer's FFmpeg context and stream facts (ADR-011: not here)
+        explicit OpenedFile(std::unique_ptr<Data> data);
+        ~OpenedFile();  // closes the file unless finishOpen() took it; any thread
+        OpenedFile(const OpenedFile&) = delete;
+        OpenedFile& operator=(const OpenedFile&) = delete;
+
+    private:
+        friend class HapFileSource;
+        std::unique_ptr<Data> data_;
+    };
+    // Null (logged) when the file cannot be read or holds no HAP stream. Any thread.
+    static std::unique_ptr<OpenedFile> openFile(const std::filesystem::path& path);
+    void beginOpen();
+    // False (logged; getErrorMessage() says so) when `file` is null; the source stays
+    // empty and keeps the transport it was given.
+    bool finishOpen(std::unique_ptr<OpenedFile> file);
+    bool isOpening() const;
+
 private:
     class Impl;  // FFmpeg + demux thread behind the pimpl (ADR-011)
 
@@ -112,6 +139,7 @@ private:
     FrameData frame_;       // staged compressed frame for main-thread upload
     bool ready_ = false;
     bool hasNewFrame_ = false;
+    bool openFailed_ = false;  // the last open failed (the source stays empty)
 };
 
 } // namespace quadmapper

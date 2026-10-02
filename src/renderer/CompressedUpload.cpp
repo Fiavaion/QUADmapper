@@ -44,6 +44,26 @@ public:
         finished_.wait(lock, [&job] { return job.done; });
     }
 
+    // Never waits: true once no copy writes into `job`'s mapping (a queued copy is
+    // dropped, it never starts), false while its copy runs.
+    bool drop(CompressedUploadState::Staging& job) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (job.done) return true;
+        for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+            if (*it == &job) {
+                queue_.erase(it);
+                job.done = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static std::function<void()>& hook() {
+        static std::function<void()> h;
+        return h;
+    }
+
 private:
     void run() {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -53,6 +73,7 @@ private:
             CompressedUploadState::Staging* job = queue_.front();
             queue_.pop_front();
             lock.unlock();
+            if (hook()) hook()();
             std::memcpy(job->mapped, job->bytes->data(), job->bytes->size());
             lock.lock();
             job->done = true;
@@ -85,6 +106,10 @@ CompressedUploadState::~CompressedUploadState() {
     }
 }
 
+bool CompressedUploadState::idle() {
+    return !staging_.mapped || !copier_ || copier_->drop(staging_);
+}
+
 void CompressedUploadState::settle() {
     if (staging_.mapped) {
         if (copier_) copier_->wait(staging_);
@@ -98,6 +123,10 @@ void CompressedUploadState::settle() {
 }
 
 // --- CompressedUploader ---
+
+void CompressedUploader::setCopyHookForTesting(std::function<void()> hook) {
+    ByteCopier::hook() = std::move(hook);
+}
 
 // Orphan the next buffer of the ring (the GPU may still read the frame uploaded from it
 // before) and map it for the copier to fill.

@@ -12,6 +12,7 @@
 
 namespace quadmapper {
 
+class BackgroundWorker;
 class Texture;
 class YuvConverter;
 struct InteropDevice;
@@ -32,6 +33,12 @@ public:
     ~DxInteropTarget();
     DxInteropTarget(const DxInteropTarget&) = delete;
     DxInteropTarget& operator=(const DxInteropTarget&) = delete;
+
+    // Free it a piece at a time (TD-35: unregistering a shared plane took up to 53 ms
+    // under load): each call releases one shared plane (its GL registration, GL name and
+    // D3D11 texture), the last one also the decoded frames it had opened. True once
+    // nothing is left. GL context current; main thread.
+    bool releaseStep();
 
 private:
     friend class DxInterop;
@@ -109,8 +116,9 @@ public:
      * @param decoderDevice The decoders' ID3D11Device (VideoDecoder::sharedD3dDevice())
      *
      * The D3D11 device on the decoders' adapter and its plane copy shader, the slow part
-     * of the first zero-copy frame (up to 3.1 s under load, on the main thread). The first
-     * stage() then only opens it for OpenGL (which needs the GL context). Any thread;
+     * of the first zero-copy frame (up to 3.1 s under load, on the main thread). The next
+     * beginFrame() (or the first stage()) then only opens it for OpenGL, which needs the
+     * GL context. Any thread;
      * does nothing once a device is prepared or open, or if `decoderDevice` is null. A
      * failure here is not final: stage() tries again on the main thread and reports it.
      */
@@ -124,6 +132,52 @@ public:
      */
     bool stage(const YuvPicture& picture, DxInteropTarget& target, Texture& dest, void* key,
                std::string& why);
+
+    /**
+     * @brief Start a frame's allowance of zero-copy set-up (TD-35)
+     *
+     * Call once per update, before setUp(). The allowance is one costly GL call a frame.
+     * When prepare() has made the device and it is not open yet, it is opened for OpenGL
+     * here (wglDXOpenDeviceNV), spending the allowance, so the first frame of the first
+     * stream on the GPU does not open it.
+     */
+    void beginFrame();
+
+    enum class SetUp {
+        Ready,   // stage() will only queue the frame
+        Later,   // steps remain: keep the frame, ask again next update
+        Failed,  // the source cannot use zero-copy (`why` says why)
+    };
+
+    /**
+     * @brief Set up `target` for frames like `picture` a step at a time (TD-35)
+     *
+     * What stage() would do at once for a source's first frame, spread over updates: the
+     * interop device opened for OpenGL, the shared planes' D3D11 textures made on a
+     * worker thread, then each plane registered with OpenGL, at most one of those GL
+     * calls per beginFrame(). Main thread, GL context current.
+     */
+    SetUp setUp(const YuvPicture& picture, DxInteropTarget& target, std::string& why);
+
+    /**
+     * @brief Keep a removed source's target for a later source (TD-35)
+     *
+     * Unregistering shared planes from OpenGL is one driver call that took up to 57 ms
+     * under load even once the GPU was done with them, and registering them again for the
+     * next source up to 7 ms a plane. A target whose planes are registered is kept (at
+     * most MAX_SPARES), and setUp() gives it to the next fresh target for frames of its
+     * size and format, so a clip removed and opened again (undo, a preview, a replaced
+     * clip) calls neither. Returns what is not kept, for the caller to release: a target
+     * without registered planes, or the oldest spare once there are too many. Null when
+     * kept. Main thread.
+     */
+    std::unique_ptr<DxInteropTarget> recycle(std::unique_ptr<DxInteropTarget> target);
+    static constexpr size_t MAX_SPARES = 4;
+
+    // Release every kept target now (leak checks, before the GL context goes): main
+    // thread, GL context current; it may stall on the driver.
+    void releaseSpares();
+    size_t spareCount() const { return spares_.size(); }
 
     using Failure = std::function<void(void* key, const YuvPicture& picture, const std::string& why)>;
 
@@ -161,7 +215,14 @@ private:
     bool checked_ = false;
     bool available_ = false;
     std::string unavailableReason_;
+    // The GPU GL renders on, asked with available() (glAdapterLuid).
+    bool glLuidKnown_ = false;
+    uint64_t glLuid_ = 0;
+    std::string glLuidWhy_;
     int batches_ = 0;
+    int stepsLeft_ = 1;  // setUp() GL calls left this frame (beginFrame)
+    std::unique_ptr<BackgroundWorker> builder_;  // makes shared planes' D3D11 textures
+    std::vector<std::unique_ptr<DxInteropTarget>> spares_;  // recycle(), oldest first
 };
 
 }  // namespace quadmapper

@@ -16,6 +16,7 @@
 #include "../scene/Quad.hpp"
 #include "../scene/QuadManager.hpp"
 #include "../scene/Scene.hpp"
+#include "../source/HapFileSource.hpp"
 #include "../source/SourceManager.hpp"
 #include "../source/VideoFileSource.hpp"
 #include "../source/procedural/ProceduralSource.hpp"
@@ -277,16 +278,17 @@ int Application::runStress(const StressConfig& cfg) {
     // source really builds its decoder thread and mixer input before it is freed.
     auto sourceUp = [&]() -> bool {
         const TextureSource* source = m_sourceManager->getSource(sourceId);
-        if (!source || !source->getCurrentFrame()) return false;
+        if (!source || !source->getCurrentFrame() || !m_sourceManager->showsCurrentFrame(sourceId)) return false;
         if (!m_audioEngine) return true;
         const SourceAudioStatus audio = m_audioEngine->status(sourceId);
         return audio == SourceAudioStatus::NoAudio ||
                (audio == SourceAudioStatus::Ready && m_audioEngine->mixer().getSourceCount() > 0);
     };
-    // A video file opens on the opener thread (TD-35); updateAll() ends the open.
+    // A video or HAP file opens on the opener thread (TD-35); updateAll() ends the open.
     auto sourceOpening = [&]() -> bool {
-        const auto* video = m_sourceManager->getSourceAs<VideoFileSource>(sourceId);
-        return video && video->isOpening();
+        if (const auto* video = m_sourceManager->getSourceAs<VideoFileSource>(sourceId)) return video->isOpening();
+        const auto* hap = m_sourceManager->getSourceAs<HapFileSource>(sourceId);
+        return hap && hap->isOpening();
     };
     auto runCycle = [&](int budgetMs) -> bool {
         const double budgetSec = budgetMs / 1000.0;
@@ -348,9 +350,9 @@ int Application::runStress(const StressConfig& cfg) {
                 cycleStart = glfwGetTime();
                 const std::vector<UUID> failed = m_sourceManager->takeFailedOpens();
                 if (std::find(failed.begin(), failed.end(), sourceId) != failed.end()) {
-                    const auto* video = m_sourceManager->getSourceAs<VideoFileSource>(sourceId);
+                    const auto* failedSource = m_sourceManager->getSourceAs<PlayableSource>(sourceId);
                     Logger::error("[STRESS] STRESS FAIL (open) — '{}' could not be opened: {}", cfg.media,
-                                  video ? video->getErrorMessage() : std::string());
+                                  failedSource ? failedSource->getErrorMessage() : std::string());
                     openFailed = true;
                     m_outputManager->exitPerformMode();
                     return false;

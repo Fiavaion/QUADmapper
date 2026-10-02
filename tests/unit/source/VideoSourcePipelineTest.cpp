@@ -197,7 +197,9 @@ TEST(VideoSourcePipeline, PausedSourceShowsFirstFrame) {
     for (int i = 0; i < 100 && !uploaded; ++i) {
         sm.updateAll(1.0 / 60.0);
         const FrameData* frame = playable->getCurrentFrame();
-        uploaded = frame && frame->isYuv();
+        // On the zero-copy path the first frame reaches the texture a few updates after
+        // the source holds it (TD-35).
+        uploaded = frame && frame->isYuv() && sm.showsCurrentFrame(id);
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     ASSERT_TRUE(uploaded);

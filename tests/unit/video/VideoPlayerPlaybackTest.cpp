@@ -660,6 +660,39 @@ void expectQueuedFrom(VideoDecoder& decoder, const DecodePlan& plan, int first, 
 // and before the frame is queued (TD-35 review): the frame belongs to the plan just
 // replaced and is dropped under the queue's lock, so the new plan's first frame is the
 // first one queued.
+// TD-35: a decoder opened off the main thread starts its decode thread there, idle: it
+// decodes nothing until startPlayback() hands it a plan, then the plan's frames come; a
+// decoder closed while its thread idles closes at once.
+TEST(VideoDecoderReposition, AnIdleThreadDecodesNothingUntilItsFirstPlan) {
+    const fs::path path = clipPath("clip", ".mp4");
+    if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";
+    constexpr size_t QUEUE = 4;
+    constexpr int LAST = 37;
+    {
+        VideoDecoder decoder;
+        ASSERT_TRUE(decoder.open(path));
+        decoder.startIdleThread();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        EXPECT_EQ(decoder.getBufferedFrameCount(), 0u) << "the idle thread decoded before its plan";
+        DecodePlan plan;
+        plan.duration = DURATION;
+        plan.loopMode = LoopMode::LOOP;
+        plan.timeline = double(LAST) / FPS;
+        decoder.startPlayback(plan, QUEUE);
+        ASSERT_TRUE(waitUntil([&] { return decoder.getBufferedFrameCount() == QUEUE; }));
+        expectQueuedFrom(decoder, plan, LAST, QUEUE);
+    }
+    const auto start = std::chrono::steady_clock::now();
+    {
+        VideoDecoder idle;
+        ASSERT_TRUE(idle.open(path));
+        idle.startIdleThread();
+    }  // closed while idle
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(5));
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
 TEST(VideoDecoderReposition, AFrameDecodedForAReplacedPlanIsNeverQueued) {
     const fs::path path = clipPath("clip", ".mp4");
     if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";

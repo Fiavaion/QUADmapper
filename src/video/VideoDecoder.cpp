@@ -1252,6 +1252,15 @@ public:
         backgroundThread_ = std::thread(&Impl::backgroundDecodingLoop, this);
     }
 
+    void startIdleThread() {
+        if (!isOpen_ || backgroundThread_.joinable()) return;
+        {
+            std::lock_guard<std::mutex> lock(bufferMutex_);
+            awaitPlan_ = true;
+        }
+        startBackgroundDecoding(maxBufferSize_);
+    }
+
     void stopBackgroundDecoding() {
         if (!backgroundThread_.joinable()) return;
 
@@ -2127,6 +2136,12 @@ private:
     bool interrupted() const { return stopDecoding_ || replan_; }
 
     void backgroundDecodingLoop() {
+        {
+            // Started by startIdleThread(): nothing to decode until the first plan.
+            std::unique_lock<std::mutex> lock(bufferMutex_);
+            bufferCondition_.wait(lock, [this] { return !awaitPlan_ || stopDecoding_ || replan_; });
+            awaitPlan_ = false;
+        }
         DecodeBackoff backoff;
         while (!stopDecoding_) {
             if (replan_) {
@@ -2301,6 +2316,7 @@ private:
     std::string lastError_;     // guarded by bufferMutex_
     std::atomic<bool> stopDecoding_{false};
     std::atomic<bool> replan_{false};  // pendingPlan_ waits for the decode thread
+    bool awaitPlan_ = false;  // the thread idles until a plan (startIdleThread); bufferMutex_
     DecodePlan pendingPlan_;            // guarded by bufferMutex_
     size_t maxBufferSize_ = 8;          // guarded by bufferMutex_ while the thread runs
 };
@@ -2325,6 +2341,7 @@ public:
     int64_t getCurrentFrame() const { return 0; }
     bool isAtEnd() const { return true; }
     void startBackgroundDecoding(size_t) {}
+    void startIdleThread() {}
     void startPlayback(const DecodePlan&, size_t) {}
     std::string checkReverse(size_t) const { return {}; }
     std::string getReverseError() const { return {}; }
@@ -2372,6 +2389,7 @@ double VideoDecoder::getCurrentTime() const { return impl_->getCurrentTime(); }
 int64_t VideoDecoder::getCurrentFrame() const { return impl_->getCurrentFrame(); }
 bool VideoDecoder::isAtEnd() const { return impl_->isAtEnd(); }
 void VideoDecoder::startBackgroundDecoding(size_t bufferSize) { impl_->startBackgroundDecoding(bufferSize); }
+void VideoDecoder::startIdleThread() { impl_->startIdleThread(); }
 void VideoDecoder::startPlayback(const DecodePlan& plan, size_t bufferSize) {
     impl_->startPlayback(plan, bufferSize);
 }

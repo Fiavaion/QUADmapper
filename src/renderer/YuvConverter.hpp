@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace quadmapper {
@@ -28,6 +29,12 @@ public:
     ~YuvUploadState();  // waits for a copy still writing into a buffer, then unmaps it
     YuvUploadState(const YuvUploadState&) = delete;
     YuvUploadState& operator=(const YuvUploadState&) = delete;
+
+    // Whether the destructor would free it at once: true once no copy writes into its
+    // buffers (a copy still queued is dropped, it never starts), false while one runs.
+    // Never waits (TD-35: a removed source's state waited on the main thread for its
+    // copy). Main thread.
+    bool idle();
 
     // A frame being copied into one of the pixel buffers, which stays mapped until the
     // upload. Written by the copier thread only between submit and done.
@@ -111,6 +118,10 @@ public:
         float scale = 1.0f;
     };
     static Coefficients coefficients(YuvMatrix matrix, bool fullRange, YuvLayout layout);
+
+    // Test hook: run on the copier thread before each frame copy (every converter); it
+    // may block. Set it while no copy is queued.
+    static void setCopyHookForTesting(std::function<void()> hook);
 
 private:
     bool ensureObjects();
