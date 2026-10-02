@@ -21,8 +21,14 @@
 // router and the scene take keys); the canvas with the mouse (ViewportEditor::Pointer)
 // and its keys; drags dropped on the canvas and on every panel item; the pickers'
 // answers (ProjectSession's *Chosen, the Video Player's load, the Preferences folder)
-// and an OBJ import finishing under the lock; every OSC target and MIDI mapping; every
-// key on an output window.
+// and an OBJ import finishing under the lock; every OSC target and MIDI mapping, queued
+// and applied as the application applies them, and a MIDI learn begun before locking;
+// every key on an output window.
+//
+// The application's own frame code runs between the steps as Application runs it
+// (TD-36): boundary() is Application::runFrameBoundaryTasks and the steps render() takes
+// before the editor frame, and the scene takes (keys, output windows, OSC/MIDI) are
+// queued and drained in the editor frame through editor/SceneTakes.hpp.
 //
 // The real EditorUi runs in a hidden GL 3.3 window (skips without GL), with the
 // project session, a source manager and two unrealised outputs (no window is ever
@@ -43,10 +49,12 @@
 #include "editor/MediaAssign.hpp"
 #include "editor/MeshLoads.hpp"
 #include "editor/MissingMedia.hpp"
+#include "editor/NewQuads.hpp"
 #include "editor/PerformLock.hpp"
 #include "editor/ProjectorFit.hpp"
 #include "editor/Preferences.hpp"
 #include "editor/ProjectMapping.hpp"
+#include "editor/SceneTakes.hpp"
 #include "editor/SliceEditing.hpp"
 #include "input/VertexKeyboard.hpp"
 #include "media/MediaItem.hpp"
@@ -470,16 +478,21 @@ protected:
         put(action_id::PERFORM_ESCAPE, performEscape);
         put(action_id::PERFORM_LOCK, togglePerformLock);
         installPerformLockPolicy(registry_, es_);
+        // The take as Application::takeSceneByNumber makes it: the OSC/MIDI fade, else
+        // the Preferences one.
         for (int n = 1; n <= 9; ++n) {
-            put(sceneTakeId(n), [n](EditorContext& c) { c.es.takeScene(n, *c.outputManager); });
+            put(sceneTakeId(n), [this, n](EditorContext&) {
+                takeSceneByNumber(es_, om_, n,
+                                  takeQueue_.controlFade.value_or(prefsDialog_.getPreferences().general.sceneFadeSeconds));
+            });
         }
 
         // External control, as Application wires it (ADR-048): the targets on this show,
-        // a take going through the take action.
+        // a take queued for the editor frame (runExternalSceneTakes).
         host_.scenes = &es_.scenes;
         host_.sources = &sources_;
-        host_.takeScene = [this](int number, std::optional<float>) {
-            registry_.invoke(sceneTakeId(number), ctx_, Source::Control);
+        host_.takeScene = [this](int number, std::optional<float> fadeSeconds) {
+            takeQueue_.external.push_back({number, fadeSeconds});
         };
         host_.activeSceneNumber = [this] {
             return findSceneIndex(es_.scenes, es_.activeScene().getId()) + 1;
@@ -490,19 +503,22 @@ protected:
         registerControlTargets(control_.registry(), host_);
         refreshControlEntities(control_.registry(), es_.scenes, &sources_);
 
-        // An output window's 1-9 (OutputManager's GLFW key callback) queue takes.
-        om_.setSceneKeyCallback([this](int number) {
-            registry_.invoke(sceneTakeId(number), ctx_, Source::Key);
-        });
+        // An output window's 1-9 (OutputManager's GLFW key callback) queue takes
+        // (Application::queueSceneTake).
+        om_.setSceneKeyCallback([this](int number) { takeQueue_.keys.push_back(number); });
     }
 
-    // Lock from the menu, as an operator does, and take the baseline.
+    // Lock from the menu, as an operator does, and take the baseline. The frame code runs
+    // once before locking (what it does then is the show as locked) and is checked on
+    // its first pass under the lock, so a change it makes only while locked is a leak.
     void lockShow() {
+        boundary();
         ASSERT_EQ(registry_.invoke(action_id::PERFORM_LOCK, ctx_, Source::Menu), Outcome::Ran);
         ASSERT_TRUE(es_.performLock.isOn());
         ASSERT_FALSE(om_.isBlendTestPattern()) << "locking turns the blend test pattern off";
-        boundary();
         rebaseline();
+        boundary();
+        unchanged("the first frame boundary after locking");
     }
 
     // ---- Checking -------------------------------------------------------------------
@@ -543,7 +559,10 @@ protected:
         }
         if (problem.empty()) {
             // An allowed change (a take, a target) is the new baseline.
-            if (allow != ALLOW_NONE && allowedValues(es_, om_, &sources_) != allowedBaseline_) rebaseline();
+            if (allow != ALLOW_NONE && allowedValues(es_, om_, &sources_) != allowedBaseline_) {
+                ++allowedChanges_;
+                rebaseline();
+            }
             return true;
         }
         stopped_ = true;
@@ -551,10 +570,13 @@ protected:
         return false;
     }
 
-    // The application's frame boundary (Application::runFrameBoundaryTasks): the
-    // session's file actions, OBJ adoption, the folder search, the projector fit. Save
-    // As would open the native Save dialog: it is allowed under the lock, so it is
-    // counted, not shown.
+    // The application's frame boundary (Application::runFrameBoundaryTasks), in its
+    // order: the session's file actions, OBJ adoption, external control (the queued
+    // OSC/MIDI events applied, with the Control panel open so the entities are re-read),
+    // the folder search, the source housekeeping, the projector fit; then what render()
+    // does before the editor frame: the new-quad upkeep and the failed opens. Save As
+    // would open the native Save dialog: it is allowed under the lock, so it is counted,
+    // not shown. External control runs on controlNow_, which the sweep keeps still.
     void boundary() {
         if (es_.pendingFileAction == EditorState::FileAction::SaveAs) {
             es_.pendingFileAction = EditorState::FileAction::None;
@@ -562,10 +584,32 @@ protected:
         }
         session_->processPendingFileAction();
         adoptObjectMeshes(es_, &om_);
+        processExternalControl(control_, es_.scenes, es_.midiMappings, &sources_, controlNow_,
+                               /*controlPanelShown=*/true);
         session_->pollMissingMediaSearch();
+        releaseUnusedSources(es_, sources_, &library_);
         fitProjectorsToOutputs(es_, om_);
+        prepareNewQuads(es_);
+        adoptFailedOpens(es_, sources_);
         // Unlocking asks first; the sweep never answers "Unlock".
         if (es_.performLock.isConfirmingUnlock()) cancelPerformUnlock(es_);
+    }
+
+    // A MIDI message on the external control queue, as MIDI input pushes it.
+    void pushMidi(control::MidiType type, int channel, int number, int value) {
+        control::ControlEvent e;
+        e.source = control::ControlEvent::Source::Midi;
+        e.midi.type = type;
+        e.midi.channel = static_cast<uint8_t>(channel);
+        e.midi.number = static_cast<uint8_t>(number);
+        e.midi.value = static_cast<uint8_t>(value);
+        ASSERT_TRUE(control_.queue().push(std::move(e)));
+    }
+
+    // Unlock as an operator does (the prompt answered "Unlock").
+    void unlockShow() {
+        requestPerformUnlock(es_);
+        ASSERT_TRUE(confirmPerformUnlock(es_));
     }
 
     // ---- Headless ImGui input ----------------------------------------------------------
@@ -855,8 +899,9 @@ protected:
         if (!focusWindow_.empty()) ImGui::SetWindowFocus(focusWindow_.c_str());
     }
 
-    // The whole editor frame, as Application runs it, with the scene take keys queued
-    // in takes_ and, while dragSource_ is set, a window that holds a drag.
+    // The whole editor frame, as Application runs it, with the scene takes queued in
+    // takeQueue_ (Application::runSceneTakes) and, while dragSource_ is set, a window
+    // that holds a drag.
     void uiFrame() {
         ImGui::NewFrame();
         if (resetUi_) {
@@ -865,7 +910,10 @@ protected:
             ImGui::ClosePopupsExceptModals();
         }
         if (dragSource_) dragSource_();
-        ui_->frame(ctx_, [this](EditorContext& c) { runSceneTakeKeys(registry_, c, takes_); });
+        ui_->frame(ctx_, [this](EditorContext& c) {
+            runSceneTakeKeys(registry_, c, takeQueue_.keys);
+            runExternalSceneTakes(registry_, c, takeQueue_);
+        });
         ImGui::Render();
     }
 
@@ -916,7 +964,8 @@ protected:
     bool resetUi_ = false;
     float scroll_ = 0.0f;
     std::string focusWindow_;
-    std::vector<int> takes_;
+    SceneTakeQueue takeQueue_;
+    double controlNow_ = 100.0;  // external control's clock (seconds)
     std::function<void()> dragSource_;
 
     // Counts for the report.
@@ -924,6 +973,7 @@ protected:
     size_t gestures_ = 0;
     size_t skipped_ = 0;
     size_t unreached_ = 0;
+    size_t allowedChanges_ = 0;  // checks after which an allowed value had changed
     int saveAsRequests_ = 0;
     std::map<std::string, size_t> itemsFound_;
     std::map<std::string, size_t> enabledFound_;
@@ -1305,7 +1355,7 @@ TEST_F(PerformLockSweepTest, KeyboardChangesOnlyWhatTheLockKeeps) {
         }
     }
     for (int n = 1; n <= 9; ++n) {
-        takes_.push_back(n);
+        takeQueue_.keys.push_back(n);
         frame();
         boundary();
         if (!unchanged("scene take key " + std::to_string(n), ALLOW_TAKES)) return;
@@ -1569,8 +1619,7 @@ TEST_F(PerformLockSweepTest, PickersAnsweredAfterLockingChangeNothing) {
     if (!unchanged("Preferences media folder answered after locking")) return;
 
     // An import begun before locking: unlock, import, lock again; then its parse lands.
-    requestPerformUnlock(es_);
-    ASSERT_TRUE(confirmPerformUnlock(es_));
+    unlockShow();
     importObjectFile(es_, utf8FromPath(obj));
     lockShow();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -1586,12 +1635,21 @@ TEST_F(PerformLockSweepTest, PickersAnsweredAfterLockingChangeNothing) {
 // ---- External control ------------------------------------------------------------------------
 
 // Every OSC target (globals and every entity's actions, at 0, 0.5 and 1) and the show's
-// MIDI mappings: they act, as the lock keeps every target, and change nothing else:
-// no mapping, no learn, nothing a target does not name.
+// MIDI mappings, each event queued as the OSC and MIDI threads queue it and applied at
+// the frame boundary (processExternalControl), its take made in the editor frame
+// (runExternalSceneTakes): they act, as the lock keeps every target, and change nothing
+// else: no mapping, no learn, nothing a target does not name.
 TEST_F(PerformLockSweepTest, ExternalControlChangesOnlyItsTargets) {
-    std::vector<std::string> addresses = {"/qm/scene/take", "/qm/scene/active"};
-    for (const auto& target : control_.registry().listTargets()) addresses.push_back(target.path);
+    showOnly("");
+    const Frame frame = [this] { uiFrame(); };
+    frame();
     size_t events = 0;
+    const auto apply = [&] {
+        ++events;
+        boundary();  // the event applied (processExternalControl)
+        frame();     // a take it queued is made (runExternalSceneTakes)
+        boundary();
+    };
     const auto osc = [&](const std::string& address, float value) {
         control::ControlEvent e;
         e.source = control::ControlEvent::Source::Osc;
@@ -1600,40 +1658,74 @@ TEST_F(PerformLockSweepTest, ExternalControlChangesOnlyItsTargets) {
         arg.type = control::OscArg::Type::Float;
         arg.f = value;
         e.osc.args.push_back(arg);
-        control_.dispatcher().dispatch(e, es_.midiMappings, 0.0);
-        ++events;
+        ASSERT_TRUE(control_.queue().push(std::move(e)));
+        apply();
     };
+
+    // An OSC take reaches the show through the queue, the boundary and the editor frame.
+    const UUID encore = es_.scenes[1]->getId();
+    osc("/qm/scene/take", 2.0f);
+    EXPECT_EQ(es_.activeScene().getId(), encore) << "the OSC take of scene 2 was not made";
+    if (!unchanged("OSC /qm/scene/take 2", ALLOW_TAKES | ALLOW_TARGETS)) return;
+
+    std::vector<std::string> addresses = {"/qm/scene/take", "/qm/scene/active"};
+    for (const auto& target : control_.registry().listTargets()) addresses.push_back(target.path);
     for (const std::string& address : addresses) {
         for (float value : {0.0f, 0.5f, 1.0f}) {
             osc(address, value);
-            boundary();
             if (!unchanged("OSC " + address + " " + std::to_string(value), ALLOW_TAKES | ALLOW_TARGETS)) return;
         }
     }
     for (const control::MidiMapping& mapping : std::vector<control::MidiMapping>(es_.midiMappings)) {
-        for (uint8_t value : {uint8_t(0), uint8_t(64), uint8_t(127)}) {
-            control::ControlEvent e;
-            e.source = control::ControlEvent::Source::Midi;
-            e.midi.type = mapping.type == control::MidiControlType::CC ? control::MidiType::ControlChange
-                                                                      : control::MidiType::ProgramChange;
-            e.midi.channel = static_cast<uint8_t>(mapping.channel > 0 ? mapping.channel : 1);
-            e.midi.number = static_cast<uint8_t>(mapping.number);
-            e.midi.value = value;
-            control_.dispatcher().dispatch(e, es_.midiMappings, 0.0);
-            ++events;
-            boundary();
+        for (int value : {0, 64, 127}) {
+            pushMidi(mapping.type == control::MidiControlType::CC ? control::MidiType::ControlChange
+                                                                 : control::MidiType::ProgramChange,
+                     mapping.channel > 0 ? mapping.channel : 1, mapping.number, value);
+            apply();
             if (!unchanged("MIDI " + mapping.target, ALLOW_TAKES | ALLOW_TARGETS)) return;
         }
     }
-    std::printf("[sweep] external control: %zu addresses, %zu events\n", addresses.size(), events);
+    EXPECT_GT(allowedChanges_, 1u) << "no OSC/MIDI event reached a target";
+    std::printf("[sweep] external control: %zu addresses, %zu events, %zu allowed changes\n", addresses.size(),
+                events, allowedChanges_);
     report("external control");
+}
+
+// A MIDI learn armed before locking: locking cancels it, so a control moved under the
+// lock binds nothing.
+TEST_F(PerformLockSweepTest, ALearnArmedBeforeLockingBindsNothingUnderTheLock) {
+    unlockShow();
+    control_.dispatcher().beginLearn("/qm/quad/" + stage_->getId().toString() + "/opacity");
+    lockShow();
+    pushMidi(control::MidiType::ControlChange, 1, 20, 64);
+    boundary();
+    unchanged("a control moved under the lock after a learn armed before it");
+}
+
+// A 14-bit pair whose first half (CC 20) was learned just before locking: its second
+// half (CC 52) arriving under the lock, within the pairing time, must not make the
+// mapping a 14-bit one (TD-36: locking cancelled the learn but not the pair).
+TEST_F(PerformLockSweepTest, AFourteenBitPairHalfLearnedBeforeLockingDoesNotCompleteUnderIt) {
+    unlockShow();
+    control_.dispatcher().beginLearn("/qm/quad/" + stage_->getId().toString() + "/opacity");
+    pushMidi(control::MidiType::ControlChange, 1, 20, 64);
+    boundary();
+    ASSERT_EQ(es_.midiMappings.size(), 3u) << "the learn made no mapping";
+    ASSERT_EQ(es_.midiMappings.back().bits, 7);
+    lockShow();
+    pushMidi(control::MidiType::ControlChange, 1, 20 + 32, 1);  // controlNow_ has not moved
+    boundary();
+    unchanged("the other half of a 14-bit pair learned before locking");
 }
 
 // ---- Output windows ----------------------------------------------------------------------------
 
 // Every key on a focused output window (OutputManager's GLFW key callback): Esc / F11
-// leave perform mode, Ctrl+B is blackout, 1-9 take scenes; nothing else does anything.
+// leave perform mode, Ctrl+B is blackout, 1-9 queue scene takes, made in the next
+// editor frame; nothing else does anything.
 TEST_F(PerformLockSweepTest, OutputWindowKeysChangeOnlyWhatTheLockKeeps) {
+    showOnly("");
+    const Frame frame = [this] { uiFrame(); };
     size_t presses = 0;
     for (int key = GLFW_KEY_SPACE; key <= GLFW_KEY_LAST; ++key) {
         for (int mods : {0, GLFW_MOD_CONTROL, GLFW_MOD_SHIFT, GLFW_MOD_ALT, GLFW_MOD_CONTROL | GLFW_MOD_SHIFT}) {
@@ -1641,6 +1733,7 @@ TEST_F(PerformLockSweepTest, OutputWindowKeysChangeOnlyWhatTheLockKeeps) {
             om_.applyPendingPerformExit();
             om_.handleOutputWindowKey(key, GLFW_RELEASE, mods);
             ++presses;
+            frame();
             boundary();
         }
         // Once per key: a take is the only allowed change, and two cannot cancel out.
