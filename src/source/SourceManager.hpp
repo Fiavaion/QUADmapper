@@ -3,6 +3,7 @@
 #include "TextureSource.hpp"
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
+#include <chrono>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -148,7 +149,8 @@ public:
     void removeSource(const UUID& id);
 
     /**
-     * @brief Remove all sources (freed as removeSource() frees them)
+     * @brief Remove all sources (freed as removeSource() frees them), and release the
+     *        shared zero-copy planes kept for later sources (a new or replaced project)
      */
     void clear();
 
@@ -196,6 +198,16 @@ public:
      *        (sources created from now on); it may block or throw
      */
     void setOpenHookForTesting(std::function<void(const std::filesystem::path&)> hook);
+
+    /**
+     * @brief Test hook for the fence removed GL state waits behind (TD-35)
+     * @param neverSignals Every fence reads as not signalled, as after a GPU reset
+     * @param limit How long one may stay unsignalled before it is taken as signalled
+     */
+    void setFenceHooksForTesting(bool neverSignals, std::chrono::milliseconds limit = FENCE_LIMIT);
+    // A fence still unsignalled after this (a TDR or a lost device never signals it) is
+    // taken as signalled, so removed GL state is still freed.
+    static constexpr std::chrono::milliseconds FENCE_LIMIT{10000};
 
     /**
      * @brief Show `standIn`'s texture for `id` until `id` has a frame of its own
@@ -389,6 +401,7 @@ private:
         std::unique_ptr<CompressedUploadState> compressedUpload;
         std::unique_ptr<DxInteropTarget> zeroCopy;
         std::unique_ptr<void, GlFenceDeleter> fence;  // signalled once the GPU is done with it all
+        std::chrono::steady_clock::time_point retiredAt;
     };
 
     std::unordered_map<UUID, SourceEntry> sources_;
@@ -403,6 +416,9 @@ private:
     std::vector<UUID> failedOpens_;     // see takeFailedOpens()
     std::function<void(const std::filesystem::path&)> openHookForTesting_;
     std::vector<RetiredGl> retiredGl_;  // freed a piece a frame, oldest first
+    std::chrono::milliseconds fenceLimit_ = FENCE_LIMIT;  // setFenceHooksForTesting
+    bool fenceNeverSignalsForTesting_ = false;
+    bool fenceTimeoutLogged_ = false;
     std::unique_ptr<BackgroundWorker> opener_;
     std::unique_ptr<BackgroundWorker> reaper_;
 

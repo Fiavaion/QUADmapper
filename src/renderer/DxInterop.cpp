@@ -494,15 +494,31 @@ std::unique_ptr<DxInteropTarget> DxInterop::recycle(std::unique_ptr<DxInteropTar
 #else
     return target;
 #endif
-    spares_.push_back(std::move(target));
+    spares_.push_back({std::move(target), std::chrono::steady_clock::now()});
     if (spares_.size() <= MAX_SPARES) return nullptr;
-    std::unique_ptr<DxInteropTarget> oldest = std::move(spares_.front());
+    return takeSpare(true);
+}
+
+std::unique_ptr<DxInteropTarget> DxInterop::takeSpare(bool all) {
+    if (spares_.empty()) return nullptr;
+    if (!all) {
+        const int hookMs = testHooks().spareLifetimeMs;
+        const std::chrono::steady_clock::duration lifetime =
+            hookMs >= 0 ? std::chrono::steady_clock::duration(std::chrono::milliseconds(hookMs))
+                        : std::chrono::steady_clock::duration(SPARE_LIFETIME);
+        if (std::chrono::steady_clock::now() - spares_.front().keptAt < lifetime) return nullptr;
+    }
+    std::unique_ptr<DxInteropTarget> oldest = std::move(spares_.front().target);
     spares_.erase(spares_.begin());
     return oldest;
 }
 
 void DxInterop::releaseSpares() {
     spares_.clear();
+}
+
+void DxInterop::finishBackgroundWork() {
+    if (builder_) builder_->drain();
 }
 
 bool DxInterop::available() {
@@ -786,8 +802,8 @@ DxInterop::SetUp DxInterop::setUp(const YuvPicture& picture, DxInteropTarget& ta
     if (!t.fits(device_, picture, inputDesc.Format) && !t.planes[0].texture && !t.making) {
         // A fresh target: a kept one with planes for these frames, already registered.
         for (auto it = spares_.begin(); it != spares_.end(); ++it) {
-            if ((*it)->impl_->fits(device_, picture, inputDesc.Format)) {
-                std::swap(target.impl_, (*it)->impl_);
+            if (it->target->impl_->fits(device_, picture, inputDesc.Format)) {
+                std::swap(target.impl_, it->target->impl_);
                 spares_.erase(it);  // with the fresh, empty one it now holds
                 return SetUp::Ready;
             }

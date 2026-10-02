@@ -418,6 +418,175 @@ TEST_F(AsyncSourceLifecycle, AReopenedZeroCopyClipTakesOverTheKeptSharedPlanes) 
     MainThreadTimings::reset();
 }
 
+// TD-35: kept shared planes hold video memory (about 100 MB a target at 8K P010), so they
+// go once no source has taken them for DxInterop::SPARE_LIFETIME (shortened here), and at
+// once when the project is replaced (clear()), freed by the updates that follow.
+TEST_F(AsyncSourceLifecycle, KeptSharedPlanesAreReleasedWhenUnusedAndOnClear) {
+    const fs::path h264 = "D:/testing Videos/greenCrystals_15Sec.mp4";
+    if (!fs::exists(h264)) GTEST_SKIP() << "test media not present";
+    constexpr auto LIFETIME = std::chrono::milliseconds(300);
+    DxInterop::testHooks().spareLifetimeMs = static_cast<int>(LIFETIME.count());
+    {
+        SourceManager sm;
+        const UUID first = sm.createVideoSource(h264);
+        sm.getSourceAs<PlayableSource>(first)->play();
+        ASSERT_TRUE(showsFrame(sm, first));
+        if (!sm.getSourceAs<VideoFileSource>(first)->isZeroCopy()) {
+            DxInterop::testHooks() = DxInterop::TestHooks{};
+            GTEST_SKIP() << "no zero-copy here";
+        }
+        sm.removeSource(first);
+        const auto removed = std::chrono::steady_clock::now();
+        for (int i = 0; i < 5; ++i) sm.updateAll(1.0 / 60.0);
+        EXPECT_GT(DxInterop::liveObjects(), 0) << "the shared planes were not kept";
+        auto deadline = removed + WAIT_LIMIT;
+        while (DxInterop::liveObjects() > 0 && std::chrono::steady_clock::now() < deadline) {
+            sm.updateAll(1.0 / 60.0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        EXPECT_EQ(DxInterop::liveObjects(), 0) << "kept planes no source took were never released";
+        EXPECT_GE(std::chrono::steady_clock::now() - removed, LIFETIME);
+
+        DxInterop::testHooks().spareLifetimeMs = -1;  // SPARE_LIFETIME: clear() must release them itself
+        const UUID second = sm.createVideoSource(h264);
+        sm.getSourceAs<PlayableSource>(second)->play();
+        ASSERT_TRUE(showsFrame(sm, second));
+        sm.clear();
+        deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+        while (sm.getRetiredGlCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+            sm.updateAll(1.0 / 60.0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_EQ(sm.getRetiredGlCount(), 0u);
+        EXPECT_EQ(DxInterop::liveObjects(), 0) << "clear() kept shared planes for later sources";
+        sm.finishBackgroundWork();
+    }
+    DxInterop::testHooks() = DxInterop::TestHooks{};
+}
+
+// TD-35: while a zero-copy source's first frame waits for its set-up (DxInterop::setUp:
+// at least two updates, one plane registered in each), the source holds a frame its
+// texture does not show yet. A replacement shows the clip it replaces (setStandIn); a
+// source without a stand-in keeps a texture with no storage, which buildQuadTextureMap
+// draws black, never as the renderer's white default.
+TEST_F(AsyncSourceLifecycle, AZeroCopySourceWaitingForItsSetUpShowsItsStandInOrBlack) {
+    const fs::path h264 = "D:/testing Videos/greenCrystals_15Sec.mp4";
+    if (!fs::exists(h264)) GTEST_SKIP() << "test media not present";
+    SourceManager sm;
+    const UUID original = sm.createVideoSource(clip_);
+    ASSERT_TRUE(showsFrame(sm, original));
+    Texture* originalTexture = sm.getTexture(original);
+    ASSERT_NE(originalTexture, nullptr);
+
+    const UUID replacement = sm.createVideoSource(h264);
+    sm.setStandIn(replacement, original);
+    const UUID fresh = sm.createVideoSource(h264);
+    sm.getSourceAs<PlayableSource>(replacement)->play();
+    sm.getSourceAs<PlayableSource>(fresh)->play();
+    auto waiting = [&](const UUID& id) {
+        const TextureSource* source = sm.getSource(id);
+        return source && source->getCurrentFrame() && !sm.showsCurrentFrame(id);
+    };
+    int replacementWaits = 0;
+    int freshWaits = 0;
+    const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+    while (!(sm.showsCurrentFrame(replacement) && sm.showsCurrentFrame(fresh)) &&
+           std::chrono::steady_clock::now() < deadline) {
+        sm.updateAll(1.0 / 60.0);
+        if (waiting(replacement)) {
+            ++replacementWaits;
+            EXPECT_EQ(sm.getTexture(replacement), originalTexture) << "the stand-in was not shown";
+        }
+        if (waiting(fresh)) {
+            ++freshWaits;
+            const Texture* texture = sm.getTexture(fresh);
+            ASSERT_NE(texture, nullptr);
+            EXPECT_FALSE(texture->isValid()) << "a texture with storage but no frame in it was shown";
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(sm.showsCurrentFrame(replacement) && sm.showsCurrentFrame(fresh));
+    if (!sm.getSourceAs<VideoFileSource>(replacement)->isZeroCopy()) GTEST_SKIP() << "no zero-copy here";
+    EXPECT_GE(replacementWaits, 2);
+    EXPECT_GE(freshWaits, 2);
+    EXPECT_NE(sm.getTexture(replacement), originalTexture);
+    sm.clear();
+    sm.finishBackgroundWork();
+}
+
+namespace {
+
+// A GPU read of `texture` (blitted into the window's framebuffer), as a draw sampling it is.
+void readOnGpu(const Texture& texture) {
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture.getId(), 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, texture.getWidth(), texture.getHeight(), 0, 0, 64, 64, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+}
+
+}  // namespace
+
+// TD-35: a removed source's texture, read by the GPU just before, is freed only once its
+// fence reports the GPU done: held while the fence reads as unsignalled (a test hook),
+// freed once it signals.
+TEST_F(AsyncSourceLifecycle, RemovedGlStateWaitsForItsFence) {
+    DxInterop::testHooks().extensionMissing = true;  // through memory: nothing kept for later sources
+    {
+        SourceManager sm;
+        const UUID id = sm.createVideoSource(clip_);
+        ASSERT_TRUE(showsFrame(sm, id));
+        const Texture* texture = sm.getTexture(id);
+        const GLuint name = texture->getId();
+        readOnGpu(*texture);
+        sm.setFenceHooksForTesting(true);
+        sm.removeSource(id);
+        for (int i = 0; i < 30; ++i) {
+            sm.updateAll(1.0 / 60.0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_EQ(sm.getRetiredGlCount(), 1u);
+        EXPECT_TRUE(glIsTexture(name)) << "freed before its fence signalled";
+
+        sm.setFenceHooksForTesting(false);
+        const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+        while (sm.getRetiredGlCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+            sm.updateAll(1.0 / 60.0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_EQ(sm.getRetiredGlCount(), 0u);
+        EXPECT_FALSE(glIsTexture(name));
+    }
+    DxInterop::testHooks() = DxInterop::TestHooks{};
+}
+
+// TD-35: a fence that never signals (a GPU reset or lost device) would hold everything
+// removed after it for the rest of the session: past SourceManager::FENCE_LIMIT
+// (shortened here) it is taken as signalled and the state freed.
+TEST_F(AsyncSourceLifecycle, AFenceThatNeverSignalsIsTakenAsSignalledAfterItsLimit) {
+    DxInterop::testHooks().extensionMissing = true;
+    constexpr auto LIMIT = std::chrono::milliseconds(200);
+    {
+        SourceManager sm;
+        const UUID id = sm.createVideoSource(clip_);
+        ASSERT_TRUE(showsFrame(sm, id));
+        sm.setFenceHooksForTesting(true, LIMIT);
+        sm.removeSource(id);
+        const auto removed = std::chrono::steady_clock::now();
+        const auto deadline = removed + WAIT_LIMIT;
+        while (sm.getRetiredGlCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+            sm.updateAll(1.0 / 60.0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_EQ(sm.getRetiredGlCount(), 0u) << "held for good behind a fence that never signals";
+        EXPECT_GE(std::chrono::steady_clock::now() - removed, LIMIT);
+    }
+    DxInterop::testHooks() = DxInterop::TestHooks{};
+}
+
 // A HAP clip opens on the opener thread too (TD-35: its container took up to 18 ms on the
 // main thread). Registered at once, not ready; transport given meanwhile carries over;
 // ready once the container is open, with frames demuxed from where the clock is.

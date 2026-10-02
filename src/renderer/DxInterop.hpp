@@ -2,6 +2,7 @@
 
 #include "core/YuvPicture.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -82,6 +83,7 @@ public:
         int failLockAfter = -1;         // every wglDXLockObjectsNV fails after this many batches
         const Texture* failLockDest = nullptr;  // any lock including the planes for this texture fails
         bool adapterMismatch = false;   // as if OpenGL ran on another GPU than the decoders
+        int spareLifetimeMs = -1;       // in place of SPARE_LIFETIME when >= 0
     };
     static TestHooks& testHooks();
 
@@ -174,10 +176,24 @@ public:
     std::unique_ptr<DxInteropTarget> recycle(std::unique_ptr<DxInteropTarget> target);
     static constexpr size_t MAX_SPARES = 4;
 
+    /**
+     * @brief Hand back a kept target for the caller to release (TD-35)
+     *
+     * The oldest one kept for SPARE_LIFETIME without a source taking it, or, with `all`,
+     * the oldest one whatever its age; null when there is none. A spare holds two plane
+     * textures of its size: about 100 MB at 8K P010, so up to 0.4 GB for MAX_SPARES.
+     * Main thread.
+     */
+    std::unique_ptr<DxInteropTarget> takeSpare(bool all = false);
+    static constexpr std::chrono::seconds SPARE_LIFETIME{10};
+
     // Release every kept target now (leak checks, before the GL context goes): main
     // thread, GL context current; it may stall on the driver.
     void releaseSpares();
-    size_t spareCount() const { return spares_.size(); }
+
+    // Wait for the worker making shared planes' D3D11 textures (tests, leak checks): it
+    // blocks, so never on the live path.
+    void finishBackgroundWork();
 
     using Failure = std::function<void(void* key, const YuvPicture& picture, const std::string& why)>;
 
@@ -222,7 +238,11 @@ private:
     int batches_ = 0;
     int stepsLeft_ = 1;  // setUp() GL calls left this frame (beginFrame)
     std::unique_ptr<BackgroundWorker> builder_;  // makes shared planes' D3D11 textures
-    std::vector<std::unique_ptr<DxInteropTarget>> spares_;  // recycle(), oldest first
+    struct Spare {
+        std::unique_ptr<DxInteropTarget> target;
+        std::chrono::steady_clock::time_point keptAt;
+    };
+    std::vector<Spare> spares_;  // recycle(), oldest first
 };
 
 }  // namespace quadmapper

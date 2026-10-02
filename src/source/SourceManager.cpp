@@ -328,6 +328,13 @@ void SourceManager::clear() {
         retire(entry);
     }
     sources_.clear();
+    // Kept for the next source of their size: a new project seldom has one, and they hold
+    // video memory (TD-35).
+    while (std::unique_ptr<DxInteropTarget> spare = dxInterop_->takeSpare(true)) {
+        RetiredGl gl;
+        gl.zeroCopy = std::move(spare);
+        retireGl(std::move(gl));
+    }
 }
 
 // Free a source that is leaving: its GL objects here (they need this thread's context),
@@ -368,6 +375,7 @@ void SourceManager::retire(SourceEntry& entry) {
 void SourceManager::retireGl(RetiredGl retired) {
     if (!retired.texture && !retired.yuvUpload && !retired.compressedUpload && !retired.zeroCopy) return;
     if (glFenceSync) retired.fence.reset(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
+    retired.retiredAt = std::chrono::steady_clock::now();
     retiredGl_.push_back(std::move(retired));
 }
 
@@ -383,7 +391,9 @@ void SourceManager::GlFenceDeleter::operator()(void* fence) const {
 // state, one shared plane): at least one step a frame, and more only while the frame's
 // 1 ms budget lasts. A single driver call can still stall its step (unregistering a plane
 // took up to 57 ms with the GPU done with it), which is why removed sources' shared
-// planes are kept for the next source instead (DxInterop::recycle).
+// planes are kept for the next source instead (DxInterop::recycle). A fence that has not
+// signalled after FENCE_LIMIT never will (a GPU reset): it is taken as signalled, or
+// everything retired after it would be held for the rest of the session.
 void SourceManager::releaseRetiredGl() {
     if (retiredGl_.empty()) return;
     ScopedMainThreadTiming timing("retiredGlRelease");
@@ -399,8 +409,18 @@ void SourceManager::releaseRetiredGl() {
         if (r.fence) {
             // Flushes, so the fence is sure to signal, but never waits (timeout 0).
             const GLenum status =
-                glClientWaitSync(static_cast<GLsync>(r.fence.get()), GL_SYNC_FLUSH_COMMANDS_BIT, 0);
-            if (status == GL_TIMEOUT_EXPIRED) break;  // fences signal in order: so are the later ones
+                fenceNeverSignalsForTesting_
+                    ? GL_TIMEOUT_EXPIRED
+                    : glClientWaitSync(static_cast<GLsync>(r.fence.get()), GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+            if (status == GL_TIMEOUT_EXPIRED) {
+                // Fences signal in order: so are the later ones.
+                if (std::chrono::steady_clock::now() - r.retiredAt < fenceLimit_) break;
+                if (!fenceTimeoutLogged_) {
+                    fenceTimeoutLogged_ = true;
+                    Logger::warning("SourceManager: a GPU fence did not signal in {} ms (GPU reset?); "
+                                    "freeing removed GL state without it", fenceLimit_.count());
+                }
+            }
             r.fence.reset();  // signalled (or failed: then nothing can be learned by waiting)
         }
         if (r.yuvUpload && r.yuvUpload->idle()) {
@@ -472,6 +492,7 @@ void SourceManager::finishBackgroundWork() {
     if (opener_) opener_->drain();
     adoptOpenedSources();
     if (reaper_) reaper_->drain();
+    dxInterop_->finishBackgroundWork();
     retiredGl_.clear();
     dxInterop_->releaseSpares();
 }
@@ -482,6 +503,11 @@ std::vector<UUID> SourceManager::takeFailedOpens() {
 
 void SourceManager::setOpenHookForTesting(std::function<void(const std::filesystem::path&)> hook) {
     openHookForTesting_ = std::move(hook);
+}
+
+void SourceManager::setFenceHooksForTesting(bool neverSignals, std::chrono::milliseconds limit) {
+    fenceNeverSignalsForTesting_ = neverSignals;
+    fenceLimit_ = limit;
 }
 
 void SourceManager::setStandIn(const UUID& id, const UUID& standIn) {
@@ -643,6 +669,12 @@ void SourceManager::updateAll(double deltaTime) {
     uploadStats_.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     yuvConverter_->end();
 
+    // Shared planes no source took for DxInterop::SPARE_LIFETIME go, one target a frame.
+    if (std::unique_ptr<DxInteropTarget> spare = dxInterop_->takeSpare()) {
+        RetiredGl gl;
+        gl.zeroCopy = std::move(spare);
+        retireGl(std::move(gl));
+    }
     releaseRetiredGl();
 }
 
