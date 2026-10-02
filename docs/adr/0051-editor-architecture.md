@@ -220,6 +220,7 @@ E0 can run alongside anything. E1, E2, E3 and E5 all touch `Application.cpp`, so
   - removing the new pair drop;
   - removing the fit's kept framing;
   - four reach mutants: `releaseUnusedSources` re-resolving a missing binding only while locked; the OSC/MIDI take drain making no take; `processExternalControl` applying no event; `prepareNewQuads` gridding every quad only while locked.
+- **A clip that fails to open while locked** still becomes missing media (`adoptFailedOpens`), which changes the saved show. Accepted as an allowed change (lead decision, 2026-10-02): it is a runtime failure, not an edit, and the projectors show black either way. Holding it until unlock would only delay the Missing Media prompt the operator needs.
 
 ### 6. Gates
 - Every slice keeps `ctest` green, including `bench_smoke`, which drives Tab + arrow nudges and 1–9 through the real GLFW key callback: the automated success-metric gate.
