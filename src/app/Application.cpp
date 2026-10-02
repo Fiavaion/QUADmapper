@@ -6,7 +6,9 @@
 #include "../editor/TextureResolve.hpp"
 #include "../editor/MediaAssign.hpp"
 #include "../editor/MissingMedia.hpp"
+#include "../editor/NewQuads.hpp"
 #include "../editor/ProjectorFit.hpp"
+#include "../editor/SceneTakes.hpp"
 #include "../editor/ReplaceMedia.hpp"
 #include "../editor/MeshLoads.hpp"
 #include "../editor/SliceEditing.hpp"
@@ -31,7 +33,6 @@
 #include "../media/ThumbnailCache.hpp"
 #include "../source/SourceManager.hpp"
 #include "../ai/SidecarClient.hpp"
-#include "../renderer/UvTestGrid.hpp"
 #include "../renderer/Renderer.hpp"
 #include "../renderer/Texture.hpp"
 #include "../renderer/GpuCapabilities.hpp"
@@ -106,7 +107,7 @@ static void dropCallback(GLFWwindow* /*window*/, int count, const char** paths) 
     }
 }
 
-Application::Application() {
+Application::Application() : m_sceneTakes(std::make_unique<SceneTakeQueue>()) {
     s_instance = this;
 }
 
@@ -421,7 +422,7 @@ bool Application::initializeComponents() {
         services.outputs = m_outputManager.get();
         services.audio = m_audioEngine.get();
         services.library = m_mediaLibrary.get();
-        services.dropQueuedSceneTakes = [this]() { dropQueuedSceneTakes(); };
+        services.dropQueuedSceneTakes = [this]() { m_sceneTakes->clear(); };
         services.projectReplaced = [this]() {
             EditorContext ctx = editorContext();
             m_ui->projectReplaced(ctx);
@@ -568,29 +569,8 @@ void Application::render() {
     // Clear the framebuffer
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Per-session editor state lives in m_editorState (ADR-031 TD-02).
-    EditorState& es = *m_editorState;
-    auto& quadManager = es.quadManager();
-
-    // Initialize with one default quad
-    if (!es.initialized) {
-        quadManager.createQuad("Quad 1");
-        if (quadManager.getQuadCount() > 0) {
-            quadManager.selectQuad(quadManager.getQuads()[0]->getId());
-        }
-        es.initialized = true;
-    }
-
-    // UV test-grid (#2): apply the colored UV reference grid once to any quad we
-    // haven't reconciled yet, when the toggle is on. Runs every frame so it
-    // covers all creation paths (default, new-project, Quad List "+"). Existing
-    // quads get marked seen, so toggling on later only affects future quads.
-    for (const auto& qptr : quadManager.getQuads()) {
-        const UUID& id = qptr->getId();
-        if (es.seenQuadIds.insert(id).second && es.uvGridOnNewQuads) {
-            assignUvTestGrid(es.quadTextures, es.quadTexturePaths, id, 1024, 8);
-        }
-    }
+    // The first quad of a fresh session and the UV test grid on new quads (NewQuads.hpp).
+    prepareNewQuads(*m_editorState);
 
     float deltaTime = ImGui::GetIO().DeltaTime;
 
@@ -638,53 +618,22 @@ void Application::render() {
     }
 }
 
+void Application::queueSceneTake(int number) { m_sceneTakes->keys.push_back(number); }
+
+// Scene takes (US-008, ADR-048; editor/SceneTakes.hpp): the 1-9 presses queued since the
+// last frame, unless typed into a field or behind a popup, then the OSC/MIDI takes.
 void Application::runSceneTakes(EditorContext& ctx) {
-    // Scene take (US-008): the 1-9 presses queued since the last frame put scene N on
-    // air, unless typed into a field or behind a popup (runSceneTakeKeys).
-    runSceneTakeKeys(*m_actions, ctx, m_pendingSceneTakes);
-    // OSC/MIDI takes (ADR-048) skip that guard: it exists so keys typed into a field or
-    // behind a modal do not act on the show, and an operator's controller is not
-    // typing. Calibration still holds them off (takeSceneByNumber), as it does the keys.
-    for (const ExternalSceneTake& t : m_pendingExternalSceneTakes) {
-        m_controlTakeFade = t.fadeSeconds;
-        m_actions->invoke(sceneTakeId(t.number), ctx, Source::Control);
-        m_controlTakeFade.reset();
-        Logger::info("Control: scene take {} requested; active scene is now '{}'", t.number,
-                     m_editorState->activeScene().getName());
-    }
-    m_pendingExternalSceneTakes.clear();
+    runSceneTakeKeys(*m_actions, ctx, m_sceneTakes->keys);
+    runExternalSceneTakes(*m_actions, ctx, *m_sceneTakes);
 }
 
 void Application::takeSceneByNumber(int number, std::optional<float> fadeSeconds) {
-    EditorState& es = *m_editorState;
-    // Calibration edits the scene routed to the calibrated output; keep it there.
-    if (!es.calibratingOutputId.isNull()) return;
-
     // The harnesses cut whatever this machine's preference is, so their scene-switch
     // timings and same-frame readbacks do not depend on it.
     const bool harness = m_stressConfig.has_value() || m_benchConfig.has_value();
     const float fade = fadeSeconds ? *fadeSeconds
                                    : (harness ? 0.0f : m_preferences->getPreferences().general.sceneFadeSeconds);
-    const SceneTake take = es.takeScene(number, *m_outputManager, fade);
-    if (take.kind == SceneTake::Kind::None) return;
-    // Takes run inside render(), after the frame-boundary fit and before this frame's
-    // projector frames are drawn: re-fit now so those frames are framed for the scene
-    // just put on air.
-    fitProjectorsToOutputs();
-
-    const Scene& scene = es.activeScene();
-    if (take.kind == SceneTake::Kind::Route) {
-        const OutputWindow* output = m_outputManager->getOutput(take.outputIds.front());
-        const std::string where = take.outputIds.size() > 1
-                                      ? std::to_string(take.outputIds.size()) + " outputs"
-                                      : (output ? output->getName() : std::string("output"));
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "Scene %d: %s on %s", number,
-                 scene.getName().c_str(), where.c_str());
-    } else {
-        snprintf(es.statusMessage, sizeof(es.statusMessage), "Scene %d: %s", number,
-                 scene.getName().c_str());
-    }
-    es.statusTimer = 3.0f;
+    quadmapper::takeSceneByNumber(*m_editorState, *m_outputManager, number, fade);
 }
 
 void Application::initializeExternalControl() {
@@ -694,7 +643,7 @@ void Application::initializeExternalControl() {
     host.scenes = &m_editorState->scenes;
     host.sources = m_sourceManager.get();
     host.takeScene = [this](int number, std::optional<float> fadeSeconds) {
-        m_pendingExternalSceneTakes.push_back({number, fadeSeconds});
+        m_sceneTakes->external.push_back({number, fadeSeconds});
     };
     host.activeSceneNumber = [this]() {
         const EditorState& es = *m_editorState;
@@ -722,20 +671,6 @@ void Application::initializeExternalControl() {
     }
 }
 
-void Application::processExternalControl() {
-    if (!m_externalControl) return;
-    EditorState& es = *m_editorState;
-    const double now = glfwGetTime();
-    m_externalControl->maintainMidi(now);
-    // Names and ids can change with any edit; re-read them when something will use them.
-    const bool controlShown = m_ui && m_ui->panels().isVisible(ControlPanel::ID);
-    if (m_externalControl->hasPendingEvents() || controlShown || m_externalControl->feedbackDue(now)) {
-        refreshControlEntities(m_externalControl->registry(), es.scenes, m_sourceManager.get());
-    }
-    m_externalControl->processEvents(es.midiMappings, now);
-    m_externalControl->updateFeedback(now);
-}
-
 void Application::saveProject() {
     m_editorState->pendingFileAction = EditorState::FileAction::Save;
 }
@@ -750,7 +685,11 @@ void Application::runFrameBoundaryTasks() {
     if (!m_session->ensureCleanBaseline()) return;
     m_session->processPendingFileAction();
     adoptObjectMeshes(*m_editorState, m_outputManager.get());
-    processExternalControl();
+    if (m_externalControl) {
+        processExternalControl(*m_externalControl, m_editorState->scenes, m_editorState->midiMappings,
+                               m_sourceManager.get(), glfwGetTime(),
+                               m_ui && m_ui->panels().isVisible(ControlPanel::ID));
+    }
     m_session->pollMissingMediaSearch();
     if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager, m_mediaLibrary.get());
     fitProjectorsToOutputs();

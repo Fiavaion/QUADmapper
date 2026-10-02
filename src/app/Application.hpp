@@ -30,6 +30,7 @@ class PreferencesDialog;
 class ProjectSession;
 class AiAssist;
 class ActionRegistry;
+struct SceneTakeQueue;
 namespace control { class ExternalControl; }
 
 // Also the editor's services (ADR-051 §1): the panels reach the session, the
@@ -64,7 +65,7 @@ public:
     // Live-show scene take (US-008). Key events from the editor window and, in perform
     // mode, from a focused output window only queue the scene number (GLFW callbacks
     // run inside glfwPollEvents); runSceneTakes() takes them under the editing-key guard.
-    void queueSceneTake(int number) { m_pendingSceneTakes.push_back(number); }
+    void queueSceneTake(int number);
 
     // Accessors
     GLFWwindow* getWindow() const { return m_window; }
@@ -118,28 +119,20 @@ private:
     // the old shortcut block ran them. Once, from initializeComponents().
     void registerActions();
 
-    // Live-show scene take, fading over `fadeSeconds` (nullopt = the Preferences
-    // default, ADR-047 §5); ignored while calibrating.
+    // Live-show scene take (editor/SceneTakes.hpp), fading over `fadeSeconds` (nullopt =
+    // the Preferences default, ADR-047 §5; the harnesses cut).
     void takeSceneByNumber(int number, std::optional<float> fadeSeconds = std::nullopt);
     // The takes queued since the last frame, through the scene.take.N actions, after the
     // shortcuts (EditorUi::frame). Key presses only under the Editing key guard (not
     // while a text field is active or a popup is open; presses made then are dropped,
     // never replayed); OSC/MIDI takes skip it (Source::Control).
     void runSceneTakes(EditorContext& ctx);
-    // New, Load and Restore drop takes still queued: they were pressed for the show
-    // that was just replaced and must not put its scene N of the new one on air.
-    void dropQueuedSceneTakes() {
-        m_pendingSceneTakes.clear();
-        m_pendingExternalSceneTakes.clear();
-    }
 
     // ---- External control (ADR-048) ---------------------------------------------
     // Created at startup (not for the stress or bench harness); OSC/MIDI settings come
-    // from the preferences. processExternalControl() runs at the frame boundary: MIDI hot-plug
-    // upkeep, then at most ExternalControl::kMaxEventsPerFrame queued events are
-    // applied on the main thread, before render() takes any scene references.
+    // from the preferences. Each frame boundary runs processExternalControl
+    // (editor/ControlBindings.hpp) before render() takes any scene references.
     void initializeExternalControl();
-    void processExternalControl();
 
     // ---- Show-safe session (ADR-046 §4, ProjectSession) ---------------------------
     // Runs once per frame between glfwPollEvents() and render(): establishes the
@@ -190,16 +183,8 @@ private:
     // The editor's UI (ADR-051 §2): canvas, dock layout, menu and panels. Its panels
     // refer to m_editorState and m_preferences, so it goes before them.
     std::unique_ptr<EditorUi> m_ui;
-    std::vector<int> m_pendingSceneTakes;  // scene numbers pressed since the last frame
-    // Scene takes asked for by OSC/MIDI since the last frame (ADR-048). Kept apart from
-    // the key presses because they skip the typing/popup guard (see render()).
-    struct ExternalSceneTake {
-        int number = 0;
-        std::optional<float> fadeSeconds;  // nullopt = the Preferences default
-    };
-    std::vector<ExternalSceneTake> m_pendingExternalSceneTakes;
-    // The fade of the OSC/MIDI take being invoked; nullopt for a key press.
-    std::optional<float> m_controlTakeFade;
+    // Scene takes by key and by OSC/MIDI since the last frame (editor/SceneTakes.hpp).
+    std::unique_ptr<SceneTakeQueue> m_sceneTakes;
 
     // The editor's actions: the keys, the menu and the scene takes all invoke them.
     std::unique_ptr<ActionRegistry> m_actions;

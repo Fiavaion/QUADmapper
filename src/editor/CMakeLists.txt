@@ -16,6 +16,7 @@ add_library(quadmapper_editor STATIC
     MeshEditKeys.hpp
     MeshLoads.hpp
     MissingMedia.hpp
+    NewQuads.hpp
     OutputPersistence.hpp
     PerformLock.hpp
     PerformLock.cpp
@@ -27,6 +28,7 @@ add_library(quadmapper_editor STATIC
     ProjectReplace.hpp
     QuadSelection.hpp
     ReplaceMedia.hpp
+    SceneTakes.hpp
     SliceEditing.hpp
     SourceAudio.hpp
     StatusLine.hpp

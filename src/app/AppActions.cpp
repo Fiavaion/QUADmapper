@@ -8,6 +8,7 @@
 #include "../editor/EditActions.hpp"
 #include "../editor/EditorState.hpp"
 #include "../editor/PerformLock.hpp"
+#include "../editor/SceneTakes.hpp"
 #include "../output/OutputManager.hpp"
 #include "../ui/dialogs/PreferencesDialog.hpp"
 
@@ -62,9 +63,9 @@ void Application::registerActions() {
 
     // Scene takes 1-9 (US-008): no chord. runSceneTakes() invokes them for the queued
     // physical key presses (Source::Key) and OSC/MIDI takes (Source::Control, with the
-    // controller's fade in m_controlTakeFade).
+    // controller's fade in SceneTakeQueue::controlFade).
     for (int n = 1; n <= 9; ++n) {
-        put(sceneTakeId(n), [this, n](EditorContext&) { takeSceneByNumber(n, m_controlTakeFade); },
+        put(sceneTakeId(n), [this, n](EditorContext&) { takeSceneByNumber(n, m_sceneTakes->controlFade); },
             hasOutputs);
     }
 

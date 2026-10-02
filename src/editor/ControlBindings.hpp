@@ -13,6 +13,7 @@
 // Adding a target is one registration below.
 
 #include "../control/ControlRegistry.hpp"
+#include "../control/ExternalControl.hpp"
 #include "../control/MidiMapping.hpp"
 #include "../core/UUID.hpp"
 #include "../project/Project.hpp"
@@ -393,6 +394,24 @@ inline std::string remapTargetPath(const std::string& path, const std::string& c
     auto it = savedToLive.find(saved);
     if (it == savedToLive.end()) return path;
     return prefix + it->second.toString() + path.substr(idEnd);
+}
+
+// External control's frame step (ADR-048 §5), at the frame boundary before anything
+// takes scene references: MIDI hot-plug upkeep, the entities re-read when something
+// will use them (names and ids change with any edit), at most
+// ExternalControl::kMaxEventsPerFrame queued events applied onto the show's targets and
+// MIDI mappings, then feedback. `now` in seconds; controlPanelShown: the Control panel
+// lists the entities.
+inline void processExternalControl(control::ExternalControl& control,
+                                   const std::vector<std::unique_ptr<Scene>>& scenes,
+                                   std::vector<control::MidiMapping>& mappings, SourceManager* sources,
+                                   double now, bool controlPanelShown) {
+    control.maintainMidi(now);
+    if (control.hasPendingEvents() || controlPanelShown || control.feedbackDue(now)) {
+        refreshControlEntities(control.registry(), scenes, sources);
+    }
+    control.processEvents(mappings, now);
+    control.updateFeedback(now);
 }
 
 }  // namespace quadmapper
