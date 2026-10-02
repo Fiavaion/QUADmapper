@@ -47,7 +47,12 @@ public:
         learnTarget_ = targetPath;
         pendingPair_.reset();
     }
-    void cancelLearn() { learnTarget_.reset(); }
+    // Cancels a pending learn, and a 14-bit pair still waiting for its other half: the
+    // perform lock cancels learning, and that half would still change the mapping (TD-36).
+    void cancelLearn() {
+        learnTarget_.reset();
+        pendingPair_.reset();
+    }
     bool isLearning() const { return learnTarget_.has_value(); }
     const std::string& learnTarget() const;
     // Index into `mappings` of the mapping the last learn created or found, or -1.
