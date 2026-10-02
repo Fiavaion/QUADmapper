@@ -366,6 +366,20 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
   dead/parallel paths. Any accepted deferral goes in `TECHNICAL_DEBT.md` with a cost.
 - **Isolate parallel/background agent work in a git worktree** to keep `main` clean.
 
+### Verification budget (owner decision 2026-10-02)
+
+Testing serves the success metric; it is not the goal. Spend it in proportion to risk:
+
+1. **One full `ctest` per change**, at the end, before merging. While working, run only the
+   tests for the code you changed.
+2. **A fresh-context review only for risky changes:** threading, the `.qmap` format, the
+   perform lock, the render loop. Everything else gets the lead's own read of the diff.
+3. **No mutation runs** except to settle one specific doubt, and then one or two at most.
+4. **Stress loops: at most 5 rounds, no added load**, unless chasing a reported failure.
+5. **Benchmarks only for changes meant to affect speed.**
+6. **No speed work below what a user would notice** unless the owner reports a stall.
+7. **The owner's hands-on testing comes before more automated proof.**
+
 ## Session Continuity Layer
 
 Source of truth stays the existing `TASKS.md` / `SESSION_STATE.json` / `PROJECT_HISTORY.md`
