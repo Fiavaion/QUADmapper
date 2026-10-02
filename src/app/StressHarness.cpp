@@ -25,8 +25,11 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <thread>
 
 // psapi is a Windows system library (no vcpkg dependency). NOMINMAX keeps
 // windows.h from defining min/max macros that clash with std::max.
@@ -37,6 +40,14 @@
 #include <psapi.h>
 
 namespace quadmapper {
+
+namespace {
+
+// An open still running after this long is hung, not slow (the slowest seen under load
+// took 4.3 s); failing here reports it before the ctest TIMEOUT (120 s) ends the run.
+constexpr double OPEN_TIMEOUT_SECONDS = 60.0;
+
+}  // namespace
 
 bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
     // Intentionally minimal: no getopt dependency, no env-var fallback.
@@ -70,6 +81,8 @@ bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
         config().media = arg + 8;
     } else if (std::strcmp(arg, "--audio-churn") == 0) {
         config().audioChurn = true;
+    } else if (std::strncmp(arg, "--open-delay-ms=", 16) == 0) {
+        config().openDelayMs = std::atoi(arg + 16);
     } else {
         return false;
     }
@@ -177,6 +190,11 @@ int Application::runStress(const StressConfig& cfg) {
                           cfg.source);
             return 2;
         }
+        if (cfg.openDelayMs > 0) {
+            m_sourceManager->setOpenHookForTesting([ms = cfg.openDelayMs](const std::filesystem::path&) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            });
+        }
         sourceId = m_sourceManager->createVideoSource(cfg.media);
         if (sourceId.isNull()) {
             Logger::error("[STRESS] Failed to create video/HAP source from '{}'", cfg.media);
@@ -211,6 +229,7 @@ int Application::runStress(const StressConfig& cfg) {
     // recovery check fails (LESSON-BUG-006 repro).
     bool pauseResumeWedge = false;
     bool audioLeak = false;  // --audio-churn: a replaced source kept its audio
+    bool openFailed = false;  // the video file could not be opened after all
     // QM-087 frame pacing: wall-clock time of the steady frame loop (enter/exit
     // transitions excluded), accumulated over the measured cycles only.
     bool measurePacing = false;
@@ -230,6 +249,11 @@ int Application::runStress(const StressConfig& cfg) {
         return audio == SourceAudioStatus::NoAudio ||
                (audio == SourceAudioStatus::Ready && m_audioEngine->mixer().getSourceCount() > 0);
     };
+    // A video file opens on the opener thread (TD-35); updateAll() ends the open.
+    auto sourceOpening = [&]() -> bool {
+        const auto* video = m_sourceManager->getSourceAs<VideoFileSource>(sourceId);
+        return video && video->isOpening();
+    };
     auto runCycle = [&]() -> bool {
         const double budgetSec = cfg.cycleTimeoutMs / 1000.0;
 
@@ -247,11 +271,16 @@ int Application::runStress(const StressConfig& cfg) {
             quad->getTexture().mediaId = sourceId;
         }
 
-        // The wedge watchdog times the cycle from here. Opening a file and its hardware
-        // decoder, above, took over 3 s while other GPU tests started (ctest -j 4): slow
-        // under contention, not wedged. A call that never returns was never caught here
-        // (the check runs between frames); the ctest TIMEOUT catches it.
-        const double cycleStart = glfwGetTime();
+        // The wedge watchdog times the cycle from the moment its source has opened. Opening
+        // a file and its hardware decoder took 4.3 s while the machine stalled under ctest
+        // -j 4: slow, not wedged. The open used to run above, before the watchdog started;
+        // it now runs on the opener thread while the frames go on (TD-35), so the watchdog
+        // restarts when the open ends, and the open has its own, longer bound. A call that
+        // never returns is not caught here (the check runs between frames); the ctest
+        // TIMEOUT catches it.
+        double cycleStart = glfwGetTime();
+        const double openStart = cycleStart;
+        bool opening = needsMedia && sourceOpening();
         if (cfg.hidden) {
             // --hidden: call the same enter/exit path, but keep windows hidden.
             // enterPerformMode normally shows + fullscreens each window; hiding
@@ -280,9 +309,28 @@ int Application::runStress(const StressConfig& cfg) {
         const double loopStart = t;
         int frames = 0;
         for (int f = 0; f < cfg.framesPerCycle || (needsMedia && !sourceUp()); ++f) {
+            if (opening && !sourceOpening()) {
+                opening = false;
+                cycleStart = glfwGetTime();
+                const std::vector<UUID> failed = m_sourceManager->takeFailedOpens();
+                if (std::find(failed.begin(), failed.end(), sourceId) != failed.end()) {
+                    const auto* video = m_sourceManager->getSourceAs<VideoFileSource>(sourceId);
+                    Logger::error("[STRESS] STRESS FAIL (open) — '{}' could not be opened: {}", cfg.media,
+                                  video ? video->getErrorMessage() : std::string());
+                    openFailed = true;
+                    m_outputManager->exitPerformMode();
+                    return false;
+                }
+            }
             // Wedge check: abort if we've been in this cycle too long, which includes a
-            // media source that never comes up.
-            if ((glfwGetTime() - cycleStart) > budgetSec) {
+            // media source that never comes up, or an open that never ends.
+            if (opening && (glfwGetTime() - openStart) > OPEN_TIMEOUT_SECONDS) {
+                Logger::error("[STRESS] The media file was still opening {} s into the cycle.",
+                              OPEN_TIMEOUT_SECONDS);
+                m_outputManager->exitPerformMode();
+                return false;
+            }
+            if (!opening && (glfwGetTime() - cycleStart) > budgetSec) {
                 if (needsMedia && !sourceUp()) {
                     Logger::error("[STRESS] The media source was not up (a frame shown, its audio in "
                                   "the mix) {} ms into the cycle.", cfg.cycleTimeoutMs);
@@ -379,7 +427,7 @@ int Application::runStress(const StressConfig& cfg) {
     if (!runCycle()) {
         if (pauseResumeWedge) {
             Logger::error("[STRESS] STRESS FAIL (pause-resume wedge) — warm-up cycle failed.");
-        } else if (!audioLeak) {
+        } else if (!audioLeak && !openFailed) {
             Logger::error("[STRESS] STRESS FAIL (wedge) — warm-up cycle exceeded {}ms budget.",
                           cfg.cycleTimeoutMs);
         }
@@ -408,7 +456,7 @@ int Application::runStress(const StressConfig& cfg) {
             // runCycle returns false for two reasons:
             // (a) wall-clock budget exceeded (anyWedge), OR
             // (b) pause-resume recovery check failed (pauseResumeWedge, already logged).
-            if (!pauseResumeWedge && !audioLeak) {
+            if (!pauseResumeWedge && !audioLeak && !openFailed) {
                 Logger::error("[STRESS] STRESS FAIL (wedge) — cycle {} exceeded {}ms budget.",
                               c + 1, cfg.cycleTimeoutMs);
                 anyWedge = true;
@@ -428,8 +476,7 @@ int Application::runStress(const StressConfig& cfg) {
         }
 
         // H3: working-set sample (spec §2).
-        std::size_t wsCurrent = processWorkingSetBytes();
-        if (wsCurrent > wsMax) {
+        std::size_t wsCurrent = processWorkingSetBytes();        if (wsCurrent > wsMax) {
             wsMax = wsCurrent;
         }
         long growthMB = static_cast<long>((wsCurrent - wsBaseline) / (1024 * 1024));
@@ -524,7 +571,7 @@ int Application::runStress(const StressConfig& cfg) {
         }
     }
 
-    if (anyLeak || anyWedge || wsExceeded || pauseResumeWedge || audioLeak || d3dLeak) {
+    if (anyLeak || anyWedge || wsExceeded || pauseResumeWedge || audioLeak || openFailed || d3dLeak) {
         return 1;
     }
 

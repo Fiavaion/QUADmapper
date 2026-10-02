@@ -38,6 +38,9 @@ struct StressConfig {
     // cycle, so its audio attachment (decoder thread, mixer input) is created and freed
     // each cycle under the working-set bound. Audio runs on the silent null device.
     bool audioChurn     = false;
+    // Test only: each video file opens this much later (on the opener thread), to show
+    // that a slow open is not counted as a wedge. 0 = disabled.
+    int  openDelayMs    = 0;
 };
 
 // Consume one command-line argument if it is a --stress flag (the first one seen
