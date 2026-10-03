@@ -152,6 +152,7 @@ def test_segment_stub_without_image_path(live_server):
     {"image_path": "x.png", "point": [0.5, -0.1]},
     {"image_path": "x.png", "point": [0.5, 0.5], "model": "large"},
     {"image_path": 42, "point": [0.5, 0.5]},
+    {"image_path": "x.png", "point": [10 ** 400, 0.5]},  # overflows float(): still a 400
 ])
 def test_segment_bad_request_is_400(live_server, body):
     status, reply = _request(*live_server, "POST", "/segment", body)

@@ -76,6 +76,9 @@ public:
         std::optional<AiSurfaceProposal> proposal;
         std::optional<std::string> photo;
         std::optional<std::string> oneFlashPhoto;
+        // The remembered One-Flash photo showed no usable pattern: forget it, so the
+        // next Apply does not try it again.
+        bool forgetOneFlashPhoto = false;
     };
     // Runs `work` on a worker thread so the camera and the sidecar's HTTP call never
     // stall a frame; tick() applies its outcome on the main thread. Corners land on

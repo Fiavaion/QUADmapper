@@ -192,6 +192,23 @@ TEST(AiAssistTest, AResultThatLandsAfterTheLockEngagedChangesNothing) {
                  "AI: result dropped - the show is locked (Output > Perform Lock)");
 }
 
+TEST(AiAssistTest, AnAppliedWarpIsOneUndoStep) {
+    EditorState es;
+    Quad* quad = es.quadManager().createQuad("A");
+    const auto before = quad->getGeometry().getCorners();
+    AiAssist ai(es, nullptr);
+
+    HeldWork work;
+    ASSERT_TRUE(ai.startRequest("AI: detecting surface...", "AI", quad->getId(),
+                                work.returning({"AI: surface applied", 5.0f, kWarp})));
+    work.release();
+    ASSERT_TRUE(tickUntilIdle(ai));
+    ASSERT_NE(quad->getGeometry().getCorners(), before);
+
+    ASSERT_TRUE(es.commandHistory.undo());
+    EXPECT_EQ(quad->getGeometry().getCorners(), before);
+}
+
 TEST(AiAssistTest, AResultForADeletedQuadChangesNothing) {
     EditorState es;
     Quad* quad = es.quadManager().createQuad("A");

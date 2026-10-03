@@ -173,10 +173,14 @@ def _parse_segment(request: dict) -> tuple:
     """Validate a /segment body. Returns (image_path or None, (x, y), model)."""
     point = request.get("point")
     if (not isinstance(point, (list, tuple)) or len(point) != 2
-            or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
-                       and math.isfinite(v) for v in point)):
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in point)):
         raise BadRequest("point must be [x, y] numbers")
-    x, y = float(point[0]), float(point[1])
+    try:
+        x, y = float(point[0]), float(point[1])  # a huge JSON integer overflows here
+    except OverflowError:
+        raise BadRequest("point must be [x, y] numbers") from None
+    if not (math.isfinite(x) and math.isfinite(y)):
+        raise BadRequest("point must be [x, y] numbers")
     if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
         raise BadRequest("point must be normalized to 0..1")
     model = request.get("model", "small")

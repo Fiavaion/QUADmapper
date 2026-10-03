@@ -7,6 +7,7 @@
 #include "../output/OutputManager.hpp"
 #include "../renderer/Renderer.hpp"
 #include "../renderer/Texture.hpp"
+#include "../scene/Commands.hpp"
 #include "../scene/Quad.hpp"
 #include "../source/CameraDevices.hpp"
 #include "../source/CameraSource.hpp"
@@ -173,6 +174,7 @@ void AiAssist::applyOutcome(const Request& request) {
         photo_.proposal.reset();  // it was drawn on the previous photo
     }
     if (outcome.oneFlashPhoto) oneFlashPhoto_ = *outcome.oneFlashPhoto;
+    if (outcome.forgetOneFlashPhoto) oneFlashPhoto_.clear();
     // The lock may have engaged while the request ran: it never lets a warp through,
     // nor a proposal that would invite one.
     if ((outcome.corners || outcome.proposal) && editor_.performLock.isOn()) {
@@ -189,10 +191,13 @@ void AiAssist::applyOutcome(const Request& request) {
         }
         // TL,TR,BR,BL, normalized [0,1]: the same order and space as QuadGeometry.
         // The result is an ordinary warp: drawn on canvas, F11-projectable, and
-        // refinable with Tab-cycle + arrow-nudge.
+        // refinable with Tab-cycle + arrow-nudge, and one undo step.
         const auto& c = *outcome.corners;
-        quad->getGeometry().setCorners({Vec2{c[0][0], c[0][1]}, Vec2{c[1][0], c[1][1]},
-                                        Vec2{c[2][0], c[2][1]}, Vec2{c[3][0], c[3][1]}});
+        const std::array<Vec2, 4> after{Vec2{c[0][0], c[0][1]}, Vec2{c[1][0], c[1][1]},
+                                        Vec2{c[2][0], c[2][1]}, Vec2{c[3][0], c[3][1]}};
+        editor_.commandHistory.execute(std::make_unique<QuadPropertyCommand<std::array<Vec2, 4>>>(
+            "AI Warp", editor_.quadRef(*quad), quad->getGeometry().getCorners(), after,
+            [](Quad& q, const std::array<Vec2, 4>& corners) { q.getGeometry().setCorners(corners); }));
     }
     setStatus(outcome.status, outcome.seconds);
 }
@@ -627,14 +632,14 @@ void AiAssist::applyProposal() {
             startRequest("Pick Surface: mapping into projector space...", PICK, quad->getId(),
                          [sidecar, pattern = oneFlashPhoto_, corners]() -> Outcome {
                 auto result = sidecar->requestOneFlash(pattern, &corners);
-                if (!result || result->stub) {
-                    return Outcome{"Pick Surface: the One-Flash photo shows no pattern - capture it again",
-                                   6.0f, std::nullopt};
-                }
-                if (result->confidence < AI_MIN_CONFIDENCE) {
-                    return Outcome{formatStatus("Pick Surface: One-Flash low confidence (%.2f) - capture it again",
-                                                result->confidence),
-                                   6.0f, std::nullopt};
+                if (!result || result->stub || result->confidence < AI_MIN_CONFIDENCE) {
+                    // No usable pattern in that photo: never a dead end. Apply in photo
+                    // space as when there is no One-Flash photo, and forget this one.
+                    Outcome fallback{"Pick Surface: the One-Flash photo shows no usable pattern - "
+                                     "assuming the camera is at the projector",
+                                     6.0f, corners};
+                    fallback.forgetOneFlashPhoto = true;
+                    return fallback;
                 }
                 return Outcome{formatStatus("Pick Surface: applied through One-Flash (confidence %.2f) - "
                                             "nudge with Tab + arrows",

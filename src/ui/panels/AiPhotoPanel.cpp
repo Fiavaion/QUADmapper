@@ -103,7 +103,10 @@ void AiPhotoPanel::drawContent(EditorContext& ctx) {
     if (size.x < 1.0f || size.y < 1.0f) return;
 
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const bool clicked = ImGui::InvisibleButton("##photo", size);
+    ImGui::InvisibleButton("##photo", size);
+    // A mouse click only: the point is where the pointer is, which keyboard activation
+    // of the button would not choose.
+    const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
     if (canSegment && !busy) ImGui::SetItemTooltip("Click the surface to map");
     if (clicked && canSegment && !busy) {
         const ImVec2 mouse = ImGui::GetIO().MousePos;
