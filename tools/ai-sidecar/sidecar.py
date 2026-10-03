@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""QUADmapper AI pre-show sidecar (QM-056 skeleton).
+"""QUADmapper AI pre-show sidecar (ADR-035, ADR-053).
 
-An optional, out-of-process service the C++ app talks to over loopback HTTP+JSON
-(ADR-035). This is the *skeleton*: it proves the integration boundary — launch,
-health-check, versioned request/response, teardown — with **nothing intelligent
-behind it yet**. The surface/one-flash CV lands in QM-057+.
+An optional, out-of-process service the C++ app talks to over loopback HTTP+JSON.
 
 Contract (v1):
-  GET  /health           -> 200 {status, api_version, service}
-  POST /surface {image_path|frame}
+  GET  /health           -> 200 {status, api_version, service, capabilities}
+  POST /surface {image_path}
                          -> 200 {api_version, corners[4], plane, confidence, stub}
+  POST /oneflash {pattern_image, target_corners?, surface_image?}
+                         -> 200 {api_version, corners[4], homography, confidence, stub}
+  POST /segment {image_path, point[2], model?}
+                         -> 200 {api_version, corners[4], outline, confidence,
+                                 planarity, stub}
 
-The server binds loopback-only (127.0.0.1) by default. It depends on the Python
-standard library alone, so the skeleton and its unit tests run GPU-free and
-without installing torch/Open3D (those arrive with the real service).
+The server binds loopback-only (127.0.0.1) by default. The server itself needs
+only the standard library; the CV modules are imported when a request needs them,
+so /health, the stubs and the contract tests run without torch or a GPU.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import math
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -33,6 +38,9 @@ SERVICE_NAME = "quadmapper-ai-sidecar"
 # is a sanity bound, not a real image-upload limit (images go by path for now).
 MAX_BODY_BYTES = 1 << 20  # 1 MiB
 
+# Placeholder corners every stub answers with: a centered rectangle, confidence 0.
+STUB_CORNERS = [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]
+
 
 def _stub_surface(_request: dict) -> dict:
     """Return a placeholder surface response.
@@ -44,12 +52,7 @@ def _stub_surface(_request: dict) -> dict:
     """
     return {
         "api_version": SIDECAR_API_VERSION,
-        "corners": [
-            [0.25, 0.25],
-            [0.75, 0.25],
-            [0.75, 0.75],
-            [0.25, 0.75],
-        ],
+        "corners": [list(c) for c in STUB_CORNERS],
         "plane": {"normal": [0.0, 0.0, 1.0], "d": 0.0},
         "confidence": 0.0,
         "stub": True,
@@ -57,22 +60,18 @@ def _stub_surface(_request: dict) -> dict:
 
 
 def _real_surface(request: dict) -> Optional[dict]:
-    """Run the real Metric3D surface service (QM-057), or None to fall back.
+    """Run the SAM 2 + Depth Anything surface detector, or None to fall back.
 
-    None (=> stub) when: no readable image_path, the Metric3D model is absent on
-    this machine, or the heavy CV stack (torch/open3d/surface) is not importable.
-    Imports are deferred to here so the skeleton's /health and the GPU-free
-    contract tests never pull in torch.
+    None (=> stub) when: no readable image_path, a model is absent on this
+    machine, the CV stack is not importable, or no candidate region survives.
     """
-    import os
-
     image_path = request.get("image_path")
-    if not image_path or not os.path.isfile(image_path):
+    if not isinstance(image_path, str) or not os.path.isfile(image_path):
         return None
 
     try:
         import cv2
-        import surface  # local module; imports torch/open3d on first real use
+        import surface
     except Exception:  # noqa: BLE001 - any import failure => graceful stub
         return None
     if not surface.model_available():
@@ -82,9 +81,9 @@ def _real_surface(request: dict) -> Optional[dict]:
     if bgr is None:
         return None
 
-    fx = float(request.get("fx", 1000.0))
-    fy = float(request.get("fy", 1000.0))
-    result = surface.estimate_surface(bgr, fx=fx, fy=fy)
+    result = surface.estimate_surface(bgr)
+    if result is None:
+        return None
     result["api_version"] = SIDECAR_API_VERSION
     return result
 
@@ -103,7 +102,7 @@ def _stub_oneflash() -> dict:
     """Placeholder One-Flash response (pattern not detected / deps absent)."""
     return {
         "api_version": SIDECAR_API_VERSION,
-        "corners": [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]],
+        "corners": [list(c) for c in STUB_CORNERS],
         "homography": None,
         "confidence": 0.0,
         "stub": True,
@@ -118,8 +117,6 @@ def _real_oneflash(request: dict) -> Optional[dict]:
     pattern_image); if the model is absent, the full frame is the target. Imports
     are deferred so /health and the contract tests stay light.
     """
-    import os
-
     pattern_path = request.get("pattern_image") or request.get("image_path")
     if not pattern_path or not os.path.isfile(pattern_path):
         return None
@@ -142,8 +139,9 @@ def _real_oneflash(request: dict) -> Optional[dict]:
             import surface
             if surface.model_available() and os.path.isfile(surface_path):
                 sbgr = cv2.imread(surface_path)
-                if sbgr is not None:
-                    target = surface.estimate_surface(sbgr)["corners"]
+                found = surface.estimate_surface(sbgr) if sbgr is not None else None
+                if found is not None:
+                    target = found["corners"]
         except Exception:  # noqa: BLE001 - surface is best-effort; frame fallback
             pass
 
@@ -162,6 +160,96 @@ def _oneflash_response(request: dict) -> dict:
         sys.stderr.write(f"[sidecar] oneflash solve failed: {exc!r}\n")
         real = None
     return real if real is not None else _stub_oneflash()
+
+
+SEGMENT_MODELS = ("small", "tiny")
+
+
+class BadRequest(ValueError):
+    """A request the client got wrong: answered with 400, never a crash."""
+
+
+def _parse_segment(request: dict) -> tuple:
+    """Validate a /segment body. Returns (image_path or None, (x, y), model)."""
+    point = request.get("point")
+    if (not isinstance(point, (list, tuple)) or len(point) != 2
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                       and math.isfinite(v) for v in point)):
+        raise BadRequest("point must be [x, y] numbers")
+    x, y = float(point[0]), float(point[1])
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        raise BadRequest("point must be normalized to 0..1")
+    model = request.get("model", "small")
+    if model not in SEGMENT_MODELS:
+        raise BadRequest(f"model must be one of {list(SEGMENT_MODELS)}")
+    image_path = request.get("image_path")
+    if image_path is not None and not isinstance(image_path, str):
+        raise BadRequest("image_path must be a string")
+    return image_path, (x, y), model
+
+
+def _stub_segment() -> dict:
+    """Placeholder /segment response (no image, no model, or an empty mask)."""
+    return {
+        "api_version": SIDECAR_API_VERSION,
+        "corners": [list(c) for c in STUB_CORNERS],
+        "outline": [list(c) for c in STUB_CORNERS],
+        "confidence": 0.0,
+        "planarity": None,
+        "stub": True,
+    }
+
+
+def _segment_response(request: dict) -> dict:
+    """Real segmentation when possible, else the stub. Raises only BadRequest."""
+    image_path, point, model = _parse_segment(request)
+    real = None
+    if image_path and os.path.isfile(image_path):
+        try:
+            import segment
+            real = segment.segment(image_path, point, model)
+        except Exception as exc:  # noqa: BLE001 - must never 500 the app
+            sys.stderr.write(f"[sidecar] segment failed: {exc!r}\n")
+            real = None
+    if real is None:
+        return _stub_segment()
+    real["api_version"] = SIDECAR_API_VERSION
+    return real
+
+
+def capabilities() -> list:
+    """Features whose packages and model files are present on this machine.
+
+    Checked without loading anything (a model load takes seconds), and a model
+    whose load has failed this run is dropped, so the list stays honest after a
+    broken checkpoint is first touched.
+    """
+    caps = []
+    try:
+        import models
+    except Exception:  # noqa: BLE001 - numpy missing: no CV features at all
+        models = None
+    if models is not None and models.sam2_available() and models.depth_available():
+        caps.append("surface")
+    if _oneflash_available():
+        caps.append("oneflash")
+    if models is not None and models.sam2_available():
+        caps.append("segment")
+    if models is not None and models.depth_available():
+        caps.append("depth")
+    return caps
+
+
+def _oneflash_available() -> bool:
+    if importlib.util.find_spec("cv2") is None:
+        return False
+    try:
+        import cv2
+        import oneflash
+    except Exception:  # noqa: BLE001
+        return False
+    return hasattr(cv2, "aruco") and os.path.isfile(
+        os.path.join(oneflash._PATTERN_DIR, "charuco.png"))
 
 
 class SidecarHandler(BaseHTTPRequestHandler):
@@ -183,12 +271,13 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "api_version": SIDECAR_API_VERSION,
                 "service": SERVICE_NAME,
+                "capabilities": capabilities(),
             })
             return
         self._send_json(404, {"error": "not found", "path": self.path})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib signature
-        if self.path not in ("/surface", "/oneflash"):
+        if self.path not in ("/surface", "/oneflash", "/segment"):
             self._send_json(404, {"error": "not found", "path": self.path})
             return
 
@@ -212,8 +301,13 @@ class SidecarHandler(BaseHTTPRequestHandler):
 
         if self.path == "/surface":
             self._send_json(200, _surface_response(request))
-        else:
+        elif self.path == "/oneflash":
             self._send_json(200, _oneflash_response(request))
+        else:
+            try:
+                self._send_json(200, _segment_response(request))
+            except BadRequest as exc:
+                self._send_json(400, {"error": "bad request", "detail": str(exc)})
 
 
 def make_server(host: str, port: int) -> ThreadingHTTPServer:

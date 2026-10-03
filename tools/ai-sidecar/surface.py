@@ -1,260 +1,147 @@
-"""Surface detection for the AI pre-show sidecar (QM-057).
+"""Automatic surface detection, POST /surface (QM-057, re-engined by ADR-053).
 
-Turns a single photo of a projection surface into the dominant planar surface's
-four image-space corners + plane + a calibrated confidence, using:
+  photo -> SAM 2.1 automatic masks (candidate regions)
+        -> Depth Anything V2 Small relative disparity
+        -> per candidate: planarity + verticality from a disparity-plane fit
+        -> best candidate's four corners + confidence
 
-  image -> Metric3D (metric depth + normals) -> metric point cloud ->
-  Open3D segment_plane (ms-scale RANSAC) -> largest planar component ->
-  4-corner extraction -> confidence
+The confidence keeps the QM-057 intent: a quality score for "a clean planar
+region exists", then two multiplicative gates that collapse it when the winner
+is the wrong kind of surface (a floor or ceiling: verticality) or when another,
+separate region scores about as well (a cluttered scene: ambiguity). Low, not
+confidently wrong.
 
-Metric depth (not the spike's relative DA-V2) removes the affine bow on oblique
-surfaces. The confidence folds in a verticality prior from the plane normal so a
-cluttered scene whose biggest plane is the floor returns LOW confidence rather
-than confidently warping onto the wrong surface (the spike's gallery failure).
-
-The Metric3D model is loaded lazily from the local ComfyUI controlnet_aux install
-(ADR-035; user-authorized). Paths are overridable via env vars so the heavy model
-never loads in unit tests / on machines without it.
+Relative depth has no metric scale, so no plane equation is returned
+(`plane: null`).
 """
 
 from __future__ import annotations
 
-import os
-import sys
 import time
 from typing import Optional
 
-import cv2
 import numpy as np
 
-# Local Metric3D install (overridable). Kept out of the repo; see ADR-035.
-M3D_SRC = os.environ.get(
-    "QM_M3D_SRC",
-    r"D:\aiTools\ComfyUI_windows_portable\ComfyUI\custom_nodes\comfyui_controlnet_aux\src",
-)
-M3D_CKPT = os.environ.get(
-    "QM_M3D_CKPT",
-    r"D:\aiTools\ComfyUI_windows_portable\ComfyUI\custom_nodes\comfyui_controlnet_aux"
-    r"\ckpts\JUGGHM\Metric3D\metric_depth_vit_small_800k.pth",
-)
-M3D_BACKBONE = os.environ.get("QM_M3D_BACKBONE", "vit-small")
+import geometry
+import models
 
-# Lazily-initialised singletons (torch model + cfg).
-_model = None
-_cfg = None
-_device = "cpu"
+MIN_AREA = 0.02  # candidates smaller than this share of the frame are ignored
+MAX_AREA = 0.95  # ...and one that is the whole frame says nothing
+FULL_SIZE_AREA = 0.15  # a region this big earns the full size term
 
 
 def model_available() -> bool:
-    """True if the Metric3D source + checkpoint are present (no load attempted)."""
-    return os.path.isdir(M3D_SRC) and os.path.isfile(M3D_CKPT)
+    return models.sam2_available(models.DEFAULT_SAM2) and models.depth_available()
 
 
-def _ensure_model():
-    """Load Metric3D once. Raises if unavailable (caller maps to a 503)."""
-    global _model, _cfg, _device
-    if _model is not None:
-        return
-    if not model_available():
-        raise RuntimeError(f"Metric3D not found (src={M3D_SRC}, ckpt={M3D_CKPT})")
+def score_candidates(masks, sam_scores, disparity: np.ndarray,
+                     luminance: Optional[np.ndarray] = None) -> list:
+    """Score candidate masks. Pure numpy; returns dicts sorted best first.
 
-    # The vendored mmcv needs these set before import (matches the ComfyUI node).
-    os.environ.setdefault("NPU_DEVICE_COUNT", "0")
-    os.environ.setdefault("MMCV_WITH_OPS", "0")
-    if M3D_SRC not in sys.path:
-        sys.path.insert(0, M3D_SRC)
+    quality mixes planarity, size, SAM's own mask score and, when `luminance`
+    (HxW in 0..1) is given, how light the region is: a white screen or wall
+    takes projection, a black curtain hardly does. score = quality * verticality.
+    """
+    h, w = disparity.shape
+    total = float(h * w)
+    scored = []
+    for i, (mask, sam) in enumerate(zip(masks, sam_scores)):
+        area = float(np.count_nonzero(mask)) / total
+        if not MIN_AREA <= area <= MAX_AREA:
+            continue
+        fit = geometry.fit_disparity_plane(disparity, mask, seed=i)
+        if fit is None:
+            continue
+        vert = geometry.verticality(fit)
+        size = min(1.0, area / FULL_SIZE_AREA)
+        sam = float(np.clip(sam, 0.0, 1.0))
+        if luminance is None:
+            quality = 0.5 * fit["planarity"] + 0.25 * size + 0.25 * sam
+        else:
+            light = float(np.clip(luminance[mask].mean(), 0.0, 1.0))
+            quality = 0.4 * fit["planarity"] + 0.2 * size + 0.2 * sam + 0.2 * light
+        scored.append({"index": i, "area": area, "planarity": fit["planarity"],
+                       "verticality": vert, "quality": quality,
+                       "score": quality * vert, "fit": fit})
+    scored.sort(key=lambda c: c["score"], reverse=True)
+    return scored
 
+
+def _overlap(a: np.ndarray, b: np.ndarray) -> float:
+    """Intersection over the smaller mask: 1 when one region contains the other."""
+    inter = np.count_nonzero(a & b)
+    return inter / max(1, min(np.count_nonzero(a), np.count_nonzero(b)))
+
+
+COPLANAR = 0.8  # plane_agreement at or above this: the same surface, not a rival
+
+
+def ambiguity_gate(scored: list, masks, disparity: np.ndarray) -> float:
+    """1 when the winner has no rival, falling to 0 as a different surface matches it.
+
+    Not rivals: a region nested in the winner (a screen inside its wall) and a
+    region on the winner's plane (another panel of the same facade). The best
+    remaining region is the rival: at two thirds of the winner's score or less it
+    costs nothing, and an equal rival collapses the gate.
+    """
+    if len(scored) < 2 or scored[0]["score"] <= 0.0:
+        return 1.0
+    best = scored[0]
+    winner = masks[best["index"]]
+    for rival in scored[1:]:
+        other = masks[rival["index"]]
+        if _overlap(winner, other) >= 0.2:
+            continue
+        if geometry.plane_agreement(disparity, other, best["fit"]) >= COPLANAR:
+            continue
+        ratio = rival["score"] / best["score"]
+        return float(np.clip(3.0 * (1.0 - ratio), 0.0, 1.0))
+    return 1.0
+
+
+def estimate_surface(bgr: np.ndarray) -> Optional[dict]:
+    """Detect the best projection surface in a BGR photo.
+
+    Returns the /surface body without api_version, or None when no candidate
+    region survives (the caller answers with the stub).
+    """
+    import cv2
     import torch
-    from custom_controlnet_aux.metric3d import load_model
 
-    model, cfg = load_model(M3D_BACKBONE, M3D_CKPT)
-    _device = "cuda" if torch.cuda.is_available() else "cpu"
-    _model = model.to(_device)
-    _cfg = cfg
-
-
-def _infer_depth_normal(bgr: np.ndarray, fx: float, fy: float):
-    """Run Metric3D. Returns (depth HxW float metres, normal HxWx3) at input size."""
-    _ensure_model()
-    import torch
-    from custom_controlnet_aux.metric3d import predict_depth_normal
-
+    t0 = time.perf_counter()
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    state: dict = {}
-    predict_depth_normal(_model, _cfg, rgb, fx=fx, fy=fy, state_cache=state)
-    if _device == "cuda":
-        torch.cuda.synchronize()
+    h, w = rgb.shape[:2]
+    with models.LOCK:
+        generator = models.sam2_mask_generator()
+        with torch.inference_mode(), models.autocast():
+            proposals = generator.generate(rgb)
+        t_sam = time.perf_counter()
+        disparity = models.relative_disparity(rgb)
+    t_depth = time.perf_counter()
 
-    H, W = bgr.shape[:2]
-    depth = state["depth"].astype(np.float64)
-    # Metric3D returns depth at its own internal (padded/resized) resolution;
-    # resize back to the input frame so pixels line up for back-projection.
-    if depth.shape != (H, W):
-        depth = cv2.resize(depth, (W, H), interpolation=cv2.INTER_LINEAR)
-    normal = state["normal"]
-    if normal.shape[:2] != (H, W):
-        normal = cv2.resize(normal, (W, H), interpolation=cv2.INTER_LINEAR)
-    return depth, normal
+    masks = [p["segmentation"].astype(bool) for p in proposals]
+    luminance = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    scored = score_candidates(masks, [p["predicted_iou"] for p in proposals],
+                              disparity, luminance)
+    if not scored:
+        return None
+    best = scored[0]
+    quad = geometry.mask_to_quad(masks[best["index"]])
+    if quad is None:
+        return None
+    corners_px, _ = quad
 
-
-def _backproject(depth: np.ndarray, fx: float, fy: float, step: int):
-    """Pinhole back-projection on a subsampled grid. Returns (pts Nx3, gridshape)."""
-    H, W = depth.shape
-    cx, cy = W / 2.0, H / 2.0
-    ys, xs = np.mgrid[0:H:step, 0:W:step]
-    Z = depth[0:H:step, 0:W:step].astype(np.float64)
-    X = (xs - cx) * Z / fx
-    Y = (ys - cy) * Z / fy
-    pts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
-    return pts, Z.shape
-
-
-def _order_corners(pts: np.ndarray) -> np.ndarray:
-    """Order 4 points as TL, TR, BR, BL using the sum/diff trick."""
-    pts = pts.astype(np.float64)
-    s = pts.sum(axis=1)
-    d = np.diff(pts, axis=1).ravel()
-    return np.array([
-        pts[np.argmin(s)],   # TL: smallest x+y
-        pts[np.argmin(d)],   # TR: smallest y-x
-        pts[np.argmax(s)],   # BR: largest x+y
-        pts[np.argmax(d)],   # BL: largest y-x
-    ])
-
-
-def _extract_corners(mask: np.ndarray):
-    """Four corners (pixels) of the largest connected component of `mask`.
-
-    Returns (corners 4x2 float, cc_fraction) or (None, 0.0) if nothing usable.
-    cc_fraction is the largest component's share of all mask pixels — a
-    compactness signal (scattered inliers -> low).
-    """
-    total = int(mask.sum() > 0 and np.count_nonzero(mask))
-    if total == 0:
-        return None, 0.0
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
-    if n <= 1:
-        return None, 0.0
-    # Largest non-background component.
-    areas = stats[1:, cv2.CC_STAT_AREA]
-    largest = 1 + int(np.argmax(areas))
-    cc = (labels == largest).astype(np.uint8)
-    cc_fraction = float(areas.max()) / float(np.count_nonzero(mask))
-
-    contours, _ = cv2.findContours(cc, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None, 0.0
-    cnt = max(contours, key=cv2.contourArea)
-
-    # Prefer a clean 4-gon (perspective quad); fall back to the min-area rect.
-    peri = cv2.arcLength(cnt, True)
-    approx = cv2.approxPolyDP(cnt, 0.03 * peri, True)
-    if len(approx) == 4:
-        corners = approx.reshape(4, 2).astype(np.float64)
-    else:
-        corners = cv2.boxPoints(cv2.minAreaRect(cnt)).astype(np.float64)
-    return _order_corners(corners), cc_fraction
-
-
-def estimate_surface(bgr: np.ndarray, fx: float = 1000.0, fy: float = 1000.0,
-                     dist_threshold: float = 0.04, step: int = 3,
-                     debug: bool = False) -> dict:
-    """Detect the dominant planar surface in `bgr`.
-
-    Returns a dict with normalized corners[4] (TL,TR,BR,BL in [0,1]), the metric
-    plane {normal,d}, a confidence in [0,1], and timing. `debug` adds the raw
-    sub-signals + an inlier mask for visualization.
-    """
-    import open3d as o3d
-
-    t_total = time.time()
-    H, W = bgr.shape[:2]
-
-    t = time.time()
-    depth, normal = _infer_depth_normal(bgr, fx, fy)
-    t_infer = time.time() - t
-
-    pts, grid_shape = _backproject(depth, fx, fy, step)
-
-    t = time.time()
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(pts)
-    # Dominant plane.
-    plane1, inl1 = pcd.segment_plane(dist_threshold, ransac_n=3, num_iterations=400)
-    # Second plane on the remainder, to measure surface ambiguity.
-    second_frac = 0.0
-    if len(inl1) > 0 and len(pts) - len(inl1) > 100:
-        rest = pcd.select_by_index(inl1, invert=True)
-        _, inl2 = rest.segment_plane(dist_threshold, ransac_n=3, num_iterations=200)
-        second_frac = len(inl2) / max(len(inl1), 1)
-    t_fit = time.time() - t
-
-    a, b, c, d = plane1
-    pn = np.array([a, b, c], dtype=np.float64)
-    pn = pn / (np.linalg.norm(pn) + 1e-9)
-
-    # Inlier mask back in image space (grid resolution -> full frame).
-    inl_grid = np.zeros(grid_shape[0] * grid_shape[1], dtype=np.uint8)
-    inl_grid[np.asarray(inl1, dtype=np.int64)] = 1
-    inl_grid = inl_grid.reshape(grid_shape)
-    mask = cv2.resize(inl_grid * 255, (W, H), interpolation=cv2.INTER_NEAREST)
-
-    corners_px, cc_fraction = _extract_corners(mask)
-
-    # --- confidence ---------------------------------------------------------
-    # Two parts: a "clean planar surface exists" quality score, then two
-    # multiplicative gates that collapse it when the scene says the surface is
-    # the WRONG kind (floor/ceiling) or ambiguous (cluttered). Multiplicative,
-    # not additive, so the gallery floor-trap drops to ~0 (low, not confidently
-    # wrong) instead of riding high on planarity alone (the spike's failure).
-    inl_frac = len(inl1) / max(len(pts), 1)
-    # Planarity: RMS point-plane distance of inliers, relative to depth span.
-    inl_pts = pts[np.asarray(inl1, dtype=np.int64)]
-    resid = np.abs(inl_pts @ pn + d)
-    span = float(depth.max() - depth.min()) + 1e-9
-    planarity = 1.0 - min(1.0, (np.sqrt((resid ** 2).mean()) / span) * 8.0)
-    quality = (0.35 * min(1.0, inl_frac * 2.5)
-               + 0.35 * planarity
-               + 0.30 * cc_fraction)
-
-    # Verticality gate: a projection surface is vertical, so its plane normal has
-    # a small camera-up (Y) component. A floor/ceiling plane (the gallery trap)
-    # has |normal_y| ~ 1 -> gate ~ 0.
-    verticality = 1.0 - min(1.0, abs(pn[1]))
-    # Ambiguity gate: a comparably-large second plane means a cluttered scene.
-    ambiguity = 1.0 - min(1.0, second_frac)
-
-    confidence = float(np.clip(quality * verticality * ambiguity, 0.0, 1.0))
-
-    # Normalized corners (centered fallback if extraction failed).
-    if corners_px is None:
-        corners_norm = [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]
-        confidence = min(confidence, 0.1)
-    else:
-        corners_norm = [[float(x) / W, float(y) / H] for x, y in corners_px]
-
-    result = {
-        "corners": corners_norm,
-        "plane": {"normal": [float(pn[0]), float(pn[1]), float(pn[2])],
-                  "d": float(d)},
+    ambiguity = ambiguity_gate(scored, masks, disparity)
+    confidence = float(np.clip(best["score"] * ambiguity, 0.0, 1.0))
+    return {
+        "corners": geometry.normalize_points(corners_px, w, h),
+        "plane": None,
         "confidence": confidence,
         "stub": False,
-        "timing_ms": {"infer": round(t_infer * 1000, 1),
-                      "fit": round(t_fit * 1000, 1),
-                      "total": round((time.time() - t_total) * 1000, 1)},
+        "timing_ms": {"sam": round((t_sam - t0) * 1000, 1),
+                      "depth": round((t_depth - t_sam) * 1000, 1),
+                      "total": round((time.perf_counter() - t0) * 1000, 1)},
+        "debug": {"candidates": len(scored), "planarity": round(best["planarity"], 3),
+                  "verticality": round(best["verticality"], 3),
+                  "area": round(best["area"], 3), "ambiguity": round(ambiguity, 3)},
     }
-    if debug:
-        result["debug"] = {
-            "inl_frac": round(inl_frac, 3),
-            "planarity": round(planarity, 3),
-            "cc_fraction": round(cc_fraction, 3),
-            "verticality": round(verticality, 3),
-            "second_frac": round(second_frac, 3),
-            "ambiguity": round(ambiguity, 3),
-            "normal": pn.tolist(),
-            "depth_min": float(depth.min()),
-            "depth_max": float(depth.max()),
-            "_mask": mask,
-            "_corners_px": None if corners_px is None else corners_px.tolist(),
-        }
-    return result
