@@ -49,6 +49,9 @@ private:
 
     std::vector<Panel*> panels_;
     std::vector<bool> defaultVisible_;
+    // Opened by a request this frame: brought to the front, even when already open as a
+    // tab behind another panel.
+    std::vector<const Panel*> focusNext_;
 };
 
 }  // namespace quadmapper

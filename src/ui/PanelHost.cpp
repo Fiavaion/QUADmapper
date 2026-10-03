@@ -6,6 +6,8 @@
 
 #include <imgui.h>
 
+#include <algorithm>
+
 namespace quadmapper {
 
 void PanelHost::add(Panel& panel) {
@@ -41,6 +43,7 @@ void PanelHost::drainOpenRequests(EditorState& es) {
     for (const std::string& id : es.panelOpenRequests) {
         if (Panel* panel = find(id)) {
             panel->visible = true;
+            focusNext_.push_back(panel);
         } else {
             Logger::warning("PanelHost: no panel '{}' to open", id);
         }
@@ -61,6 +64,9 @@ void PanelHost::drawWindows(EditorContext& ctx) {
         if (kind != PanelKind::Window || !panel->visible || !panel->available(ctx)) continue;
 
         panel->beforeBegin(ctx);
+        if (std::find(focusNext_.begin(), focusNext_.end(), panel) != focusNext_.end()) {
+            ImGui::SetNextWindowFocus();
+        }
         const bool disabled = drawDisabled(*panel, ctx);
         if (ImGui::Begin(panel->id(), &panel->visible, panel->windowFlags())) {
             if (disabled) ImGui::BeginDisabled();
@@ -69,6 +75,7 @@ void PanelHost::drawWindows(EditorContext& ctx) {
         }
         ImGui::End();
     }
+    focusNext_.clear();
 }
 
 void PanelHost::drawTabs(EditorContext& ctx) {
