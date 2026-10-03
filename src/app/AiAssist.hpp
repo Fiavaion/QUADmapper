@@ -1,10 +1,14 @@
 #pragma once
 
+#include "../core/UUID.hpp"
 #include "../editor/EditorServices.hpp"
 
 #include <array>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <thread>
 
 namespace quadmapper {
 
@@ -34,6 +38,9 @@ public:
 
     // AI menu: the sidecar is connected (reads cached state, no per-frame I/O).
     bool isActive() const;
+    // AI menu: a camera capture or sidecar request is running; the items that start
+    // one are disabled until tick() has applied its outcome.
+    bool isBusy() const;
     // AI menu: connect off the UI thread (TD-10) so the menu never freezes 1-3s;
     // tick() reports the outcome.
     void enable();
@@ -44,9 +51,27 @@ public:
     void run(EditorServices::AiAction action, OutputManager* outputs);
 
     // Once per interactive frame, after the frame is presented: posts a one-shot
-    // status when an async connect resolves (TD-10), and runs the QM_AI_SELFTEST
-    // hook on the third frame.
+    // status when an async connect resolves (TD-10), applies a finished request's
+    // outcome, and runs the QM_AI_SELFTEST hook on the third frame.
     void tick(OutputManager* outputs);
+
+    // What a request made off the main thread hands back: a status line and, for a
+    // confident warp, the target quad's new corners (TL,TR,BR,BL, normalized).
+    struct Outcome {
+        std::string status;
+        float seconds = 5.0f;
+        std::optional<std::array<std::array<float, 2>, 4>> corners;
+    };
+    // Runs `work` on a worker thread so the camera and the sidecar's HTTP call never
+    // stall a frame; tick() applies its outcome on the main thread. Corners land on
+    // the quad `target` names, looked up when the outcome arrives: a deleted quad or
+    // an engaged perform lock drops them with a status, changing nothing. `who`
+    // prefixes those statuses ("AI", "One-Flash"). `work` must not touch this object
+    // or the editor: it may outlive both at shutdown. False, and nothing started,
+    // while another request is running. The detect, capture and solve actions use
+    // it; a test drives the async path with it, without a camera or a sidecar.
+    bool startRequest(const std::string& busyStatus, const std::string& who,
+                      const UUID& target, std::function<Outcome()> work);
 
     // "Detect Surface" (QM-058): capture a frame (live camera, or the
     // QM_AI_TEST_IMAGE override) -> sidecar /surface -> apply the proposed quad to
@@ -89,7 +114,9 @@ private:
     static bool captureCameraFrameToPng(const std::string& pngPath, std::string& error);
 
     EditorState& editor_;
-    std::unique_ptr<ai::SidecarClient> sidecar_;
+    // Shared with a running request, which may still be inside its HTTP call when
+    // stopSidecar() lets go of it.
+    std::shared_ptr<ai::SidecarClient> sidecar_;
     // Last observed sidecar state, so tick() can report an async connect (TD-10).
     ai::SidecarState lastSidecarState_;
 
@@ -102,6 +129,14 @@ private:
     bool emitPattern_ = false;
     std::unique_ptr<Quad> calibQuad_;
     std::unique_ptr<Texture> calibTexture_;
+
+    // The request in flight (at most one). The worker owns a share of Request, so a
+    // worker still stuck at shutdown can be detached safely.
+    struct Request;
+    std::shared_ptr<Request> request_;
+    std::thread requestThread_;
+    // On the main thread: post a finished request's outcome (see startRequest).
+    void applyOutcome(const Request& request);
 };
 
 } // namespace quadmapper

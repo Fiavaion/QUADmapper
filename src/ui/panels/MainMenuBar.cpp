@@ -237,13 +237,15 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         // Clear Pattern stays, since it gives the show back.
         const bool aiAllowed = !locked;
         if (services && services->aiActive()) {
-            if (ImGui::MenuItem("Detect Surface (stub)", nullptr, false, aiAllowed)) run(AiAction::DetectSurface);
+            // One camera or sidecar request at a time: the items that start one wait.
+            const bool aiIdle = aiAllowed && !services->aiBusy();
+            if (ImGui::MenuItem("Detect Surface (stub)", nullptr, false, aiIdle)) run(AiAction::DetectSurface);
             ImGui::Separator();
             if (ImGui::BeginMenu("One-Flash")) {
                 if (ImGui::MenuItem("Emit Pattern", nullptr, false, aiAllowed)) run(AiAction::EmitPattern);
-                if (ImGui::MenuItem("Capture Photo", nullptr, false, aiAllowed)) run(AiAction::CapturePhoto);
-                if (ImGui::MenuItem("Solve & Apply", nullptr, false, aiAllowed)) run(AiAction::SolveApply);
-                if (ImGui::MenuItem("Anamorphic Warp", nullptr, false, aiAllowed)) run(AiAction::Anamorphic);
+                if (ImGui::MenuItem("Capture Photo", nullptr, false, aiIdle)) run(AiAction::CapturePhoto);
+                if (ImGui::MenuItem("Solve & Apply", nullptr, false, aiIdle)) run(AiAction::SolveApply);
+                if (ImGui::MenuItem("Anamorphic Warp", nullptr, false, aiIdle)) run(AiAction::Anamorphic);
                 if (ImGui::MenuItem("Clear Pattern")) run(AiAction::ClearPattern);
                 ImGui::EndMenu();
             }
