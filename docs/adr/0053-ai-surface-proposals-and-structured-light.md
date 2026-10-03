@@ -1,7 +1,7 @@
 # ADR-053: AI surface proposals (SAM 2) and camera-assisted mapping (Gray-code structured light)
 
 **Date:** 2026-10-03
-**Status:** Proposed
+**Status:** Accepted (owner, 2026-10-03: "as written")
 **Deciders:** Jones
 
 ## Context
