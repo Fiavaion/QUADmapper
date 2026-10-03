@@ -68,6 +68,9 @@ AiAssist::AiAssist(EditorState& editor, std::unique_ptr<ai::SidecarClient> sidec
 
 AiAssist::~AiAssist() {
     if (!requestThread_.joinable()) return;
+    // A launched sidecar dies here (no orphan), which also ends a running HTTP call
+    // at once instead of after the wait below. Idempotent after stopSidecar().
+    if (sidecar_) sidecar_->stop();
     bool done;
     {
         std::unique_lock<std::mutex> lock(request_->mutex);
