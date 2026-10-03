@@ -18,6 +18,7 @@
 #include "ui/PanelHost.hpp"
 #include "ui/dialogs/MissingMediaWindow.hpp"
 #include "ui/dialogs/SessionDialogs.hpp"
+#include "ui/panels/AiPhotoPanel.hpp"
 #include "ui/panels/Banners.hpp"
 #include "ui/panels/CalibrationPanel.hpp"
 #include "ui/panels/ControlPanel.hpp"
@@ -118,6 +119,7 @@ private:
     OutputPanel outputs_;
     VideoPlayerPanel videoPlayer_;
     ControlPanel control_;
+    AiPhotoPanel aiPhoto_;
     MissingMediaWindow missingMedia_;
     CalibrationPanel calibration_;
     Banners banners_;

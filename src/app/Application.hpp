@@ -110,6 +110,9 @@ private:
     bool aiActive() const override;
     bool aiBusy() const override;
     void runAi(AiAction action) override;
+    bool aiCanSegment() const override;
+    const AiPhoto& aiPhoto() const override;
+    void aiSegmentAt(float x, float y) override;
 
     // Ctrl+S: only queues a deferred EditorState::FileAction (as the File menu does);
     // the work runs in processPendingFileAction() at the next frame boundary (ADR-046).

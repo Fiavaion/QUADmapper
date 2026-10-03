@@ -493,6 +493,9 @@ bool Application::aiActive() const { return m_aiAssist->isActive(); }
 bool Application::aiBusy() const { return m_aiAssist->isBusy(); }
 
 void Application::runAi(AiAction action) { m_aiAssist->run(action, m_outputManager.get()); }
+bool Application::aiCanSegment() const { return m_aiAssist->canSegment(); }
+const AiPhoto& Application::aiPhoto() const { return m_aiAssist->photo(); }
+void Application::aiSegmentAt(float x, float y) { m_aiAssist->segmentAt(x, y); }
 
 int Application::run() {
     // QM-081 H2: stress harness runs as a sibling branch, not a hijack of the UI loop.

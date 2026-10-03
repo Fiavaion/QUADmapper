@@ -4,6 +4,7 @@
 #include "../editor/EditorServices.hpp"
 
 #include <array>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -17,7 +18,12 @@ class OutputManager;
 class Renderer;
 class Quad;
 class Texture;
-namespace ai { class SidecarClient; struct SidecarConfig; enum class SidecarState; }
+namespace ai {
+class SidecarClient;
+struct SidecarConfig;
+struct SegmentReply;
+enum class SidecarState;
+}
 
 // The optional AI pre-show assist (ADR-035, ADR-051 §1): the sidecar's lifecycle,
 // "Detect Surface" and the One-Flash pattern, capture and solve. Owned by
@@ -34,7 +40,11 @@ public:
 
     // The sidecar script next to the working dir or the repo root. When it is
     // missing, scriptPath stays empty and start() fails cleanly (AI menu shows disabled).
+    // The interpreter is the sidecar's own environment (tools/ai-sidecar/.venv, ADR-053
+    // §1) when it exists beside the script, else `python` on PATH.
     static ai::SidecarConfig locateSidecar();
+    // The same, searching from `workingDir` instead of the current directory.
+    static ai::SidecarConfig locateSidecarFrom(const std::filesystem::path& workingDir);
 
     // AI menu: the sidecar is connected (reads cached state, no per-frame I/O).
     bool isActive() const;
@@ -56,11 +66,16 @@ public:
     void tick(OutputManager* outputs);
 
     // What a request made off the main thread hands back: a status line and, for a
-    // confident warp, the target quad's new corners (TL,TR,BR,BL, normalized).
+    // confident warp, the target quad's new corners (TL,TR,BR,BL, normalized). The
+    // AI Photo requests hand back a proposal (Pick Surface) or a new photo; a One-Flash
+    // capture hands back its photo, which Pick Surface's Apply maps through.
     struct Outcome {
         std::string status;
         float seconds = 5.0f;
         std::optional<std::array<std::array<float, 2>, 4>> corners;
+        std::optional<AiSurfaceProposal> proposal;
+        std::optional<std::string> photo;
+        std::optional<std::string> oneFlashPhoto;
     };
     // Runs `work` on a worker thread so the camera and the sidecar's HTTP call never
     // stall a frame; tick() applies its outcome on the main thread. Corners land on
@@ -92,6 +107,32 @@ public:
     //     content looks frontal from the captured viewpoint (anamorphosis).
     void solveAndApply(const OutputManager* outputs);
     void anamorphic(const OutputManager* outputs);
+
+    // ---- Pick Surface, the AI Photo panel (ADR-053 §2) ----------------------------
+    // The sidecar advertises "segment" (cached at its health check, no I/O).
+    bool canSegment() const;
+    const AiPhoto& photo() const { return photo_; }
+    // Take the panel's photo (live camera, or the QM_AI_TEST_IMAGE override); a new
+    // photo clears the proposal.
+    void takePhoto();
+    // Ask the sidecar for the surface under a click on the photo (normalized, top-left
+    // origin). The proposal is only shown: nothing changes until applyProposal().
+    void segmentAt(float x, float y);
+    // Warp the quad selected now onto the proposal, mapped into projector space with
+    // the best mapping available (pickMapping).
+    void applyProposal();
+    void clearProposal();
+
+    // How Pick Surface maps photo corners into projector space, best first. A
+    // Gray-code map (ADR-053 §3) will rank above OneFlash when it exists.
+    enum class PickMapping {
+        OneFlash,           // through /oneflash with the One-Flash photo taken this session
+        CameraAtProjector,  // photo space as-is
+    };
+    static PickMapping pickMapping(const std::string& oneFlashPhoto);
+    // A finished /segment call as the panel shows it: the proposal (also a stub or a
+    // low-confidence one, which Apply refuses) and a status line.
+    static Outcome segmentOutcome(const ai::SegmentReply& reply);
 
     // When the One-Flash pattern is armed, draws it fullscreen into every output's
     // frame in place of the scene and returns true; otherwise draws nothing.
@@ -129,6 +170,11 @@ private:
     bool emitPattern_ = false;
     std::unique_ptr<Quad> calibQuad_;
     std::unique_ptr<Texture> calibTexture_;
+
+    // The AI Photo panel's photo and proposal, and the last One-Flash > Capture Photo
+    // this session (Pick Surface maps through it).
+    AiPhoto photo_;
+    std::string oneFlashPhoto_;
 
     // The request in flight (at most one). The worker owns a share of Request, so a
     // worker still stuck at shutdown can be detached safely.

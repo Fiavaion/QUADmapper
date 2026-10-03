@@ -11,6 +11,7 @@
 #include "../source/CameraDevices.hpp"
 #include "../source/CameraSource.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
@@ -45,7 +46,7 @@ constexpr float BUSY_STATUS_SECONDS = 60.0f;
 // Shutdown waits this long for a running request, then lets its thread go: it holds
 // only its own shares (Request, the sidecar) and never touches AiAssist or the editor.
 constexpr auto SHUTDOWN_WAIT = std::chrono::seconds(2);
-constexpr float CONFIDENCE_THRESHOLD = 0.35f;
+constexpr const char* PICK = "Pick Surface";
 
 }  // namespace
 
@@ -88,16 +89,24 @@ AiAssist::~AiAssist() {
 }
 
 ai::SidecarConfig AiAssist::locateSidecar() {
+    return locateSidecarFrom(std::filesystem::current_path());
+}
+
+ai::SidecarConfig AiAssist::locateSidecarFrom(const std::filesystem::path& workingDir) {
     ai::SidecarConfig config;
     const std::filesystem::path rel("tools/ai-sidecar/sidecar.py");
     for (const std::filesystem::path& base :
-         {std::filesystem::current_path(),
-          std::filesystem::current_path() / ".." / "..",
-          std::filesystem::current_path() / ".." / ".." / ".."}) {
+         {workingDir, workingDir / ".." / "..", workingDir / ".." / ".." / ".."}) {
         std::error_code ec;
         std::filesystem::path candidate = base / rel;
         if (std::filesystem::exists(candidate, ec)) {
-            config.scriptPath = utf8FromPath(std::filesystem::weakly_canonical(candidate, ec));
+            const std::filesystem::path script = std::filesystem::weakly_canonical(candidate, ec);
+            config.scriptPath = utf8FromPath(script);
+            // The sidecar's own environment (setup.ps1), so its packages never clash
+            // with the global Python's.
+            const std::filesystem::path venvPython =
+                script.parent_path() / ".venv" / "Scripts" / "python.exe";
+            if (std::filesystem::exists(venvPython, ec)) config.pythonExe = utf8FromPath(venvPython);
             break;
         }
     }
@@ -158,14 +167,21 @@ bool AiAssist::startRequest(const std::string& busyStatus, const std::string& wh
 
 void AiAssist::applyOutcome(const Request& request) {
     const Outcome& outcome = request.outcome;
+    if (outcome.photo) {
+        photo_.path = *outcome.photo;
+        ++photo_.serial;
+        photo_.proposal.reset();  // it was drawn on the previous photo
+    }
+    if (outcome.oneFlashPhoto) oneFlashPhoto_ = *outcome.oneFlashPhoto;
+    // The lock may have engaged while the request ran: it never lets a warp through,
+    // nor a proposal that would invite one.
+    if ((outcome.corners || outcome.proposal) && editor_.performLock.isOn()) {
+        setStatus(request.who + ": result dropped - the show is locked (Output > Perform Lock)",
+                  6.0f);
+        return;
+    }
+    if (outcome.proposal) photo_.proposal = *outcome.proposal;
     if (outcome.corners) {
-        // The lock may have engaged while the request ran: it never lets a warp through.
-        if (editor_.performLock.isOn()) {
-            setStatus(request.who +
-                          ": result dropped - the show is locked (Output > Perform Lock)",
-                      6.0f);
-            return;
-        }
         Quad* quad = editor_.quadManager().getQuad(request.target);
         if (!quad) {
             setStatus(request.who + ": result dropped - the quad was deleted", 6.0f);
@@ -198,6 +214,9 @@ void AiAssist::run(EditorServices::AiAction action, OutputManager* outputs) {
         case AiAction::ClearPattern:  clearPattern(); break;
         case AiAction::SolveApply:    solveAndApply(outputs); break;
         case AiAction::Anamorphic:    anamorphic(outputs); break;
+        case AiAction::TakePhoto:     takePhoto(); break;
+        case AiAction::ApplyProposal: applyProposal(); break;
+        case AiAction::ClearProposal: clearProposal(); break;
     }
 }
 
@@ -317,7 +336,7 @@ void AiAssist::detectSurface() {
 
         // Low confidence: do NOT auto-warp onto a possibly-wrong surface — ask the
         // user to disambiguate instead (the spike's load-bearing human-confirm step).
-        if (surface->confidence < CONFIDENCE_THRESHOLD) {
+        if (surface->confidence < AI_MIN_CONFIDENCE) {
             return Outcome{formatStatus("AI: low confidence (%.2f) - tap the surface to retry",
                                         surface->confidence),
                            5.0f, std::nullopt};
@@ -400,7 +419,9 @@ void AiAssist::capturePhoto(const OutputManager* outputs) {
         if (!captureCameraFrameToPng(out, err)) {
             return Outcome{"One-Flash: " + err, 6.0f, std::nullopt};
         }
-        return Outcome{"One-Flash: captured " + out, 6.0f, std::nullopt};
+        Outcome outcome{"One-Flash: captured " + out, 6.0f, std::nullopt};
+        outcome.oneFlashPhoto = out;
+        return outcome;
     });
 }
 
@@ -473,7 +494,7 @@ void AiAssist::runOneFlash(const OutputManager* outputs,
             return Outcome{"One-Flash: pattern not detected (need the ChArUco visible)", 6.0f,
                            std::nullopt};
         }
-        if (result->confidence < CONFIDENCE_THRESHOLD) {
+        if (result->confidence < AI_MIN_CONFIDENCE) {
             return Outcome{formatStatus("One-Flash: low confidence (%.2f) - reframe the pattern",
                                         result->confidence),
                            6.0f, std::nullopt};
@@ -482,6 +503,160 @@ void AiAssist::runOneFlash(const OutputManager* outputs,
                                     label.c_str(), result->confidence),
                        6.0f, result->corners};
     });
+}
+
+// ---- Pick Surface (ADR-053 §2) ---------------------------------------------------------
+
+bool AiAssist::canSegment() const {
+    if (!sidecarReady()) return false;
+    const std::vector<std::string> caps = sidecar_->capabilities();
+    return std::find(caps.begin(), caps.end(), "segment") != caps.end();
+}
+
+void AiAssist::takePhoto() {
+    // QM_AI_TEST_IMAGE stands in for the camera (verification, or a photo on disk).
+    std::string testImage;
+    if (const char* testImg = std::getenv("QM_AI_TEST_IMAGE")) {
+        const std::filesystem::path path(testImg);
+        if (!std::filesystem::exists(path)) {
+            setStatus("AI Photo: QM_AI_TEST_IMAGE not found", 5.0f);
+            return;
+        }
+        testImage = utf8FromPath(path);
+    }
+    startRequest("AI Photo: taking a photo...", "AI Photo", UUID::null(), [testImage]() -> Outcome {
+        std::string path = testImage;
+        if (path.empty()) {
+            path = utf8FromPath(std::filesystem::temp_directory_path() / "quadmapper_ai_photo.png");
+            std::string err;
+            if (!captureCameraFrameToPng(path, err)) {
+                return Outcome{"AI Photo: " + err, 5.0f, std::nullopt};
+            }
+        }
+        Outcome outcome{"AI Photo: photo taken - click the surface to map", 5.0f, std::nullopt};
+        outcome.photo = path;
+        return outcome;
+    });
+}
+
+void AiAssist::segmentAt(float x, float y) {
+    if (refusedByPerformLock(editor_, "AI assist")) return;
+    if (!sidecarReady()) {
+        setStatus("Pick Surface: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+        return;
+    }
+    if (!canSegment()) {
+        setStatus("Pick Surface: update the AI sidecar (it cannot segment)", 6.0f);
+        return;
+    }
+    if (photo_.path.empty()) {
+        setStatus("Pick Surface: take a photo first", 5.0f);
+        return;
+    }
+    if (x < 0.0f || x > 1.0f || y < 0.0f || y > 1.0f) return;  // not on the photo
+
+    std::shared_ptr<ai::SidecarClient> sidecar = sidecar_;
+    const std::string path = photo_.path;
+    const std::array<float, 2> point{x, y};
+    startRequest("Pick Surface: finding the surface...", PICK, UUID::null(),
+                 [sidecar, path, point]() -> Outcome {
+        return segmentOutcome(sidecar->requestSegment(path, point));
+    });
+}
+
+AiAssist::Outcome AiAssist::segmentOutcome(const ai::SegmentReply& reply) {
+    if (reply.endpointMissing) {
+        return Outcome{"Pick Surface: update the AI sidecar (it cannot segment)", 6.0f, std::nullopt};
+    }
+    if (!reply.result) {
+        return Outcome{"Pick Surface: segmentation failed (sidecar error)", 5.0f, std::nullopt};
+    }
+    const ai::SegmentResult& r = *reply.result;
+    AiSurfaceProposal proposal;
+    proposal.corners = r.corners;
+    proposal.outline = r.outline;
+    proposal.confidence = r.confidence;
+    proposal.planarity = r.planarity;
+    proposal.stub = r.stub;
+
+    Outcome outcome;
+    outcome.seconds = 6.0f;
+    if (proposal.stub) {
+        outcome.status = "Pick Surface: placeholder only - the sidecar has no SAM 2 model";
+    } else if (!proposal.canApply()) {
+        outcome.status = formatStatus("Pick Surface: low confidence (%.2f) - click elsewhere on the surface",
+                                      proposal.confidence);
+    } else {
+        outcome.status = formatStatus("Pick Surface: surface found (confidence %.2f) - Apply to warp the selected quad",
+                                      proposal.confidence);
+    }
+    outcome.proposal = std::move(proposal);
+    return outcome;
+}
+
+AiAssist::PickMapping AiAssist::pickMapping(const std::string& oneFlashPhoto) {
+    // ADR-053 §3: a current Gray-code map goes ahead of One-Flash here once it exists.
+    return oneFlashPhoto.empty() ? PickMapping::CameraAtProjector : PickMapping::OneFlash;
+}
+
+void AiAssist::applyProposal() {
+    if (!photo_.proposal) {
+        setStatus("Pick Surface: click the surface in the photo first", 5.0f);
+        return;
+    }
+    if (!photo_.proposal->canApply()) {
+        setStatus("Pick Surface: the proposal is not confident enough to apply", 5.0f);
+        return;
+    }
+    Quad* quad = editor_.quadManager().getPrimarySelectedQuad();
+    if (!quad) {
+        setStatus("Pick Surface: select a quad to warp first", 5.0f);
+        return;
+    }
+    const std::array<std::array<float, 2>, 4> corners = photo_.proposal->corners;
+
+    switch (pickMapping(oneFlashPhoto_)) {
+        case PickMapping::OneFlash: {
+            if (!sidecarReady()) {
+                setStatus("Pick Surface: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+                return;
+            }
+            // As the anamorphic path does: the photo corners go to /oneflash as
+            // target_corners and come back in projector space.
+            std::shared_ptr<ai::SidecarClient> sidecar = sidecar_;
+            startRequest("Pick Surface: mapping into projector space...", PICK, quad->getId(),
+                         [sidecar, pattern = oneFlashPhoto_, corners]() -> Outcome {
+                auto result = sidecar->requestOneFlash(pattern, &corners);
+                if (!result || result->stub) {
+                    return Outcome{"Pick Surface: the One-Flash photo shows no pattern - capture it again",
+                                   6.0f, std::nullopt};
+                }
+                if (result->confidence < AI_MIN_CONFIDENCE) {
+                    return Outcome{formatStatus("Pick Surface: One-Flash low confidence (%.2f) - capture it again",
+                                                result->confidence),
+                                   6.0f, std::nullopt};
+                }
+                return Outcome{formatStatus("Pick Surface: applied through One-Flash (confidence %.2f) - "
+                                            "nudge with Tab + arrows",
+                                            result->confidence),
+                               6.0f, result->corners};
+            });
+            break;
+        }
+        case PickMapping::CameraAtProjector:
+            // Through startRequest all the same, so the lock and deleted-quad rules
+            // apply in one place (applyOutcome).
+            startRequest("Pick Surface: applying...", PICK, quad->getId(), [corners]() -> Outcome {
+                return Outcome{"Pick Surface: no One-Flash photo - assuming the camera is at the projector",
+                               6.0f, corners};
+            });
+            break;
+    }
+}
+
+void AiAssist::clearProposal() {
+    photo_.proposal.reset();
+    setStatus("Pick Surface: proposal cleared", 4.0f);
 }
 
 bool AiAssist::renderPatternFrames(OutputManager& outputs, Renderer& renderer) {

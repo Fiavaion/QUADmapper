@@ -18,6 +18,7 @@
 #include "audio/AudioEngine.hpp"
 #include "ui/PanelHost.hpp"
 #include "ui/ShortcutRouter.hpp"
+#include "ui/panels/AiPhotoPanel.hpp"
 
 #include <imgui.h>
 
@@ -239,7 +240,15 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         if (services && services->aiActive()) {
             // One camera or sidecar request at a time: the items that start one wait.
             const bool aiIdle = aiAllowed && !services->aiBusy();
-            if (ImGui::MenuItem("Detect Surface (stub)", nullptr, false, aiIdle)) run(AiAction::DetectSurface);
+            if (ImGui::MenuItem("Detect Surface", nullptr, false, aiIdle)) run(AiAction::DetectSurface);
+            // ADR-053 §2: opens the AI Photo panel, which does the clicking and applying.
+            const bool canSegment = services->aiCanSegment();
+            if (ImGui::MenuItem("Pick Surface...", nullptr, false, aiAllowed && canSegment)) {
+                es.requestPanelOpen(AiPhotoPanel::ID);
+            }
+            if (!canSegment) {
+                ImGui::SetItemTooltip("This AI sidecar cannot segment: update it (tools/ai-sidecar)");
+            }
             ImGui::Separator();
             if (ImGui::BeginMenu("One-Flash")) {
                 if (ImGui::MenuItem("Emit Pattern", nullptr, false, aiAllowed)) run(AiAction::EmitPattern);

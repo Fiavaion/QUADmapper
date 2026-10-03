@@ -11,6 +11,8 @@
 
 #include <array>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <memory>
@@ -88,12 +90,17 @@ TEST(AiAssistTest, ThePerformLockRefusesAllButClearPattern) {
     AiAssist ai(es, stoppedSidecar());
     lockPerform(es);
     for (AiAction action : {AiAction::Enable, AiAction::DetectSurface, AiAction::EmitPattern,
-                            AiAction::CapturePhoto, AiAction::SolveApply, AiAction::Anamorphic}) {
+                            AiAction::CapturePhoto, AiAction::SolveApply, AiAction::Anamorphic,
+                            AiAction::TakePhoto, AiAction::ApplyProposal, AiAction::ClearProposal}) {
         es.statusMessage[0] = '\0';
         ai.run(action, nullptr);
         EXPECT_STREQ(es.statusMessage,
                      "AI assist is blocked: the show is locked (Output > Perform Lock)");
     }
+    es.statusMessage[0] = '\0';
+    ai.segmentAt(0.5f, 0.5f);
+    EXPECT_STREQ(es.statusMessage, "AI assist is blocked: the show is locked (Output > Perform Lock)");
+    EXPECT_FALSE(ai.isBusy());
     EXPECT_EQ(quad->getGeometry().getCorners(), before);
 
     ai.run(AiAction::ClearPattern, nullptr);
@@ -228,6 +235,242 @@ TEST(AiAssistTest, TickWithAnIdleSidecarPostsNothing) {
     ai.tick(nullptr);
     EXPECT_STREQ(es.statusMessage, "");
     EXPECT_FALSE(ai.isActive());
+}
+
+// ---- Pick Surface (ADR-053 §2) --------------------------------------------------------
+
+// Hands `outcome` back through the async path, as a finished request would.
+void land(AiAssist& ai, const AiAssist::Outcome& outcome) {
+    ASSERT_TRUE(ai.startRequest("working...", "Pick Surface", UUID::null(),
+                                [outcome] { return outcome; }));
+    ASSERT_TRUE(tickUntilIdle(ai));
+}
+
+AiSurfaceProposal proposalWith(float confidence, bool stub = false) {
+    AiSurfaceProposal p;
+    p.corners = kWarp;
+    p.outline = {{0.1f, 0.2f}, {0.9f, 0.1f}, {0.8f, 0.9f}};
+    p.confidence = confidence;
+    p.stub = stub;
+    return p;
+}
+
+void landProposal(AiAssist& ai, const AiSurfaceProposal& proposal) {
+    AiAssist::Outcome outcome{"Pick Surface: surface found", 6.0f, std::nullopt};
+    outcome.proposal = proposal;
+    land(ai, outcome);
+}
+
+void expectWarped(const Quad& quad) {
+    const auto& c = quad.getGeometry().getCorners();
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_FLOAT_EQ(c[i].x, kWarp[i][0]);
+        EXPECT_FLOAT_EQ(c[i].y, kWarp[i][1]);
+    }
+}
+
+TEST(AiAssistPickSurfaceTest, TheVenvInterpreterIsPreferredWhenItExists) {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("qm_locate_" + UUID::generate().toString());
+    const fs::path sidecarDir = root / "tools" / "ai-sidecar";
+    fs::create_directories(sidecarDir);
+    std::ofstream(sidecarDir / "sidecar.py") << "# test\n";
+
+    ai::SidecarConfig config = AiAssist::locateSidecarFrom(root);
+    EXPECT_FALSE(config.scriptPath.empty());
+    EXPECT_EQ(config.pythonExe, "python");
+
+    fs::create_directories(sidecarDir / ".venv" / "Scripts");
+    std::ofstream(sidecarDir / ".venv" / "Scripts" / "python.exe") << "";
+    config = AiAssist::locateSidecarFrom(root);
+    EXPECT_EQ(fs::path(config.pythonExe).filename(), "python.exe");
+    EXPECT_EQ(fs::path(config.pythonExe).parent_path().parent_path().filename(), ".venv");
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
+TEST(AiAssistPickSurfaceTest, TheMappingIsOneFlashOnlyWithAOneFlashPhoto) {
+    EXPECT_EQ(AiAssist::pickMapping(""), AiAssist::PickMapping::CameraAtProjector);
+    EXPECT_EQ(AiAssist::pickMapping("C:/tmp/quadmapper_oneflash_capture.png"),
+              AiAssist::PickMapping::OneFlash);
+}
+
+TEST(AiAssistPickSurfaceTest, ASegmentReplyBecomesAProposalAndAStatus) {
+    ai::SegmentReply missing;
+    missing.endpointMissing = true;
+    AiAssist::Outcome o = AiAssist::segmentOutcome(missing);
+    EXPECT_EQ(o.status, "Pick Surface: update the AI sidecar (it cannot segment)");
+    EXPECT_FALSE(o.proposal);
+
+    o = AiAssist::segmentOutcome(ai::SegmentReply{});
+    EXPECT_EQ(o.status, "Pick Surface: segmentation failed (sidecar error)");
+    EXPECT_FALSE(o.proposal);
+
+    ai::SegmentResult result;
+    result.corners = kWarp;
+    result.outline = {{0.1f, 0.2f}, {0.9f, 0.1f}, {0.8f, 0.9f}};
+    result.confidence = 0.8f;
+    result.planarity = 0.9f;
+    o = AiAssist::segmentOutcome(ai::SegmentReply{result, false});
+    ASSERT_TRUE(o.proposal);
+    EXPECT_TRUE(o.proposal->canApply());
+    EXPECT_EQ(o.proposal->outline.size(), 3u);
+    EXPECT_EQ(o.proposal->planarity, 0.9f);
+    EXPECT_FALSE(o.corners) << "a proposal is only shown, never applied on arrival";
+    EXPECT_EQ(o.status,
+              "Pick Surface: surface found (confidence 0.80) - Apply to warp the selected quad");
+
+    result.confidence = 0.2f;
+    o = AiAssist::segmentOutcome(ai::SegmentReply{result, false});
+    ASSERT_TRUE(o.proposal);
+    EXPECT_FALSE(o.proposal->canApply());
+    EXPECT_EQ(o.status, "Pick Surface: low confidence (0.20) - click elsewhere on the surface");
+
+    result.confidence = 0.9f;
+    result.stub = true;
+    o = AiAssist::segmentOutcome(ai::SegmentReply{result, false});
+    ASSERT_TRUE(o.proposal);
+    EXPECT_FALSE(o.proposal->canApply());
+    EXPECT_EQ(o.status, "Pick Surface: placeholder only - the sidecar has no SAM 2 model");
+}
+
+TEST(AiAssistPickSurfaceTest, AProposalIsShownAndANewPhotoClearsIt) {
+    EditorState es;
+    AiAssist ai(es, nullptr);
+    landProposal(ai, proposalWith(0.8f));
+    ASSERT_TRUE(ai.photo().proposal);
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: surface found");
+
+    AiAssist::Outcome photo{"AI Photo: photo taken - click the surface to map", 5.0f, std::nullopt};
+    photo.photo = "C:/tmp/quadmapper_ai_photo.png";
+    land(ai, photo);
+    EXPECT_EQ(ai.photo().path, "C:/tmp/quadmapper_ai_photo.png");
+    EXPECT_EQ(ai.photo().serial, 1);
+    EXPECT_FALSE(ai.photo().proposal);
+
+    landProposal(ai, proposalWith(0.8f));
+    ai.run(EditorServices::AiAction::ClearProposal, nullptr);
+    EXPECT_FALSE(ai.photo().proposal);
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: proposal cleared");
+}
+
+TEST(AiAssistPickSurfaceTest, AProposalThatLandsAfterTheLockEngagedIsDropped) {
+    EditorState es;
+    AiAssist ai(es, nullptr);
+    HeldWork work;
+    AiAssist::Outcome outcome{"Pick Surface: surface found", 6.0f, std::nullopt};
+    outcome.proposal = proposalWith(0.8f);
+    ASSERT_TRUE(ai.startRequest("Pick Surface: finding the surface...", "Pick Surface", UUID::null(),
+                                work.returning(outcome)));
+    lockPerform(es);
+    work.release();
+    ASSERT_TRUE(tickUntilIdle(ai));
+    EXPECT_FALSE(ai.photo().proposal);
+    EXPECT_STREQ(es.statusMessage,
+                 "Pick Surface: result dropped - the show is locked (Output > Perform Lock)");
+}
+
+TEST(AiAssistPickSurfaceTest, ApplyWithoutAOneFlashPhotoUsesThePhotoCornersOnTheQuadPickedAtTheClick) {
+    EditorState es;
+    Quad* a = es.quadManager().createQuad("A");
+    Quad* b = es.quadManager().createQuad("B");
+    const auto bBefore = b->getGeometry().getCorners();
+    AiAssist ai(es, nullptr);
+    landProposal(ai, proposalWith(0.8f));
+
+    es.quadManager().selectQuad(a->getId());
+    ai.run(EditorServices::AiAction::ApplyProposal, nullptr);
+    es.quadManager().selectQuad(b->getId());  // the selection moves on before the result lands
+    ASSERT_TRUE(tickUntilIdle(ai));
+
+    expectWarped(*a);
+    EXPECT_EQ(b->getGeometry().getCorners(), bBefore);
+    EXPECT_STREQ(es.statusMessage,
+                 "Pick Surface: no One-Flash photo - assuming the camera is at the projector");
+}
+
+TEST(AiAssistPickSurfaceTest, AnApplyThatLandsUnderTheLockOrOnADeletedQuadChangesNothing) {
+    EditorState es;
+    Quad* quad = es.quadManager().createQuad("A");
+    es.quadManager().selectQuad(quad->getId());
+    const auto before = quad->getGeometry().getCorners();
+    AiAssist ai(es, nullptr);
+    landProposal(ai, proposalWith(0.8f));
+
+    // The outcome is applied on tick(): the lock taken in between drops it.
+    ai.applyProposal();
+    lockPerform(es);
+    ASSERT_TRUE(tickUntilIdle(ai));
+    EXPECT_EQ(quad->getGeometry().getCorners(), before);
+    EXPECT_STREQ(es.statusMessage,
+                 "Pick Surface: result dropped - the show is locked (Output > Perform Lock)");
+
+    requestPerformUnlock(es);
+    ASSERT_TRUE(confirmPerformUnlock(es));
+    const UUID target = quad->getId();
+    ai.applyProposal();
+    es.quadManager().deleteQuad(target);
+    ASSERT_TRUE(tickUntilIdle(ai));
+    EXPECT_EQ(es.quadManager().getQuad(target), nullptr);
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: result dropped - the quad was deleted");
+}
+
+TEST(AiAssistPickSurfaceTest, ApplyRefusesNoProposalAnUnsureOneAndNoQuad) {
+    EditorState es;
+    Quad* quad = es.quadManager().createQuad("A");
+    const auto before = quad->getGeometry().getCorners();
+    AiAssist ai(es, nullptr);
+
+    ai.applyProposal();
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: click the surface in the photo first");
+
+    landProposal(ai, proposalWith(0.9f, /*stub=*/true));
+    ai.applyProposal();
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: the proposal is not confident enough to apply");
+
+    landProposal(ai, proposalWith(0.2f));
+    ai.applyProposal();
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: the proposal is not confident enough to apply");
+
+    landProposal(ai, proposalWith(0.8f));
+    es.quadManager().deselectAll();
+    ai.applyProposal();
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: select a quad to warp first");
+    EXPECT_FALSE(ai.isBusy());
+    EXPECT_EQ(quad->getGeometry().getCorners(), before);
+}
+
+// With a One-Flash photo from this session, Apply goes through /oneflash: without a
+// connected sidecar it asks for one rather than falling back to photo space.
+TEST(AiAssistPickSurfaceTest, ApplyWithAOneFlashPhotoMapsThroughTheSidecar) {
+    EditorState es;
+    Quad* quad = es.quadManager().createQuad("A");
+    es.quadManager().selectQuad(quad->getId());
+    const auto before = quad->getGeometry().getCorners();
+    AiAssist ai(es, stoppedSidecar());
+
+    AiAssist::Outcome captured{"One-Flash: captured", 6.0f, std::nullopt};
+    captured.oneFlashPhoto = "C:/tmp/quadmapper_oneflash_capture.png";
+    land(ai, captured);
+    landProposal(ai, proposalWith(0.8f));
+
+    ai.applyProposal();
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_FALSE(ai.isBusy());
+    EXPECT_EQ(quad->getGeometry().getCorners(), before);
+}
+
+TEST(AiAssistPickSurfaceTest, SegmentingNeedsASidecarThatCanSegment) {
+    EditorState es;
+    AiAssist ai(es, stoppedSidecar());
+    EXPECT_FALSE(ai.canSegment());
+    ai.segmentAt(0.5f, 0.5f);
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_FALSE(ai.isBusy());
+
+    AiAssist none(es, nullptr);
+    EXPECT_FALSE(none.canSegment());
 }
 
 }  // namespace

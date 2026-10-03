@@ -257,6 +257,13 @@ public:
     bool aiActive() const override { return active; }
     bool aiBusy() const override { return false; }
     void runAi(AiAction action) override { aiRuns.push_back(action); }
+    // The AI Photo panel with a photo and an applicable proposal, so its click area,
+    // Apply and Clear are all there to be swept.
+    AiPhoto photo;
+    int segmentRequests = 0;
+    bool aiCanSegment() const override { return active; }
+    const AiPhoto& aiPhoto() const override { return photo; }
+    void aiSegmentAt(float, float) override { ++segmentRequests; }
 };
 
 // An item under the mouse somewhere in a window: its id, a point on it, and the
@@ -325,6 +332,13 @@ protected:
         session_ = std::make_unique<ProjectSession>(project_, es_, prefsDialog_.getPreferences(),
                                                     std::move(services));
         services_.session = session_.get();
+        services_.photo.path = utf8FromPath(fixturesDir().parent_path() / "resources" / "patterns" / "charuco.png");
+        services_.photo.serial = 1;
+        AiSurfaceProposal proposal;
+        proposal.corners = {{{0.2f, 0.2f}, {0.8f, 0.2f}, {0.8f, 0.8f}, {0.2f, 0.8f}}};
+        proposal.outline = {{0.2f, 0.2f}, {0.8f, 0.2f}, {0.8f, 0.8f}, {0.2f, 0.8f}};
+        proposal.confidence = 0.9f;
+        services_.photo.proposal = proposal;
         projectFile_ = utf8FromPath(dir_ / "show.qmap");
         project_.setFilePath(projectFile_);
         snprintf(es_.projectPath, sizeof(es_.projectPath), "%s", projectFile_.c_str());
@@ -555,6 +569,8 @@ protected:
                        return a != EditorServices::AiAction::ClearPattern;
                    })) {
             problem = "an AI assist action other than Clear Pattern ran";
+        } else if (services_.segmentRequests) {
+            problem = "a Pick Surface segment was asked for";
         } else if (control_.dispatcher().isLearning()) {
             problem = "a MIDI learn was armed";
         }

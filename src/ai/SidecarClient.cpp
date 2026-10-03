@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <thread>
 
 // Windows networking + process control. Kept entirely in this TU (pimpl).
@@ -153,6 +154,55 @@ std::optional<SurfaceResult> parseCornersResponse(const std::string& body,
 
 }  // namespace
 
+std::optional<SegmentResult> parseSegmentResponse(const std::string& body,
+                                                  int expectedApiVersion) {
+    // The corners, confidence and stub read exactly as /surface's do.
+    const std::optional<SurfaceResult> corners = parseCornersResponse(body, expectedApiVersion);
+    if (!corners) return std::nullopt;
+    try {
+        const json j = json::parse(body);
+        SegmentResult out;
+        out.corners = corners->corners;
+        out.confidence = corners->confidence;
+        out.stub = corners->stub;
+        if (j.contains("outline")) {
+            const json& outline = j.at("outline");
+            if (!outline.is_array() || outline.size() > MAX_SEGMENT_OUTLINE_POINTS) {
+                return std::nullopt;
+            }
+            out.outline.reserve(outline.size());
+            for (const json& point : outline) {
+                if (!point.is_array() || point.size() != 2 || !point[0].is_number() ||
+                    !point[1].is_number()) {
+                    return std::nullopt;
+                }
+                out.outline.push_back({point[0].get<float>(), point[1].get<float>()});
+            }
+        }
+        if (j.contains("planarity") && j.at("planarity").is_number()) {
+            out.planarity = j.at("planarity").get<float>();
+        }
+        return out;
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::vector<std::string> parseCapabilities(const std::string& healthBody) {
+    try {
+        const json j = json::parse(healthBody);
+        if (!j.contains("capabilities")) return {"surface", "oneflash"};
+        if (!j.at("capabilities").is_array()) return {};
+        std::vector<std::string> out;
+        for (const json& c : j.at("capabilities")) {
+            if (c.is_string()) out.push_back(c.get<std::string>());
+        }
+        return out;
+    } catch (const json::exception&) {
+        return {};
+    }
+}
+
 // ---- Impl ------------------------------------------------------------------
 
 struct SidecarClient::Impl {
@@ -164,6 +214,11 @@ struct SidecarClient::Impl {
     // Background worker for startAsync(); joined before teardown so the process
     // handles below are only touched after it has finished.
     std::thread worker;
+
+    // From the last successful health check, which may run on the startAsync worker
+    // while the UI thread reads them.
+    mutable std::mutex capabilitiesMutex;
+    mutable std::vector<std::string> capabilities;
 
     // Set only when we launched the process ourselves.
     HANDLE job = nullptr;          // job with KILL_ON_JOB_CLOSE
@@ -183,8 +238,13 @@ struct SidecarClient::Impl {
         if (!r.ok || r.status != 200) return false;
         try {
             json j = json::parse(r.body);
-            return j.value("status", "") == "ok" &&
-                   j.value("api_version", -1) == config.expectedApiVersion;
+            const bool healthy = j.value("status", "") == "ok" &&
+                                 j.value("api_version", -1) == config.expectedApiVersion;
+            if (healthy) {
+                std::lock_guard<std::mutex> lock(capabilitiesMutex);
+                capabilities = parseCapabilities(r.body);
+            }
+            return healthy;
         } catch (const json::exception&) {
             return false;
         }
@@ -327,6 +387,33 @@ bool SidecarClient::isHealthy() const {
 
 SidecarState SidecarClient::state() const {
     return impl_->state.load();
+}
+
+std::vector<std::string> SidecarClient::capabilities() const {
+    const SidecarState s = impl_->state.load();
+    if (s != SidecarState::Attached && s != SidecarState::Launched) return {};
+    std::lock_guard<std::mutex> lock(impl_->capabilitiesMutex);
+    return impl_->capabilities;
+}
+
+SegmentReply SidecarClient::requestSegment(const std::string& imagePath,
+                                           const std::array<float, 2>& point) {
+    auto& im = *impl_;
+    const SidecarState s = im.state.load();
+    if (s != SidecarState::Attached && s != SidecarState::Launched) return {};
+
+    json req = {{"image_path", imagePath}, {"point", {point[0], point[1]}}};
+    HttpResponse r = httpRequest(im.config.host, im.config.port, "POST",
+                                 "/segment", req.dump(), im.config.requestTimeoutMs);
+    SegmentReply reply;
+    if (!r.ok) return reply;
+    if (r.status == 404) {
+        reply.endpointMissing = true;
+        return reply;
+    }
+    if (r.status != 200) return reply;
+    reply.result = parseSegmentResponse(r.body, im.config.expectedApiVersion);
+    return reply;
 }
 
 std::optional<SurfaceResult> SidecarClient::requestSurface(

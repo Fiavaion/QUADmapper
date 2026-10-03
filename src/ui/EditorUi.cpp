@@ -34,6 +34,7 @@ EditorUi::EditorUi(PreferencesDialog& preferences) {
     host_.add(outputs_);
     host_.add(videoPlayer_);
     host_.add(control_);
+    host_.add(aiPhoto_);
     host_.add(preferences);
     host_.add(missingMedia_);
     host_.add(calibration_);
@@ -148,6 +149,7 @@ void EditorUi::drawDockSpace(EditorContext& ctx) {
         ImGui::DockBuilderDockWindow(InspectorPanel::ID, dockRight);
         ImGui::DockBuilderDockWindow(CalibrationPanel::ID, dockRight);  // Tabbed with Properties
         ImGui::DockBuilderDockWindow(ControlPanel::ID, dockRight);      // Tabbed with Properties (ADR-048)
+        ImGui::DockBuilderDockWindow(AiPhotoPanel::ID, dockRight);      // Tabbed with Properties (ADR-053)
         ImGui::DockBuilderDockWindow(ResourcesPanel::ID, dockBottom);   // Tabbed panel with Project, Media, Outputs
 
         // Finish the layout

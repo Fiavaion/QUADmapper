@@ -40,6 +40,8 @@ add_library(quadmapper_ui STATIC
     panels/CalibrationPanel.cpp
     panels/ControlPanel.hpp
     panels/ControlPanel.cpp
+    panels/AiPhotoPanel.hpp
+    panels/AiPhotoPanel.cpp
     dialogs/PreferencesDialog.hpp
     dialogs/PreferencesDialog.cpp
     dialogs/HapConvertWindow.hpp

@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace quadmapper::ai {
 
@@ -25,6 +26,35 @@ struct SurfaceResult {
     float confidence = 0.0f;
     bool stub = false;
 };
+
+// A click-to-segment surface proposal (ADR-053 §2, POST /segment), in normalized [0,1]
+// photo coordinates with a top-left origin.
+struct SegmentResult {
+    std::array<std::array<float, 2>, 4> corners{};  // TL, TR, BR, BL
+    std::vector<std::array<float, 2>> outline;      // the mask's outline
+    float confidence = 0.0f;                        // planarity already folded in
+    std::optional<float> planarity;                 // nullopt: no depth model
+    bool stub = false;
+};
+
+// What requestSegment() hands back: a result, or why there is none.
+struct SegmentReply {
+    std::optional<SegmentResult> result;
+    bool endpointMissing = false;  // HTTP 404: the sidecar predates /segment
+};
+
+// The most outline points a /segment reply may carry; more is a malformed reply.
+constexpr size_t MAX_SEGMENT_OUTLINE_POINTS = 256;
+
+// Parse a /segment reply body. nullopt on a version mismatch, malformed corners or a
+// malformed outline (not a list of [x, y] numbers, or too many points). A missing
+// outline reads as empty, a missing or null planarity as nullopt.
+std::optional<SegmentResult> parseSegmentResponse(const std::string& body,
+                                                  int expectedApiVersion);
+
+// The capabilities a /health body advertises. A sidecar that predates the field
+// (ADR-053 §1) can do what it always could: {"surface", "oneflash"}.
+std::vector<std::string> parseCapabilities(const std::string& healthBody);
 
 struct SidecarConfig {
     std::string host = "127.0.0.1";   // loopback-only (ADR-035)
@@ -76,6 +106,10 @@ public:
 
     SidecarState state() const;
 
+    // What the sidecar advertised at its last successful health check ("surface",
+    // "oneflash", "segment", "depth"); empty until one succeeds. Cached: no I/O.
+    std::vector<std::string> capabilities() const;
+
     // POST /surface {image_path}. Returns nullopt on any transport, parse, or
     // version error — never throws — so callers treat AI as best-effort.
     std::optional<SurfaceResult> requestSurface(const std::string& imagePath);
@@ -91,6 +125,12 @@ public:
     std::optional<SurfaceResult> requestOneFlash(
         const std::string& patternImagePath,
         const std::array<std::array<float, 2>, 4>* targetCorners = nullptr);
+
+    // POST /segment {image_path, point} (ADR-053 §2): the surface under `point`
+    // (normalized photo coordinates, top-left origin). Same best-effort contract;
+    // an old sidecar's 404 sets endpointMissing.
+    SegmentReply requestSegment(const std::string& imagePath,
+                                const std::array<float, 2>& point);
 
 private:
     struct Impl;

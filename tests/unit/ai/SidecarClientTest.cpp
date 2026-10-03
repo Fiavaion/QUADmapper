@@ -16,6 +16,7 @@
 #include <chrono>
 #include <string>
 #include <thread>
+#include <vector>
 
 #ifndef QM_SIDECAR_SCRIPT
 #define QM_SIDECAR_SCRIPT ""
@@ -132,8 +133,96 @@ TEST(SidecarClientTest, LaunchHealthSurfaceTeardown) {
         EXPECT_LE(corner[1], 1.0f);
     }
 
+    // Any sidecar advertises at least what the oldest one could do.
+    EXPECT_FALSE(client.capabilities().empty());
+
     client.stop();
     EXPECT_EQ(client.state(), SidecarState::Stopped);
     // Process killed -> no longer reachable.
     EXPECT_FALSE(client.isHealthy());
+    EXPECT_TRUE(client.capabilities().empty());
+}
+
+// --- /segment and /health parsing (ADR-053; no Python needed) ---------------
+
+using quadmapper::ai::parseCapabilities;
+using quadmapper::ai::parseSegmentResponse;
+
+namespace {
+const char* kSegmentReply = R"({"api_version": 1,
+    "corners": [[0.1, 0.2], [0.9, 0.1], [0.8, 0.9], [0.2, 0.8]],
+    "outline": [[0.1, 0.2], [0.5, 0.15], [0.9, 0.1], [0.8, 0.9]],
+    "confidence": 0.82, "planarity": 0.91, "stub": false})";
+}  // namespace
+
+TEST(SidecarClientTest, SegmentReplyParses) {
+    auto r = parseSegmentResponse(kSegmentReply, 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FLOAT_EQ(r->corners[1][0], 0.9f);
+    EXPECT_FLOAT_EQ(r->corners[3][1], 0.8f);
+    ASSERT_EQ(r->outline.size(), 4u);
+    EXPECT_FLOAT_EQ(r->outline[1][0], 0.5f);
+    EXPECT_FLOAT_EQ(r->confidence, 0.82f);
+    ASSERT_TRUE(r->planarity.has_value());
+    EXPECT_FLOAT_EQ(*r->planarity, 0.91f);
+    EXPECT_FALSE(r->stub);
+}
+
+TEST(SidecarClientTest, SegmentReplyWithoutPlanarityOrAsAStub) {
+    auto r = parseSegmentResponse(R"({"api_version": 1,
+        "corners": [[0,0],[1,0],[1,1],[0,1]], "outline": [], "confidence": 0.5,
+        "planarity": null, "stub": true})", 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(r->planarity.has_value());
+    EXPECT_TRUE(r->stub);
+    EXPECT_TRUE(r->outline.empty());
+
+    r = parseSegmentResponse(R"({"api_version": 1,
+        "corners": [[0,0],[1,0],[1,1],[0,1]], "confidence": 0.5})", 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(r->planarity.has_value());
+    EXPECT_TRUE(r->outline.empty());
+    EXPECT_FALSE(r->stub);
+}
+
+TEST(SidecarClientTest, SegmentReplyWithABadOutlineOrVersionIsRefused) {
+    const std::string corners = R"("corners": [[0,0],[1,0],[1,1],[0,1]], "confidence": 0.5)";
+    for (const std::string& outline : {std::string(R"("outline": "nope")"),
+                                       std::string(R"("outline": [[0.1]])"),
+                                       std::string(R"("outline": [[0.1, "x"]])"),
+                                       std::string(R"("outline": [0.1, 0.2])")}) {
+        EXPECT_FALSE(parseSegmentResponse("{\"api_version\": 1, " + corners + ", " + outline + "}", 1))
+            << outline;
+    }
+    std::string tooMany = "[";
+    for (size_t i = 0; i <= quadmapper::ai::MAX_SEGMENT_OUTLINE_POINTS; ++i) {
+        tooMany += (i ? ",[0.5,0.5]" : "[0.5,0.5]");
+    }
+    tooMany += "]";
+    EXPECT_FALSE(parseSegmentResponse("{\"api_version\": 1, " + corners + ", \"outline\": " + tooMany + "}", 1));
+
+    EXPECT_FALSE(parseSegmentResponse(kSegmentReply, 2));  // another API version
+    EXPECT_FALSE(parseSegmentResponse(R"({"api_version": 1, "corners": [[0,0],[1,0]]})", 1));
+    EXPECT_FALSE(parseSegmentResponse("not json", 1));
+}
+
+TEST(SidecarClientTest, CapabilitiesDefaultForAnOldSidecar) {
+    EXPECT_EQ(parseCapabilities(R"({"status": "ok", "api_version": 1})"),
+              (std::vector<std::string>{"surface", "oneflash"}));
+    EXPECT_EQ(parseCapabilities(R"({"status": "ok", "api_version": 1,
+                                    "capabilities": ["surface", "oneflash", "segment", "depth"]})"),
+              (std::vector<std::string>{"surface", "oneflash", "segment", "depth"}));
+    EXPECT_TRUE(parseCapabilities(R"({"capabilities": []})").empty());
+    EXPECT_TRUE(parseCapabilities(R"({"capabilities": "segment"})").empty());
+    EXPECT_TRUE(parseCapabilities("not json").empty());
+}
+
+TEST(SidecarClientTest, SegmentBeforeStartReturnsNothing) {
+    SidecarConfig cfg;
+    cfg.port = 8796;
+    SidecarClient client(cfg);
+    const auto reply = client.requestSegment("x.png", {0.5f, 0.5f});
+    EXPECT_FALSE(reply.result.has_value());
+    EXPECT_FALSE(reply.endpointMissing);
+    EXPECT_TRUE(client.capabilities().empty());
 }
