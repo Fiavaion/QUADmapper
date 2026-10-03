@@ -63,7 +63,10 @@ struct SidecarConfig {
     std::string scriptPath;           // absolute path to tools/ai-sidecar/sidecar.py
     int expectedApiVersion = 1;       // refuse to attach to an unknown version
     int startupTimeoutMs = 8000;      // budget for a freshly launched sidecar to answer /health
-    int requestTimeoutMs = 30000;     // per-request ceiling (pre-show, latency-tolerant)
+    // Per-request ceiling. Requests run off the main thread (AiAssist::startRequest), so
+    // this only bounds a wait: a first request that loads the models can take ~40 s from
+    // a cold disk, and /surface on a CPU-only machine ~30 s (ADR-053).
+    int requestTimeoutMs = 120000;
 };
 
 enum class SidecarState {

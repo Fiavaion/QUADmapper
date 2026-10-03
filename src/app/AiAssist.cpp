@@ -41,8 +41,8 @@ std::string formatStatus(const char* fmt, ...) {
 }
 
 // The busy status stays up until the outcome replaces it: longer than the camera
-// pump plus the sidecar's 30 s request ceiling.
-constexpr float BUSY_STATUS_SECONDS = 60.0f;
+// pump plus the sidecar's request ceiling (SidecarConfig::requestTimeoutMs, 120 s).
+constexpr float BUSY_STATUS_SECONDS = 150.0f;
 // Shutdown waits this long for a running request, then lets its thread go: it holds
 // only its own shares (Request, the sidecar) and never touches AiAssist or the editor.
 constexpr auto SHUTDOWN_WAIT = std::chrono::seconds(2);
@@ -82,7 +82,7 @@ AiAssist::~AiAssist() {
         requestThread_.join();
     } else {
         // Stuck in the camera or an HTTP call to a sidecar we do not own: never hold
-        // the exit hostage to its 30 s timeout.
+        // the exit hostage to its request timeout.
         Logger::warning("AI: a request was still running at shutdown; leaving it to finish");
         requestThread_.detach();
     }
@@ -669,7 +669,7 @@ void AiAssist::stopSidecar() {
     if (!sidecar_) return;
     // Kill any launched sidecar now (no orphan), even while a running request still
     // holds a share of the client: its HTTP call then fails fast instead of waiting
-    // out the 30 s timeout.
+    // out the request timeout.
     sidecar_->stop();
     sidecar_.reset();
 }

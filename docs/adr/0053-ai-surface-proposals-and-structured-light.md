@@ -21,7 +21,7 @@ Facts checked for this decision (2026-10-03, primary sources unless marked):
 
 | Component | Licence | Notes |
 |---|---|---|
-| SAM 2 / SAM 2.1, code and all checkpoints | Apache-2.0 (github.com/facebookresearch/sam2 LICENSE) | `pip install sam2`; needs Python ≥ 3.10 and torch ≥ 2.5.1. SAM 2.1 small ≈ 46 MB, tiny ≈ 39 MB (sizes from secondary sources) |
+| SAM 2 / SAM 2.1, code and all checkpoints | Apache-2.0 (github.com/facebookresearch/sam2 LICENSE) | `pip install sam2`; needs Python ≥ 3.10 and torch ≥ 2.5.1. SAM 2.1 small 184 MB, tiny 156 MB (measured at setup) |
 | Depth Anything V2 **Small** | Apache-2.0 (Hugging Face model card) | ≈ 99 MB; loads through the installed `transformers` (`AutoModelForDepthEstimation`) |
 | Depth Anything V2 Base / Large / Giant | **CC-BY-NC-4.0** (Large confirmed on its model card; Base and Giant from secondary sources) | Non-commercial: **never used**. ADR-052 wrongly listed Base as Apache-2.0 |
 | Metric3D v2 | Code BSD-2-Clause | The checkpoint in use comes from a ComfyUI custom node (`comfyui_controlnet_aux`). No licence grant for that file was found |
@@ -88,7 +88,7 @@ Facts checked for this decision (2026-10-03, primary sources unless marked):
 - ✅ Click-to-segment is the "propose, then the human confirms" step the spike said was essential. It reuses the quad, nudge and lock rules unchanged.
 - ✅ The Gray-code map removes the planar limit of One-Flash, and it makes 3D calibration point-and-click without needing a camera calibration yet.
 - ✅ The sidecar's own environment fixes the OpenCV package clash without touching the user's Python.
-- ❌ About 150 MB of models and a CUDA-capable torch to get good speed. CPU works but is slower; SAM 2 on CPU is reported at seconds per image, unmeasured here. The async requests (ae8c4a0) keep the app responsive meanwhile.
+- ❌ About 440 MB of models (SAM 2.1 small + tiny + Depth Anything V2 Small) and a 5.2 GB sidecar venv, and a CUDA-capable torch to get good speed. CPU works but is slower; SAM 2 on CPU is reported at seconds per image, unmeasured here. The async requests (ae8c4a0) keep the app responsive meanwhile.
 - ❌ A scan takes about 15 s with the projector showing patterns. It is a pre-show step only, refused under the lock.
 - ❌ The map is session-only. Moving the camera or projector means rescanning, which is accepted for v1.
 

@@ -119,6 +119,22 @@ def sam2_mask_generator():
     return _load_once("sam2-amg", load)
 
 
+def warm_up_in_background() -> None:
+    """Load the installed models on a daemon thread, so the first request does not pay
+    for it (about 12 s on GPU, up to 40 s from a cold disk). A request that arrives
+    meanwhile waits on LOCK for the same load; a failed load is left to that request
+    to report."""
+    def run():
+        for available, load in ((sam2_available, sam2_predictor), (depth_available, _depth_parts)):
+            try:
+                if available():
+                    load()
+            except Exception:  # noqa: BLE001 - the request path reports load failures
+                pass
+
+    threading.Thread(target=run, name="model-warm-up", daemon=True).start()
+
+
 def autocast():
     """bfloat16 autocast on CUDA (as SAM 2 recommends), a no-op context on CPU."""
     import contextlib

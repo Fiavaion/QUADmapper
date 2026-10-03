@@ -337,6 +337,11 @@ def main(argv: list[str] | None = None) -> int:
         "port": bound_port,
         "api_version": SIDECAR_API_VERSION,
     }), flush=True)
+    try:
+        import models
+        models.warm_up_in_background()
+    except Exception:  # noqa: BLE001 - numpy missing: no CV features to warm
+        pass
 
     try:
         server.serve_forever()
