@@ -250,7 +250,8 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
                 ImGui::EndMenu();
             }
             ImGui::Separator();
-            ImGui::TextDisabled("Sidecar connected");
+            ImGui::TextDisabled(services->aiBusy() ? "Sidecar connected - request running..."
+                                                   : "Sidecar connected");
         } else {
             if (ImGui::MenuItem("Enable AI Assist", nullptr, false, aiAllowed)) run(AiAction::Enable);
             ImGui::Separator();
