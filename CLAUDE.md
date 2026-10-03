@@ -370,8 +370,8 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
 
 Testing serves the success metric; it is not the goal. Spend it in proportion to risk:
 
-1. **One full `ctest` per change**, at the end, before merging. While working, run only the
-   tests for the code you changed.
+1. **No full `ctest` per change** (owner, 2026-10-03). Build, and run only the tests for the
+   code you changed. The full suite runs once, near release (part of `/release`).
 2. **A fresh-context review only for risky changes:** threading, the `.qmap` format, the
    perform lock, the render loop. Everything else gets the lead's own read of the diff.
 3. **No mutation runs** except to settle one specific doubt, and then one or two at most.
