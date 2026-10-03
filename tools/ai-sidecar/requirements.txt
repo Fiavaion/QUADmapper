@@ -1,26 +1,26 @@
-# QUADmapper AI pre-show sidecar — runtime dependencies.
+# QUADmapper AI sidecar: pinned runtime for tools/ai-sidecar/.venv (ADR-053 section 1).
 #
-# Tiered so the skeleton/contract layer stays light and GPU-free:
+# Install with setup.ps1, never into the global Python. setup.ps1 installs every
+# line here first, then sam2 on its own (it is source-only on PyPI and its build
+# needs the torch installed above; SAM2_BUILD_CUDA=0 skips the optional CUDA op).
 #
-# SKELETON (QM-056) — stdlib only. /health and the stub /surface need nothing
-# here, so the contract tests (Python + C++) run without installing anything.
-#
-# SURFACE SERVICE (QM-057) — the real Metric3D + plane-fit path. Imported lazily
-# inside /surface, so it loads only when a real detection is requested:
-numpy>=1.26,<2
-opencv-python>=4.8
-open3d>=0.19
-addict          # vendored mmcv (Metric3D config loader) needs these two
-yapf
-einops>=0.8
-matplotlib>=3.7
-# torch with CUDA — install the build matching your CUDA toolkit, e.g.:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu118
-# (verified here: torch 2.7.1+cu118). CPU-only torch also works (slower).
-#
-# Metric3D weights + source are NOT pip-installed: they come from a local
-# install (default: the ComfyUI controlnet_aux tree). Override the locations with
-# the QM_M3D_SRC / QM_M3D_CKPT / QM_M3D_BACKBONE env vars (see surface.py). When
-# they are absent, /surface returns the stub and the app degrades cleanly.
-#
-# Dev/test only: pytest>=8
+# /health and the stub endpoints need only the standard library, so the contract
+# tests still run on a bare interpreter.
+
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.7.1+cu126
+torchvision==0.22.1+cu126
+
+numpy==2.2.6
+# opencv-contrib-python and NOT opencv-python: both install cv2, and contrib adds
+# cv2.aruco (One-Flash) and cv2.structured_light (Gray code, ADR-053 section 3).
+opencv-contrib-python==4.12.0.88
+transformers==4.57.6
+hydra-core==1.3.2
+iopath==0.1.10
+pillow==11.3.0
+setuptools==80.9.0
+wheel==0.45.1
+pytest==8.4.2
+
+sam2==1.1.0
