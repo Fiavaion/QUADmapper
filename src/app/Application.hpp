@@ -108,6 +108,7 @@ private:
     void requestMissingMediaSearch() override;
     void savePreferences() override;
     bool aiActive() const override;
+    bool aiBusy() const override;
     void runAi(AiAction action) override;
 
     // Ctrl+S: only queues a deferred EditorState::FileAction (as the File menu does);

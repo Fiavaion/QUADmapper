@@ -255,6 +255,7 @@ public:
     void requestMissingMediaSearch() override { ++searchRequests; }
     void savePreferences() override { ++preferenceSaves; }
     bool aiActive() const override { return active; }
+    bool aiBusy() const override { return false; }
     void runAi(AiAction action) override { aiRuns.push_back(action); }
 };
 

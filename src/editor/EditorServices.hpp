@@ -32,6 +32,8 @@ public:
     // Every action no-ops gracefully without a sidecar.
     enum class AiAction { Enable, DetectSurface, EmitPattern, CapturePhoto, ClearPattern, SolveApply, Anamorphic };
     virtual bool aiActive() const = 0;
+    // A camera capture or sidecar request is running: the items that start one wait.
+    virtual bool aiBusy() const = 0;
     virtual void runAi(AiAction action) = 0;
 };
 
