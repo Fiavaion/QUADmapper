@@ -202,7 +202,7 @@ Agents spawn automatically when:
 - Component interface is ready for dependent work
 - Integration tests pass
 
-See `.claude/agent-state/spawn-rules.json` for full configuration.
+Spawn-rule configuration (`.claude/agent-state/spawn-rules.json`) is not present yet.
 
 ## Common Tasks
 
@@ -277,25 +277,17 @@ maths and key ownership in [VertexKeyboard.hpp](src/input/VertexKeyboard.hpp); n
 
 ## Model Selection Policy
 
-The authoritative per-task rubric is the **`modelswitcher`** skill — consult it before any
-multi-step plan or multi-agent fan-out. The tiers below are the fallback if it is absent.
-
-- **Opus-class** — planning, architecture, multi-file/cross-cutting changes, agent-team
-  lead, non-obvious debugging (render/timing/threading), high-risk refactors, audit
-  synthesis, the `/release` gate.
-- **Sonnet-class** — day-to-day feature work, routine refactors, test writing, rubric-driven
-  scans (security/slop/dead-code), browser/manual-UX sweeps.
-- **Haiku-class** — file listing, log triage, bulk mechanical edits.
-- **Fable-class** — *opportunistic upgrade for long-horizon agentic coding* (investigate →
-  patch → test → recover across many files). **Confirm availability via `/status` before
-  routing to it** — it is a bonus over Opus, never a dependency. Best used for the
-  remediation/fix phase, not the audit/planning phase.
-- **Advisor (on-demand)** — the Executor may spawn a single-question Opus subagent for
+- Routing lives in `~/.claude/CLAUDE.md` + the `switcher` skill — not restated here. Delegate
+  through the named global agents; never the built-in `general-purpose` agent — it inherits
+  the orchestrator's model and bypasses routing.
+- Project specialists: **Advisor (on-demand)** — the Executor may spawn a single-question Opus subagent for
   architectural forks, hard-to-reverse decisions, or repeated stalls. Keep the prompt under
-  200 words; receive one recommendation and return. See `.claude/agents/advisor.md`.
-
-> Note: the "Fable 10% / Opus 80% / Fable 10% by calendar" rule is **not** used — allocate
-> by task shape (above), not by project timeline.
+  200 words; receive one recommendation and return. See `.claude/agents/advisor.md`. Also in
+  `.claude/agents/`: `audio-specialist` (`src/audio`), `cpp-executor` (cross-module C++ work
+  from an agreed plan), `renderer-specialist` (`src/renderer`, `src/shaders`, `src/output`,
+  the render loop), `ui-specialist` (`src/ui`, ImGui interaction), `video-specialist`
+  (`src/video`, `VideoFileSource`, FFmpeg playback).
+- Project exceptions: none.
 
 ## Change Boundaries
 
@@ -310,6 +302,7 @@ These areas are **no-edit-without-approval**; changing them is hard to reverse:
   changing a header that downstream modules include is cross-cutting; plan it.
 - **`external/`** vendored libs (ImGui/GLAD/stb) — do not hand-edit; update via the
   documented process.
+- **Secrets** — never commit credentials or keys; none belong in this repo.
 
 Everything else: keep diffs **surgical** — touch only what the task needs, match the
 surrounding style, and clean up only the mess your change introduces.
@@ -332,16 +325,18 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
 - `/context` to inspect, `/compact` (with a focused instruction) after milestones, `/cost`
   before expensive phases (e.g. the full audit).
 - Don't paste big build logs — save to a file and `@`-mention; summarize first, then zoom in.
-- Standard loop: **plan (Opus, plan mode) → execute (Sonnet, small diffs) → compact/checkpoint.**
+- Standard loop: **plan (plan mode) → execute (small diffs) → compact/checkpoint.** Which model runs it is global routing's call.
 
 ## Dev & Bug-Fix Discipline
 
+- **Karpathy core:** think before coding · simplicity first · surgical changes · goal-driven execution. Verification is the binding constraint — wire "done" to a runnable check (run the app and warp a quad), not a feeling.
 - **Minimalism ladder — before writing code, walk it in order:** (1) does this need to exist?
   — if not, skip it (YAGNI); (2) does the C++17 stdlib do it? (3) a feature of an
   already-linked lib (GLM / GLFW / ImGui / FFmpeg / stb / miniaudio)? (4) only then a new
   dependency — and that needs an **ADR + approval** (see Change Boundaries); (5) can it be a few
   lines? (6) then the minimum that works. Never cut validation, error handling, RAII/GL cleanup,
   or the success-metric UX to be "minimal."
+- **Scope:** build the in-scope must-haves (the Success Metric workflow) first; everything else is explicitly deferred (tracked in `TASKS.md`), not "maybe." For a new panel or UI flow, validate the UI with dummy data before wiring the backend.
 - **Build → test → commit, one change at a time.** One feature/fix per commit; no `wip`
   commits on `main`. Incremental, reversible steps.
 - **Reviewer mode before "done".** After writing code, re-read your own diff as a senior
@@ -352,6 +347,7 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
 - **Done means verified working** — a feature is complete only when its behavior is seen
   working (run the app) or user-confirmed. Green tests ≠ done (624 tests pass while the
   real interaction could still be broken).
+- **Never build on an unverified foundation** — the Success Metric workflow is seen working before new phase work lands on top of it.
 - **Acceptance criteria up front** — before building anything non-trivial, write the *checkable*
   criteria that define done (e.g. "vertex warps precisely with Tab-cycle + arrow nudge, sent
   fullscreen to the chosen output") and fix them before, not after — so the loop has a real gate
@@ -364,6 +360,7 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
   (geometry → mesh → render → output), count expected vs actual at each step, fix all.
 - **Zero technical debt** — delete old code (git is the backup), never comment it out; no
   dead/parallel paths. Any accepted deferral goes in `TECHNICAL_DEBT.md` with a cost.
+- Fix debt the moment it appears — `DEFERRED`, `TEMPORARY` or `refactor later` in a core path (`src/core/`, `src/renderer/`, `ProjectSerializer`) means stop and fix; core work is never deferred. Refactors remove the old path in the same change. If a deadline would need debt, say so and get a decision.
 - **Isolate parallel/background agent work in a git worktree** to keep `main` clean.
 
 ### Verification budget (owner decision 2026-10-02)
@@ -392,3 +389,5 @@ The one-page restart package is [notes/CURRENT_STATUS.md](notes/CURRENT_STATUS.m
 dated log under [docs/sessions/](docs/sessions/) (the latest is the detailed source of truth on
 conflict). Hard-to-reverse decisions get an ADR in [docs/adr/](docs/adr/) — written *before*
 implementation (ADR-031+; ADR-001–030 are recorded informally in `SESSION_STATE.json`).
+
+Tag TODOs inline as `TODO[cl]:` so `/todos` can sync them. **Fix the process, not the output:** when a mistake is corrected, write the correction into this file, a rule in `.claude/rules/` or a skill so it can't recur.
