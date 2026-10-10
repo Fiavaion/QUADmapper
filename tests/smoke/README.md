@@ -16,7 +16,7 @@ and never assigns media):
 - **`drive_ai_smoke.ps1`** — AI "Detect Surface" (QM-058). Pre-warms the sidecar, launches the
   app with the `QM_AI_SELFTEST` hook so `aiDetectSurface()` runs headlessly on the default quad
   (avoids fragile ImGui menu-driving), then asserts via the app log + screenshots. `-TestImage`
-  picks the scene: `test_screen.png` → "surface applied" + F11 (AC1/AC3); `test_wall.png` →
+  picks the scene: `test_screen.png` → status begins "AI: surface found (confidence X) - " + F11 (AC1/AC3); `test_wall.png` →
   "low confidence … tap the surface", no apply (AC2). Output in `out_ai/`. The `QM_AI_SELFTEST` /
   `QM_AI_TEST_IMAGE` env vars are off in normal runs (verification seams).
 

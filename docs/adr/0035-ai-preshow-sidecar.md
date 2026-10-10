@@ -86,3 +86,5 @@ Integrate AI as an **optional, out-of-process Python sidecar** that the C++ app 
 (out-of-build) dependency; the sidecar is never linked into QUADmapper.exe and the C++ build /
 vcpkg manifest / CMake presets stay untouched. Roadmap: docs/research/ai-preshow-roadmap-2026-06-16.md
 (QM-055..062). Implementation starts at QM-055 (live camera input). -->
+
+**Note (2026-10-10):** [ADR-053](0053-ai-surface-proposals-and-structured-light.md) replaced Metric3D and Open3D with SAM 2 and Depth Anything V2 Small. The Metric3D checkpoint's licence is unconfirmed. Mentions of Metric3D and Open3D above describe the design as accepted in June 2026, not the sidecar as it is now.

@@ -99,3 +99,67 @@ Facts checked for this decision (2026-10-03, primary sources unless marked):
 4. **Run SAM 2 through `transformers` (`Sam2Model`) instead of the `sam2` package.** Possible: transformers 4.57.1 is installed. The implementation may choose either after a short spike. The decision recorded here is the model and its licence, not the loader.
 5. **In-process OpenCV in C++ for Gray-code decoding.** Rejected, as in ADR-052 alternative 1: a large build dependency, when the sidecar already has OpenCV.
 6. **Fully automatic 3D calibration now (stereo + ICP).** Deferred to 3D-B2: it needs a calibrated camera and a much larger verification surface, and assisted clicks deliver most of the time saving first.
+
+## Amendment 1 (implementation, 2026-10-10)
+
+Sections 1 to 3 are built (commits 62fd0bf, c27fbf9, d973cb5, 6fd682d, 3b77499, 1b5a475). The 3D-B2 work is not. The owner has not yet checked any of it on a real camera.
+
+### What was built
+
+- **§1, environment and models.**
+  - `tools/ai-sidecar/setup.ps1` builds `tools/ai-sidecar/.venv` from a pinned `requirements.txt` (torch 2.7.1+cu126, `sam2`, `transformers`, `opencv-contrib-python`).
+  - It downloads the models into `%LOCALAPPDATA%\QUADmapper\models` and checks a pinned SHA-256 for each.
+  - `AiAssist` runs the sidecar on the venv's `python.exe` when it exists.
+  - `/health` lists `capabilities`: `surface`, `oneflash`, `segment`, `depth`, and `graycode`.
+- **§2, proposals.**
+  - AI > Pick Surface... opens the AI Photo panel. A click calls `POST /segment` (SAM 2.1), and the panel shows the outline, corners, confidence and planarity. Nothing changes until Apply.
+  - AI > Detect Surface now runs on SAM 2 automatic masks scored with Depth Anything V2 Small. Metric3D, Open3D and the `QM_M3D_*` variables are gone.
+  - Every applied AI warp (Pick Surface, Detect Surface, One-Flash) is one undo step.
+- **§3, structured light.**
+  - AI > Scan Output shows the Gray-code frames fullscreen on the selected output (else the first enabled one) and saves one camera frame of each. The sidecar decodes them (`/graycode/patterns`, `/graycode`, `/graymap`) into a session-only camera-to-projector map. Esc or Cancel Scan stops it.
+  - Calibration's Place From Photo sets the selected point's projector pixel from a click on the AI photo. It is one calibration undo step and is refused under the lock.
+- **Off the main thread.** Camera capture and sidecar requests run on a worker. `tick()` applies the result on the main thread and drops it under the perform lock or for a deleted quad.
+
+### Measured
+
+- SAM 2.1 small 184 MB, SAM 2.1 tiny 156 MB, Depth Anything V2 Small 99 MB.
+- The sidecar venv is 5.2 GB.
+- The first request of a run loaded the models in about 12 s (40 s from a cold disk). `/surface` on a CPU-only machine took about 30 s.
+- Because of that, the per-request timeout is 120 s (it was 30 s), and the sidecar loads its models on a background thread at startup (c27fbf9). The timeout only bounds a wait now that requests run off the main thread.
+
+### Mapping order
+
+Pick Surface and Detect Surface map their photo corners in this order, and the status says which one applied:
+1. a current Gray-code scan map;
+2. else a One-Flash homography taken this session;
+3. else photo space, with a status that the camera is assumed to be at the projector.
+
+### Scan details
+
+- The scan goes fullscreen first. It then asks the sidecar for the patterns at the size the output shows there, and decodes at that same size, so windowed and fullscreen sizes never mix.
+- A map is keyed on the output's display and that display's mode, not the window's size. Leaving perform mode does not make it stale. A change of display or display mode does.
+- A display that stays unresolved after going fullscreen, or a failed patterns request, ends the scan.
+- Esc in the editor cancels a scan in any phase. Calibration and slice warp editing cannot start during a scan, and a scan cannot start during them.
+- A mapped calibration click is dropped unless the photo pick is still on for the same point.
+
+### Open risks
+
+- **Camera timings are guesses.** The 250 ms settle time per frame is a default, not a measurement. It has not been tuned on a real camera, and a slow webcam could capture a frame before the pattern has changed.
+- **Mapping is inexact with slices or rotation.** The map is camera pixel to output pixel. A quad corner on an output that uses slices, or an output rotation, does not land exactly where the map says.
+- **Exclusive fullscreen at a non-desktop mode** may leave a map stale. The map is keyed on the display's mode, and the mode a display reports during an exclusive-fullscreen switch is not checked on real hardware.
+- **Detect Surface was tuned on three images** (screen, facade, gallery floor), not on field photos.
+- No model, pattern or camera test has run on a real projector.
+
+### Owner's hands-on check
+
+Setup: run `tools/ai-sidecar/setup.ps1` once. Aim a webcam at the second display or a projector.
+1. AI > Enable AI Assist. Wait for "sidecar connected".
+2. Select the output in the Outputs panel. Otherwise the first enabled one is scanned.
+3. AI > Scan Output. The output goes fullscreen and shows stripes for about 15 s. Esc stops it.
+4. When it ends, the app leaves fullscreen and the status reads "Scan: map ready - the camera saw N% of the output (noise X px)". Check that N is high and the noise low.
+5. Open the AI Photo panel (Pick Surface...), take a photo, click the surface, and press Apply. The status should say the corners were applied through the scan.
+6. In the calibration view, select a point, press Place From Photo, and click the same spot in the AI Photo panel. The point's pixel is set. Ctrl+Z undoes it.
+
+Then, with and without a scan, check Pick Surface and Detect Surface:
+- Detect Surface: the status begins "AI: surface found (confidence X) - " and names the mapping used. A low confidence applies nothing.
+- Pick Surface: the outline sits on the clicked surface. After Apply, Tab and the arrows refine the corners, and Ctrl+Z undoes the warp.

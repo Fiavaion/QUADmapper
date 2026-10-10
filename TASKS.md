@@ -1,10 +1,10 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-09-30 (ADR-051 shortcut amendment)
+Last Updated: 2026-10-10 (ADR-053 built)
 
 ## Quick Status
 - In Progress: 0
-- Todo: the GUI check of the perform lock and the Keyboard preferences (QM-122), TD-12 present threads (hardware), TD-14b, TD-29 running-app check
+- Todo: owner hands-on test of the AI features (QM-124, next), the GUI check of the perform lock and the Keyboard preferences (QM-122), TD-12 present threads (hardware), TD-14b, TD-29 running-app check
   (calibration on sliced outputs, done in code), TD-32/33 (pre-existing loop bugs), dev→master
   PR #2, 🚩 QM-061
 - Done: Session 22 added QM-083..QM-099; Session 23 added QM-100..QM-109 (PRD MVP gaps + control);
@@ -367,7 +367,9 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **AC:** on a real projector + real surface + real phone photo, One-Flash produces a visibly correct warp, watched working; failure modes documented. Fallback if it fails: port MIT gray-code structured-light behind the same sidecar contract.
 - **Runbook (Session 15):** turnkey step-by-step procedure + result template at
   [docs/QM-061-hardware-test-runbook.md](docs/QM-061-hardware-test-runbook.md). Note: One-Flash
-  itself is GPU-free (`cv2.aruco` only) — QM-061 does **not** need the Metric3D model.
+  itself is GPU-free (`cv2.aruco` only). Updated 2026-10-10: the runbook now also covers Detect
+  Surface, Pick Surface, Scan Output and Place From Photo (QM-123), and setup is
+  `tools/ai-sidecar/setup.ps1` (Metric3D is gone).
 - **On pass:** open the `dev`→`master` PR using the prepared body
   [docs/QM-061-pr-prep.md](docs/QM-061-pr-prep.md).
 
@@ -378,6 +380,25 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **AC met (software):** AC1 frontal-from-viewpoint warp applied ✓ (the perspective claim is hardware-validated) · AC2 geometry-only, `.qmap`-safe, smoke green ✓.
 - **Verified:** anamorphic round-trip test (audience target → corners → forward `H` lands back on target, <2px); in-app Anamorphic Warp via `QM_AI_SELFTEST=anamorphic` (conf 0.99, watched). 15/15 sidecar pytest; 596/596 ctest.
 - **Note:** a projector-off (QM-057-only) anamorphic is geometrically underdetermined (the spike's finding); this is the One-Flash-based (projector-pose-observed) realization.
+
+#### QM-123: AI proposals and assisted calibration (ADR-053 §1–3, 3D-C and 3D-B v1)
+- **Status:** DONE (software-complete; the owner has not yet checked it on a real camera) — **Completed:** 2026-10-10. Branch `dev`.
+- **Effort:** L · **Depends On:** QM-057, QM-058, QM-060
+- **Delivered:**
+  - Async AI: camera capture and sidecar requests run off the main thread (`ae8c4a0`, `4b1dae9`); the request ceiling is 120 s and the sidecar warms its models at start (`c27fbf9`).
+  - §1: `tools/ai-sidecar/setup.ps1` and an isolated `.venv`, pinned models with SHA-256, `/health` capabilities (`62fd0bf`).
+  - §2: Pick Surface and the AI Photo panel with `/segment` (SAM 2.1) (`d973cb5`, `e10212b`); Detect Surface re-engined on SAM 2 + Depth Anything V2 Small, Metric3D and Open3D removed (`62fd0bf`); every AI warp is one undo step (`6fd682d`).
+  - §3: Gray-code Scan Output, session maps, Pick/Detect mapped through the scan (scan, then One-Flash, then photo space), assisted calibration through Place From Photo (`3b77499`, `1b5a475`).
+- **Not verified:** nothing has run on a real camera or projector. The camera settle time (250 ms) is a guess. See TD-37..TD-40.
+- **Note:** ADR-053 Amendment 1 (2026-10-10) records what was built, the measured model sizes and the owner's hands-on checklist.
+
+#### QM-124: Owner hands-on test of AI features (Pick Surface, Detect Surface, Scan Output, Place From Photo)
+- **Status:** TODO — next · **Effort:** S · **Depends On:** QM-123
+- **AC:** the owner runs the checklist in ADR-053 Amendment 1 with a webcam aimed at the display or a projector, and records what works and what does not. Failures go back as fixes before the `dev`→`master` PR.
+
+#### 3D-B2: ChArUco camera calibration, stereo and ICP (FUTURE)
+- **Status:** not planned · Needs its own ADR-053 amendment before any work (ADR-053 §3, "Deferred to 3D-B2").
+- **Scope:** calibrate the camera with ChArUco, then camera–projector stereo to make a point cloud and register the mesh to it (ICP), for fully automatic 3D calibration.
 
 ---
 
@@ -1153,6 +1174,8 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-060 | One-Flash homography solve → push warp | DONE | Phase 9 |
 | QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |
 | QM-062 | Audience-perspective anamorphic warp | DONE | Phase 9 |
+| QM-123 | AI proposals and assisted calibration (ADR-053 §1–3) | DONE | Phase 9 |
+| QM-124 | Owner hands-on test of AI features | TODO | Phase 9 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |

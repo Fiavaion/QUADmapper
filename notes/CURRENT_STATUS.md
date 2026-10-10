@@ -1,59 +1,55 @@
 # Current Status
 
-**Last updated:** 2026-06-19 (Session 20)
-**Phase / focus:** **Mapping-editor UX overhaul** — viewport zoom/pan, Simple/Advanced UI,
-media-bin thumbnails, undo/redo, smooth distortion, bezier corner edges. ADR-040 (one video →
-many cropped quads) is COMPLETE (P1–P5, from Session 19). AI wedge (Phase 9) stays
-software-complete, gated on 🚩 QM-061 (hardware).
-**Branch:** `dev` — **committed + pushed** to `origin/dev` (in sync @ `83deff2`). Session-20 work is
-`721b61a` (feature code, 29 files) + `83deff2` (ADRs + tracking). Only `imgui.ini` / `project.qmap`
-(layout/scratch) remain uncommitted by design. **Build:** ✅ app builds & launches. **Tests:** ✅ 633/633 ctest.
+**Last updated:** 2026-10-10 (overnight docs sync)
+**Phase / focus:** Release preparation. The AI features from ADR-053 are built. The owner tests them by hand next, then release.
+**Dev:** code is at `1b5a475` ("fix(ai): Scan Output review fixes"), plus any later polish commits on top. This docs sync sits on branch `docs/overnight-sync`.
+**Not yet run this session:** the full ctest, the success-metric smoke, the sidecar pytest. The verification budget says the full ctest runs once, near release.
 
-## Session-20 stack is committed + pushed
-QM-073..078 landed as two compiling commits (code + docs) rather than per-feature — the core files
-each span several features and per-feature splits would need interactive `git add -p` (and wouldn't
-compile in isolation). The `721b61a` body enumerates QM-073..078 for traceability.
+## What is done
 
-## What shipped this session (built + ctest-green; ⚠️ user-visual-verify the interactive bits)
-- **QM-073 — Viewport zoom/pan + aspect canvas (ADR-041).** Canvas renders into the dockspace
-  central node, letterboxed to the assigned output's aspect (portrait auto via effective res);
-  Fit/±/wheel zoom + middle-drag pan; success-metric hit-test inverts the same transform.
-- **QM-074 — Video picker + crop insets.** "Load Video…" opens a native file dialog; crop UI is
-  now Left/Right/Top/Bottom % insets (storage stays `{x,y,w,h}`); "Right ½"/"Left ½" align two faces.
-- **QM-075 — Simple/Advanced UI (ADR-042).** Toolbar toggle (persisted, default Simple). Simple =
-  curated Inspector/Video-Player + Media-only Resources + toolbar Apply-Test-Grid / Send-to-Projector.
-  Plus: video auto-plays on assign; **drag clip from bin onto canvas quad** (manual
-  `GetDragDropPayload`+release — custom target can't sit over the passthrough node); **click a quad
-  to select it**; centralized `assignMediaToQuad` (fixed a video-as-image bug); Scenes "New" seeds a quad.
-- **QM-076 — Bin thumbnails.** Video first-frame thumbnails (one-shot decode→cached texture),
-  procedural live-texture thumbnails, and **hover-to-play** (one dedicated preview decoder).
-- **QM-077 — Undo/Redo.** `CommandHistory` in `EditorState`; Ctrl+Z/Y + Edit menu; routes
-  corner/mesh drag+nudge, rename, and grid edits (add/del col/row, even-grid, click-insert). Safe
-  via a guard that **clears history on quad delete / scene switch** (commands hold raw pointers).
-- **QM-078 — Report Bug + smooth distortion + bezier corners (ADR-043).** Toolbar "Report Bug"
-  (opens the GitHub bug template). Corner-pin quads tessellate 32×32 → no diagonal fold. **Bezier
-  edges on the 4 corners**: Coons patch via `surfacePoint`, amber drag handles, toggle + Reset in
-  Inspector (Simple **and** Advanced), `.qmap`-persisted (additive), undoable.
+- **Editor architecture (ADR-051):** panels, ActionRegistry, shortcuts and rebinding, and the perform lock. The GUI check of the lock and the Keyboard preferences is still pending by hand.
+- **AI requests run off the main thread** (`ae8c4a0`): no more freeze. One request at a time. Request ceiling 120 s, and the sidecar warms its models at start.
+- **ADR-053 accepted and built** (see its Amendment 1):
+  - `tools/ai-sidecar/setup.ps1` builds an isolated venv (5.2 GB) and downloads SAM 2.1 small (184 MB), tiny (156 MB) and Depth Anything V2 Small (99 MB), SHA-256 checked.
+  - Pick Surface with the AI Photo panel (SAM 2). Detect Surface on SAM 2 + Depth Anything V2 Small. Metric3D and Open3D are removed.
+  - Every AI warp is one undo step.
+  - Scan Output (Gray-code, session map). Pick and Detect map through the scan, then One-Flash, then photo space.
+  - Place From Photo in the calibration view.
+- **Nothing in the AI features has been checked by the owner on a real camera.**
 
-## NEXT TASK — resume here
-1. **🚩 User visual-verify** (couldn't auto-drive the UI reliably — shared desktop): smooth
-   distortion (extreme corner-pin), bezier handles (toggle Curved edges → drag amber handles),
-   hover-to-play, undo/redo, scene-New, canvas drag-drop, click-select.
-2. **QM-079 — bezier on grid division lines (DEFERRED).** Corner bezier is done; curving interior
-   division lines is a larger surface-model change. The user explicitly wants it next.
-3. **Revert test pref:** `preferences.json` `defaultMediaFolder` was set to `D:\testing Videos`
-   for verification (auto-loads 17 clips each launch). Clear it if unwanted.
-4. ADR-040 dev→master PR still gated on 🚩 QM-061 (hardware). `dev` is pushed; `master` untouched.
+## Owner's morning test (about 15 minutes, webcam aimed at the display or a projector)
 
-## Verification gate (non-negotiable)
-`cmake --build build/debug` → `ctest --test-dir build/debug` (633/633) → success-metric warp
-(corner drag + Tab/arrow + F11 projector). **Build gotcha:** the running app locks
-`QUADmapper.exe`; close it before relinking. Shader edits need `cmake --preset debug` to re-embed.
+Run `tools/ai-sidecar/setup.ps1` once first.
+1. AI > Enable AI Assist. Wait for "sidecar connected".
+2. Select the output to scan (else the first enabled one is used).
+3. AI > Scan Output. The output goes fullscreen with stripes for about 15 s. Esc stops it.
+4. The app leaves fullscreen and the status reads "Scan: map ready - the camera saw N% of the output (noise X px)". N should be high, X low.
+5. Pick Surface...: take a photo in the AI Photo panel, click the surface, check the outline, press Apply. The status should say the corners went through the scan. Tab and arrows refine; Ctrl+Z undoes.
+6. Calibration view: select a point, Place From Photo, click the same spot in the AI Photo panel. Ctrl+Z undoes it.
+7. Detect Surface: the status begins "AI: surface found (confidence X) - ". Low confidence applies nothing.
+8. Run the success metric once: add a quad, Tab and arrow warp, F11 to a projector.
+
+Write down anything that looks wrong. Known risks to watch: the 250 ms camera settle time (TD-39), stale maps after a display mode change (TD-37), and misplaced corners on sliced or rotated outputs (TD-38).
+
+## What is left before release
+
+1. Fixes from the owner's test (QM-124).
+2. Full ctest, once. Reconfigure and rebuild first (`cmake --preset debug`, then `cmake --build build/debug`), so a stale build does not pass.
+3. Sidecar pytest (`tools/ai-sidecar`).
+4. `/release`.
+5. The `dev`→`master` PR. The prepared body is [docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md); fill in the test counts and the hands-on result.
+
+## Hardware-only items
+
+- 🚩 **QM-061**: One-Flash and the AI features on a real projector, real surface. Runbook: [docs/QM-061-hardware-test-runbook.md](../docs/QM-061-hardware-test-runbook.md).
+- TD-12 present threads, TD-26 audio device latency (hardware remainder).
+- TD-37, TD-39: need a projector and a camera to measure.
+- 3D-B2 (ChArUco camera calibration, stereo, ICP) is future work and needs its own ADR-053 amendment.
 
 ## Reference links
-- Decisions this session: @docs/adr/0041-viewport-zoom-pan-and-canvas-aspect.md ·
-  @docs/adr/0042-simple-advanced-ui-modes.md · @docs/adr/0043-smooth-tessellation-and-bezier-edges.md
-- Tasks: @TASKS.md · Machine state: @SESSION_STATE.json · Success metric: @CLAUDE.md#success-metric
+
+- Decisions: @docs/adr/0053-ai-surface-proposals-and-structured-light.md (Amendment 1) · @docs/adr/0035-ai-preshow-sidecar.md
+- Tasks: @TASKS.md (QM-123, QM-124) · Debt: @TECHNICAL_DEBT.md (TD-37..TD-40) · Success metric: @CLAUDE.md#success-metric
 
 <!-- Rewrite this whole file at /end. It is the restart package: the next session reads
 THIS (plus the latest docs/sessions/ log), not the chat history. Keep it to one page. -->

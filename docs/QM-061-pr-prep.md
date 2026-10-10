@@ -27,14 +27,27 @@ the plan is one `dev`→`master` merge once QM-061 is green.
 - **QM-056** Optional out-of-process Python AI sidecar (ADR-035): stdlib HTTP server; C++
   `SidecarClient` (WinHTTP + Job Object, kill-on-close, graceful absence). `.qmap`/build/render
   path untouched.
-- **QM-057** Surface service — Metric3D metric depth + Open3D plane fit → 4 corners + confidence
-  (verticality gate: gallery floor-trap 0.00 vs screen 0.58).
+- **QM-057** Surface service — now SAM 2 automatic masks scored by Depth Anything V2 Small
+  (planarity, verticality) → 4 corners + confidence (ADR-053 replaced Metric3D and Open3D).
 - **QM-058** "Detect Surface" UI — capture → sidecar → apply proposed quad, refine with the
-  existing Tab+arrow UX; low confidence → "tap the surface".
+  existing Tab+arrow UX; low confidence → "tap the surface". Every applied AI warp is one
+  undo step.
 - **QM-059** One-Flash ChArUco pattern emit + single-photo capture.
 - **QM-060** One-Flash homography solve → push warp (synthetic-validated <0.02, conf 0.99,
   0.13px RMS).
 - **QM-062** Audience-perspective ("trap-art") anamorphic warp via the One-Flash homography.
+
+**ADR-053 (AI proposals and structured light):**
+- `tools/ai-sidecar/setup.ps1` builds an isolated venv and downloads SAM 2.1 and Depth Anything
+  V2 Small with pinned SHA-256 (all Apache-2.0).
+- **Pick Surface** (AI Photo panel): click a surface, SAM 2 returns an outline and four corners
+  with confidence and planarity; nothing changes until Apply.
+- **Scan Output**: Gray-code patterns shown fullscreen, one camera frame each, decoded by the
+  sidecar to a session-only camera-to-projector map. Pick Surface and Detect Surface map
+  through it first, then One-Flash, then photo space.
+- **Place From Photo** in the calibration view: a click on the AI photo sets a point's pixel.
+- Camera capture and sidecar requests run off the main thread (the freeze fix); the request
+  ceiling is 120 s.
 
 All AI results are **geometry-only** (ordinary quad corners). The Python sidecar is an optional
 out-of-build component; `QUADmapper.exe`, the `.qmap` C++ build, and the vcpkg manifest are
@@ -56,15 +69,20 @@ defaults, and the unchanged major keeps `validateVersion` accepting files both d
 
 ### ADRs added
 
-ADR-035 (AI sidecar), ADR-036 (color correction), ADR-037 (soft-edge blending).
+ADR-035 (AI sidecar), ADR-036 (color correction), ADR-037 (soft-edge blending), ADR-053
+(SAM 2 surface proposals and Gray-code scan).
 
 ### Verification
 
 - **Build:** clean (`cmake --build build/debug`).
-- **Tests:** 601/601 ctest; 15/15 sidecar pytest (surface tests skip without the GPU model).
+- **Tests:** fill in at release time: the full ctest and the sidecar pytest are run once, near
+  release (verification budget), not per change. The counts from the June 2026 wedge (601/601
+  ctest, 15/15 pytest) are out of date.
 - **Success-metric smoke:** green — add quad → Tab-cycle + arrow-nudge warp → F11 projector.
 - **US-101** feathering verified visually (temporary env-gated demo screenshot; scaffolding
   removed). **US-104** identity render-no-op verified by smoke + round-trip tests.
+- **Owner hands-on check** of Pick Surface, Detect Surface, Scan Output and Place From Photo:
+  _not done yet; record the result here._
 - **🚩 QM-061** real-device One-Flash: _attach the documented result + screenshots from the
   runbook here before merging._
 
