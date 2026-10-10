@@ -496,6 +496,14 @@ void Application::runAi(AiAction action) { m_aiAssist->run(action, m_outputManag
 bool Application::aiCanSegment() const { return m_aiAssist->canSegment(); }
 const AiPhoto& Application::aiPhoto() const { return m_aiAssist->photo(); }
 void Application::aiSegmentAt(float x, float y) { m_aiAssist->segmentAt(x, y); }
+bool Application::aiCanScan() const { return m_aiAssist->canScan(); }
+bool Application::aiScanning() const { return m_aiAssist->isScanning(); }
+bool Application::aiHasScan(const UUID& outputId) const {
+    return m_aiAssist->currentGrayMap(outputId, m_outputManager.get()) != nullptr;
+}
+void Application::aiCalibrationPixelAt(float x, float y) {
+    m_aiAssist->calibrationPixelAt(x, y, m_outputManager.get());
+}
 
 int Application::run() {
     // QM-081 H2: stress harness runs as a sibling branch, not a hijack of the UI loop.

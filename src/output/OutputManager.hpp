@@ -518,10 +518,11 @@ public:
     /**
      * Like renderOutputFrames, but every output's frame is one fullscreen calibration
      * quad (One-Flash pattern, QM-059) instead of its scene, so one photo can solve
-     * the projector->surface homography (QM-060).
+     * the projector->surface homography (QM-060). With `only` set, that output alone
+     * shows the pattern and the others are black (a Gray-code scan, ADR-053 §3).
      */
     void renderPatternFrames(const Quad& patternQuad, const Texture* texture,
-                             Renderer& renderer);
+                             Renderer& renderer, const UUID& only = UUID::null());
 
     /**
      * Show the frames drawn this frame: copy each enabled, created, VISIBLE output's

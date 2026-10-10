@@ -3,7 +3,9 @@
 #include "core/FileSystem.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorServices.hpp"
+#include "editor/EditorState.hpp"
 #include "renderer/Texture.hpp"
+#include "scene/CalibrationSession.hpp"
 
 #include <imgui.h>
 
@@ -37,6 +39,11 @@ void AiPhotoPanel::drawContent(EditorContext& ctx) {
     const bool busy = services->aiBusy();
     const bool canSegment = services->aiActive() && services->aiCanSegment();
     const std::optional<AiSurfaceProposal>& proposal = photo.proposal;
+    // Assisted calibration (ADR-053 §3): Place From Photo turns a click into the selected
+    // calibration point's position instead of a surface pick.
+    const EditorState& es = ctx.es;
+    const bool calibrationPick = !es.calibratingOutputId.isNull() &&
+                                 es.calibration.pick == CalibrationSession::Pick::Photo;
 
     if (photo.serial != loadedSerial_) {
         loadedSerial_ = photo.serial;
@@ -62,7 +69,10 @@ void AiPhotoPanel::drawContent(EditorContext& ctx) {
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("Discard the proposal");
 
-    if (!services->aiActive()) {
+    if (calibrationPick) {
+        ImGui::TextColored(WARNING_COLOR, "Click calibration point %d where it is in the photo.",
+                           es.calibration.selected + 1);
+    } else if (!services->aiActive()) {
         ImGui::TextDisabled("Enable the sidecar (AI > Enable AI Assist) to pick a surface.");
     } else if (!canSegment) {
         ImGui::TextDisabled("This AI sidecar cannot segment: update it.");
@@ -107,10 +117,15 @@ void AiPhotoPanel::drawContent(EditorContext& ctx) {
     // A mouse click only: the point is where the pointer is, which keyboard activation
     // of the button would not choose.
     const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
-    if (canSegment && !busy) ImGui::SetItemTooltip("Click the surface to map");
-    if (clicked && canSegment && !busy) {
-        const ImVec2 mouse = ImGui::GetIO().MousePos;
-        services->aiSegmentAt((mouse.x - origin.x) / size.x, (mouse.y - origin.y) / size.y);
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const float clickX = (mouse.x - origin.x) / size.x;
+    const float clickY = (mouse.y - origin.y) / size.y;
+    if (calibrationPick) {
+        if (!busy) ImGui::SetItemTooltip("Click the calibration point");
+        if (clicked && !busy) services->aiCalibrationPixelAt(clickX, clickY);
+    } else {
+        if (canSegment && !busy) ImGui::SetItemTooltip("Click the surface to map");
+        if (clicked && canSegment && !busy) services->aiSegmentAt(clickX, clickY);
     }
 
     ImDrawList* draw = ImGui::GetWindowDrawList();

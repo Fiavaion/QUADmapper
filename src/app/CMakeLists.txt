@@ -7,6 +7,8 @@ add_executable(QUADmapper
     AppActions.cpp
     AiAssist.hpp
     AiAssist.cpp
+    GrayCodeScan.hpp
+    GrayCodeScan.cpp
     StressHarness.hpp
     StressHarness.cpp
     Bench.hpp

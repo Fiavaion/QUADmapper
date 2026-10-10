@@ -264,6 +264,12 @@ public:
     bool aiCanSegment() const override { return active; }
     const AiPhoto& aiPhoto() const override { return photo; }
     void aiSegmentAt(float, float) override { ++segmentRequests; }
+    // Scan Output is offered (the menu item is swept), with no scan running or held.
+    int calibrationClicks = 0;
+    bool aiCanScan() const override { return active; }
+    bool aiScanning() const override { return false; }
+    bool aiHasScan(const UUID&) const override { return false; }
+    void aiCalibrationPixelAt(float, float) override { ++calibrationClicks; }
 };
 
 // An item under the mouse somewhere in a window: its id, a point on it, and the
@@ -571,6 +577,8 @@ protected:
             problem = "an AI assist action other than Clear Pattern ran";
         } else if (services_.segmentRequests) {
             problem = "a Pick Surface segment was asked for";
+        } else if (services_.calibrationClicks) {
+            problem = "an assisted calibration click was asked for";
         } else if (control_.dispatcher().isLearning()) {
             problem = "a MIDI learn was armed";
         }

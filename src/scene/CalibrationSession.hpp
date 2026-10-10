@@ -77,7 +77,9 @@ struct CalibrationSession {
     enum class Pick {
         None,
         World,  // Add Point: waiting for a click on the model
-        Pixel   // waiting for a click on the canvas where pendingWorld must land
+        Pixel,  // waiting for a click on the canvas where pendingWorld must land
+        Photo   // waiting for a click on the AI photo where the selected point is: its
+                // pixel comes through the output's Gray-code map (ADR-053 §3)
     };
 
     // The lens a pose-only solve keeps: set from the throw ratio, or from a solve

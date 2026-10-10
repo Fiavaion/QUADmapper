@@ -12,6 +12,14 @@ Contract (v1):
   POST /segment {image_path, point[2], model?}
                          -> 200 {api_version, corners[4], outline, confidence,
                                  planarity, stub}
+  POST /graycode/patterns {folder, projector[W, H]}
+                         -> 200 {api_version, count, stub}
+  POST /graycode {folder, projector[W, H]}
+                         -> 200 {api_version, map_path, coverage, decode_error_px, stub}
+  POST /graymap {map_path, points[[x, y]...]}
+                         -> 200 {api_version, points[[x, y]...], valid[bool...]}
+
+A request the client got wrong (bad fields, missing captures, no such map) answers 400.
 
 The server binds loopback-only (127.0.0.1) by default. The server itself needs
 only the standard library; the CV modules are imported when a request needs them,
@@ -163,26 +171,35 @@ def _oneflash_response(request: dict) -> dict:
 
 
 SEGMENT_MODELS = ("small", "tiny")
+# Gray-code limits, here so a bad request is refused without importing numpy.
+GRAYCODE_MIN_PROJECTOR = 2
+GRAYCODE_MAX_PROJECTOR = 8192
+GRAYMAP_MAX_POINTS = 64
 
 
 class BadRequest(ValueError):
     """A request the client got wrong: answered with 400, never a crash."""
 
 
-def _parse_segment(request: dict) -> tuple:
-    """Validate a /segment body. Returns (image_path or None, (x, y), model)."""
-    point = request.get("point")
+def _normalized_point(point, what: str) -> tuple:
+    """[x, y] finite numbers in 0..1, else BadRequest naming `what`."""
     if (not isinstance(point, (list, tuple)) or len(point) != 2
             or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in point)):
-        raise BadRequest("point must be [x, y] numbers")
+        raise BadRequest(f"{what} must be [x, y] numbers")
     try:
         x, y = float(point[0]), float(point[1])  # a huge JSON integer overflows here
     except OverflowError:
-        raise BadRequest("point must be [x, y] numbers") from None
+        raise BadRequest(f"{what} must be [x, y] numbers") from None
     if not (math.isfinite(x) and math.isfinite(y)):
-        raise BadRequest("point must be [x, y] numbers")
+        raise BadRequest(f"{what} must be [x, y] numbers")
     if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
-        raise BadRequest("point must be normalized to 0..1")
+        raise BadRequest(f"{what} must be normalized to 0..1")
+    return x, y
+
+
+def _parse_segment(request: dict) -> tuple:
+    """Validate a /segment body. Returns (image_path or None, (x, y), model)."""
+    x, y = _normalized_point(request.get("point"), "point")
     model = request.get("model", "small")
     if model not in SEGMENT_MODELS:
         raise BadRequest(f"model must be one of {list(SEGMENT_MODELS)}")
@@ -221,6 +238,99 @@ def _segment_response(request: dict) -> dict:
     return real
 
 
+# ---- Gray-code structured light (ADR-053 section 3) ---------------------------------
+
+def _graycode_available() -> bool:
+    if importlib.util.find_spec("cv2") is None:
+        return False
+    try:
+        import graycode
+    except Exception:  # noqa: BLE001 - numpy missing
+        return False
+    return graycode.available()
+
+
+def _parse_scan(request: dict) -> tuple:
+    """Validate a /graycode or /graycode/patterns body. Returns (folder, width, height)."""
+    folder = request.get("folder")
+    if not isinstance(folder, str) or not folder:
+        raise BadRequest("folder must be a path")
+    if not os.path.isdir(folder):
+        raise BadRequest("folder does not exist")
+    projector = request.get("projector")
+    if (not isinstance(projector, (list, tuple)) or len(projector) != 2
+            or not all(isinstance(v, int) and not isinstance(v, bool) for v in projector)):
+        raise BadRequest("projector must be [width, height] integers")
+    width, height = projector
+    if not all(GRAYCODE_MIN_PROJECTOR <= v <= GRAYCODE_MAX_PROJECTOR for v in (width, height)):
+        raise BadRequest(f"projector size must be {GRAYCODE_MIN_PROJECTOR}.."
+                         f"{GRAYCODE_MAX_PROJECTOR} pixels")
+    return folder, width, height
+
+
+def _graycode_patterns_response(request: dict) -> dict:
+    """Write the pattern PNGs. Raises only BadRequest; a stub without OpenCV contrib."""
+    folder, width, height = _parse_scan(request)
+    stub = {"api_version": SIDECAR_API_VERSION, "count": 0, "stub": True}
+    if not _graycode_available():
+        return stub
+    try:
+        import graycode
+        count = graycode.write_patterns(width, height, folder)
+    except Exception as exc:  # noqa: BLE001 - must never 500 the app
+        sys.stderr.write(f"[sidecar] graycode patterns failed: {exc!r}\n")
+        return stub
+    return {"api_version": SIDECAR_API_VERSION, "count": count, "stub": False}
+
+
+def _graycode_response(request: dict) -> dict:
+    """Decode the captures into a map. Raises only BadRequest (missing captures too)."""
+    folder, width, height = _parse_scan(request)
+    stub = {"api_version": SIDECAR_API_VERSION, "map_path": None, "coverage": 0.0,
+            "decode_error_px": None, "stub": True}
+    if not _graycode_available():
+        return stub
+    import graycode
+    try:
+        result = graycode.decode_folder(folder, width, height)
+    except (FileNotFoundError, ValueError) as exc:
+        raise BadRequest(str(exc)) from None
+    except Exception as exc:  # noqa: BLE001 - must never 500 the app
+        sys.stderr.write(f"[sidecar] graycode decode failed: {exc!r}\n")
+        return stub
+    result["api_version"] = SIDECAR_API_VERSION
+    result["stub"] = False
+    return result
+
+
+def _graymap_response(request: dict) -> dict:
+    """Map photo points through a map. Raises only BadRequest."""
+    map_path = request.get("map_path")
+    if not isinstance(map_path, str) or not map_path.lower().endswith(".npz"):
+        raise BadRequest("map_path must be a .npz path")
+    if not os.path.isfile(map_path):
+        raise BadRequest("map_path does not exist")
+    points = request.get("points")
+    if not isinstance(points, list) or not 1 <= len(points) <= GRAYMAP_MAX_POINTS:
+        raise BadRequest(f"points must be a list of 1..{GRAYMAP_MAX_POINTS} [x, y]")
+    parsed = [_normalized_point(p, "each point") for p in points]
+    try:
+        import graycode
+        mapped, valid = graycode.map_points(graycode.load_map(map_path), parsed)
+    except Exception as exc:  # noqa: BLE001 - not a map we wrote, or no numpy
+        raise BadRequest(f"map_path is not a Gray-code map: {exc}") from None
+    return {"api_version": SIDECAR_API_VERSION, "points": mapped, "valid": valid}
+
+
+# The POST paths that validate their body (a bad one answers 400), and their handlers.
+_CHECKED_ENDPOINTS = {
+    "/segment": _segment_response,
+    "/graycode/patterns": _graycode_patterns_response,
+    "/graycode": _graycode_response,
+    "/graymap": _graymap_response,
+}
+
+
 def capabilities() -> list:
     """Features whose packages and model files are present on this machine.
 
@@ -241,6 +351,8 @@ def capabilities() -> list:
         caps.append("segment")
     if models is not None and models.depth_available():
         caps.append("depth")
+    if _graycode_available():
+        caps.append("graycode")
     return caps
 
 
@@ -281,7 +393,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found", "path": self.path})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib signature
-        if self.path not in ("/surface", "/oneflash", "/segment"):
+        if self.path not in ("/surface", "/oneflash") and self.path not in _CHECKED_ENDPOINTS:
             self._send_json(404, {"error": "not found", "path": self.path})
             return
 
@@ -309,7 +421,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             self._send_json(200, _oneflash_response(request))
         else:
             try:
-                self._send_json(200, _segment_response(request))
+                self._send_json(200, _CHECKED_ENDPOINTS[self.path](request))
             except BadRequest as exc:
                 self._send_json(400, {"error": "bad request", "detail": str(exc)})
 

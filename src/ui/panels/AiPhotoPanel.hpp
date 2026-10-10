@@ -13,6 +13,8 @@ class Texture;
 // for the surface under it. The proposal (the mask outline, its four corners and a
 // confidence and planarity readout) is drawn over the photo, and nothing changes until
 // Apply warps the selected quad onto it. Opened from AI > Pick Surface...
+// While the Calibration panel's Place From Photo waits (ADR-053 §3), a click places the
+// selected calibration point instead, through the output's Gray-code scan.
 //
 // No I/O of its own beyond showing the photo: the camera, the sidecar and the warp go
 // through EditorServices. Disabled under the perform lock (editsShow).

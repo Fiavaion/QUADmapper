@@ -6,6 +6,9 @@
 #include "editor/EditorState.hpp"
 #include "editor/PerformLock.hpp"
 #include "ai/SidecarClient.hpp"
+#include "output/OutputManager.hpp"
+#include "output/OutputWindow.hpp"
+#include "scene/CalibrationSession.hpp"
 
 #include <gtest/gtest.h>
 
@@ -307,10 +310,115 @@ TEST(AiAssistPickSurfaceTest, TheVenvInterpreterIsPreferredWhenItExists) {
     fs::remove_all(root, ec);
 }
 
-TEST(AiAssistPickSurfaceTest, TheMappingIsOneFlashOnlyWithAOneFlashPhoto) {
-    EXPECT_EQ(AiAssist::pickMapping(""), AiAssist::PickMapping::CameraAtProjector);
-    EXPECT_EQ(AiAssist::pickMapping("C:/tmp/quadmapper_oneflash_capture.png"),
-              AiAssist::PickMapping::OneFlash);
+TEST(AiAssistPickSurfaceTest, AScanGoesAheadOfOneFlashWhichGoesAheadOfPhotoSpace) {
+    const std::string photo = "C:/tmp/quadmapper_oneflash_capture.png";
+    EXPECT_EQ(AiAssist::pickMapping(true, photo), AiAssist::PickMapping::GrayCode);
+    EXPECT_EQ(AiAssist::pickMapping(true, ""), AiAssist::PickMapping::GrayCode);
+    EXPECT_EQ(AiAssist::pickMapping(false, photo), AiAssist::PickMapping::OneFlash);
+    EXPECT_EQ(AiAssist::pickMapping(false, ""), AiAssist::PickMapping::CameraAtProjector);
+}
+
+// ---- The mapping chain Apply's worker runs ---------------------------------------------
+
+constexpr Corners kMapped{{{0.2f, 0.2f}, {0.7f, 0.25f}, {0.75f, 0.8f}, {0.25f, 0.7f}}};
+constexpr Corners kOneFlash{{{0.3f, 0.3f}, {0.6f, 0.3f}, {0.6f, 0.6f}, {0.3f, 0.6f}}};
+
+AiAssist::GrayMapFn grayMapReturning(std::vector<bool> valid, int* calls = nullptr) {
+    return [valid, calls](const std::vector<std::array<float, 2>>& points) {
+        if (calls) ++*calls;
+        ai::GrayReply<ai::GrayMapResult> reply;
+        reply.result = ai::GrayMapResult{};
+        for (size_t i = 0; i < points.size(); ++i) {
+            reply.result->points.push_back(kMapped[i]);
+            reply.result->valid.push_back(valid[i]);
+        }
+        return reply;
+    };
+}
+
+AiAssist::OneFlashFn oneFlashReturning(float confidence) {
+    return [confidence](const Corners&) {
+        ai::SurfaceResult result;
+        result.corners = kOneFlash;
+        result.confidence = confidence;
+        return std::optional<ai::SurfaceResult>(result);
+    };
+}
+
+TEST(AiAssistPickSurfaceTest, ACurrentScanMapsEveryCorner) {
+    int oneFlashCalls = 0;
+    const AiAssist::Outcome o = AiAssist::mapPickCorners(
+        kWarp, grayMapReturning({true, true, true, true}),
+        [&oneFlashCalls](const Corners&) {
+            ++oneFlashCalls;
+            return std::optional<ai::SurfaceResult>();
+        });
+    ASSERT_TRUE(o.corners);
+    EXPECT_EQ(*o.corners, kMapped);
+    EXPECT_EQ(oneFlashCalls, 0) << "One-Flash is only the fallback";
+    EXPECT_EQ(o.status, "Pick Surface: applied through the scan - nudge with Tab + arrows");
+}
+
+TEST(AiAssistPickSurfaceTest, ACornerOutsideTheScanFallsBackToOneFlashThenPhotoSpace) {
+    AiAssist::Outcome o = AiAssist::mapPickCorners(kWarp, grayMapReturning({true, false, true, true}),
+                                                   oneFlashReturning(0.8f));
+    ASSERT_TRUE(o.corners);
+    EXPECT_EQ(*o.corners, kOneFlash);
+    EXPECT_EQ(o.status, "Pick Surface: a corner is outside the scanned area - applied through "
+                        "One-Flash (confidence 0.80) - nudge with Tab + arrows");
+
+    o = AiAssist::mapPickCorners(kWarp, grayMapReturning({true, true, true, false}), nullptr);
+    ASSERT_TRUE(o.corners);
+    EXPECT_EQ(*o.corners, kWarp);
+    EXPECT_EQ(o.status, "Pick Surface: a corner is outside the scanned area - assuming the camera "
+                        "is at the projector");
+
+    o = AiAssist::mapPickCorners(kWarp, grayMapReturning({false, true, true, true}),
+                                 oneFlashReturning(0.1f));
+    ASSERT_TRUE(o.corners);
+    EXPECT_EQ(*o.corners, kWarp);
+    EXPECT_TRUE(o.forgetOneFlashPhoto);
+    EXPECT_EQ(o.status, "Pick Surface: a corner is outside the scanned area - the One-Flash photo "
+                        "shows no usable pattern - assuming the camera is at the projector");
+}
+
+TEST(AiAssistPickSurfaceTest, AScanTheSidecarCannotMapFallsBackAndSaysWhy) {
+    const AiAssist::GrayMapFn missing = [](const std::vector<std::array<float, 2>>&) {
+        ai::GrayReply<ai::GrayMapResult> reply;
+        reply.endpointMissing = true;
+        return reply;
+    };
+    AiAssist::Outcome o = AiAssist::mapPickCorners(kWarp, missing, nullptr);
+    EXPECT_EQ(*o.corners, kWarp);
+    EXPECT_EQ(o.status, "Pick Surface: update the AI sidecar to map through the scan - assuming "
+                        "the camera is at the projector");
+
+    const AiAssist::GrayMapFn refused = [](const std::vector<std::array<float, 2>>&) {
+        ai::GrayReply<ai::GrayMapResult> reply;
+        reply.error = "map_path does not exist";
+        return reply;
+    };
+    o = AiAssist::mapPickCorners(kWarp, refused, oneFlashReturning(0.9f));
+    EXPECT_EQ(*o.corners, kOneFlash);
+    EXPECT_EQ(o.status, "Pick Surface: the scan could not map it (map_path does not exist) - "
+                        "applied through One-Flash (confidence 0.90) - nudge with Tab + arrows");
+}
+
+TEST(AiAssistPickSurfaceTest, WithoutAScanTheChainIsOneFlashThenPhotoSpace) {
+    AiAssist::Outcome o = AiAssist::mapPickCorners(kWarp, nullptr, oneFlashReturning(0.8f));
+    EXPECT_EQ(*o.corners, kOneFlash);
+    EXPECT_EQ(o.status,
+              "Pick Surface: applied through One-Flash (confidence 0.80) - nudge with Tab + arrows");
+
+    o = AiAssist::mapPickCorners(kWarp, nullptr, oneFlashReturning(0.1f));
+    EXPECT_EQ(*o.corners, kWarp);
+    EXPECT_TRUE(o.forgetOneFlashPhoto);
+    EXPECT_EQ(o.status, "Pick Surface: the One-Flash photo shows no usable pattern - assuming the "
+                        "camera is at the projector");
+
+    o = AiAssist::mapPickCorners(kWarp, nullptr, nullptr);
+    EXPECT_EQ(*o.corners, kWarp);
+    EXPECT_EQ(o.status, "Pick Surface: no One-Flash photo - assuming the camera is at the projector");
 }
 
 TEST(AiAssistPickSurfaceTest, ASegmentReplyBecomesAProposalAndAStatus) {
@@ -476,6 +584,222 @@ TEST(AiAssistPickSurfaceTest, ApplyWithAOneFlashPhotoMapsThroughTheSidecar) {
     EXPECT_STREQ(es.statusMessage, "Pick Surface: enable the sidecar first (AI > Enable AI Assist)");
     EXPECT_FALSE(ai.isBusy());
     EXPECT_EQ(quad->getGeometry().getCorners(), before);
+}
+
+// ---- Scan Output (ADR-053 §3) ----------------------------------------------------------
+
+// An output with no window (the manager is not initialized): enough for its id,
+// resolution, display and calibration points.
+OutputWindow* addOutput(OutputManager& outputs, IVec2 resolution = IVec2(1920, 1080), int monitor = 1) {
+    OutputWindow* output = outputs.createOutput("Projector");
+    output->setResolution(resolution);
+    output->setMonitor(monitor);
+    output->setEnabled(true);
+    return output;
+}
+
+AiAssist::GrayMap mapOf(const OutputWindow& output) {
+    return AiAssist::GrayMap{output.getId(), ScanOutput{output.getResolution(), output.getMonitor()},
+                             "C:/tmp/quadmapper_scan/graymap.npz", 0.9f, 0.3f};
+}
+
+void landMap(AiAssist& ai, const AiAssist::GrayMap& map) {
+    AiAssist::Outcome outcome{"Scan: map ready", 8.0f, std::nullopt};
+    outcome.grayMap = map;
+    land(ai, outcome);
+}
+
+TEST(AiAssistScanTest, AMapIsCurrentUntilTheOutputsResolutionOrDisplayChanges) {
+    const AiAssist::GrayMap map{UUID::generate(), ScanOutput{IVec2(1920, 1080), 1}, "m.npz", 0.9f, {}};
+    EXPECT_TRUE(AiAssist::grayMapCurrent(map, ScanOutput{IVec2(1920, 1080), 1}));
+    EXPECT_FALSE(AiAssist::grayMapCurrent(map, ScanOutput{IVec2(1280, 720), 1}));
+    EXPECT_FALSE(AiAssist::grayMapCurrent(map, ScanOutput{IVec2(1920, 1080), 2}));
+    EXPECT_FALSE(AiAssist::grayMapCurrent(map, std::nullopt)) << "the output is gone";
+    AiAssist::GrayMap noPath = map;
+    noPath.path.clear();
+    EXPECT_FALSE(AiAssist::grayMapCurrent(noPath, ScanOutput{IVec2(1920, 1080), 1}));
+}
+
+TEST(AiAssistScanTest, TheSessionKeepsAMapPerOutputAndDropsItWhenStale) {
+    EditorState es;
+    OutputManager outputs;
+    OutputWindow* a = addOutput(outputs);
+    OutputWindow* b = addOutput(outputs);
+    AiAssist ai(es, nullptr);
+    EXPECT_EQ(ai.currentGrayMap(a->getId(), &outputs), nullptr);
+
+    landMap(ai, mapOf(*a));
+    ASSERT_NE(ai.currentGrayMap(a->getId(), &outputs), nullptr);
+    EXPECT_EQ(ai.currentGrayMap(b->getId(), &outputs), nullptr);
+    EXPECT_EQ(ai.currentGrayMap(a->getId(), nullptr), nullptr);
+
+    a->setMonitor(2);
+    EXPECT_EQ(ai.currentGrayMap(a->getId(), &outputs), nullptr);
+    a->setMonitor(1);
+    EXPECT_NE(ai.currentGrayMap(a->getId(), &outputs), nullptr) << "back where it was scanned";
+    a->setResolution(IVec2(1280, 720));
+    EXPECT_EQ(ai.currentGrayMap(a->getId(), &outputs), nullptr);
+}
+
+TEST(AiAssistScanTest, ScanOutputIsRefusedUnderTheLockBlackoutABusyRequestAndWithoutASidecar) {
+    EditorState es;
+    OutputManager outputs;
+    addOutput(outputs);
+    AiAssist ai(es, stoppedSidecar());
+
+    lockPerform(es);
+    ai.run(EditorServices::AiAction::ScanOutput, &outputs);
+    EXPECT_STREQ(es.statusMessage, "AI assist is blocked: the show is locked (Output > Perform Lock)");
+    requestPerformUnlock(es);
+    ASSERT_TRUE(confirmPerformUnlock(es));
+
+    HeldWork work;
+    ASSERT_TRUE(ai.startRequest("AI: detecting surface...", "AI", UUID::null(),
+                                work.returning({"done", 5.0f, std::nullopt})));
+    ai.scanOutput(&outputs);
+    EXPECT_STREQ(es.statusMessage, "Scan: wait for the running request to finish");
+    work.release();
+    ASSERT_TRUE(tickUntilIdle(ai));
+
+    outputs.setBlackout(true);
+    ai.scanOutput(&outputs);
+    EXPECT_STREQ(es.statusMessage, "Scan: Blackout is on - turn it off to scan");
+    outputs.setBlackout(false);
+
+    ai.scanOutput(&outputs);
+    EXPECT_STREQ(es.statusMessage, "Scan: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_FALSE(ai.canScan());
+    EXPECT_FALSE(ai.isScanning());
+    EXPECT_FALSE(ai.isBusy());
+}
+
+TEST(AiAssistScanTest, CancelScanAndClearPatternPassTheLock) {
+    EditorState es;
+    AiAssist ai(es, nullptr);
+    lockPerform(es);
+    es.statusMessage[0] = '\0';
+    ai.run(EditorServices::AiAction::CancelScan, nullptr);  // no scan: nothing, and no refusal
+    EXPECT_STREQ(es.statusMessage, "");
+}
+
+// ---- Assisted calibration (ADR-052 §6 through ADR-053 §3) ------------------------------
+
+TEST(AiAssistScanTest, TheAssistedClickIsRefusedUnderTheLockAndWithoutItsPrerequisites) {
+    EditorState es;
+    OutputManager outputs;
+    OutputWindow* output = addOutput(outputs);
+    AiAssist ai(es, stoppedSidecar());
+
+    lockPerform(es);
+    ai.calibrationPixelAt(0.5f, 0.5f, &outputs);
+    EXPECT_STREQ(es.statusMessage, "Calibration is blocked: the show is locked (Output > Perform Lock)");
+    requestPerformUnlock(es);
+    ASSERT_TRUE(confirmPerformUnlock(es));
+
+    ai.calibrationPixelAt(0.5f, 0.5f, &outputs);
+    EXPECT_STREQ(es.statusMessage, "Calibration: calibrate a projector first");
+
+    es.beginCalibration(*output);
+    ai.calibrationPixelAt(0.5f, 0.5f, &outputs);
+    EXPECT_STREQ(es.statusMessage, "Calibration: select a calibration point first");
+
+    output->getCalibrationPoints().push_back(CalibrationPoint{Vec3(1.0f, 2.0f, 3.0f), Vec2(5.0f, 5.0f)});
+    es.calibration.selected = 0;
+    ai.calibrationPixelAt(0.5f, 0.5f, &outputs);
+    EXPECT_STREQ(es.statusMessage, "Calibration: scan this projector first (AI > Scan Output)");
+
+    landMap(ai, mapOf(*output));
+    ai.calibrationPixelAt(0.5f, 0.5f, &outputs);
+    EXPECT_STREQ(es.statusMessage, "Calibration: take a photo first (AI Photo panel)");
+
+    AiAssist::Outcome photo{"AI Photo: photo taken", 5.0f, std::nullopt};
+    photo.photo = "C:/tmp/quadmapper_ai_photo.png";
+    land(ai, photo);
+    ai.calibrationPixelAt(0.5f, 0.5f, &outputs);
+    EXPECT_STREQ(es.statusMessage, "Calibration: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_FALSE(ai.isBusy());
+    EXPECT_EQ(output->getCalibrationPoints()[0].pixel, Vec2(5.0f, 5.0f));
+}
+
+// A mapped click lands on the point as an ordinary calibration edit: noted for the
+// panel's undo step, and the pick is over so Tab/arrows nudge it next.
+AiAssist::Outcome placed(const OutputWindow& output, int index, std::array<float, 2> projector) {
+    AiAssist::Outcome outcome{"Calibration: point placed", 6.0f, std::nullopt};
+    outcome.calibrationPixel = AiAssist::CalibrationPixel{
+        output.getId(), index, output.getCalibrationPoints()[index].world, projector};
+    return outcome;
+}
+
+void landWith(AiAssist& ai, OutputManager& outputs, const AiAssist::Outcome& outcome) {
+    ASSERT_TRUE(ai.startRequest("working...", "Calibration", UUID::null(), [outcome] { return outcome; }));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (ai.isBusy() && std::chrono::steady_clock::now() < deadline) {
+        ai.tick(&outputs);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_FALSE(ai.isBusy());
+}
+
+TEST(AiAssistScanTest, AMappedClickPlacesThePointAsOneCalibrationEdit) {
+    EditorState es;
+    OutputManager outputs;
+    OutputWindow* output = addOutput(outputs);
+    output->getProjector().intrinsics.width = 1920;
+    output->getProjector().intrinsics.height = 1080;
+    auto& points = output->getCalibrationPoints();
+    points.push_back(CalibrationPoint{Vec3(0.0f), Vec2(1.0f, 1.0f)});
+    points.push_back(CalibrationPoint{Vec3(1.0f, 0.0f, 0.0f), Vec2(2.0f, 2.0f)});
+    es.beginCalibration(*output);
+    es.calibration.selected = 1;
+    es.calibration.pick = CalibrationSession::Pick::Photo;
+    const CalibrationSnapshot before = es.calibration.capture(points, output->getProjector());
+    AiAssist ai(es, nullptr);
+
+    landWith(ai, outputs, placed(*output, 1, {0.25f, 0.5f}));
+    EXPECT_EQ(points[1].pixel, Vec2(480.0f, 540.0f));
+    EXPECT_EQ(points[0].pixel, Vec2(1.0f, 1.0f));
+    EXPECT_EQ(es.calibration.pick, CalibrationSession::Pick::None);
+    EXPECT_EQ(es.calibration.selected, 1);
+    EXPECT_TRUE(es.calibration.isDirty());
+    // The panel records the frame's noted edit as one undo step.
+    const auto edit = es.calibration.finishFrame(points, output->getProjector());
+    ASSERT_TRUE(edit);
+    EXPECT_EQ(edit->description, "Place calibration point 2 from the AI photo");
+    EXPECT_TRUE(sameCalibrationState(edit->before, before));
+}
+
+TEST(AiAssistScanTest, AMappedClickIsDroppedUnderTheLockOrWhenThePointOrCalibrationWent) {
+    EditorState es;
+    OutputManager outputs;
+    OutputWindow* output = addOutput(outputs);
+    auto& points = output->getCalibrationPoints();
+    points.push_back(CalibrationPoint{Vec3(0.0f), Vec2(1.0f, 1.0f)});
+    es.beginCalibration(*output);
+    AiAssist ai(es, nullptr);
+
+    const AiAssist::Outcome outcome = placed(*output, 0, {0.5f, 0.5f});
+    points[0].world = Vec3(9.0f);  // another point now sits at that index
+    landWith(ai, outputs, outcome);
+    EXPECT_EQ(points[0].pixel, Vec2(1.0f, 1.0f));
+    EXPECT_STREQ(es.statusMessage, "Calibration: result dropped - the point was changed meanwhile");
+
+    es.endCalibration();
+    landWith(ai, outputs, placed(*output, 0, {0.5f, 0.5f}));
+    EXPECT_EQ(points[0].pixel, Vec2(1.0f, 1.0f));
+    EXPECT_STREQ(es.statusMessage,
+                 "Calibration: result dropped - calibration of that projector ended");
+
+    es.beginCalibration(*output);
+    HeldWork work;
+    ASSERT_TRUE(ai.startRequest("working...", "Calibration", UUID::null(),
+                                work.returning(placed(*output, 0, {0.5f, 0.5f}))));
+    lockPerform(es);  // ends calibration too; the lock is what drops it first
+    work.release();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (ai.isBusy() && std::chrono::steady_clock::now() < deadline) ai.tick(&outputs);
+    EXPECT_EQ(points[0].pixel, Vec2(1.0f, 1.0f));
+    EXPECT_STREQ(es.statusMessage,
+                 "Calibration: result dropped - the show is locked (Output > Perform Lock)");
 }
 
 TEST(AiAssistPickSurfaceTest, SegmentingNeedsASidecarThatCanSegment) {

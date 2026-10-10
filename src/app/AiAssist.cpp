@@ -5,8 +5,10 @@
 #include "../core/FileSystem.hpp"
 #include "../core/Logger.hpp"
 #include "../output/OutputManager.hpp"
+#include "../output/OutputWindow.hpp"
 #include "../renderer/Renderer.hpp"
 #include "../renderer/Texture.hpp"
+#include "../scene/CalibrationSession.hpp"
 #include "../scene/Commands.hpp"
 #include "../scene/Quad.hpp"
 #include "../source/CameraDevices.hpp"
@@ -48,8 +50,97 @@ constexpr float BUSY_STATUS_SECONDS = 150.0f;
 // only its own shares (Request, the sidecar) and never touches AiAssist or the editor.
 constexpr auto SHUTDOWN_WAIT = std::chrono::seconds(2);
 constexpr const char* PICK = "Pick Surface";
+constexpr const char* SCAN = "Scan";
+constexpr const char* CALIBRATION = "Calibration";
+// A decoded map that saw less of the output than this is refused: the camera was not
+// aimed at it.
+constexpr float MIN_SCAN_COVERAGE = 0.02f;
+
+// The scan's folder for one output: the sidecar writes the frames there and the camera's
+// captures and the map land beside them.
+std::filesystem::path scanFolder(const UUID& outputId) {
+    return std::filesystem::temp_directory_path() / "quadmapper_scan" / outputId.toString();
+}
+
+AiAssist::Outcome scanPatternsOutcome(const ai::GrayReply<ai::GrayPatternsResult>& reply) {
+    AiAssist::Outcome outcome;
+    outcome.seconds = 6.0f;
+    outcome.scanFrames = 0;
+    if (reply.endpointMissing) {
+        outcome.status = "Scan: update the AI sidecar (it cannot scan)";
+    } else if (!reply.error.empty()) {
+        outcome.status = "Scan: " + reply.error;
+    } else if (!reply.result) {
+        outcome.status = "Scan: the AI sidecar could not write the patterns";
+    } else if (reply.result->stub) {
+        outcome.status = "Scan: the AI sidecar has no OpenCV contrib (run tools/ai-sidecar/setup.ps1)";
+    } else {
+        outcome.scanFrames = reply.result->count;
+    }
+    return outcome;
+}
+
+AiAssist::Outcome scanDecodeOutcome(const ai::GrayReply<ai::GrayCodeResult>& reply,
+                                    const UUID& outputId, const ScanOutput& output) {
+    AiAssist::Outcome outcome;
+    outcome.seconds = 8.0f;
+    if (reply.endpointMissing) {
+        outcome.status = "Scan: update the AI sidecar (it cannot decode a scan)";
+    } else if (!reply.error.empty()) {
+        outcome.status = "Scan: decoding failed - " + reply.error;
+    } else if (!reply.result || reply.result->stub) {
+        outcome.status = "Scan: decoding failed (sidecar error)";
+    } else if (reply.result->coverage < MIN_SCAN_COVERAGE) {
+        outcome.status = "Scan: the camera saw almost none of the output - aim it at the output and scan again";
+    } else {
+        const ai::GrayCodeResult& r = *reply.result;
+        outcome.status = formatStatus("Scan: map ready - the camera saw %.0f%% of the output (noise %.2f px)",
+                                      r.coverage * 100.0f, r.decodeErrorPx.value_or(0.0f));
+        outcome.grayMap = AiAssist::GrayMap{outputId, output, r.mapPath, r.coverage, r.decodeErrorPx};
+    }
+    return outcome;
+}
 
 }  // namespace
+
+// The scan's view of the application: the editor's lock, the outputs, and the frame
+// texture the projectors show (renderPatternFrames).
+class AiAssist::ScanHostImpl : public ScanHost {
+public:
+    ScanHostImpl(AiAssist& ai, OutputManager& outputs, std::filesystem::path folder)
+        : ai_(ai), outputs_(outputs), folder_(std::move(folder)) {}
+
+    bool locked() const override { return ai_.editor_.performLock.isOn(); }
+    bool blackout() const override { return outputs_.isBlackout(); }
+    bool inPerformMode() const override { return outputs_.isInPerformMode(); }
+    bool enterPerformMode() override {
+        outputs_.handleF11Key();  // as F11 does, with the user's fullscreen kind
+        return outputs_.isInPerformMode();
+    }
+    void exitPerformMode() override { outputs_.exitPerformMode(); }
+    std::optional<ScanOutput> output(const UUID& outputId) const override {
+        const OutputWindow* output = outputs_.getOutput(outputId);
+        if (!output) return std::nullopt;
+        return ScanOutput{output->getResolution(), output->getMonitor()};
+    }
+    bool showFrame(int index) override {
+        auto texture = std::make_unique<Texture>();
+        if (!texture->loadFromFile(folder_ / GrayCodeScan::patternName(index))) return false;
+        texture->setFilterMode(false);  // stripes stay sharp if the frame is resampled
+        ai_.scanTexture_ = std::move(texture);
+        ai_.scanFrameShown_ = true;
+        return true;
+    }
+    void hideFrames() override {
+        ai_.scanFrameShown_ = false;
+        ai_.scanTexture_.reset();
+    }
+
+private:
+    AiAssist& ai_;
+    OutputManager& outputs_;
+    std::filesystem::path folder_;
+};
 
 // A request in flight. The worker fills `outcome` and sets `done`; tick() collects
 // it on the main thread. `who` and `target` are read on the main thread only.
@@ -130,7 +221,7 @@ bool AiAssist::isActive() const {
 }
 
 bool AiAssist::isBusy() const {
-    return request_ != nullptr;
+    return request_ != nullptr || scan_ != nullptr;
 }
 
 bool AiAssist::startRequest(const std::string& busyStatus, const std::string& who,
@@ -166,8 +257,19 @@ bool AiAssist::startRequest(const std::string& busyStatus, const std::string& wh
     return true;
 }
 
-void AiAssist::applyOutcome(const Request& request) {
+void AiAssist::applyOutcome(const Request& request, OutputManager* outputs) {
     const Outcome& outcome = request.outcome;
+    if (outcome.scanFrames) {
+        // The scan may have been cancelled while the sidecar wrote the frames.
+        if (!scan_) return;
+        if (*outcome.scanFrames > 0) {
+            scan_->patternsReady(*outcome.scanFrames);
+        } else {
+            scan_->fail(outcome.status);
+        }
+        return;
+    }
+    if (outcome.grayMap) grayMaps_[outcome.grayMap->outputId] = *outcome.grayMap;
     if (outcome.photo) {
         photo_.path = *outcome.photo;
         ++photo_.serial;
@@ -177,12 +279,16 @@ void AiAssist::applyOutcome(const Request& request) {
     if (outcome.forgetOneFlashPhoto) oneFlashPhoto_.clear();
     // The lock may have engaged while the request ran: it never lets a warp through,
     // nor a proposal that would invite one.
-    if ((outcome.corners || outcome.proposal) && editor_.performLock.isOn()) {
+    if ((outcome.corners || outcome.proposal || outcome.calibrationPixel) &&
+        editor_.performLock.isOn()) {
         setStatus(request.who + ": result dropped - the show is locked (Output > Perform Lock)",
                   6.0f);
         return;
     }
     if (outcome.proposal) photo_.proposal = *outcome.proposal;
+    if (outcome.calibrationPixel && !applyCalibrationPixel(*outcome.calibrationPixel, outputs)) {
+        return;
+    }
     if (outcome.corners) {
         Quad* quad = editor_.quadManager().getQuad(request.target);
         if (!quad) {
@@ -210,7 +316,11 @@ void AiAssist::enable() {
 
 void AiAssist::run(EditorServices::AiAction action, OutputManager* outputs) {
     using AiAction = EditorServices::AiAction;
-    if (action != AiAction::ClearPattern && refusedByPerformLock(editor_, "AI assist")) return;
+    // Clear Pattern and Cancel Scan give the show back, so the lock lets them through.
+    if (action != AiAction::ClearPattern && action != AiAction::CancelScan &&
+        refusedByPerformLock(editor_, "AI assist")) {
+        return;
+    }
     switch (action) {
         case AiAction::Enable:        enable(); break;
         case AiAction::DetectSurface: detectSurface(); break;
@@ -220,8 +330,10 @@ void AiAssist::run(EditorServices::AiAction action, OutputManager* outputs) {
         case AiAction::SolveApply:    solveAndApply(outputs); break;
         case AiAction::Anamorphic:    anamorphic(outputs); break;
         case AiAction::TakePhoto:     takePhoto(); break;
-        case AiAction::ApplyProposal: applyProposal(); break;
+        case AiAction::ApplyProposal: applyProposal(outputs); break;
         case AiAction::ClearProposal: clearProposal(); break;
+        case AiAction::ScanOutput:    scanOutput(outputs); break;
+        case AiAction::CancelScan:    cancelScan(); break;
     }
 }
 
@@ -254,7 +366,23 @@ void AiAssist::tick(OutputManager* outputs) {
         if (done) {
             requestThread_.join();  // the work is over; this only waits out its exit
             const std::shared_ptr<Request> request = std::move(request_);
-            applyOutcome(*request);
+            applyOutcome(*request, outputs);
+        }
+    }
+
+    if (scan_) {
+        scan_->tick(GrayCodeScan::Clock::now());
+        if (scan_->phase() == GrayCodeScan::Phase::Captured) {
+            startScanDecode();
+        } else if (scan_->phase() == GrayCodeScan::Phase::Ended) {
+            const std::string status = scan_->endStatus();
+            scan_.reset();
+            scanHost_.reset();
+            scanProgress_.clear();
+            setStatus(status, 6.0f);
+        } else if (!request_ && scan_->progress() != scanProgress_) {
+            scanProgress_ = scan_->progress();
+            showStatus(editor_, scanProgress_, BUSY_STATUS_SECONDS);  // each frame: not logged
         }
     }
 
@@ -377,6 +505,13 @@ bool AiAssist::captureCameraFrameToPng(const std::string& pngPath, std::string& 
     return true;
 }
 
+void AiAssist::ensurePatternQuad() {
+    if (calibQuad_) return;
+    calibQuad_ = std::make_unique<Quad>();
+    calibQuad_->getGeometry().setCorners(
+        {Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)});
+}
+
 void AiAssist::emitPattern(const OutputManager& outputs) {
     // Lazily load the calibration pattern + build the fullscreen identity quad.
     if (!calibTexture_) {
@@ -398,9 +533,7 @@ void AiAssist::emitPattern(const OutputManager& outputs) {
             return;
         }
         calibTexture_ = std::move(tex);
-        calibQuad_ = std::make_unique<Quad>();
-        calibQuad_->getGeometry().setCorners(
-            {Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)});
+        ensurePatternQuad();
     }
 
     emitPattern_ = true;
@@ -599,12 +732,61 @@ AiAssist::Outcome AiAssist::segmentOutcome(const ai::SegmentReply& reply) {
     return outcome;
 }
 
-AiAssist::PickMapping AiAssist::pickMapping(const std::string& oneFlashPhoto) {
-    // ADR-053 §3: a current Gray-code map goes ahead of One-Flash here once it exists.
+AiAssist::PickMapping AiAssist::pickMapping(bool grayMapCurrent, const std::string& oneFlashPhoto) {
+    if (grayMapCurrent) return PickMapping::GrayCode;
     return oneFlashPhoto.empty() ? PickMapping::CameraAtProjector : PickMapping::OneFlash;
 }
 
-void AiAssist::applyProposal() {
+AiAssist::Outcome AiAssist::mapPickCorners(const Corners& photoCorners, const GrayMapFn& grayMap,
+                                           const OneFlashFn& oneFlash) {
+    // Why a better mapping was passed over, for the status; empty when none was tried.
+    std::string passedOver;
+    if (grayMap) {
+        const ai::GrayReply<ai::GrayMapResult> reply =
+            grayMap(std::vector<std::array<float, 2>>(photoCorners.begin(), photoCorners.end()));
+        if (reply.result &&
+            std::all_of(reply.result->valid.begin(), reply.result->valid.end(), [](bool v) { return v; })) {
+            Corners corners;
+            std::copy(reply.result->points.begin(), reply.result->points.end(), corners.begin());
+            return Outcome{"Pick Surface: applied through the scan - nudge with Tab + arrows", 6.0f,
+                           corners};
+        }
+        if (reply.endpointMissing) {
+            passedOver = "update the AI sidecar to map through the scan";
+        } else if (reply.result) {
+            passedOver = "a corner is outside the scanned area";
+        } else if (!reply.error.empty()) {
+            passedOver = "the scan could not map it (" + reply.error + ")";
+        } else {
+            passedOver = "the scan could not map it";
+        }
+    }
+    const std::string lead = passedOver.empty() ? "Pick Surface: " : "Pick Surface: " + passedOver + " - ";
+    if (oneFlash) {
+        // As the anamorphic path does: the photo corners go to /oneflash as
+        // target_corners and come back in projector space.
+        const std::optional<ai::SurfaceResult> result = oneFlash(photoCorners);
+        if (result && !result->stub && result->confidence >= AI_MIN_CONFIDENCE) {
+            return Outcome{lead + formatStatus("applied through One-Flash (confidence %.2f) - "
+                                               "nudge with Tab + arrows",
+                                               result->confidence),
+                           6.0f, result->corners};
+        }
+        // No usable pattern in that photo: never a dead end. Apply in photo space as
+        // when there is no One-Flash photo, and forget this one.
+        Outcome fallback{lead + "the One-Flash photo shows no usable pattern - "
+                                "assuming the camera is at the projector",
+                         6.0f, photoCorners};
+        fallback.forgetOneFlashPhoto = true;
+        return fallback;
+    }
+    return Outcome{passedOver.empty()
+                       ? "Pick Surface: no One-Flash photo - assuming the camera is at the projector"
+                       : lead + "assuming the camera is at the projector",
+                   6.0f, photoCorners};
+}
+
+void AiAssist::applyProposal(const OutputManager* outputs) {
     if (!photo_.proposal) {
         setStatus("Pick Surface: click the surface in the photo first", 5.0f);
         return;
@@ -618,45 +800,41 @@ void AiAssist::applyProposal() {
         setStatus("Pick Surface: select a quad to warp first", 5.0f);
         return;
     }
-    const std::array<std::array<float, 2>, 4> corners = photo_.proposal->corners;
+    const Corners corners = photo_.proposal->corners;
 
-    switch (pickMapping(oneFlashPhoto_)) {
-        case PickMapping::OneFlash: {
-            if (!sidecarReady()) {
-                setStatus("Pick Surface: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
-                return;
-            }
-            // As the anamorphic path does: the photo corners go to /oneflash as
-            // target_corners and come back in projector space.
-            std::shared_ptr<ai::SidecarClient> sidecar = sidecar_;
-            startRequest("Pick Surface: mapping into projector space...", PICK, quad->getId(),
-                         [sidecar, pattern = oneFlashPhoto_, corners]() -> Outcome {
-                auto result = sidecar->requestOneFlash(pattern, &corners);
-                if (!result || result->stub || result->confidence < AI_MIN_CONFIDENCE) {
-                    // No usable pattern in that photo: never a dead end. Apply in photo
-                    // space as when there is no One-Flash photo, and forget this one.
-                    Outcome fallback{"Pick Surface: the One-Flash photo shows no usable pattern - "
-                                     "assuming the camera is at the projector",
-                                     6.0f, corners};
-                    fallback.forgetOneFlashPhoto = true;
-                    return fallback;
-                }
-                return Outcome{formatStatus("Pick Surface: applied through One-Flash (confidence %.2f) - "
-                                            "nudge with Tab + arrows",
-                                            result->confidence),
-                               6.0f, result->corners};
-            });
-            break;
+    // The scan of an output showing the quad's scene, when it is current.
+    const GrayMap* gray = nullptr;
+    if (outputs) {
+        for (const auto& output : outputs->getOutputs()) {
+            if (output->getSceneId() != editor_.activeScene().getId()) continue;
+            if ((gray = currentGrayMap(output->getId(), outputs)) != nullptr) break;
         }
-        case PickMapping::CameraAtProjector:
-            // Through startRequest all the same, so the lock and deleted-quad rules
-            // apply in one place (applyOutcome).
-            startRequest("Pick Surface: applying...", PICK, quad->getId(), [corners]() -> Outcome {
-                return Outcome{"Pick Surface: no One-Flash photo - assuming the camera is at the projector",
-                               6.0f, corners};
-            });
-            break;
     }
+    const PickMapping mapping = pickMapping(gray != nullptr, oneFlashPhoto_);
+    if (mapping != PickMapping::CameraAtProjector && !sidecarReady()) {
+        setStatus("Pick Surface: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+        return;
+    }
+    std::shared_ptr<ai::SidecarClient> sidecar = sidecar_;
+    GrayMapFn grayMap;
+    if (gray) {
+        grayMap = [sidecar, path = gray->path](const std::vector<std::array<float, 2>>& points) {
+            return sidecar->requestGrayMap(path, points);
+        };
+    }
+    OneFlashFn oneFlash;
+    if (!oneFlashPhoto_.empty()) {
+        oneFlash = [sidecar, pattern = oneFlashPhoto_](const Corners& target) {
+            return sidecar->requestOneFlash(pattern, &target);
+        };
+    }
+    // Through startRequest even in photo space, so the lock and deleted-quad rules apply
+    // in one place (applyOutcome).
+    startRequest(mapping == PickMapping::CameraAtProjector ? "Pick Surface: applying..."
+                                                          : "Pick Surface: mapping into projector space...",
+                 PICK, quad->getId(), [corners, grayMap, oneFlash]() -> Outcome {
+        return mapPickCorners(corners, grayMap, oneFlash);
+    });
 }
 
 void AiAssist::clearProposal() {
@@ -664,13 +842,222 @@ void AiAssist::clearProposal() {
     setStatus("Pick Surface: proposal cleared", 4.0f);
 }
 
+// ---- Scan Output (ADR-053 §3) ----------------------------------------------------------
+
+bool AiAssist::canScan() const {
+    if (!sidecarReady()) return false;
+    const std::vector<std::string> caps = sidecar_->capabilities();
+    return std::find(caps.begin(), caps.end(), "graycode") != caps.end();
+}
+
+bool AiAssist::grayMapCurrent(const GrayMap& map, const std::optional<ScanOutput>& now) {
+    return !map.path.empty() && now && *now == map.output;
+}
+
+const AiAssist::GrayMap* AiAssist::currentGrayMap(const UUID& outputId,
+                                                  const OutputManager* outputs) const {
+    const auto it = grayMaps_.find(outputId);
+    if (it == grayMaps_.end() || !outputs) return nullptr;
+    const OutputWindow* output = outputs->getOutput(outputId);
+    std::optional<ScanOutput> now;
+    if (output) now = ScanOutput{output->getResolution(), output->getMonitor()};
+    return grayMapCurrent(it->second, now) ? &it->second : nullptr;
+}
+
+void AiAssist::scanOutput(OutputManager* outputs) {
+    if (refusedByPerformLock(editor_, "AI assist")) return;
+    if (isBusy()) {
+        setStatus("Scan: wait for the running request to finish", 5.0f);
+        return;
+    }
+    if (!outputs) return;
+    if (outputs->isBlackout()) {  // the camera would photograph black
+        setStatus("Scan: Blackout is on - turn it off to scan", 6.0f);
+        return;
+    }
+    if (!editor_.calibratingOutputId.isNull()) {  // calibration owns Esc and the canvas
+        setStatus("Scan: leave calibration first", 5.0f);
+        return;
+    }
+    if (!sidecarReady()) {
+        setStatus("Scan: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+        return;
+    }
+    if (!canScan()) {
+        setStatus("Scan: update the AI sidecar (it cannot scan)", 6.0f);
+        return;
+    }
+    // The selected output, else the first enabled one.
+    OutputWindow* target = editor_.selectedOutputId.isNull()
+                               ? nullptr : outputs->getOutput(editor_.selectedOutputId);
+    if (!target) {
+        for (const auto& output : outputs->getOutputs()) {
+            if (output->isEnabled()) {
+                target = output.get();
+                break;
+            }
+        }
+    }
+    if (!target) {
+        setStatus("Scan: add a projector output first (Output panel)", 5.0f);
+        return;
+    }
+    if (!target->isEnabled()) {
+        setStatus("Scan: enable output '" + target->getName() + "' first", 5.0f);
+        return;
+    }
+    const IVec2 resolution = target->getResolution();
+    if (resolution.x < 2 || resolution.y < 2) {
+        setStatus("Scan: output '" + target->getName() + "' has no resolution", 5.0f);
+        return;
+    }
+
+    // A fresh folder: the last scan's frames and captures go, and so does the map made
+    // from them.
+    const UUID outputId = target->getId();
+    const std::filesystem::path folder = scanFolder(outputId);
+    std::error_code ec;
+    std::filesystem::remove_all(folder, ec);
+    std::filesystem::create_directories(folder, ec);
+    if (ec) {
+        setStatus("Scan: cannot create the scan folder " + utf8FromPath(folder), 6.0f);
+        return;
+    }
+    grayMaps_.erase(outputId);
+
+    // The camera opens now, alongside the sidecar writing the frames.
+    scanOutputId_ = outputId;
+    scanHost_ = std::make_unique<ScanHostImpl>(*this, *outputs, folder);
+    scan_ = std::make_unique<GrayCodeScan>(*scanHost_, openScanCamera(), outputId,
+                                           ScanOutput{resolution, target->getMonitor()}, folder);
+    scanProgress_.clear();
+    std::shared_ptr<ai::SidecarClient> sidecar = sidecar_;
+    startRequest("Scan: preparing the patterns...", SCAN, UUID::null(),
+                 [sidecar, folder = utf8FromPath(folder), resolution]() -> Outcome {
+        return scanPatternsOutcome(sidecar->requestGrayPatterns(folder, resolution.x, resolution.y));
+    });
+}
+
+void AiAssist::cancelScan() {
+    if (!scan_) return;
+    scan_->cancel();  // tick() posts the status and lets it go
+}
+
+void AiAssist::startScanDecode() {
+    const UUID outputId = scan_->outputId();
+    const ScanOutput output = scan_->output();
+    const std::string folder = utf8FromPath(scan_->folder());
+    scan_.reset();
+    scanHost_.reset();
+    scanProgress_.clear();
+    std::shared_ptr<ai::SidecarClient> sidecar = sidecar_;
+    if (!sidecar) return;
+    startRequest("Scan: decoding the map...", SCAN, UUID::null(),
+                 [sidecar, folder, outputId, output]() -> Outcome {
+        return scanDecodeOutcome(sidecar->requestGrayCode(folder, output.resolution.x,
+                                                          output.resolution.y),
+                                 outputId, output);
+    });
+}
+
+void AiAssist::calibrationPixelAt(float x, float y, const OutputManager* outputs) {
+    if (refusedByPerformLock(editor_, CALIBRATION)) return;
+    const UUID outputId = editor_.calibratingOutputId;
+    const OutputWindow* output = outputs && !outputId.isNull() ? outputs->getOutput(outputId) : nullptr;
+    if (!output) {
+        setStatus("Calibration: calibrate a projector first", 5.0f);
+        return;
+    }
+    const int index = editor_.calibration.selected;
+    const auto& points = output->getCalibrationPoints();
+    if (index < 0 || index >= static_cast<int>(points.size())) {
+        setStatus("Calibration: select a calibration point first", 5.0f);
+        return;
+    }
+    const GrayMap* map = currentGrayMap(outputId, outputs);
+    if (!map) {
+        setStatus("Calibration: scan this projector first (AI > Scan Output)", 6.0f);
+        return;
+    }
+    if (photo_.path.empty()) {
+        setStatus("Calibration: take a photo first (AI Photo panel)", 5.0f);
+        return;
+    }
+    if (!sidecarReady()) {
+        setStatus("Calibration: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+        return;
+    }
+    if (x < 0.0f || x > 1.0f || y < 0.0f || y > 1.0f) return;  // not on the photo
+
+    std::shared_ptr<ai::SidecarClient> sidecar = sidecar_;
+    const CalibrationPixel target{outputId, index, points[index].world, {}};
+    startRequest("Calibration: finding the point on the projector...", CALIBRATION, UUID::null(),
+                 [sidecar, path = map->path, point = std::array<float, 2>{x, y}, target]() -> Outcome {
+        const ai::GrayReply<ai::GrayMapResult> reply = sidecar->requestGrayMap(path, {point});
+        if (reply.endpointMissing) {
+            return Outcome{"Calibration: update the AI sidecar (it cannot map through a scan)", 6.0f,
+                           std::nullopt};
+        }
+        if (!reply.result) {
+            return Outcome{"Calibration: the scan could not map the click" +
+                               (reply.error.empty() ? std::string() : " (" + reply.error + ")"),
+                           6.0f, std::nullopt};
+        }
+        if (!reply.result->valid[0]) {
+            return Outcome{"Calibration: that spot is outside the scanned area - click inside it",
+                           6.0f, std::nullopt};
+        }
+        Outcome outcome{formatStatus("Calibration: point %d placed from the photo - nudge with Tab + arrows",
+                                     target.index + 1),
+                        6.0f, std::nullopt};
+        outcome.calibrationPixel = target;
+        outcome.calibrationPixel->projector = reply.result->points[0];
+        return outcome;
+    });
+}
+
+bool AiAssist::applyCalibrationPixel(const CalibrationPixel& pixel, OutputManager* outputs) {
+    OutputWindow* output = outputs ? outputs->getOutput(pixel.outputId) : nullptr;
+    if (!output || editor_.calibratingOutputId != pixel.outputId) {
+        setStatus("Calibration: result dropped - calibration of that projector ended", 6.0f);
+        return false;
+    }
+    auto& points = output->getCalibrationPoints();
+    if (pixel.index >= static_cast<int>(points.size()) || points[pixel.index].world != pixel.world) {
+        setStatus("Calibration: result dropped - the point was changed meanwhile", 6.0f);
+        return false;
+    }
+    // The canvas shows the output's frame edge to edge, so its normalized position is
+    // the projector pixel's (canvasToPixel); an ordinary edit, one undo step, which
+    // CalibrationPanel records with the live solve.
+    points[pixel.index].pixel =
+        canvasToPixel(Vec2(pixel.projector[0], pixel.projector[1]), output->getProjector().intrinsics);
+    CalibrationSession& cal = editor_.calibration;
+    cal.selected = pixel.index;
+    if (cal.pick == CalibrationSession::Pick::Photo) cal.pick = CalibrationSession::Pick::None;
+    cal.noteEdit("Place calibration point " + std::to_string(pixel.index + 1) + " from the AI photo");
+    cal.markChanged();
+    return true;
+}
+
 bool AiAssist::renderPatternFrames(OutputManager& outputs, Renderer& renderer) {
+    if (scanFrameShown_ && scanTexture_) {
+        ensurePatternQuad();
+        outputs.renderPatternFrames(*calibQuad_, scanTexture_.get(), renderer, scanOutputId_);
+        return true;
+    }
     if (!emitPattern_ || !calibQuad_) return false;
     outputs.renderPatternFrames(*calibQuad_, calibTexture_.get(), renderer);
     return true;
 }
 
 void AiAssist::stopSidecar() {
+    // A scan gives the outputs back while they still exist.
+    if (scan_) {
+        scan_->cancel();
+        scan_.reset();
+        scanHost_.reset();
+    }
     if (!sidecar_) return;
     // Kill any launched sidecar now (no orphan), even while a running request still
     // holds a share of the client: its HTTP call then fails fast instead of waiting

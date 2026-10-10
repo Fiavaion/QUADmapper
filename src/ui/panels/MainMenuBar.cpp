@@ -249,6 +249,19 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             if (!canSegment) {
                 ImGui::SetItemTooltip("This AI sidecar cannot segment: update it (tools/ai-sidecar)");
             }
+            // ADR-053 §3: Gray-code patterns on one output, a camera frame of each.
+            if (services->aiScanning()) {
+                if (ImGui::MenuItem("Cancel Scan")) run(AiAction::CancelScan);
+            } else {
+                const bool canScan = services->aiCanScan();
+                if (ImGui::MenuItem("Scan Output", nullptr, false, aiIdle && canScan)) {
+                    run(AiAction::ScanOutput);
+                }
+                ImGui::SetItemTooltip(canScan
+                    ? "Map the camera to the selected output (else the first enabled one): it shows "
+                      "patterns fullscreen and photographs each, about 15 s"
+                    : "This AI sidecar cannot scan: update it (tools/ai-sidecar)");
+            }
             ImGui::Separator();
             if (ImGui::BeginMenu("One-Flash")) {
                 if (ImGui::MenuItem("Emit Pattern", nullptr, false, aiAllowed)) run(AiAction::EmitPattern);

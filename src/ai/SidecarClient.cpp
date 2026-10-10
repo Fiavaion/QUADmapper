@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -181,6 +182,78 @@ std::optional<SegmentResult> parseSegmentResponse(const std::string& body,
         }
         if (j.contains("planarity") && j.at("planarity").is_number()) {
             out.planarity = j.at("planarity").get<float>();
+        }
+        return out;
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::optional<GrayPatternsResult> parseGrayPatternsResponse(const std::string& body,
+                                                            int expectedApiVersion) {
+    try {
+        const json j = json::parse(body);
+        if (j.value("api_version", -1) != expectedApiVersion) return std::nullopt;
+        const json& count = j.at("count");
+        if (!count.is_number_integer() || count.get<long long>() < 0 ||
+            count.get<long long>() > 10000) {
+            return std::nullopt;
+        }
+        GrayPatternsResult out;
+        out.count = count.get<int>();
+        out.stub = j.value("stub", false);
+        if (!out.stub && out.count < 3) return std::nullopt;  // at least one pattern + white/black
+        return out;
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::optional<GrayCodeResult> parseGrayCodeResponse(const std::string& body,
+                                                    int expectedApiVersion) {
+    try {
+        const json j = json::parse(body);
+        if (j.value("api_version", -1) != expectedApiVersion) return std::nullopt;
+        GrayCodeResult out;
+        out.stub = j.value("stub", false);
+        if (out.stub) return out;
+        const json& path = j.at("map_path");
+        const json& coverage = j.at("coverage");
+        if (!path.is_string() || path.get<std::string>().empty() || !coverage.is_number()) {
+            return std::nullopt;
+        }
+        out.mapPath = path.get<std::string>();
+        out.coverage = std::clamp(coverage.get<float>(), 0.0f, 1.0f);
+        if (j.contains("decode_error_px") && j.at("decode_error_px").is_number()) {
+            out.decodeErrorPx = j.at("decode_error_px").get<float>();
+        }
+        return out;
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::optional<GrayMapResult> parseGrayMapResponse(const std::string& body,
+                                                  int expectedApiVersion,
+                                                  size_t expectedPoints) {
+    try {
+        const json j = json::parse(body);
+        if (j.value("api_version", -1) != expectedApiVersion) return std::nullopt;
+        const json& points = j.at("points");
+        const json& valid = j.at("valid");
+        if (!points.is_array() || !valid.is_array() || points.size() != expectedPoints ||
+            valid.size() != expectedPoints) {
+            return std::nullopt;
+        }
+        GrayMapResult out;
+        for (size_t i = 0; i < expectedPoints; ++i) {
+            const json& p = points[i];
+            if (!p.is_array() || p.size() != 2 || !p[0].is_number() || !p[1].is_number() ||
+                !valid[i].is_boolean()) {
+                return std::nullopt;
+            }
+            out.points.push_back({p[0].get<float>(), p[1].get<float>()});
+            out.valid.push_back(valid[i].get<bool>());
         }
         return out;
     } catch (const json::exception&) {
@@ -414,6 +487,68 @@ SegmentReply SidecarClient::requestSegment(const std::string& imagePath,
     if (r.status != 200) return reply;
     reply.result = parseSegmentResponse(r.body, im.config.expectedApiVersion);
     return reply;
+}
+
+namespace {
+
+// POST `body` to a Gray-code endpoint and parse a 200 with `parse`; a 404 or a 400's
+// detail is reported, never thrown.
+template <typename T, typename Parse>
+GrayReply<T> grayRequest(const SidecarConfig& config, SidecarState state, const char* path,
+                         const json& body, Parse parse) {
+    GrayReply<T> reply;
+    if (state != SidecarState::Attached && state != SidecarState::Launched) return reply;
+    const HttpResponse r =
+        httpRequest(config.host, config.port, "POST", path, body.dump(), config.requestTimeoutMs);
+    if (!r.ok) return reply;
+    if (r.status == 404) {
+        reply.endpointMissing = true;
+    } else if (r.status == 400) {
+        try {
+            const json j = json::parse(r.body);
+            if (j.contains("detail") && j.at("detail").is_string()) reply.error = j.at("detail").get<std::string>();
+        } catch (const json::exception&) {
+        }
+        if (reply.error.empty()) reply.error = "bad request";
+    } else if (r.status == 200) {
+        reply.result = parse(r.body);
+    }
+    return reply;
+}
+
+}  // namespace
+
+GrayReply<GrayPatternsResult> SidecarClient::requestGrayPatterns(const std::string& folder,
+                                                                 int width, int height) {
+    const int version = impl_->config.expectedApiVersion;
+    return grayRequest<GrayPatternsResult>(
+        impl_->config, impl_->state.load(), "/graycode/patterns",
+        json{{"folder", folder}, {"projector", {width, height}}},
+        [version](const std::string& body) { return parseGrayPatternsResponse(body, version); });
+}
+
+GrayReply<GrayCodeResult> SidecarClient::requestGrayCode(const std::string& folder, int width,
+                                                         int height) {
+    const int version = impl_->config.expectedApiVersion;
+    return grayRequest<GrayCodeResult>(
+        impl_->config, impl_->state.load(), "/graycode",
+        json{{"folder", folder}, {"projector", {width, height}}},
+        [version](const std::string& body) { return parseGrayCodeResponse(body, version); });
+}
+
+GrayReply<GrayMapResult> SidecarClient::requestGrayMap(
+    const std::string& mapPath, const std::vector<std::array<float, 2>>& points) {
+    if (points.empty() || points.size() > MAX_GRAYMAP_POINTS) return {};
+    json list = json::array();
+    for (const auto& p : points) list.push_back({p[0], p[1]});
+    const int version = impl_->config.expectedApiVersion;
+    const size_t count = points.size();
+    return grayRequest<GrayMapResult>(
+        impl_->config, impl_->state.load(), "/graymap",
+        json{{"map_path", mapPath}, {"points", list}},
+        [version, count](const std::string& body) {
+            return parseGrayMapResponse(body, version, count);
+        });
 }
 
 std::optional<SurfaceResult> SidecarClient::requestSurface(

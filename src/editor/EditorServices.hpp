@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../core/UUID.hpp"
+
 #include <array>
 #include <optional>
 #include <string>
@@ -55,10 +57,11 @@ public:
 
     // ---- AI pre-show assist (ADR-035) ----------------------------------------------
     // Every action no-ops gracefully without a sidecar. TakePhoto, ApplyProposal and
-    // ClearProposal are the AI Photo panel's (ADR-053 §2).
+    // ClearProposal are the AI Photo panel's (ADR-053 §2); ScanOutput and CancelScan
+    // the Gray-code scan's (ADR-053 §3).
     enum class AiAction {
         Enable, DetectSurface, EmitPattern, CapturePhoto, ClearPattern, SolveApply, Anamorphic,
-        TakePhoto, ApplyProposal, ClearProposal
+        TakePhoto, ApplyProposal, ClearProposal, ScanOutput, CancelScan
     };
     virtual bool aiActive() const = 0;
     // A camera capture or sidecar request is running: the items that start one wait.
@@ -72,6 +75,18 @@ public:
     virtual const AiPhoto& aiPhoto() const = 0;
     // Ask for the surface under a click on the photo (normalized, top-left origin).
     virtual void aiSegmentAt(float x, float y) = 0;
+
+    // ---- Scan Output (ADR-053 §3) --------------------------------------------------
+    // The sidecar advertises "graycode". Cached: no I/O.
+    virtual bool aiCanScan() const = 0;
+    // A scan is showing its patterns or being decoded.
+    virtual bool aiScanning() const = 0;
+    // This session holds a current Gray-code map of that output (its resolution and
+    // display unchanged since the scan).
+    virtual bool aiHasScan(const UUID& outputId) const = 0;
+    // Assisted calibration: place the selected calibration point's pixel where a click
+    // on the AI photo (normalized, top-left origin) maps through the scan.
+    virtual void aiCalibrationPixelAt(float x, float y) = 0;
 };
 
 }  // namespace quadmapper

@@ -113,6 +113,10 @@ private:
     bool aiCanSegment() const override;
     const AiPhoto& aiPhoto() const override;
     void aiSegmentAt(float x, float y) override;
+    bool aiCanScan() const override;
+    bool aiScanning() const override;
+    bool aiHasScan(const UUID& outputId) const override;
+    void aiCalibrationPixelAt(float x, float y) override;
 
     // Ctrl+S: only queues a deferred EditorState::FileAction (as the File menu does);
     // the work runs in processPendingFileAction() at the next frame boundary (ADR-046).

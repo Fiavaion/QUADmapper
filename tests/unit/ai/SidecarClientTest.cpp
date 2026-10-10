@@ -13,7 +13,9 @@
 
 #include <process.h>  // _getpid
 
+#include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
@@ -225,4 +227,111 @@ TEST(SidecarClientTest, SegmentBeforeStartReturnsNothing) {
     EXPECT_FALSE(reply.result.has_value());
     EXPECT_FALSE(reply.endpointMissing);
     EXPECT_TRUE(client.capabilities().empty());
+}
+
+// --- Gray-code scan (ADR-053 §3) ---------------------------------------------
+
+using quadmapper::ai::parseGrayCodeResponse;
+using quadmapper::ai::parseGrayMapResponse;
+using quadmapper::ai::parseGrayPatternsResponse;
+
+TEST(SidecarClientTest, GrayPatternsReplyParses) {
+    auto r = parseGrayPatternsResponse(R"({"api_version": 1, "count": 46, "stub": false})", 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->count, 46);
+    EXPECT_FALSE(r->stub);
+
+    r = parseGrayPatternsResponse(R"({"api_version": 1, "count": 0, "stub": true})", 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(r->stub);
+
+    EXPECT_FALSE(parseGrayPatternsResponse(R"({"api_version": 2, "count": 46})", 1));
+    EXPECT_FALSE(parseGrayPatternsResponse(R"({"api_version": 1, "count": -1})", 1));
+    EXPECT_FALSE(parseGrayPatternsResponse(R"({"api_version": 1, "count": 2.5})", 1));
+    EXPECT_FALSE(parseGrayPatternsResponse(R"({"api_version": 1, "count": 2, "stub": false})", 1))
+        << "fewer than one pattern plus white and black";
+    EXPECT_FALSE(parseGrayPatternsResponse(R"({"api_version": 1})", 1));
+}
+
+TEST(SidecarClientTest, GrayCodeReplyParses) {
+    auto r = parseGrayCodeResponse(R"({"api_version": 1, "map_path": "C:/s/graymap.npz",
+        "coverage": 0.93, "decode_error_px": 0.21, "stub": false})", 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->mapPath, "C:/s/graymap.npz");
+    EXPECT_FLOAT_EQ(r->coverage, 0.93f);
+    ASSERT_TRUE(r->decodeErrorPx.has_value());
+    EXPECT_FLOAT_EQ(*r->decodeErrorPx, 0.21f);
+
+    r = parseGrayCodeResponse(R"({"api_version": 1, "map_path": "m.npz", "coverage": 0.0,
+        "decode_error_px": null, "stub": false})", 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(r->decodeErrorPx.has_value());
+
+    r = parseGrayCodeResponse(R"({"api_version": 1, "map_path": null, "coverage": 0.0,
+        "decode_error_px": null, "stub": true})", 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(r->stub);
+    EXPECT_TRUE(r->mapPath.empty());
+
+    EXPECT_FALSE(parseGrayCodeResponse(R"({"api_version": 1, "map_path": "", "coverage": 0.5})", 1));
+    EXPECT_FALSE(parseGrayCodeResponse(R"({"api_version": 1, "map_path": "m.npz"})", 1));
+    EXPECT_FALSE(parseGrayCodeResponse(R"({"api_version": 3, "map_path": "m.npz", "coverage": 1})", 1));
+}
+
+TEST(SidecarClientTest, GrayMapReplyParsesOnlyWithOneAnswerPerPoint) {
+    const char* body = R"({"api_version": 1, "points": [[0.25, 0.5], [-1, -1]], "valid": [true, false]})";
+    auto r = parseGrayMapResponse(body, 1, 2);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(r->points.size(), 2u);
+    EXPECT_FLOAT_EQ(r->points[0][0], 0.25f);
+    EXPECT_EQ(r->valid, (std::vector<bool>{true, false}));
+
+    EXPECT_FALSE(parseGrayMapResponse(body, 1, 3));
+    EXPECT_FALSE(parseGrayMapResponse(R"({"api_version": 1, "points": [[0.5, 0.5]], "valid": [1]})", 1, 1));
+    EXPECT_FALSE(parseGrayMapResponse(R"({"api_version": 1, "points": [[0.5]], "valid": [true]})", 1, 1));
+    EXPECT_FALSE(parseGrayMapResponse(R"({"api_version": 1, "points": [[0.5, 0.5]]})", 1, 1));
+}
+
+TEST(SidecarClientTest, GrayRequestsBeforeStartReturnNothing) {
+    SidecarConfig cfg;
+    cfg.port = 8796;
+    SidecarClient client(cfg);
+    EXPECT_FALSE(client.requestGrayPatterns("C:/tmp", 64, 32).result.has_value());
+    EXPECT_FALSE(client.requestGrayCode("C:/tmp", 64, 32).result.has_value());
+    const auto map = client.requestGrayMap("m.npz", {{0.5f, 0.5f}});
+    EXPECT_FALSE(map.result.has_value());
+    EXPECT_FALSE(map.endpointMissing);
+    EXPECT_TRUE(map.error.empty());
+}
+
+// The 400s carry their detail to the app; a sidecar with OpenCV contrib writes patterns.
+TEST(SidecarClientTest, LiveGrayCodeRequestsReportBadRequestsAndWritePatterns) {
+    if (std::string(QM_SIDECAR_SCRIPT).empty()) {
+        GTEST_SKIP() << "sidecar script path not configured";
+    }
+    SidecarClient client(liveConfig());
+    if (!client.start()) {
+        GTEST_SKIP() << "Python sidecar could not be launched (Python absent?)";
+    }
+    const auto missing = client.requestGrayCode("Z:/no/such/qm/folder", 64, 32);
+    EXPECT_FALSE(missing.result.has_value());
+    EXPECT_EQ(missing.error, "folder does not exist");
+    const auto badMap = client.requestGrayMap("Z:/no/such/graymap.npz", {{0.5f, 0.5f}});
+    EXPECT_EQ(badMap.error, "map_path does not exist");
+
+    const auto caps = client.capabilities();
+    if (std::find(caps.begin(), caps.end(), "graycode") != caps.end()) {
+        namespace fs = std::filesystem;
+        const fs::path folder =
+            fs::temp_directory_path() / ("qm_graycode_" + std::to_string(_getpid()));
+        fs::create_directories(folder);
+        const auto patterns = client.requestGrayPatterns(folder.string(), 64, 32);
+        ASSERT_TRUE(patterns.result.has_value());
+        EXPECT_FALSE(patterns.result->stub);
+        EXPECT_GT(patterns.result->count, 2);
+        EXPECT_TRUE(fs::exists(folder / "pattern_000.png"));
+        std::error_code ec;
+        fs::remove_all(folder, ec);
+    }
+    client.stop();
 }

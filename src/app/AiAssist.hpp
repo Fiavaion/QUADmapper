@@ -1,5 +1,6 @@
 #pragma once
 
+#include "GrayCodeScan.hpp"
 #include "../core/UUID.hpp"
 #include "../editor/EditorServices.hpp"
 
@@ -10,6 +11,8 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
 namespace quadmapper {
 
@@ -22,13 +25,18 @@ namespace ai {
 class SidecarClient;
 struct SidecarConfig;
 struct SegmentReply;
+struct SurfaceResult;
+struct GrayMapResult;
+template <typename T>
+struct GrayReply;
 enum class SidecarState;
 }
 
-// The optional AI pre-show assist (ADR-035, ADR-051 §1): the sidecar's lifecycle,
-// "Detect Surface" and the One-Flash pattern, capture and solve. Owned by
-// Application; results land on the selected quad and in the editor's status line.
-// Geometry only: nothing here changes the .qmap format.
+// The optional AI pre-show assist (ADR-035, ADR-051 §1, ADR-053): the sidecar's
+// lifecycle, "Detect Surface", the One-Flash pattern, capture and solve, Pick Surface,
+// and the Gray-code Scan Output with its session-only maps. Owned by Application;
+// results land on the selected quad (or calibration point) and in the editor's status
+// line. Geometry only: nothing here changes the .qmap format.
 class AiAssist {
 public:
     // `sidecar` may be null: every action then reports that AI is unavailable.
@@ -65,10 +73,34 @@ public:
     // outcome, and runs the QM_AI_SELFTEST hook on the third frame.
     void tick(OutputManager* outputs);
 
+    // A Gray-code map of one output (ADR-053 §3), held for the session only: never in
+    // the .qmap. Made at `output`'s resolution and display; a change to either makes it
+    // stale (grayMapCurrent).
+    struct GrayMap {
+        UUID outputId;
+        ScanOutput output;
+        std::string path;  // the sidecar's .npz, beside the captures
+        float coverage = 0.0f;
+        std::optional<float> decodeErrorPx;
+    };
+    static bool grayMapCurrent(const GrayMap& map, const std::optional<ScanOutput>& now);
+
+    // Assisted calibration: where a click on the photo put a calibration point, in the
+    // output's normalized frame. `world` names the point, so a list edited meanwhile
+    // never moves another one.
+    struct CalibrationPixel {
+        UUID outputId;
+        int index = -1;
+        Vec3 world{0.0f};
+        std::array<float, 2> projector{};
+    };
+
     // What a request made off the main thread hands back: a status line and, for a
     // confident warp, the target quad's new corners (TL,TR,BR,BL, normalized). The
     // AI Photo requests hand back a proposal (Pick Surface) or a new photo; a One-Flash
-    // capture hands back its photo, which Pick Surface's Apply maps through.
+    // capture hands back its photo, which Pick Surface's Apply maps through. A scan's
+    // requests hand back its frame count, then its map; an assisted calibration click
+    // its point's pixel.
     struct Outcome {
         std::string status;
         float seconds = 5.0f;
@@ -79,6 +111,10 @@ public:
         // The remembered One-Flash photo showed no usable pattern: forget it, so the
         // next Apply does not try it again.
         bool forgetOneFlashPhoto = false;
+        // /graycode/patterns: frames written (0: failed, `status` says why).
+        std::optional<int> scanFrames;
+        std::optional<GrayMap> grayMap;
+        std::optional<CalibrationPixel> calibrationPixel;
     };
     // Runs `work` on a worker thread so the camera and the sidecar's HTTP call never
     // stall a frame; tick() applies its outcome on the main thread. Corners land on
@@ -122,23 +158,55 @@ public:
     // origin). The proposal is only shown: nothing changes until applyProposal().
     void segmentAt(float x, float y);
     // Warp the quad selected now onto the proposal, mapped into projector space with
-    // the best mapping available (pickMapping).
-    void applyProposal();
+    // the best mapping available (pickMapping). `outputs` finds the output showing the
+    // quad, whose Gray-code map is used when it is current; it may be null.
+    void applyProposal(const OutputManager* outputs = nullptr);
     void clearProposal();
 
-    // How Pick Surface maps photo corners into projector space, best first. A
-    // Gray-code map (ADR-053 §3) will rank above OneFlash when it exists.
+    // How Pick Surface maps photo corners into projector space, best first.
     enum class PickMapping {
+        GrayCode,           // through the scanned output's current Gray-code map (/graymap)
         OneFlash,           // through /oneflash with the One-Flash photo taken this session
         CameraAtProjector,  // photo space as-is
     };
-    static PickMapping pickMapping(const std::string& oneFlashPhoto);
+    static PickMapping pickMapping(bool grayMapCurrent, const std::string& oneFlashPhoto);
+
+    // Pick Surface's mapping chain, run by Apply's worker: through `grayMap` when given,
+    // else (or when a corner falls outside the scanned area, or the map fails) through
+    // `oneFlash` when given, else photo space as-is; the status says which and why.
+    using Corners = std::array<std::array<float, 2>, 4>;
+    using GrayMapFn = std::function<ai::GrayReply<ai::GrayMapResult>(
+        const std::vector<std::array<float, 2>>&)>;
+    using OneFlashFn = std::function<std::optional<ai::SurfaceResult>(const Corners&)>;
+    static Outcome mapPickCorners(const Corners& photoCorners, const GrayMapFn& grayMap,
+                                  const OneFlashFn& oneFlash);
     // A finished /segment call as the panel shows it: the proposal (also a stub or a
     // low-confidence one, which Apply refuses) and a status line.
     static Outcome segmentOutcome(const ai::SegmentReply& reply);
 
-    // When the One-Flash pattern is armed, draws it fullscreen into every output's
-    // frame in place of the scene and returns true; otherwise draws nothing.
+    // ---- Scan Output (ADR-053 §3) ---------------------------------------------------
+    // The sidecar advertises "graycode" (cached at its health check, no I/O).
+    bool canScan() const;
+    // A scan is preparing or showing its frames (its decode afterwards is an ordinary
+    // request: isBusy).
+    bool isScanning() const { return scan_ != nullptr; }
+    // AI > Scan Output: scan the selected output, else the first enabled one. Refused
+    // under the perform lock, under blackout, while calibrating, while another request
+    // runs, and without the "graycode" capability. Ticked by tick(); the status line
+    // shows its progress, and Cancel Scan, Esc or anything that leaves perform mode
+    // cancels it.
+    void scanOutput(OutputManager* outputs);
+    void cancelScan();
+    // The output's map when this session has one and it is current; else null.
+    const GrayMap* currentGrayMap(const UUID& outputId, const OutputManager* outputs) const;
+    // Assisted calibration (ADR-052 §6): place the selected calibration point's pixel
+    // where a click on the AI photo (normalized) maps through the calibrated output's
+    // current scan. One calibration undo step; refused under the perform lock.
+    void calibrationPixelAt(float x, float y, const OutputManager* outputs);
+
+    // Draws, in place of the scene, the scan's frame fullscreen on the scanned output
+    // (the others black) while a scan shows one, else the armed One-Flash pattern on
+    // every output, and returns true; otherwise draws nothing.
     bool renderPatternFrames(OutputManager& outputs, Renderer& renderer);
 
     // Shutdown: stop and kill any launched sidecar (no orphan). Application calls it
@@ -156,6 +224,13 @@ private:
     // Open the first camera, grab one frame, and write it to pngPath. Returns
     // false with a human-readable reason in `error`.
     static bool captureCameraFrameToPng(const std::string& pngPath, std::string& error);
+
+    // ScanHost over the outputs and the editor; showFrame loads the scan's frame image.
+    class ScanHostImpl;
+    // Every frame is captured: let the scan go and ask the sidecar for its map.
+    void startScanDecode();
+    // The fullscreen identity quad the One-Flash pattern and the scan's frames ride on.
+    void ensurePatternQuad();
 
     EditorState& editor_;
     // Shared with a running request, which may still be inside its HTTP call when
@@ -179,13 +254,24 @@ private:
     AiPhoto photo_;
     std::string oneFlashPhoto_;
 
+    // The scan in progress (at most one), the frame it shows, and the session's maps.
+    std::unique_ptr<ScanHostImpl> scanHost_;
+    std::unique_ptr<GrayCodeScan> scan_;
+    std::unique_ptr<Texture> scanTexture_;
+    bool scanFrameShown_ = false;
+    UUID scanOutputId_;
+    std::string scanProgress_;  // last progress posted, so it is posted on change only
+    std::unordered_map<UUID, GrayMap> grayMaps_;
+
     // The request in flight (at most one). The worker owns a share of Request, so a
     // worker still stuck at shutdown can be detached safely.
     struct Request;
     std::shared_ptr<Request> request_;
     std::thread requestThread_;
     // On the main thread: post a finished request's outcome (see startRequest).
-    void applyOutcome(const Request& request);
+    void applyOutcome(const Request& request, OutputManager* outputs);
+    // False, with the status saying why, when the point or its calibration is gone.
+    bool applyCalibrationPixel(const CalibrationPixel& pixel, OutputManager* outputs);
 };
 
 } // namespace quadmapper

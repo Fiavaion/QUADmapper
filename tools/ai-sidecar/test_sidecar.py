@@ -57,7 +57,7 @@ def test_health_reports_version(live_server):
     assert body["api_version"] == sidecar.SIDECAR_API_VERSION
     assert body["service"] == sidecar.SERVICE_NAME
     assert isinstance(body["capabilities"], list)
-    assert set(body["capabilities"]) <= {"surface", "oneflash", "segment", "depth"}
+    assert set(body["capabilities"]) <= {"surface", "oneflash", "segment", "depth", "graycode"}
 
 
 def test_health_drops_model_capabilities_without_models(live_server, no_models):

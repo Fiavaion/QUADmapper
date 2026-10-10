@@ -239,6 +239,8 @@ target_link_libraries(test_app PRIVATE quadmapper_ui quadmapper_editor glfw)
 # executable, TD-14) without a sidecar, camera or GL context.
 add_quadmapper_test(test_ai_assist
     app/AiAssistTest.cpp
+    app/GrayCodeScanTest.cpp
     ${CMAKE_SOURCE_DIR}/src/app/AiAssist.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/GrayCodeScan.cpp
 )
 target_link_libraries(test_ai_assist PRIVATE quadmapper_editor quadmapper_ai)

@@ -52,6 +52,49 @@ constexpr size_t MAX_SEGMENT_OUTLINE_POINTS = 256;
 std::optional<SegmentResult> parseSegmentResponse(const std::string& body,
                                                   int expectedApiVersion);
 
+// ---- Gray-code scan (ADR-053 §3) -------------------------------------------------------
+
+// POST /graycode/patterns: how many frames the sidecar wrote (pattern_000.png ...), from
+// OpenCV's generator. 0 with stub == true: the sidecar has no OpenCV contrib.
+struct GrayPatternsResult {
+    int count = 0;
+    bool stub = false;
+};
+// POST /graycode: the decoded camera -> projector map beside the captures.
+struct GrayCodeResult {
+    std::string mapPath;                // empty on a stub
+    float coverage = 0.0f;              // share of the projector's area the camera saw
+    std::optional<float> decodeErrorPx; // nullopt: nothing decoded
+    bool stub = false;
+};
+// POST /graymap: normalized photo points -> normalized projector points, with whether
+// each fell inside the decoded area.
+struct GrayMapResult {
+    std::vector<std::array<float, 2>> points;
+    std::vector<bool> valid;
+};
+
+// What a Gray-code request hands back: a result, or why there is none.
+template <typename T>
+struct GrayReply {
+    std::optional<T> result;
+    bool endpointMissing = false;  // HTTP 404: the sidecar predates the endpoint
+    std::string error;             // a 400's detail (a missing capture, a stale map)
+};
+
+// The most points one /graymap call carries (the sidecar's limit).
+constexpr size_t MAX_GRAYMAP_POINTS = 64;
+
+// Parse the replies; nullopt on a version mismatch or a malformed body. /graymap must
+// carry exactly `expectedPoints` points.
+std::optional<GrayPatternsResult> parseGrayPatternsResponse(const std::string& body,
+                                                            int expectedApiVersion);
+std::optional<GrayCodeResult> parseGrayCodeResponse(const std::string& body,
+                                                    int expectedApiVersion);
+std::optional<GrayMapResult> parseGrayMapResponse(const std::string& body,
+                                                  int expectedApiVersion,
+                                                  size_t expectedPoints);
+
 // The capabilities a /health body advertises. A sidecar that predates the field
 // (ADR-053 §1) can do what it always could: {"surface", "oneflash"}.
 std::vector<std::string> parseCapabilities(const std::string& healthBody);
@@ -110,7 +153,7 @@ public:
     SidecarState state() const;
 
     // What the sidecar advertised at its last successful health check ("surface",
-    // "oneflash", "segment", "depth"); empty until one succeeds. Cached: no I/O.
+    // "oneflash", "segment", "depth", "graycode"); empty until one succeeds. Cached: no I/O.
     std::vector<std::string> capabilities() const;
 
     // POST /surface {image_path}. Returns nullopt on any transport, parse, or
@@ -134,6 +177,17 @@ public:
     // an old sidecar's 404 sets endpointMissing.
     SegmentReply requestSegment(const std::string& imagePath,
                                 const std::array<float, 2>& point);
+
+    // The Gray-code scan (ADR-053 §3), same best-effort contract. `folder` is the scan
+    // folder; width x height the output's resolution.
+    //   requestGrayPatterns: write the pattern PNGs into `folder`.
+    //   requestGrayCode:     decode folder's captures into a map.
+    //   requestGrayMap:      map up to MAX_GRAYMAP_POINTS normalized photo points.
+    GrayReply<GrayPatternsResult> requestGrayPatterns(const std::string& folder, int width,
+                                                      int height);
+    GrayReply<GrayCodeResult> requestGrayCode(const std::string& folder, int width, int height);
+    GrayReply<GrayMapResult> requestGrayMap(const std::string& mapPath,
+                                            const std::vector<std::array<float, 2>>& points);
 
 private:
     struct Impl;

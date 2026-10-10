@@ -1060,9 +1060,10 @@ bool OutputManager::renderFadeLayers(const OutputWindow& output, IVec2 effective
 }
 
 void OutputManager::renderPatternFrames(const Quad& patternQuad, const Texture* texture,
-                                        Renderer& renderer) {
+                                        Renderer& renderer, const UUID& only) {
     // One fullscreen identity quad carrying the calibration texture.
-    renderFrames(renderer, [&](const OutputWindow&, IVec2) {
+    renderFrames(renderer, [&](const OutputWindow& output, IVec2) {
+        if (!only.isNull() && output.getId() != only) return;  // left black
         renderer.renderQuad(patternQuad, texture, /*selected=*/false);
     });
 }

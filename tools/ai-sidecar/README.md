@@ -62,6 +62,9 @@ malformed request gets 400.
 | POST | `/surface` | `{image_path}` | `{api_version, corners[4], plane, confidence, stub}` |
 | POST | `/oneflash` | `{pattern_image, target_corners?, surface_image?}` | `{api_version, corners[4], homography, confidence, stub}` |
 | POST | `/segment` | `{image_path, point: [x, y], model?: "small"\|"tiny"}` | `{api_version, corners[4], outline, confidence, planarity, stub}` |
+| POST | `/graycode/patterns` | `{folder, projector: [W, H]}` | `{api_version, count, stub}` |
+| POST | `/graycode` | `{folder, projector: [W, H]}` | `{api_version, map_path, coverage, decode_error_px, stub}` |
+| POST | `/graymap` | `{map_path, points: [[x, y], ...]}` | `{api_version, points: [[x, y], ...], valid: [bool, ...]}` |
 
 `api_version` is bumped on any shape change; the C++ client refuses to attach to
 a sidecar whose version it does not understand. Responses may carry extra
@@ -79,6 +82,7 @@ load fails is dropped for the rest of the run.
 | `oneflash` | `cv2.aruco` + `resources/patterns/charuco.png` |
 | `segment` | SAM 2.1 small |
 | `depth` | Depth Anything V2 Small |
+| `graycode` | `cv2.structured_light` (opencv-contrib-python) |
 
 ### `/segment`: click-to-segment (ADR-053 section 2)
 
@@ -102,6 +106,29 @@ second click on the same photo takes tens of milliseconds.
 A request without `point`, with a point outside 0..1, an unknown `model` or a
 non-string `image_path` gets 400. A missing or unreadable image, or no SAM 2
 model, gives the stub.
+
+### Gray-code scan (ADR-053 section 3)
+
+The app drives the capture; the sidecar writes the patterns and decodes.
+
+1. `/graycode/patterns` writes OpenCV's `GrayCodePattern` sequence for a `W x H`
+   projector into `folder` as `pattern_000.png` ... : the patterns (each followed by
+   its inverse, columns then rows), then a white and a black frame. `count` is the
+   number of frames, read from the generator (46 at 1920x1080).
+2. The app shows frame k fullscreen on the output and saves one camera frame as
+   `capture_000.png` ... in the same folder.
+3. `/graycode` decodes the captures and writes `graymap.npz` beside them: for each
+   camera pixel, the projector pixel it sees, or -1. The decode is GrayCodePattern's
+   `getProjPixel` rule over the whole image at once (a test checks they agree), with
+   the white/black shadow mask. `coverage` is the share of the projector's area
+   (8 px cells) the camera saw; `decode_error_px` is the mean distance of a decoded
+   pixel from its 5x5 median, a noise estimate (null when nothing decoded).
+4. `/graymap` maps normalized photo points (the same camera, same position) to
+   normalized projector points: the median of the decoded pixels within 3 camera
+   pixels, at the pixel centre. A point with none is `valid: false`.
+
+Bad fields, a missing folder or capture, or a `map_path` that is not a map get
+400. Without OpenCV contrib, `/graycode/patterns` and `/graycode` give the stub.
 
 ### `/surface`: automatic detection (QM-057, re-engined by ADR-053)
 
@@ -147,3 +174,6 @@ tools\ai-sidecar\.venv\Scripts\python.exe -m pytest -q tools\ai-sidecar
 - `test_segment.py`: real SAM 2 on the theatre photo; skipped without models.
   Run with `-s` to see latencies.
 - `test_oneflash.py`: One-Flash homography on a synthetic warp.
+- `test_graycode.py`: Gray-code decode on patterns warped by a known homography
+  and a known non-planar displacement (within 1 px), agreement with
+  `getProjPixel`, and the `/graycode`, `/graycode/patterns`, `/graymap` contract.

@@ -1,6 +1,8 @@
 #include "CalibrationPanel.hpp"
 
+#include "AiPhotoPanel.hpp"
 #include "editor/EditorContext.hpp"
+#include "editor/EditorServices.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/TextureResolve.hpp"
 #include "output/OutputManager.hpp"
@@ -205,12 +207,37 @@ void CalibrationPanel::render(EditorContext& ctx) {
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Aim the uncalibrated projector at the objects with this lens");
 
+        // Assisted placement (ADR-053 §3): with a current scan of this projector, the
+        // selected point's pixel comes from a click on the AI photo.
+        EditorServices* services = ctx.services;
+        if (services && services->aiHasScan(output->getId())) {
+            const bool hasPhoto = !services->aiPhoto().path.empty();
+            if (cal.pick == CalibrationSession::Pick::Photo) {
+                if (ImGui::Button("Cancel Photo Pick")) cal.cancelPick();
+            } else {
+                ImGui::BeginDisabled(cal.selected < 0 || !hasPhoto || services->aiBusy());
+                if (ImGui::Button("Place From Photo")) {
+                    cal.cancelPick();
+                    cal.pick = CalibrationSession::Pick::Photo;
+                    es.requestPanelOpen(AiPhotoPanel::ID);
+                }
+                ImGui::EndDisabled();
+                ImGui::SetItemTooltip(
+                    !hasPhoto ? "Take a photo in the AI Photo panel first, from where the camera scanned"
+                    : cal.selected < 0 ? "Select a point first"
+                                       : "Click the selected point in the AI photo: the scan gives its pixel");
+            }
+        }
+
         if (cal.pick == CalibrationSession::Pick::World) {
             ImGui::TextColored(HINT_COLOR, "Click the model below to pick point %d (Esc cancels)",
                                static_cast<int>(points.size()) + 1);
         } else if (cal.pick == CalibrationSession::Pick::Pixel) {
             ImGui::TextColored(HINT_COLOR, "Click the canvas where point %d must land (Esc cancels)",
                                static_cast<int>(points.size()) + 1);
+        } else if (cal.pick == CalibrationSession::Pick::Photo) {
+            ImGui::TextColored(HINT_COLOR, "Click point %d in the AI Photo panel (Esc cancels)",
+                               cal.selected + 1);
         }
 
         int deleteIndex = -1;
