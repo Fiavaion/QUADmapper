@@ -131,6 +131,10 @@ public:
             return scanPatternsOutcome(sidecar->requestGrayPatterns(folder, size.x, size.y));
         });
     }
+    void showBlack() override {
+        ai_.scanTexture_.reset();
+        ai_.scanFrameShown_ = true;
+    }
     bool showFrame(int index) override {
         auto texture = std::make_unique<Texture>();
         if (!texture->loadFromFile(folder_ / GrayCodeScan::patternName(index))) return false;
@@ -1075,9 +1079,12 @@ bool AiAssist::applyCalibrationPixel(const CalibrationPixel& pixel, OutputManage
 }
 
 bool AiAssist::renderPatternFrames(OutputManager& outputs, Renderer& renderer) {
-    if (scanFrameShown_ && scanTexture_) {
+    if (scanFrameShown_) {
         ensurePatternQuad();
-        outputs.renderPatternFrames(*calibQuad_, scanTexture_.get(), renderer, scanOutputId_);
+        // Preparing (no frame yet): `only` matches no output, so every output is black.
+        static const UUID NO_OUTPUT = UUID::generate();
+        outputs.renderPatternFrames(*calibQuad_, scanTexture_.get(), renderer,
+                                    scanTexture_ ? scanOutputId_ : NO_OUTPUT);
         return true;
     }
     if (!emitPattern_ || !calibQuad_) return false;

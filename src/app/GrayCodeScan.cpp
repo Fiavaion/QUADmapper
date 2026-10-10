@@ -233,6 +233,9 @@ std::string GrayCodeScan::interruption() const {
 }
 
 void GrayCodeScan::requestPatterns() {
+    // Black while the output goes fullscreen, the camera opens and the frames are written.
+    host_.showBlack();
+    frameShown_ = true;
     if (!host_.inPerformMode()) {
         if (!host_.enterPerformMode()) {
             fail("Scan: the output could not go fullscreen (is its display connected?)");

@@ -54,6 +54,11 @@ struct FakeHost : ScanHost {
         perform = false;
     }
     std::optional<ScanOutput> output(const UUID&) const override { return out; }
+    int blacks = 0;
+    void showBlack() override {
+        ++blacks;
+        shownNow = -2;  // -2: black
+    }
     bool showFrame(int index) override {
         if (index == missingFrame) return false;
         shown.push_back(index);
@@ -330,7 +335,42 @@ TEST_F(GrayCodeScanTest, TheLockEndsItBeforeAnythingIsShown) {
     EXPECT_EQ(scan->endStatus(), "Scan cancelled: the show was locked");
     EXPECT_EQ(host.performEntries, 0);
     EXPECT_TRUE(host.shown.empty());
+    EXPECT_EQ(host.blacks, 0);
     EXPECT_EQ(host.hides, 0) << "nothing was shown, so nothing is hidden";
+}
+
+TEST_F(GrayCodeScanTest, PreparingShowsBlackAndEveryEndingClearsIt) {
+    camera->state = ScanCamera::State::Opening;
+    tick();
+    EXPECT_EQ(host.blacks, 1);
+    EXPECT_EQ(host.shownNow, -2) << "black while preparing";
+    tick();
+    EXPECT_EQ(host.blacks, 1) << "asked once";
+    scan->cancel();
+    EXPECT_EQ(host.shownNow, -1);
+    EXPECT_EQ(host.hides, 1);
+
+    // The patterns failing ends it too.
+    restart();
+    host.hides = 0;
+    camera->state = ScanCamera::State::Opening;
+    tick();
+    EXPECT_EQ(host.shownNow, -2);
+    scan->patternsReplied(std::nullopt);
+    EXPECT_EQ(host.shownNow, -1);
+    EXPECT_EQ(host.hides, 1);
+
+    // As does finishing: the first frame replaces the black, the last clears it.
+    restart();
+    host.hides = 0;
+    startShowing();
+    EXPECT_EQ(host.shownNow, 0);
+    for (int k = 0; k < 4; ++k) {
+        ASSERT_TRUE(tickUntilCapture(5.0));
+        finishCapture();
+    }
+    EXPECT_EQ(scan->phase(), Phase::Captured);
+    EXPECT_EQ(host.shownNow, -1);
 }
 
 TEST_F(GrayCodeScanTest, CameraAndFrameFailuresEndItWithTheReason) {

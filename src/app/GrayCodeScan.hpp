@@ -68,10 +68,13 @@ public:
     // Ask the sidecar for the frames at `size` (/graycode/patterns); the reply comes
     // back through patternsReplied. False: it could not be asked.
     virtual bool requestPatterns(IVec2 size) = 0;
+    // The scanned output (and every other) shows black from now on, until the first frame
+    // or hideFrames.
+    virtual void showBlack() = 0;
     // Show frame `index` of the sequence fullscreen on the scanned output from now on
     // (the other outputs black). False: its image could not be loaded.
     virtual bool showFrame(int index) = 0;
-    // Back to the show on every output.
+    // Back to the show on every output (after showBlack or a frame).
     virtual void hideFrames() = 0;
 };
 
