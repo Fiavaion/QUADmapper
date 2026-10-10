@@ -62,7 +62,8 @@ void togglePerformLock(EditorContext& ctx);
 // The perform.escape action (Esc, which acts with a popup open). While a session modal
 // is up (Unlock the Show?, Unsaved Changes, Recover Unsaved Work) Esc answers only the
 // modal: the unlock prompt stays locked, and nothing else is left, perform mode least
-// of all. Otherwise it cancels a pending MIDI learn, then leaves slice warp editing, a
+// of all. Otherwise it cancels a pending MIDI learn, then cancels a running Gray-code
+// scan (EditorState::aiScan), or else leaves slice warp editing, a
 // calibration pick, calibration, or else perform mode.
 void performEscape(EditorContext& ctx);
 

@@ -146,6 +146,12 @@ void performEscape(EditorContext& ctx) {
     if (es.unsavedPromptFor != EditorState::FileAction::None || !es.recoveryFilePath.empty()) return;
 
     if (ctx.control) ctx.control->dispatcher().cancelLearn();
+    // A running scan owns Esc in every phase (calibration and slice warp editing cannot
+    // start during one): it is cancelled, which also gives back the perform mode it took.
+    if (es.aiScan.running) {
+        es.aiScan.cancelRequested = true;
+        return;
+    }
     // Slice warp editing takes Esc: it leaves warp editing. While calibrating, Esc
     // belongs to calibration: it cancels a pick in progress, else leaves calibration,
     // and never also leaves perform mode (Esc on an output window still does).

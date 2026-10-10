@@ -141,7 +141,7 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
         // The canvas belongs to calibration while a projector is calibrated
         // (EditorState::beginSliceWarp refuses); the numbers below still edit the warp.
         const bool calibrating = !es.calibratingOutputId.isNull();
-        ImGui::BeginDisabled(calibrating);
+        ImGui::BeginDisabled(calibrating || es.aiScan.running);  // a scan owns Esc
         if (ImGui::Button("Edit Warp on Canvas")) es.beginSliceWarp(output, sliceId);
         ImGui::EndDisabled();
         ImGui::SetItemTooltip(calibrating

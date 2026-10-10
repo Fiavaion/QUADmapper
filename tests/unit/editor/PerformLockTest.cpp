@@ -222,6 +222,27 @@ TEST_F(PerformLockTest, LockingEndsSliceWarpEditingAndRefusesToStartIt) {
     EXPECT_EQ(canvasKeyOwner(es, &om), CanvasKeyOwner::None);
 }
 
+// A Gray-code scan (ADR-053 §3) owns Esc in every phase: Esc asks to cancel it and
+// leaves nothing else, and calibration and slice warp editing, which also take Esc,
+// cannot start while it runs.
+TEST_F(PerformLockTest, AScanOwnsEscAndHoldsOffCalibrationAndSliceWarp) {
+    es.aiScan.running = true;
+    performEscape(ctx);
+    EXPECT_TRUE(es.aiScan.cancelRequested);
+
+    es.beginCalibration(*output);
+    EXPECT_TRUE(es.calibratingOutputId.isNull());
+    es.beginSliceWarp(*output, output->getSlices()[0].id);
+    EXPECT_TRUE(es.sliceWarpOutputId.isNull());
+
+    es.aiScan = {};
+    es.beginCalibration(*output);
+    EXPECT_FALSE(es.calibratingOutputId.isNull());
+    performEscape(ctx);
+    EXPECT_TRUE(es.calibratingOutputId.isNull()) << "without a scan, Esc is calibration's";
+    EXPECT_FALSE(es.aiScan.cancelRequested);
+}
+
 TEST_F(PerformLockTest, UnlockingNeedsTheConfirmation) {
     lock();
     EXPECT_FALSE(confirmPerformUnlock(es)) << "no unlock was asked for";

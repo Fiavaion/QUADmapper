@@ -401,6 +401,15 @@ struct EditorState {
     std::string previewSourcePath;
     std::vector<UUID> endedPreviews;
 
+    // A Gray-code Scan Output (ADR-053 §3) is running: Esc is its (performEscape asks to
+    // cancel it), so calibration and slice warp editing, which also take Esc, wait for
+    // it to end. Runtime state, set by the application's AI assist; never saved.
+    struct AiScanState {
+        bool running = false;
+        bool cancelRequested = false;  // Esc: the AI assist cancels on its next tick
+    };
+    AiScanState aiScan;
+
     // Projector calibration mode (ADR-052 §6). While an output is being calibrated the
     // canvas edits that output's calibration points instead of quad vertices.
     UUID calibratingOutputId;  // null = not calibrating
@@ -414,9 +423,9 @@ struct EditorState {
     // the active one, so the canvas shows that projector's output frame, slices, warp
     // and blend included, with the calibration points in projector pixels
     // (calibrationViewOutput, TD-29). Leaves slice warp editing.
-    // Not under the perform lock (ADR-051 §4).
+    // Not under the perform lock (ADR-051 §4), nor during a scan (aiScan).
     void beginCalibration(const OutputWindow& output) {
-        if (performLock.isOn()) return;
+        if (performLock.isOn() || aiScan.running) return;
         endSliceWarp();
         if (findSceneIndex(scenes, output.getSceneId()) >= 0) setActiveScene(output.getSceneId());
         calibratingOutputId = output.getId();
@@ -443,9 +452,10 @@ struct EditorState {
     OutputSlices sliceWarpDragBefore;  // for one undo step when the drag ends
 
     // Start editing the warp of `sliceId` on `output` on the canvas. Not while
-    // calibrating (calibration owns the canvas then), nor under the perform lock.
+    // calibrating (calibration owns the canvas then), under the perform lock, or during
+    // a scan (aiScan).
     void beginSliceWarp(const OutputWindow& output, const UUID& sliceId) {
-        if (!calibratingOutputId.isNull() || performLock.isOn()) return;
+        if (!calibratingOutputId.isNull() || performLock.isOn() || aiScan.running) return;
         finishSliceWarpDrag();
         sliceWarpOutputId = output.getId();
         selectedSliceId = sliceId;

@@ -18,8 +18,9 @@ namespace quadmapper {
 // sidecar writes the frames before the scan (/graycode/patterns) and decodes the
 // captures after it (/graycode); AiAssist makes those calls.
 
-// An output as the scan saw it. A change to either field ends the scan, and makes a map
-// taken before it stale.
+// An output as the scan sees it: its display, and the size it shows there in perform
+// mode (the display's mode, not the window's size, which windowed and fullscreen
+// differ in). A change to either ends the scan, and makes a map taken before it stale.
 struct ScanOutput {
     IVec2 resolution{0, 0};
     int monitor = -1;
@@ -64,6 +65,9 @@ public:
     virtual void exitPerformMode() = 0;
     // The output now, or nullopt when it is gone.
     virtual std::optional<ScanOutput> output(const UUID& outputId) const = 0;
+    // Ask the sidecar for the frames at `size` (/graycode/patterns); the reply comes
+    // back through patternsReplied. False: it could not be asked.
+    virtual bool requestPatterns(IVec2 size) = 0;
     // Show frame `index` of the sequence fullscreen on the scanned output from now on
     // (the other outputs black). False: its image could not be loaded.
     virtual bool showFrame(int index) = 0;
@@ -83,7 +87,7 @@ public:
     static constexpr int MIN_TICKS_SHOWN = 2;
 
     enum class Phase {
-        Preparing,  // waiting for the sidecar's frames and the camera
+        Preparing,  // going fullscreen, then waiting for the sidecar's frames and the camera
         Settling,   // a frame is up; waiting for it to settle
         Capturing,  // the camera is saving it
         Captured,   // every frame saved and everything restored: decode next
@@ -100,8 +104,14 @@ public:
     GrayCodeScan(const GrayCodeScan&) = delete;
     GrayCodeScan& operator=(const GrayCodeScan&) = delete;
 
-    // The sidecar wrote `frameCount` frames (from its generator; never assumed here).
-    void patternsReady(int frameCount);
+    // The frames were asked for and their reply has not come.
+    bool awaitingPatterns() const {
+        return phase_ == Phase::Preparing && patternsRequested_ && frameCount_ == 0;
+    }
+    // The reply: the sidecar wrote `frameCount` frames (from its generator; never assumed
+    // here). With nullopt (the request failed) or too few, the scan ends with
+    // `failStatus`.
+    void patternsReplied(std::optional<int> frameCount, const std::string& failStatus = {});
     // End now with `status`, restoring what the scan changed. No-op once over.
     void fail(const std::string& status);
     void cancel() { fail("Scan cancelled"); }
@@ -114,17 +124,20 @@ public:
     const std::string& endStatus() const { return endStatus_; }
     int frameCount() const { return frameCount_; }
     int capturedFrames() const { return captured_; }
-    // "Scan: 12/46 (Esc cancels)", or "Scan: preparing...".
+    // "Scan: 12/46 (Esc cancels)", or "Scan: preparing... (Esc cancels)".
     std::string progress() const;
 
     const UUID& outputId() const { return outputId_; }
     const ScanOutput& output() const { return output_; }
+    // The size the frames were made for, which the decode must use.
+    IVec2 patternSize() const { return patternSize_; }
     const std::filesystem::path& folder() const { return folder_; }
 
     static std::string patternName(int index);
     static std::string captureName(int index);
 
 private:
+    void requestPatterns();
     void show(int index, Clock::time_point now);
     void restore();
     // Why the scan cannot go on now, or empty.
@@ -144,7 +157,10 @@ private:
     int captured_ = 0;
     int ticksShown_ = 0;
     Clock::time_point shownAt_{};
+    IVec2 patternSize_{0, 0};
+    bool patternsRequested_ = false;
     bool enteredPerform_ = false;  // the scan put the outputs fullscreen, so it undoes it
+    bool performSeen_ = false;     // perform mode was on for the scan
     bool frameShown_ = false;
 };
 

@@ -18,6 +18,8 @@ namespace quadmapper {
 
 struct EditorState;
 class OutputManager;
+class OutputWindow;
+struct MonitorInfo;
 class Renderer;
 class Quad;
 class Texture;
@@ -84,6 +86,10 @@ public:
         std::optional<float> decodeErrorPx;
     };
     static bool grayMapCurrent(const GrayMap& map, const std::optional<ScanOutput>& now);
+    // What `output` shows in perform mode, which a map is valid for: its display and
+    // that display's mode (`monitors`, OutputManager::getMonitors). Without a resolved
+    // display, the output's own resolution.
+    static ScanOutput performedOutput(const OutputWindow& output, const std::vector<MonitorInfo>& monitors);
 
     // Assisted calibration: where a click on the photo put a calibration point, in the
     // output's normalized frame. `world` names the point, so a list edited meanwhile
@@ -131,7 +137,9 @@ public:
     // QM_AI_TEST_IMAGE override) -> sidecar /surface -> apply the proposed quad to
     // the selected quad when confident, else prompt "tap the surface". The applied
     // corners are an ordinary warp the user refines with Tab-cycle + arrow-nudge.
-    void detectSurface();
+    // Its corners map into projector space as Pick Surface's do (mapPhotoCorners), with
+    // `outputs` finding the current scan; null: no scan is used.
+    void detectSurface(const OutputManager* outputs = nullptr);
 
     // One-Flash capture flow (QM-059): flash a known ChArUco pattern fullscreen on
     // the projector outputs, then capture a single photo (surface + pattern) to
@@ -171,15 +179,16 @@ public:
     };
     static PickMapping pickMapping(bool grayMapCurrent, const std::string& oneFlashPhoto);
 
-    // Pick Surface's mapping chain, run by Apply's worker: through `grayMap` when given,
-    // else (or when a corner falls outside the scanned area, or the map fails) through
-    // `oneFlash` when given, else photo space as-is; the status says which and why.
+    // The mapping chain for photo corners (Pick Surface's Apply and Detect Surface), run
+    // by the worker: through `grayMap` when given, else (or when a corner falls outside
+    // the scanned area, or the map fails) through `oneFlash` when given, else photo
+    // space as-is. The status starts with `lead` and says which and why.
     using Corners = std::array<std::array<float, 2>, 4>;
     using GrayMapFn = std::function<ai::GrayReply<ai::GrayMapResult>(
         const std::vector<std::array<float, 2>>&)>;
     using OneFlashFn = std::function<std::optional<ai::SurfaceResult>(const Corners&)>;
-    static Outcome mapPickCorners(const Corners& photoCorners, const GrayMapFn& grayMap,
-                                  const OneFlashFn& oneFlash);
+    static Outcome mapPhotoCorners(const std::string& lead, const Corners& photoCorners,
+                                   const GrayMapFn& grayMap, const OneFlashFn& oneFlash);
     // A finished /segment call as the panel shows it: the proposal (also a stub or a
     // low-confidence one, which Apply refuses) and a status line.
     static Outcome segmentOutcome(const ai::SegmentReply& reply);
@@ -191,10 +200,11 @@ public:
     // request: isBusy).
     bool isScanning() const { return scan_ != nullptr; }
     // AI > Scan Output: scan the selected output, else the first enabled one. Refused
-    // under the perform lock, under blackout, while calibrating, while another request
-    // runs, and without the "graycode" capability. Ticked by tick(); the status line
-    // shows its progress, and Cancel Scan, Esc or anything that leaves perform mode
-    // cancels it.
+    // under the perform lock, under blackout, while calibrating or editing a slice
+    // warp, while another request runs, and without the "graycode" capability. Ticked
+    // by tick(): it goes fullscreen, then asks the sidecar for the frames at the size
+    // the output shows there. The status line shows its progress, and Cancel Scan, Esc
+    // (EditorState::aiScan) or anything that leaves perform mode cancels it.
     void scanOutput(OutputManager* outputs);
     void cancelScan();
     // The output's map when this session has one and it is current; else null.
@@ -229,6 +239,10 @@ private:
     class ScanHostImpl;
     // Every frame is captured: let the scan go and ask the sidecar for its map.
     void startScanDecode();
+    // The mappings photo corners can take now (the current scan of an output showing the
+    // active scene, the One-Flash photo), as the worker's calls; returns the best.
+    PickMapping photoMappings(const OutputManager* outputs, GrayMapFn& grayMap,
+                              OneFlashFn& oneFlash) const;
     // The fullscreen identity quad the One-Flash pattern and the scan's frames ride on.
     void ensurePatternQuad();
 

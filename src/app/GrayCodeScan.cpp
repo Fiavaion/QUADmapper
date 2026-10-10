@@ -182,19 +182,23 @@ std::string GrayCodeScan::patternName(int index) { return numbered("pattern_%03d
 std::string GrayCodeScan::captureName(int index) { return numbered("capture_%03d.png", index); }
 
 std::string GrayCodeScan::progress() const {
-    if (phase_ == Phase::Preparing) return "Scan: preparing...";
+    if (phase_ == Phase::Preparing) return "Scan: preparing... (Esc cancels)";
     char text[64];
     std::snprintf(text, sizeof(text), "Scan: %d/%d (Esc cancels)", captured_, frameCount_);
     return text;
 }
 
-void GrayCodeScan::patternsReady(int frameCount) {
-    if (phase_ != Phase::Preparing) return;
-    if (frameCount < 3) {  // at least one pattern, then white and black
-        fail("Scan: the AI sidecar wrote no patterns");
+void GrayCodeScan::patternsReplied(std::optional<int> frameCount, const std::string& failStatus) {
+    if (!awaitingPatterns()) return;
+    if (!frameCount) {  // the request failed outright
+        fail(failStatus.empty() ? "Scan: the AI sidecar could not write the patterns" : failStatus);
         return;
     }
-    frameCount_ = frameCount;
+    if (*frameCount < 3) {  // at least one pattern, then white and black
+        fail(failStatus.empty() ? "Scan: the AI sidecar wrote no patterns" : failStatus);
+        return;
+    }
+    frameCount_ = *frameCount;
 }
 
 void GrayCodeScan::fail(const std::string& status) {
@@ -219,10 +223,42 @@ std::string GrayCodeScan::interruption() const {
     if (host_.blackout()) return "Scan cancelled: Blackout is on";
     const std::optional<ScanOutput> now = host_.output(outputId_);
     if (!now) return "Scan cancelled: the output was removed";
-    if (*now != output_) return "Scan cancelled: the output's resolution or display changed";
-    // Once the frames are up, leaving perform mode (Esc, F11) cancels.
-    if (frameShown_ && !host_.inPerformMode()) return "Scan cancelled";
+    // The display and its mode are fixed once the frames were asked for at its size.
+    if (patternsRequested_ && *now != output_) {
+        return "Scan cancelled: the output's resolution or display changed";
+    }
+    // Once in perform mode, leaving it (Esc or F11 on a projector window) cancels.
+    if (performSeen_ && !host_.inPerformMode()) return "Scan cancelled";
     return {};
+}
+
+void GrayCodeScan::requestPatterns() {
+    if (!host_.inPerformMode()) {
+        if (!host_.enterPerformMode()) {
+            fail("Scan: the output could not go fullscreen (is its display connected?)");
+            return;
+        }
+        enteredPerform_ = true;
+    }
+    performSeen_ = true;
+    // Going fullscreen resolves the output's display afresh: the frames are made for
+    // that display's size, and the scan, and its map, belong to it.
+    const std::optional<ScanOutput> settled = host_.output(outputId_);
+    if (!settled) {
+        fail("Scan cancelled: the output was removed");
+        return;
+    }
+    if (settled->monitor < 0) {
+        fail("Scan: the output has no display - pick one for it in Outputs");
+        return;
+    }
+    output_ = *settled;
+    patternSize_ = output_.resolution;
+    if (!host_.requestPatterns(patternSize_)) {
+        fail("Scan: could not ask the AI sidecar for the patterns");
+        return;
+    }
+    patternsRequested_ = true;
 }
 
 void GrayCodeScan::show(int index, Clock::time_point now) {
@@ -251,19 +287,11 @@ void GrayCodeScan::tick(Clock::time_point now) {
 
     switch (phase_) {
         case Phase::Preparing:
-            if (frameCount_ == 0 || !camera_ || camera_->state() != ScanCamera::State::Ready) return;
-            if (!host_.inPerformMode()) {
-                if (!host_.enterPerformMode()) {
-                    fail("Scan: the output could not go fullscreen (is its display connected?)");
-                    return;
-                }
-                enteredPerform_ = true;
-                // Going fullscreen resolves each output's display afresh: the scan, and
-                // its map, belong to the display it settled on.
-                if (const std::optional<ScanOutput> settled = host_.output(outputId_)) {
-                    output_ = *settled;
-                }
+            if (!patternsRequested_) {
+                requestPatterns();  // first tick: fullscreen, then the frames at its size
+                return;
             }
+            if (frameCount_ == 0 || !camera_ || camera_->state() != ScanCamera::State::Ready) return;
             show(0, now);
             return;
 

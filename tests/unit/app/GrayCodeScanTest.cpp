@@ -24,6 +24,9 @@ struct FakeHost : ScanHost {
     bool perform = false;
     bool performEntryWorks = true;
     int monitorAfterPerform = -1;  // >= 0: entering perform mode moves the output there
+    IVec2 sizeAfterPerform{0, 0};  // non-zero: entering perform mode shows it at this size
+    bool requestWorks = true;
+    std::vector<IVec2> patternRequests;
     int performEntries = 0;
     int performExits = 0;
     std::optional<ScanOutput> out = ScanOutput{IVec2(1920, 1080), 1};
@@ -39,7 +42,12 @@ struct FakeHost : ScanHost {
         ++performEntries;
         perform = performEntryWorks;
         if (perform && monitorAfterPerform >= 0 && out) out->monitor = monitorAfterPerform;
+        if (perform && sizeAfterPerform.x > 0 && out) out->resolution = sizeAfterPerform;
         return perform;
+    }
+    bool requestPatterns(IVec2 size) override {
+        patternRequests.push_back(size);
+        return requestWorks;
     }
     void exitPerformMode() override {
         ++performExits;
@@ -107,28 +115,99 @@ protected:
     }
     // Starts a 4-frame scan and runs it to its first frame.
     void startShowing() {
-        scan->patternsReady(4);
+        tick();  // fullscreen, then the frames are asked for
+        ASSERT_TRUE(scan->awaitingPatterns());
+        scan->patternsReplied(4);
         tick();
         ASSERT_EQ(scan->phase(), Phase::Settling);
     }
+    void restart(std::optional<ScanOutput> at = std::nullopt) {
+        camera = std::make_shared<CameraLog>();
+        scan = std::make_unique<GrayCodeScan>(host, std::make_unique<FakeCamera>(camera), outputId,
+                                              at.value_or(ScanOutput{IVec2(1920, 1080), 1}), "scan");
+    }
 };
 
-TEST_F(GrayCodeScanTest, WaitsForTheFramesAndTheCameraBeforeShowingAnything) {
+TEST_F(GrayCodeScanTest, GoesFullscreenAsksForTheFramesThenWaitsForThemAndTheCamera) {
     camera->state = ScanCamera::State::Opening;
     tick();
-    scan->patternsReady(4);
+    EXPECT_EQ(host.performEntries, 1);
+    ASSERT_EQ(host.patternRequests, std::vector<IVec2>{IVec2(1920, 1080)});
+    EXPECT_TRUE(scan->awaitingPatterns());
+    tick();
+    EXPECT_EQ(host.patternRequests.size(), 1u) << "asked once";
+    scan->patternsReplied(4);
     tick();
     EXPECT_EQ(scan->phase(), Phase::Preparing);
-    EXPECT_EQ(scan->progress(), "Scan: preparing...");
+    EXPECT_EQ(scan->progress(), "Scan: preparing... (Esc cancels)");
     EXPECT_TRUE(host.shown.empty());
-    EXPECT_EQ(host.performEntries, 0);
 
     camera->state = ScanCamera::State::Ready;
     tick();
     EXPECT_EQ(scan->phase(), Phase::Settling);
-    EXPECT_EQ(host.performEntries, 1);
     EXPECT_EQ(host.shown, std::vector<int>{0});
     EXPECT_EQ(scan->progress(), "Scan: 0/4 (Esc cancels)");
+}
+
+// The frames are made, and decoded, at the size the output shows fullscreen, which can
+// differ from its windowed size (C1).
+TEST_F(GrayCodeScanTest, TheFramesAreAskedForAtTheFullscreenSize) {
+    host.out = ScanOutput{IVec2(1280, 800), -1};  // windowed, display not resolved
+    restart(host.out);
+    host.sizeAfterPerform = IVec2(1920, 1200);
+    host.monitorAfterPerform = 0;
+    startShowing();
+    EXPECT_EQ(host.patternRequests, std::vector<IVec2>{IVec2(1920, 1200)});
+    EXPECT_EQ(scan->patternSize(), IVec2(1920, 1200));
+    EXPECT_EQ(scan->output(), (ScanOutput{IVec2(1920, 1200), 0}));
+    ASSERT_TRUE(tickUntilCapture(2.0)) << "not taken for a change of output";
+}
+
+TEST_F(GrayCodeScanTest, NoDisplayAfterGoingFullscreenOrNoRequestEndsIt) {
+    host.out->monitor = -1;
+    restart(host.out);
+    tick();
+    EXPECT_EQ(scan->endStatus(), "Scan: the output has no display - pick one for it in Outputs");
+    EXPECT_TRUE(host.patternRequests.empty());
+    EXPECT_FALSE(host.perform) << "the perform mode it entered is left";
+
+    host = FakeHost{};
+    host.requestWorks = false;
+    restart();
+    tick();
+    EXPECT_EQ(scan->endStatus(), "Scan: could not ask the AI sidecar for the patterns");
+    EXPECT_FALSE(host.perform);
+}
+
+// A failed request (one that threw has no frame count) ends the wait (M2).
+TEST_F(GrayCodeScanTest, AFailedPatternsRequestEndsIt) {
+    tick();
+    scan->patternsReplied(std::nullopt, "Scan: the request failed");
+    EXPECT_EQ(scan->phase(), Phase::Ended);
+    EXPECT_EQ(scan->endStatus(), "Scan: the request failed");
+    EXPECT_FALSE(host.perform);
+
+    host = FakeHost{};
+    restart();
+    tick();
+    scan->patternsReplied(std::nullopt);
+    EXPECT_EQ(scan->endStatus(), "Scan: the AI sidecar could not write the patterns");
+
+    host = FakeHost{};
+    restart();
+    tick();
+    scan->patternsReplied(0, "Scan: update the AI sidecar (it cannot scan)");
+    EXPECT_EQ(scan->endStatus(), "Scan: update the AI sidecar (it cannot scan)");
+}
+
+TEST_F(GrayCodeScanTest, LeavingPerformModeWhilePreparingCancels) {
+    camera->state = ScanCamera::State::Opening;
+    tick();
+    ASSERT_TRUE(host.perform);
+    host.perform = false;  // F11 or Esc on a projector window
+    tick();
+    EXPECT_EQ(scan->endStatus(), "Scan cancelled");
+    EXPECT_TRUE(camera->closed);
 }
 
 TEST_F(GrayCodeScanTest, ShowsSettlesAndCapturesEveryFrameThenRestores) {
@@ -246,7 +325,6 @@ TEST_F(GrayCodeScanTest, TheLockBlackoutAndOutputChangesEndIt) {
 }
 
 TEST_F(GrayCodeScanTest, TheLockEndsItBeforeAnythingIsShown) {
-    scan->patternsReady(4);
     host.isLocked = true;
     tick();
     EXPECT_EQ(scan->endStatus(), "Scan cancelled: the show was locked");
@@ -278,15 +356,13 @@ TEST_F(GrayCodeScanTest, CameraAndFrameFailuresEndItWithTheReason) {
 }
 
 TEST_F(GrayCodeScanTest, NoFramesOrNoFullscreenEndsIt) {
-    scan->patternsReady(0);
+    tick();
+    scan->patternsReplied(0);
     EXPECT_EQ(scan->endStatus(), "Scan: the AI sidecar wrote no patterns");
 
     host = FakeHost{};
     host.performEntryWorks = false;
-    camera = std::make_shared<CameraLog>();
-    scan = std::make_unique<GrayCodeScan>(host, std::make_unique<FakeCamera>(camera), outputId,
-                                          ScanOutput{IVec2(1920, 1080), 1}, "scan");
-    scan->patternsReady(4);
+    restart();
     tick();
     EXPECT_EQ(scan->endStatus(), "Scan: the output could not go fullscreen (is its display connected?)");
     EXPECT_TRUE(host.shown.empty());

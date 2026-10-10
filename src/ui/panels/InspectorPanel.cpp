@@ -835,7 +835,7 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
         // Projector calibration (ADR-052 §6), however the output is sliced (TD-29).
         ImGui::Separator();
         const bool calibratingThis = es.calibratingOutputId == selectedOutput->getId();
-        ImGui::BeginDisabled(calibratingThis);
+        ImGui::BeginDisabled(calibratingThis || es.aiScan.running);  // a scan owns Esc
         if (ImGui::Button("Calibrate Projector...")) {
             es.beginCalibration(*selectedOutput);
         }

@@ -184,7 +184,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         }
         const bool calibrating = !es.calibratingOutputId.isNull();
         if (ImGui::MenuItem("Calibrate Projector...", nullptr, calibrating,
-                            !locked && (calibrating || toCalibrate))) {
+                            !locked && !es.aiScan.running && (calibrating || toCalibrate))) {
             if (calibrating) {
                 es.endCalibration();
             } else {

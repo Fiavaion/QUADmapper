@@ -320,6 +320,7 @@ TEST(AiAssistPickSurfaceTest, AScanGoesAheadOfOneFlashWhichGoesAheadOfPhotoSpace
 
 // ---- The mapping chain Apply's worker runs ---------------------------------------------
 
+const std::string PICK_LEAD = "Pick Surface: ";
 constexpr Corners kMapped{{{0.2f, 0.2f}, {0.7f, 0.25f}, {0.75f, 0.8f}, {0.25f, 0.7f}}};
 constexpr Corners kOneFlash{{{0.3f, 0.3f}, {0.6f, 0.3f}, {0.6f, 0.6f}, {0.3f, 0.6f}}};
 
@@ -347,7 +348,7 @@ AiAssist::OneFlashFn oneFlashReturning(float confidence) {
 
 TEST(AiAssistPickSurfaceTest, ACurrentScanMapsEveryCorner) {
     int oneFlashCalls = 0;
-    const AiAssist::Outcome o = AiAssist::mapPickCorners(
+    const AiAssist::Outcome o = AiAssist::mapPhotoCorners(PICK_LEAD,
         kWarp, grayMapReturning({true, true, true, true}),
         [&oneFlashCalls](const Corners&) {
             ++oneFlashCalls;
@@ -360,20 +361,20 @@ TEST(AiAssistPickSurfaceTest, ACurrentScanMapsEveryCorner) {
 }
 
 TEST(AiAssistPickSurfaceTest, ACornerOutsideTheScanFallsBackToOneFlashThenPhotoSpace) {
-    AiAssist::Outcome o = AiAssist::mapPickCorners(kWarp, grayMapReturning({true, false, true, true}),
+    AiAssist::Outcome o = AiAssist::mapPhotoCorners(PICK_LEAD, kWarp, grayMapReturning({true, false, true, true}),
                                                    oneFlashReturning(0.8f));
     ASSERT_TRUE(o.corners);
     EXPECT_EQ(*o.corners, kOneFlash);
     EXPECT_EQ(o.status, "Pick Surface: a corner is outside the scanned area - applied through "
                         "One-Flash (confidence 0.80) - nudge with Tab + arrows");
 
-    o = AiAssist::mapPickCorners(kWarp, grayMapReturning({true, true, true, false}), nullptr);
+    o = AiAssist::mapPhotoCorners(PICK_LEAD, kWarp, grayMapReturning({true, true, true, false}), nullptr);
     ASSERT_TRUE(o.corners);
     EXPECT_EQ(*o.corners, kWarp);
     EXPECT_EQ(o.status, "Pick Surface: a corner is outside the scanned area - assuming the camera "
                         "is at the projector");
 
-    o = AiAssist::mapPickCorners(kWarp, grayMapReturning({false, true, true, true}),
+    o = AiAssist::mapPhotoCorners(PICK_LEAD, kWarp, grayMapReturning({false, true, true, true}),
                                  oneFlashReturning(0.1f));
     ASSERT_TRUE(o.corners);
     EXPECT_EQ(*o.corners, kWarp);
@@ -388,7 +389,7 @@ TEST(AiAssistPickSurfaceTest, AScanTheSidecarCannotMapFallsBackAndSaysWhy) {
         reply.endpointMissing = true;
         return reply;
     };
-    AiAssist::Outcome o = AiAssist::mapPickCorners(kWarp, missing, nullptr);
+    AiAssist::Outcome o = AiAssist::mapPhotoCorners(PICK_LEAD, kWarp, missing, nullptr);
     EXPECT_EQ(*o.corners, kWarp);
     EXPECT_EQ(o.status, "Pick Surface: update the AI sidecar to map through the scan - assuming "
                         "the camera is at the projector");
@@ -398,27 +399,41 @@ TEST(AiAssistPickSurfaceTest, AScanTheSidecarCannotMapFallsBackAndSaysWhy) {
         reply.error = "map_path does not exist";
         return reply;
     };
-    o = AiAssist::mapPickCorners(kWarp, refused, oneFlashReturning(0.9f));
+    o = AiAssist::mapPhotoCorners(PICK_LEAD, kWarp, refused, oneFlashReturning(0.9f));
     EXPECT_EQ(*o.corners, kOneFlash);
     EXPECT_EQ(o.status, "Pick Surface: the scan could not map it (map_path does not exist) - "
                         "applied through One-Flash (confidence 0.90) - nudge with Tab + arrows");
 }
 
 TEST(AiAssistPickSurfaceTest, WithoutAScanTheChainIsOneFlashThenPhotoSpace) {
-    AiAssist::Outcome o = AiAssist::mapPickCorners(kWarp, nullptr, oneFlashReturning(0.8f));
+    AiAssist::Outcome o = AiAssist::mapPhotoCorners(PICK_LEAD, kWarp, nullptr, oneFlashReturning(0.8f));
     EXPECT_EQ(*o.corners, kOneFlash);
     EXPECT_EQ(o.status,
               "Pick Surface: applied through One-Flash (confidence 0.80) - nudge with Tab + arrows");
 
-    o = AiAssist::mapPickCorners(kWarp, nullptr, oneFlashReturning(0.1f));
+    o = AiAssist::mapPhotoCorners(PICK_LEAD, kWarp, nullptr, oneFlashReturning(0.1f));
     EXPECT_EQ(*o.corners, kWarp);
     EXPECT_TRUE(o.forgetOneFlashPhoto);
     EXPECT_EQ(o.status, "Pick Surface: the One-Flash photo shows no usable pattern - assuming the "
                         "camera is at the projector");
 
-    o = AiAssist::mapPickCorners(kWarp, nullptr, nullptr);
+    o = AiAssist::mapPhotoCorners(PICK_LEAD, kWarp, nullptr, nullptr);
     EXPECT_EQ(*o.corners, kWarp);
     EXPECT_EQ(o.status, "Pick Surface: no One-Flash photo - assuming the camera is at the projector");
+}
+
+// Detect Surface's corners take the same chain, under its own lead (I2).
+TEST(AiAssistPickSurfaceTest, DetectSurfaceCornersTakeTheSameChain) {
+    const std::string lead = "AI: surface found (confidence 0.80) - ";
+    AiAssist::Outcome o = AiAssist::mapPhotoCorners(lead, kWarp, grayMapReturning({true, true, true, true}),
+                                                    oneFlashReturning(0.9f));
+    EXPECT_EQ(*o.corners, kMapped);
+    EXPECT_EQ(o.status, "AI: surface found (confidence 0.80) - applied through the scan - nudge with "
+                        "Tab + arrows");
+    o = AiAssist::mapPhotoCorners(lead, kWarp, grayMapReturning({true, true, false, true}), nullptr);
+    EXPECT_EQ(*o.corners, kWarp);
+    EXPECT_EQ(o.status, "AI: surface found (confidence 0.80) - a corner is outside the scanned area - "
+                        "assuming the camera is at the projector");
 }
 
 TEST(AiAssistPickSurfaceTest, ASegmentReplyBecomesAProposalAndAStatus) {
@@ -620,6 +635,32 @@ TEST(AiAssistScanTest, AMapIsCurrentUntilTheOutputsResolutionOrDisplayChanges) {
     EXPECT_FALSE(AiAssist::grayMapCurrent(noPath, ScanOutput{IVec2(1920, 1080), 1}));
 }
 
+// A map is valid for what the output shows in perform mode: its display at that
+// display's mode, not the window's size, which leaving perform mode changes (I1).
+TEST(AiAssistScanTest, AMapFollowsTheDisplaysModeNotTheWindowsSize) {
+    OutputManager outputs;
+    OutputWindow* output = addOutput(outputs, IVec2(1280, 720), 0);
+    std::vector<MonitorInfo> monitors(2);
+    monitors[0].resolution = IVec2(1920, 1200);
+    monitors[1].resolution = IVec2(1920, 1080);
+    const ScanOutput scanned = AiAssist::performedOutput(*output, monitors);
+    EXPECT_EQ(scanned, (ScanOutput{IVec2(1920, 1200), 0}));
+    const AiAssist::GrayMap map{output->getId(), scanned, "m.npz", 0.9f, {}};
+
+    output->setResolution(IVec2(1920, 1200));  // fullscreen
+    EXPECT_TRUE(AiAssist::grayMapCurrent(map, AiAssist::performedOutput(*output, monitors)));
+    output->setResolution(IVec2(1280, 720));   // windowed again
+    EXPECT_TRUE(AiAssist::grayMapCurrent(map, AiAssist::performedOutput(*output, monitors)));
+
+    monitors[0].resolution = IVec2(1280, 1024);  // the display's mode changed
+    EXPECT_FALSE(AiAssist::grayMapCurrent(map, AiAssist::performedOutput(*output, monitors)));
+    monitors[0].resolution = IVec2(1920, 1200);
+    output->setMonitor(1);  // another display
+    EXPECT_FALSE(AiAssist::grayMapCurrent(map, AiAssist::performedOutput(*output, monitors)));
+    output->setMonitor(-1);  // none resolved: the output's own size
+    EXPECT_EQ(AiAssist::performedOutput(*output, monitors), (ScanOutput{IVec2(1280, 720), -1}));
+}
+
 TEST(AiAssistScanTest, TheSessionKeepsAMapPerOutputAndDropsItWhenStale) {
     EditorState es;
     OutputManager outputs;
@@ -777,6 +818,8 @@ TEST(AiAssistScanTest, AMappedClickIsDroppedUnderTheLockOrWhenThePointOrCalibrat
     es.beginCalibration(*output);
     AiAssist ai(es, nullptr);
 
+    es.calibration.selected = 0;
+    es.calibration.pick = CalibrationSession::Pick::Photo;
     const AiAssist::Outcome outcome = placed(*output, 0, {0.5f, 0.5f});
     points[0].world = Vec3(9.0f);  // another point now sits at that index
     landWith(ai, outputs, outcome);
@@ -789,7 +832,21 @@ TEST(AiAssistScanTest, AMappedClickIsDroppedUnderTheLockOrWhenThePointOrCalibrat
     EXPECT_STREQ(es.statusMessage,
                  "Calibration: result dropped - calibration of that projector ended");
 
+    // The photo pick was cancelled (Esc) or moved to another point meanwhile (M3).
     es.beginCalibration(*output);
+    es.calibration.selected = 0;
+    landWith(ai, outputs, placed(*output, 0, {0.5f, 0.5f}));
+    EXPECT_EQ(points[0].pixel, Vec2(1.0f, 1.0f));
+    EXPECT_STREQ(es.statusMessage,
+                 "Calibration: result dropped - the photo pick was cancelled or moved on");
+    points.push_back(CalibrationPoint{Vec3(2.0f), Vec2(3.0f, 3.0f)});
+    es.calibration.pick = CalibrationSession::Pick::Photo;
+    es.calibration.selected = 1;
+    landWith(ai, outputs, placed(*output, 0, {0.5f, 0.5f}));
+    EXPECT_EQ(points[0].pixel, Vec2(1.0f, 1.0f));
+    EXPECT_STREQ(es.statusMessage,
+                 "Calibration: result dropped - the photo pick was cancelled or moved on");
+
     HeldWork work;
     ASSERT_TRUE(ai.startRequest("working...", "Calibration", UUID::null(),
                                 work.returning(placed(*output, 0, {0.5f, 0.5f}))));
