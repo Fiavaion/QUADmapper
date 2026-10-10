@@ -1,8 +1,10 @@
 # QUADmapper AI sidecar: pinned runtime for tools/ai-sidecar/.venv (ADR-053 section 1).
 #
-# Install with setup.ps1, never into the global Python. setup.ps1 installs every
-# line here first, then sam2 on its own (it is source-only on PyPI and its build
-# needs the torch installed above; SAM2_BUILD_CUDA=0 skips the optional CUDA op).
+# The human-readable list of direct packages. setup.ps1 installs from requirements.lock
+# (these plus every transitive package, hash-pinned; regenerate it as README.md says)
+# and sam2 from requirements-sam2.lock (source-only on PyPI; its build needs the torch
+# installed first; SAM2_BUILD_CUDA=0 skips the optional CUDA op). Never install into
+# the global Python.
 #
 # /health and the stub endpoints need only the standard library, so the contract
 # tests still run on a bare interpreter.

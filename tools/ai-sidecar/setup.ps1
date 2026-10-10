@@ -4,7 +4,8 @@
 
 .DESCRIPTION
   1. Creates tools/ai-sidecar/.venv with Python 3.11 (py -3.11).
-  2. Installs the pinned requirements.txt into it. The global Python is never touched.
+  2. Installs requirements.lock (every package pinned with hashes, --require-hashes)
+     into it, then sam2 from requirements-sam2.lock. The global Python is never touched.
   3. Downloads the models from their official sources into
      %LOCALAPPDATA%\QUADmapper\models (or $env:QM_MODELS_DIR) and checks each file's
      pinned SHA-256. A mismatch deletes the file and stops the script.
@@ -21,7 +22,8 @@ Set-StrictMode -Version Latest
 $Here = $PSScriptRoot
 $Venv = Join-Path $Here '.venv'
 $VenvPython = Join-Path $Venv 'Scripts\python.exe'
-$Requirements = Join-Path $Here 'requirements.txt'
+$Lock = Join-Path $Here 'requirements.lock'
+$Sam2Lock = Join-Path $Here 'requirements-sam2.lock'
 
 if ($env:QM_MODELS_DIR) {
     $ModelsDir = $env:QM_MODELS_DIR
@@ -76,25 +78,18 @@ $version = & $VenvPython -c "import sys; print('%d.%d' % sys.version_info[:2])"
 if ($version -ne '3.11') { throw "venv Python is $version, expected 3.11. Delete $Venv and re-run." }
 
 # --- 2. packages ---------------------------------------------------------------
-# Everything except sam2 first; sam2 is source-only and its build imports the torch
-# installed here, so it builds without isolation. SAM2_BUILD_CUDA=0 skips its
+# Everything except sam2 first, from the hash-locked requirements.lock (it carries the
+# PyTorch cu126 index for torch and torchvision). sam2 is source-only and its build
+# imports the torch installed here, so it is its own step, from the sdist hash in
+# requirements-sam2.lock, built without isolation. SAM2_BUILD_CUDA=0 skips its
 # optional CUDA op (mask hole filling), which would need the CUDA toolkit.
-$allLines = Get-Content -LiteralPath $Requirements
-$sam2Line = $allLines | Where-Object { $_ -match '^\s*sam2==' }
-if (-not $sam2Line) { throw "requirements.txt has no sam2== pin" }
-$baseFile = Join-Path $env:TEMP "qm-sidecar-requirements-$PID.txt"
-$allLines | Where-Object { $_ -notmatch '^\s*sam2==' } | Set-Content -LiteralPath $baseFile -Encoding ascii
-try {
-    Invoke-Checked 'pip upgrade' { & $VenvPython -m pip install --disable-pip-version-check -q --upgrade pip==25.2 }
-    Invoke-Checked 'pip install requirements' {
-        & $VenvPython -m pip install --disable-pip-version-check -q -r $baseFile
-    }
-} finally {
-    Remove-Item -LiteralPath $baseFile -ErrorAction SilentlyContinue
+Invoke-Checked 'pip upgrade' { & $VenvPython -m pip install --disable-pip-version-check -q --upgrade pip==25.2 }
+Invoke-Checked 'pip install requirements.lock' {
+    & $VenvPython -m pip install --disable-pip-version-check -q --require-hashes --no-deps -r $Lock
 }
 $env:SAM2_BUILD_CUDA = '0'
 Invoke-Checked 'pip install sam2' {
-    & $VenvPython -m pip install --disable-pip-version-check -q --no-build-isolation $sam2Line.Trim()
+    & $VenvPython -m pip install --disable-pip-version-check -q --require-hashes --no-deps --no-build-isolation -r $Sam2Lock
 }
 Invoke-Checked 'import check' {
     & $VenvPython -c "import torch, torchvision, sam2, transformers, cv2; cv2.structured_light; cv2.aruco; print('packages: torch', torch.__version__, 'cuda', torch.cuda.is_available(), '| cv2', cv2.__version__, '| transformers', transformers.__version__)"

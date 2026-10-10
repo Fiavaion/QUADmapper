@@ -1,0 +1,4 @@
+# sam2 is source-only: pinned by its sdist hash, installed after requirements.lock
+# (its build imports the torch installed there). See setup.ps1.
+sam2==1.1.0 \
+    --hash=sha256:7e0ea252d43c10d853e3acfce0b5770ac683c30481bd6de311300e9d44f45b74

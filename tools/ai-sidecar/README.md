@@ -15,11 +15,13 @@ powershell -ExecutionPolicy Bypass -File tools\ai-sidecar\setup.ps1
 `setup.ps1`:
 
 1. creates `tools\ai-sidecar\.venv` with Python 3.11 (`py -3.11`; git-ignored);
-2. installs the pinned `requirements.txt` into it: torch 2.7.1 + torchvision
-   (CUDA 12.6 builds from the PyTorch index), `sam2`, `transformers`,
+2. installs `requirements.lock` into it with `--require-hashes` (every package,
+   transitive ones too, pinned by hash): torch 2.7.1 + torchvision
+   (CUDA 12.6 builds from the PyTorch index), `transformers`,
    `opencv-contrib-python` (not `opencv-python`: both provide `cv2`, and only
-   contrib has `aruco` and `structured_light`) and numpy. The global Python is
-   never touched;
+   contrib has `aruco` and `structured_light`) and numpy; then `sam2` from
+   `requirements-sam2.lock` (source-only: pinned by its sdist hash and built
+   against the installed torch). The global Python is never touched;
 3. downloads the models from their official sources into
    `%LOCALAPPDATA%\QUADmapper\models\` (override with `QM_MODELS_DIR`), checking
    each file against a pinned SHA-256. A mismatch deletes the file and stops.
@@ -31,6 +33,21 @@ powershell -ExecutionPolicy Bypass -File tools\ai-sidecar\setup.ps1
 | Depth Anything V2 **Small** | `depth-anything/Depth-Anything-V2-Small-hf` @ `5426e4f` | 99 MB | Apache-2.0 |
 
 Depth Anything V2 Base, Large and Giant are CC-BY-NC and are never used.
+
+`requirements.txt` stays the human-readable list of direct packages; the lock is
+what gets installed. To regenerate the lock (after changing `requirements.txt`),
+in a throwaway venv, never the global Python:
+
+```powershell
+py -3.11 -m venv $env:TEMP\qm-lock; & $env:TEMP\qm-lock\Scripts\python.exe -m pip install packaging
+# PINS.txt: `pip freeze` of the working .venv without sam2, plus setuptools==80.9.0 and wheel==0.45.1
+& $env:TEMP\qm-lock\Scripts\python.exe tools\ai-sidecar\gen_lock.py PINS.txt tools\ai-sidecar\requirements.lock
+```
+
+`gen_lock.py` reads each file's SHA-256 from PyPI (and from the PyTorch cu126 index
+for torch and torchvision) for the Windows cp311 wheels, and writes the lock.
+The `--extra-index-url` line at the top of the lock is how pip finds torch.
+`requirements-sam2.lock` holds sam2's sdist hash from PyPI; update it with the pin.
 
 Re-running `setup.ps1` is safe: it reuses the venv and skips files that are
 already present with the right hash. The app prefers `.venv\Scripts\python.exe`
