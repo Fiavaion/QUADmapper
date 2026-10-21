@@ -1,9 +1,9 @@
 # Current Status
 
-**Last updated:** 2026-10-10 (overnight docs sync)
-**Phase / focus:** Release preparation. The AI features from ADR-053 are built. The owner tests them by hand next, then release.
-**Dev:** code is at `1b5a475` ("fix(ai): Scan Output review fixes"), plus any later polish commits on top. This docs sync sits on branch `docs/overnight-sync`.
-**Not yet run this session:** the full ctest, the success-metric smoke, the sidecar pytest. The verification budget says the full ctest runs once, near release.
+**Last updated:** 2026-10-21 (moving to the owner's RTX 5090 test PC: read `000_start.md` there first)
+**Phase / focus:** Release preparation. The AI features from ADR-053 are built. The owner tests them by hand next, then the installer (ADR-057, WIP on `feat/installer` at `9e5aacd`), then release.
+**Dev:** all finished work is on `dev` and pushed. Full ctest 1730/1730 and sidecar pytest 89/89 at `57b833e`; later commits are docs, ADR-057 and owner files only.
+**Before the AI test on the 5090:** move the sidecar to the PyTorch cu128 builds (`000_start.md` §4).
 
 ## What is done
 
