@@ -316,8 +316,8 @@ Release-gate set (global, run before shipping): `/release` orchestrates
 gate. Also available individually: `/prod-ready`, `/security-harden`, `/slop-clean`,
 `/humanize`. **Run `/release` before any release build.**
 
-Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/todos`
-(scan code TODO/FIXME into `notes/TODOs.md`).
+Bootstrap additions: `/end` (extracts `LESSON-*` tags into the ledger and syncs TODO/FIXME
+into `notes/TODOs.md`).
 
 ## Token & Context Rules
 
@@ -390,4 +390,4 @@ dated log under [docs/sessions/](docs/sessions/) (the latest is the detailed sou
 conflict). Hard-to-reverse decisions get an ADR in [docs/adr/](docs/adr/) — written *before*
 implementation (ADR-031+; ADR-001–030 are recorded informally in `SESSION_STATE.json`).
 
-Tag TODOs inline as `TODO[cl]:` so `/todos` can sync them. **Fix the process, not the output:** when a mistake is corrected, write the correction into this file, a rule in `.claude/rules/` or a skill so it can't recur.
+Tag TODOs inline as `TODO[cl]:` so `/end` can sync them. **Fix the process, not the output:** when a mistake is corrected, write the correction into this file, a rule in `.claude/rules/` or a skill so it can't recur.
