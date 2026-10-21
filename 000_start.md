@@ -67,6 +67,36 @@ step 2):**
 3. Re-run `setup.ps1`, then pytest.
 4. Check that `torch.cuda.is_available()` and a `/segment` request report `device: cuda`.
 
+## 4b. Camera for the AI features (owner's kit, advice from 2026-10-21)
+
+- **How the app reads a camera:** a live feed from any Windows webcam device (DirectShow),
+  at the device's default mode. It never triggers still photos. A DSLR or mirrorless camera
+  must appear as a webcam, through a USB webcam utility or HDMI into a capture card.
+- **It uses the FIRST camera Windows lists.** There is no picker yet, so plug in only the
+  camera you want. (A camera picker is an open decision, §8.)
+- **What a scan needs:**
+  - exposure, focus, white balance and framing locked (no auto exposure, autofocus, HDR,
+    auto framing or tracking);
+  - the whole projected area in view, filling most of the frame;
+  - the camera fixed from the scan until the result is applied;
+  - low lag: the app waits 250 ms after each pattern, `GrayCodeScan::DEFAULT_SETTLE_SECONDS`;
+  - 1080p is enough.
+
+| Camera | Connection | Use |
+|---|---|---|
+| **Insta360 Link 2 Pro** | USB webcam, works straight away | **First choice.** In Insta360 Link Controller, turn off AI tracking, auto framing, gestures and HDR; set exposure, focus and WB to manual; lock the gimbal. Mount it on a tripod. |
+| **Sony A7 III** | HDMI → capture card (e.g. Elgato Cam Link 4K) at 1080p, clean HDMI on (Sony's USB webcam software gives a lower resolution) | **Best image**, for big or long-throw venues; pick the lens to suit. Use a dummy battery or mains power; turn off auto power-off and the on-screen display. |
+| **Canon 250D** | EOS Webcam Utility (USB) or HDMI | Last choice: low-resolution USB feed, unreliable clean HDMI, powers off on its own. |
+| Other DSLRs | HDMI capture card, only with clean HDMI | Same conditions as the A7 III. |
+
+- **Scan tips:**
+  - dim the room;
+  - expose so the white stripes are not blown out (slightly dark is better);
+  - keep the camera near the projector if possible;
+  - low "camera saw N%" coverage means reframe the camera or cut the ambient light.
+- If the map looks patchy on a slow camera (an HDMI chain or a webcam utility), the settle
+  time may need raising. Tell Claude: it's a constant now and could become a preference.
+
 ## 5. Restore Claude's setup
 
 1. Global config ("Rassel") is the `~/.claude` git repo. If `~/.claude` isn't a clone yet,
@@ -123,6 +153,8 @@ step 2):**
 
 ## 8. Open owner decisions (details in `notes/CURRENT_STATUS.md` and the ADRs)
 
+- **Camera picker** in the AI Photo panel: choose the device and resolution, remembered in
+  preferences. Recommended before the AI test if several cameras are connected (§4b).
 - Is "no scanning while in calibration mode" acceptable (ADR-053 §3)?
 - **Code-signing certificate** for the installer (SmartScreen warnings), ADR-057.
 - **When to do option B:** AI on ONNX Runtime inside the app, which needs its own ADR.
