@@ -310,6 +310,37 @@ TEST(AiAssistPickSurfaceTest, TheVenvInterpreterIsPreferredWhenItExists) {
     fs::remove_all(root, ec);
 }
 
+TEST(AiAssistPickSurfaceTest, TheInstalledSidecarNextToTheExeWinsOverTheDevTree) {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("qm_locate_" + UUID::generate().toString());
+    const fs::path devDir = root / "dev" / "tools" / "ai-sidecar";
+    const fs::path exeDir = root / "app";
+    fs::create_directories(devDir);
+    std::ofstream(devDir / "sidecar.py") << "# dev
+";
+
+    // Only the script installed: not a usable install, so the dev tree is used.
+    fs::create_directories(exeDir / "ai" / "sidecar");
+    std::ofstream(exeDir / "ai" / "sidecar" / "sidecar.py") << "# installed
+";
+    ai::SidecarConfig config = AiAssist::locateSidecarFrom(root / "dev", exeDir);
+    EXPECT_EQ(fs::path(config.scriptPath).parent_path().filename(), "ai-sidecar");
+
+    // Script and bundled interpreter: the installed sidecar wins.
+    fs::create_directories(exeDir / "ai" / "python");
+    std::ofstream(exeDir / "ai" / "python" / "python.exe") << "";
+    config = AiAssist::locateSidecarFrom(root / "dev", exeDir);
+    EXPECT_EQ(fs::path(config.scriptPath), exeDir / "ai" / "sidecar" / "sidecar.py");
+    EXPECT_EQ(fs::path(config.pythonExe), exeDir / "ai" / "python" / "python.exe");
+
+    // No exe dir given: the dev tree as before.
+    config = AiAssist::locateSidecarFrom(root / "dev");
+    EXPECT_EQ(fs::path(config.scriptPath).parent_path().filename(), "ai-sidecar");
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
 TEST(AiAssistPickSurfaceTest, AScanGoesAheadOfOneFlashWhichGoesAheadOfPhotoSpace) {
     const std::string photo = "C:/tmp/quadmapper_oneflash_capture.png";
     EXPECT_EQ(AiAssist::pickMapping(true, photo), AiAssist::PickMapping::GrayCode);

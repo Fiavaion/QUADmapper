@@ -22,8 +22,19 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <iterator>
 #include <mutex>
 #include <thread>
+
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#endif
 
 namespace quadmapper {
 
@@ -193,11 +204,30 @@ AiAssist::~AiAssist() {
 }
 
 ai::SidecarConfig AiAssist::locateSidecar() {
-    return locateSidecarFrom(std::filesystem::current_path());
+    std::filesystem::path exeDir;
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH * 4];
+    const DWORD len = GetModuleFileNameW(nullptr, buffer, static_cast<DWORD>(std::size(buffer)));
+    if (len > 0 && len < std::size(buffer)) exeDir = std::filesystem::path(buffer).parent_path();
+#endif
+    return locateSidecarFrom(std::filesystem::current_path(), exeDir);
 }
 
-ai::SidecarConfig AiAssist::locateSidecarFrom(const std::filesystem::path& workingDir) {
+ai::SidecarConfig AiAssist::locateSidecarFrom(const std::filesystem::path& workingDir,
+                                              const std::filesystem::path& exeDir) {
     ai::SidecarConfig config;
+    // The installed layout (ADR-057): {app}/ai/sidecar/sidecar.py run by the bundled
+    // {app}/ai/python/python.exe. It wins over the dev-tree lookups below.
+    if (!exeDir.empty()) {
+        std::error_code ec;
+        const std::filesystem::path script = exeDir / "ai" / "sidecar" / "sidecar.py";
+        const std::filesystem::path python = exeDir / "ai" / "python" / "python.exe";
+        if (std::filesystem::exists(script, ec) && std::filesystem::exists(python, ec)) {
+            config.scriptPath = utf8FromPath(script);
+            config.pythonExe = utf8FromPath(python);
+            return config;
+        }
+    }
     const std::filesystem::path rel("tools/ai-sidecar/sidecar.py");
     for (const std::filesystem::path& base :
          {workingDir, workingDir / ".." / "..", workingDir / ".." / ".." / ".."}) {

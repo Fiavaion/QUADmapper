@@ -37,9 +37,15 @@ _failed: set = set()  # model keys whose load raised; dropped from capabilities
 
 
 def models_dir() -> str:
+    """$QM_MODELS_DIR, else the installed ai/models beside the bundled sidecar folder
+    (ADR-057) when it exists, else %LOCALAPPDATA%/QUADmapper/models (setup.ps1)."""
     override = os.environ.get("QM_MODELS_DIR")
     if override:
         return override
+    here = os.path.dirname(os.path.abspath(__file__))
+    bundled = os.path.normpath(os.path.join(here, "..", "models"))
+    if os.path.isdir(bundled):
+        return bundled
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return os.path.join(base, "QUADmapper", "models")
 

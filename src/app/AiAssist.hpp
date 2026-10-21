@@ -48,13 +48,17 @@ public:
     AiAssist(const AiAssist&) = delete;
     AiAssist& operator=(const AiAssist&) = delete;
 
-    // The sidecar script next to the working dir or the repo root. When it is
-    // missing, scriptPath stays empty and start() fails cleanly (AI menu shows disabled).
-    // The interpreter is the sidecar's own environment (tools/ai-sidecar/.venv, ADR-053
-    // §1) when it exists beside the script, else `python` on PATH.
+    // The installed sidecar next to the executable first (ai/sidecar/sidecar.py run by
+    // the bundled ai/python/python.exe, ADR-057), else the sidecar script next to the
+    // working dir or the repo root. When none is found, scriptPath stays empty and
+    // start() fails cleanly (AI menu shows disabled). In the dev tree the interpreter is
+    // the sidecar's own environment (tools/ai-sidecar/.venv, ADR-053 §1) when it exists
+    // beside the script, else `python` on PATH.
     static ai::SidecarConfig locateSidecar();
-    // The same, searching from `workingDir` instead of the current directory.
-    static ai::SidecarConfig locateSidecarFrom(const std::filesystem::path& workingDir);
+    // The same, searching from `workingDir` instead of the current directory, and from
+    // `exeDir` (skipped when empty) instead of the executable's folder.
+    static ai::SidecarConfig locateSidecarFrom(const std::filesystem::path& workingDir,
+                                               const std::filesystem::path& exeDir = {});
 
     // AI menu: the sidecar is connected (reads cached state, no per-frame I/O).
     bool isActive() const;
