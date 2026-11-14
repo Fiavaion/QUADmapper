@@ -112,9 +112,9 @@ private:
     MainMenuBar menuBar_;      // not a Panel: the menu bar is not a window
     // The first frame looked for a saved dock layout (and built the default without one).
     bool dockLayoutChecked_ = false;
-    // Frames until the default layout's front tabs are chosen; the tabs exist one frame
-    // after the layout is built.
-    int frontTabsIn_ = 0;
+    // Frames until the Quad List is brought in front of the Video Player's tab, after
+    // the default layout was built.
+    int focusQuadListIn_ = 0;
     bool canvasPanning_ = false;  // a middle-button drag that began on the canvas
 
     // In draw order (PanelHost keeps it).

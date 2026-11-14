@@ -160,14 +160,12 @@ void EditorUi::drawDockSpace(EditorContext& ctx) {
 
         // Finish the layout
         ImGui::DockBuilderFinish(dockspaceId);
-        frontTabsIn_ = 2;
+        focusQuadListIn_ = 2;
     }
-    // The tab added last would be in front (Video Player over the Quad List): put the
-    // two panels the warp workflow starts from in front.
-    if (frontTabsIn_ > 0 && --frontTabsIn_ == 0) {
-        es.requestPanelOpen(InspectorPanel::ID);
-        es.requestPanelOpen(QuadListPanel::ID);
-    }
+    // A dock node shows the tab of the focused window, and each window takes the focus
+    // as it first appears, so the Video Player (drawn last) would cover the Quad List.
+    // Once the windows have appeared, the focus goes to the Quad List.
+    if (focusQuadListIn_ > 0 && --focusQuadListIn_ == 0) es.requestPanelOpen(QuadListPanel::ID);
 
     // Capture the central node rect (the transparent canvas region between panels)
     // for next frame's ViewportEditor view transform (ADR-041). Convert from ImGui

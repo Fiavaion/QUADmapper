@@ -545,7 +545,7 @@ void AiAssist::detectSurface(const OutputManager* outputs) {
 bool AiAssist::captureCameraFrameToPng(const std::string& pngPath, std::string& error) {
     const auto cameras = enumerateCameraDevices();
     if (cameras.empty()) {
-        error = "no camera found (connect one or set QM_AI_TEST_IMAGE)";
+        error = "no camera found (connect one and try again)";
         return false;
     }
     CameraSource camera(cameras.front().name);
