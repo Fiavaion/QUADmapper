@@ -28,6 +28,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
+#include <imgui_internal.h>  // ClearActiveID
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -210,6 +211,20 @@ private:
 void InspectorPanel::drawContent(EditorContext& ctx) {
     EditorState& es = ctx.es;
     using SelectionType = EditorState::SelectionType;
+
+    // A drag or slider still held when the Properties move to another quad (a scene
+    // take, a delete) ends on the quad it began on, as that quad's undo step: the
+    // widget at the same place must not go on editing the new quad without one.
+    const Quad* shownQuad = es.currentSelectionType == SelectionType::Quad
+                                ? es.quadManager().getPrimarySelectedQuad()
+                                : nullptr;
+    const UUID shownId = shownQuad ? shownQuad->getId() : UUID::null();
+    if (pendingStep_ && shownId != pendingStepQuad_) {
+        pendingStep_();
+        pendingStep_ = nullptr;
+        ImGui::ClearActiveID();
+    }
+    pendingStepQuad_ = shownId;
 
     // Show header indicating current selection type
     switch (es.currentSelectionType) {

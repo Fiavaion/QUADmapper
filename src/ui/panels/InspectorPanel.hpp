@@ -57,8 +57,10 @@ private:
     std::string pathFieldPath_;
 
     // The undo step the active quad drag or slider records when it is released (one
-    // drag is one step); empty while none is active.
+    // drag is one step); empty while none is active. pendingStepQuad_ is the quad the
+    // Properties showed last frame, the one such a step belongs to.
     std::function<void()> pendingStep_;
+    UUID pendingStepQuad_;
 };
 
 }  // namespace quadmapper

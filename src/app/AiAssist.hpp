@@ -53,8 +53,10 @@ public:
     // the installed layout {exe}\ai\python\python.exe + {exe}\ai\sidecar\sidecar.py
     // (ADR-057 §4, with {exe}\ai\models when present), else, for a developer build,
     // tools\ai-sidecar\sidecar.py with its .venv\Scripts\python.exe (ADR-053 §1) in the
-    // executable's folder or up to 6 above it. Nothing found: both paths stay empty and
-    // start() reports that the AI features are not installed.
+    // repository the executable was built in: the folder, up to 6 above it and never a
+    // drive root, that holds CMakeLists.txt and has the executable under its build
+    // folder. Nothing found: both paths stay empty and start() reports that the AI
+    // features are not installed.
     static ai::SidecarConfig locateSidecar();
     // The same from `exeDir` (absolute; a relative one finds nothing).
     static ai::SidecarConfig locateSidecarFrom(const std::filesystem::path& exeDir);

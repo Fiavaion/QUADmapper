@@ -1,4 +1,5 @@
 #include "AiAssist.hpp"
+#include "../editor/EditActions.hpp"
 #include "../editor/EditorState.hpp"
 #include "../editor/PerformLock.hpp"
 #include "../ai/SidecarClient.hpp"
@@ -229,19 +230,25 @@ ai::SidecarConfig AiAssist::locateSidecarFrom(const std::filesystem::path& exeDi
         return config;
     }
 
-    // A developer build: the repository's sidecar with its own environment (setup.ps1),
-    // in a folder above the executable.
+    // A developer build: the sidecar, with its own environment (setup.ps1), of the
+    // repository this executable was built in. That is the folder above the executable
+    // that holds CMakeLists.txt and has the executable under its build folder. No other
+    // folder on the way up counts, and a drive root is never looked at: any user of the
+    // machine can create folders there, and whatever is found is run.
     fs::path dir = exeDir.lexically_normal();
     if (!dir.has_filename() && dir.has_relative_path()) dir = dir.parent_path();  // "C:\a\b\"
-    for (int level = 0; level <= 6; ++level) {
-        const fs::path sidecar = dir / "tools" / "ai-sidecar";
-        const fs::path python = sidecar / ".venv" / "Scripts" / "python.exe";
-        if (fs::is_regular_file(sidecar / "sidecar.py", ec) && fs::is_regular_file(python, ec)) {
-            config.pythonExe = utf8FromPath(python);
-            config.scriptPath = utf8FromPath(sidecar / "sidecar.py");
+    fs::path below;  // the folder under `dir` that leads down to the executable
+    for (int level = 0; level <= 6 && dir.has_relative_path(); ++level) {
+        if (below.filename() == "build" && fs::is_regular_file(dir / "CMakeLists.txt", ec)) {
+            const fs::path sidecar = dir / "tools" / "ai-sidecar";
+            const fs::path python = sidecar / ".venv" / "Scripts" / "python.exe";
+            if (fs::is_regular_file(sidecar / "sidecar.py", ec) && fs::is_regular_file(python, ec)) {
+                config.pythonExe = utf8FromPath(python);
+                config.scriptPath = utf8FromPath(sidecar / "sidecar.py");
+            }
             return config;
         }
-        if (!dir.has_relative_path()) break;  // at the root
+        below = dir;
         dir = dir.parent_path();
     }
     return config;
@@ -338,6 +345,8 @@ void AiAssist::applyOutcome(const Request& request, OutputManager* outputs) {
             setStatus(request.who + ": result dropped - the quad was deleted", 6.0f);
             return;
         }
+        // The quad may have been locked while the request ran.
+        if (refusedByQuadLock(editor_, *quad)) return;
         // TL,TR,BR,BL, normalized [0,1]: the same order and space as QuadGeometry.
         // The result is an ordinary warp: drawn on canvas, F11-projectable, and
         // refinable with Tab-cycle + arrow-nudge, and one undo step.

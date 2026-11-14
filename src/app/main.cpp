@@ -65,8 +65,12 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
         }
     }
     // Only from the main thread: on any other thread the editor is still being changed
-    // under the save. The autosave covers that case.
-    if (g_app && GetCurrentThreadId() == g_mainThreadId) emergencySaveAfterCrash();
+    // under the save. Not after a stack overflow either: the save needs stack that is
+    // not there. The autosave covers both cases.
+    if (g_app && GetCurrentThreadId() == g_mainThreadId &&
+        info->ExceptionRecord->ExceptionCode != EXCEPTION_STACK_OVERFLOW) {
+        emergencySaveAfterCrash();
+    }
 
     if (g_showMessages) {
         MessageBoxW(nullptr, g_crashMessage, L"QUADmapper",

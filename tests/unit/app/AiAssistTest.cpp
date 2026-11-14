@@ -346,6 +346,7 @@ struct TempTree {
 
 // A developer checkout with its sidecar and environment at `repo`.
 void plantDevSidecar(const TempTree& tree, const fs::path& repo) {
+    tree.file(repo / "CMakeLists.txt");
     tree.file(repo / "tools" / "ai-sidecar" / "sidecar.py");
     tree.file(repo / "tools" / "ai-sidecar" / ".venv" / "Scripts" / "python.exe");
 }
@@ -392,11 +393,28 @@ TEST(AiAssistLocateTest, NothingIsFoundWithoutAnInterpreterOrTooFarUp) {
     // Six levels up is found; seven is not.
     TempTree far;
     plantDevSidecar(far, "r");
-    fs::path exe = far.root / "r";
-    for (int level = 0; level < 6; ++level) exe /= "d";
+    fs::path exe = far.root / "r" / "build";
+    for (int level = 0; level < 5; ++level) exe /= "d";
     fs::create_directories(exe / "d");
     EXPECT_FALSE(AiAssist::locateSidecarFrom(exe).scriptPath.empty());
     EXPECT_TRUE(AiAssist::locateSidecarFrom(exe / "d").scriptPath.empty());
+}
+
+// A tools\ai-sidecar with a python.exe in some folder above the program (C:\tools on a
+// shared machine, which any user can create) is not the program's own repository.
+TEST(AiAssistLocateTest, AFolderAboveThatIsNotTheBuildRepositoryIsNeverUsed) {
+    TempTree tree;
+    plantDevSidecar(tree, "");  // at the top, with a CMakeLists.txt, but no build folder
+    const fs::path downloaded = tree.root / "Downloads" / "QUADmapper";
+    fs::create_directories(downloaded);
+    EXPECT_TRUE(AiAssist::locateSidecarFrom(downloaded).pythonExe.empty());
+
+    // Under a "build" folder, but the folder above it is not a CMake project.
+    TempTree bare;
+    bare.file("tools/ai-sidecar/sidecar.py");
+    bare.file("tools/ai-sidecar/.venv/Scripts/python.exe");
+    fs::create_directories(bare.root / "build" / "Debug");
+    EXPECT_TRUE(AiAssist::locateSidecarFrom(bare.root / "build" / "Debug").pythonExe.empty());
 }
 
 // A project double-clicked in a downloaded folder that holds tools\ai-sidecar and a

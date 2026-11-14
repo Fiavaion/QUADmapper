@@ -184,8 +184,11 @@ struct EditorState {
     void setActiveScene(const UUID& id) {
         // A canvas drag in progress on the scene being left (a take landing mid-drag)
         // ends where the mouse left it, as its undo step. Not when that scene is gone
-        // (deleted, or replaced by New / Load): its drag went with it.
-        if (findSceneIndex(scenes, activeSceneId) >= 0) commitCanvasDrags(*this);
+        // (deleted, or replaced by New / Load): its drag went with it. Nor when the
+        // take is of the scene already being edited: that drag carries on.
+        if (id != activeSceneId && findSceneIndex(scenes, activeSceneId) >= 0) {
+            commitCanvasDrags(*this);
+        }
         activeSceneId = id;
         for (auto& s : scenes) {
             if (s) s->setActive(s->getId() == id);

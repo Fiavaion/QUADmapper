@@ -499,6 +499,14 @@ struct SidecarClient::Impl {
 
     // A request to a usable sidecar. One that lost the connection ends it.
     HttpResponse post(const char* path, const json& body) {
+        // The process we launched has exited: whatever holds the port now is not it,
+        // and must not be sent the token.
+        if (launchedExited()) {
+            HttpResponse gone;
+            gone.error = ERROR_WINHTTP_CANNOT_CONNECT;
+            lostConnection(gone);
+            return gone;
+        }
         const HttpResponse r = httpRequest(config.host, config.port, "POST", path, body.dump(),
                                            currentToken(), config.requestTimeoutMs);
         lostConnection(r);
@@ -566,7 +574,16 @@ struct SidecarClient::Impl {
             return false;
         }
 
-        AssignProcessToJobObject(job, pi.hProcess);
+        // Outside the job it could outlive us and the listener check could not vouch
+        // for it: it is ended before it ran a single instruction.
+        if (!AssignProcessToJobObject(job, pi.hProcess)) {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            CloseHandle(job);
+            job = nullptr;
+            return false;
+        }
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
 
