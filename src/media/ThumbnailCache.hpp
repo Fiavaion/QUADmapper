@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 #include <unordered_map>
 #include <mutex>
 #include <glad/glad.h>
@@ -29,9 +30,17 @@ public:
      * @return OpenGL texture ID, or 0 if generation failed
      *
      * The thumbnail is cached both in memory and on disk. Subsequent calls
-     * with the same file path return the cached texture.
+     * with the same file path return the cached texture. A file that failed to
+     * produce a thumbnail is not retried until its last-write time changes.
      */
     GLuint getThumbnail(const std::filesystem::path& filePath, int maxSize = 128);
+
+    /**
+     * @brief Whether getThumbnail() would have to read or decode the file now.
+     * @return false when the thumbnail is in memory, or the file failed before and has
+     *         not changed since (getThumbnail() then returns at once).
+     */
+    bool needsGeneration(const std::filesystem::path& filePath) const;
 
     /**
      * @brief Check if a thumbnail exists in the cache.
@@ -98,6 +107,13 @@ private:
     /// In-memory texture cache: file path -> GL texture ID
     std::unordered_map<std::string, GLuint> textureCache_;
     mutable std::mutex cacheMutex_;
+
+    /// True when the file failed before and its last-write time is unchanged.
+    /// Call with cacheMutex_ held.
+    bool failedUnchanged(const std::filesystem::path& filePath, const std::string& pathKey) const;
+
+    /// Files that failed to produce a thumbnail: path -> last-write time at the failure
+    std::unordered_map<std::string, std::filesystem::file_time_type> failedFiles_;
 
     /// Default thumbnail size
     int defaultMaxSize_ = 128;

@@ -3,6 +3,7 @@
 #include "Panel.hpp"
 #include "core/UUID.hpp"
 #include "ui/AsyncFileDialog.hpp"
+#include "ui/ConfirmPopup.hpp"
 
 namespace quadmapper {
 
@@ -31,12 +32,18 @@ public:
     void loadVideo(EditorContext& ctx, bool simpleMode);
 
 private:
+    void unloadVideo(EditorContext& ctx, const UUID& unloaded);
+
     // The "Load Video..." browser runs off the render thread (QM-088).
     AsyncFileDialog loadDialog_;
     bool loadDialogSimpleMode_ = false;  // UI mode the dialog was opened from
 
     // The selected quad last seen, so the panel follows a selection change only once.
     UUID followedQuadId_;
+
+    // "Unload Video" asks first when more than one quad shows the clip.
+    ConfirmPopup unloadConfirm_{"videounload"};
+    UUID pendingUnloadId_;
 };
 
 }  // namespace quadmapper

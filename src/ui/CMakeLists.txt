@@ -2,6 +2,7 @@
 
 add_library(quadmapper_ui STATIC
     Theme.hpp
+    ConfirmPopup.hpp
     Theme.cpp
     AsyncFileDialog.hpp
     AsyncFileDialog.cpp

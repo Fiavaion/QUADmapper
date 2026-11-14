@@ -7,11 +7,16 @@
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
 #include "media/ThumbnailCache.hpp"
+#include "scene/Scene.hpp"
+#include "scene/QuadManager.hpp"
+#include "scene/Quad.hpp"
+#include "scene/MeshObject.hpp"
 #include "source/SourceManager.hpp"
 #include "source/procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
 #include "ui/dialogs/HapConvertWindow.hpp"
 #include "video/VideoDecoder.hpp"
+#include "ui/ConfirmPopup.hpp"
 #include <imgui.h>
 #include <vector>
 #include <algorithm>
@@ -50,6 +55,10 @@ Texture* MediaBinPanel::getVideoThumbnail(const std::filesystem::path& path) {
     const std::string key = utf8FromPath(path);
     auto it = videoThumbs_.find(key);
     if (it != videoThumbs_.end()) return it->second.get();
+
+    // One new thumbnail per frame: the render thread also drives the projector outputs.
+    if (thumbsBuiltThisFrame_ >= MAX_THUMBS_PER_FRAME) return nullptr;
+    ++thumbsBuiltThisFrame_;
 
     // Cache a null entry first so a file that fails to decode isn't retried each frame.
     videoThumbs_[key] = nullptr;
@@ -105,6 +114,74 @@ void MediaBinPanel::renderContent() {
     renderControls();
     ImGui::Separator();
     renderThumbnailGrid();
+    processRemoveRequest();
+    renderRemoveConfirm();
+}
+
+size_t countMediaUsers(const std::vector<std::unique_ptr<Scene>>& scenes, const UUID& sourceId) {
+    if (sourceId.isNull()) return 0;
+    size_t users = 0;
+    for (const auto& scene : scenes) {
+        if (!scene) continue;
+        for (const auto& quad : scene->getQuadManager().getQuads()) {
+            if (quad->getTexture().mediaId == sourceId) ++users;
+        }
+        for (const auto& object : scene->getObjects()) {
+            if (object->getTexture().mediaId == sourceId) ++users;
+        }
+    }
+    return users;
+}
+
+// The source the quads bind for this item: a procedural item owns one; an image or
+// video gets it from the SourceManager, once it has been assigned.
+static UUID sourceIdOf(const MediaItem& item, const SourceManager* sources) {
+    if (item.hasSource()) return item.getSourceId();
+    if (!sources) return UUID();
+    if (item.getType() == MediaType::IMAGE) return sources->findImageSourceByPath(item.getPath());
+    if (item.getType() == MediaType::VIDEO) return sources->findVideoSourceByPath(item.getPath());
+    return UUID();
+}
+
+// "Remove from Library" only records the request: removing the item inside its own
+// context menu would free it while the menu still reads it. An item no quad or object
+// uses goes at once; one in use asks first.
+void MediaBinPanel::processRemoveRequest() {
+    if (removeRequestId_.isNull()) return;
+    const UUID id = removeRequestId_;
+    removeRequestId_ = UUID::null();
+    const MediaItem* item = mediaLibrary_->getItem(id);
+    if (!item) return;
+
+    const size_t users = countMediaUsers(es_->scenes, sourceIdOf(*item, sourceManager_));
+    if (users == 0) {
+        removeItem(id);
+        return;
+    }
+    pendingRemoveId_ = id;
+    removeConfirm_.request(
+        "Remove Media?",
+        "'" + item->getName() + "' is used by " + std::to_string(users) +
+            (users == 1 ? " quad" : " quads") + ". Removing it leaves them without media.",
+        "Remove");
+}
+
+void MediaBinPanel::renderRemoveConfirm() {
+    if (!removeConfirm_.draw()) return;
+    const UUID id = pendingRemoveId_;
+    pendingRemoveId_ = UUID::null();
+    removeItem(id);
+}
+
+void MediaBinPanel::removeItem(const UUID& id) {
+    const MediaItem* item = mediaLibrary_->getItem(id);
+    if (!item) return;
+    if (es_->selectedMediaId == id) es_->selectedMediaId = UUID::null();
+    // Also remove the source from SourceManager if it exists
+    if (sourceManager_ && item->hasSource()) {
+        sourceManager_->removeSource(item->getSourceId());
+    }
+    mediaLibrary_->removeItem(id);
 }
 
 void MediaBinPanel::renderControls() {
@@ -139,15 +216,6 @@ void MediaBinPanel::renderControls() {
 
     // Render the procedural creation menu
     renderProceduralMenu();
-
-    ImGui::SameLine();
-
-    // Thumbnail size slider
-    ImGui::SetNextItemWidth(100.0f);
-    ImGui::SliderFloat("##size", &thumbnailSize_, 48.0f, 128.0f, "%.0f px");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Thumbnail size");
-    }
 
     // Second row: search and filter
     ImGui::SetNextItemWidth(150.0f);
@@ -238,6 +306,7 @@ void MediaBinPanel::renderThumbnailGrid() {
 
     // Collect which video (if any) is hovered this pass; reconciled after the loop.
     hoveredVideoThisFrame_.clear();
+    thumbsBuiltThisFrame_ = 0;
 
     int index = 0;
     for (MediaItem* item : filteredItems) {
@@ -343,10 +412,23 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
     // Draw thumbnail image or placeholder icon
     bool thumbnailDrawn = false;
 
-    // Try to get a real thumbnail for image items
-    if (thumbnailCache_ && item->getType() == MediaType::IMAGE) {
-        GLuint thumbTex = thumbnailCache_->getThumbnail(item->getPath(),
-                                                         static_cast<int>(thumbnailSize_));
+    // A cell scrolled out of view asks for nothing.
+    const bool cellVisible =
+        ImGui::IsRectVisible(cursorPos, ImVec2(cursorPos.x + size.x, cursorPos.y + size.y));
+
+    // Try to get a real thumbnail for image items. A new one is built at most
+    // MAX_THUMBS_PER_FRAME times a frame; cells still waiting show the placeholder.
+    if (thumbnailCache_ && cellVisible && item->getType() == MediaType::IMAGE) {
+        GLuint thumbTex = 0;
+        bool mayBuild = true;
+        if (thumbnailCache_->needsGeneration(item->getPath())) {
+            mayBuild = thumbsBuiltThisFrame_ < MAX_THUMBS_PER_FRAME;
+            if (mayBuild) ++thumbsBuiltThisFrame_;
+        }
+        if (mayBuild) {
+            thumbTex = thumbnailCache_->getThumbnail(item->getPath(),
+                                                     static_cast<int>(thumbnailSize_));
+        }
         if (thumbTex != 0) {
             // Calculate aspect-fit placement within the thumbnail area
             // For now, just center the thumbnail
@@ -395,7 +477,7 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
         if (path == es_->previewSourcePath && sourceManager_ && !es_->previewSourceId.isNull()) {
             drawTex = sourceManager_->getTexture(es_->previewSourceId);  // live preview
         }
-        if (!drawTex || !drawTex->isValid()) {
+        if ((!drawTex || !drawTex->isValid()) && cellVisible) {
             drawTex = getVideoThumbnail(item->getPath());           // static first frame
         }
         if (drawTex && drawTex->isValid()) {
@@ -504,14 +586,7 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
         }
 
         if (ImGui::MenuItem("Remove from Library")) {
-            if (es_->selectedMediaId == item->getId()) {
-                es_->selectedMediaId = UUID::null();
-            }
-            // Also remove the source from SourceManager if it exists
-            if (sourceManager_ && item->hasSource()) {
-                sourceManager_->removeSource(item->getSourceId());
-            }
-            mediaLibrary_->removeItem(item->getId());
+            removeRequestId_ = item->getId();
         }
 
         // Re-encode as HAP beside the original (QM-082); runs in the background.

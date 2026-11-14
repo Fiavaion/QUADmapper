@@ -16,6 +16,8 @@
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include "project/Project.hpp"
+#include "ui/ConfirmPopup.hpp"
+#include "ui/panels/MediaBinPanel.hpp"
 
 #include <imgui.h>
 #include <cstring>
@@ -177,8 +179,27 @@ void VideoPlayerPanel::tick(EditorContext& ctx) {
     }
 }
 
+// Take the clip off every quad too, so no binding is left pointing at nothing.
+void VideoPlayerPanel::unloadVideo(EditorContext& ctx, const UUID& unloaded) {
+    EditorState& es = ctx.es;
+    for (const auto& scene : es.scenes) {
+        if (!scene) continue;
+        for (const auto& quad : scene->getQuadManager().getQuads()) {
+            if (quad->getTexture().mediaId == unloaded) {
+                quad->getTexture().mediaId = UUID();
+                es.quadTexturePaths.erase(quad->getId());
+            }
+        }
+    }
+    ctx.sourceManager->removeSource(unloaded);
+    es.activeVideoSourceId = UUID();
+}
+
 void VideoPlayerPanel::drawContent(EditorContext& ctx) {
     EditorState& es = ctx.es;
+    if (unloadConfirm_.draw() && ctx.sourceManager && es.activeVideoSourceId == pendingUnloadId_) {
+        unloadVideo(ctx, pendingUnloadId_);
+    }
     const bool simpleMode = es.uiMode == EditorState::UiMode::Simple;
     // The perform lock (ADR-051 §4) keeps the transport (play, pause, stop, seek) and
     // disables the rest: loading, assigning, speed, loop, sound and the timeline lock.
@@ -368,19 +389,18 @@ void VideoPlayerPanel::drawContent(EditorContext& ctx) {
 
         ImGui::Separator();
         if (ImGui::Button("Unload Video")) {
-            // Take it off every quad too, so no binding is left pointing at nothing.
             const UUID unloaded = es.activeVideoSourceId;
-            for (const auto& scene : es.scenes) {
-                if (!scene) continue;
-                for (const auto& quad : scene->getQuadManager().getQuads()) {
-                    if (quad->getTexture().mediaId == unloaded) {
-                        quad->getTexture().mediaId = UUID();
-                        es.quadTexturePaths.erase(quad->getId());
-                    }
-                }
+            const size_t users = countMediaUsers(es.scenes, unloaded);
+            if (users > 1) {
+                pendingUnloadId_ = unloaded;
+                unloadConfirm_.request(
+                    "Unload Video?",
+                    "This video is used by " + std::to_string(users) +
+                        " quads. Unloading it leaves them without media.",
+                    "Unload");
+            } else {
+                unloadVideo(ctx, unloaded);
             }
-            ctx.sourceManager->removeSource(unloaded);
-            es.activeVideoSourceId = UUID();
         }
         ImGui::EndDisabled();
     } else {

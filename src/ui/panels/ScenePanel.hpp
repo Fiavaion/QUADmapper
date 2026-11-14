@@ -2,6 +2,7 @@
 
 #include "Panel.hpp"
 #include "core/UUID.hpp"
+#include "ui/ConfirmPopup.hpp"
 
 namespace quadmapper {
 
@@ -32,10 +33,16 @@ private:
     void renderCanvasControls(EditorContext& ctx);
     void renderSceneList(EditorContext& ctx);
     void beginRename(const Scene& scene);
+    // Ask before deleting a scene; the delete runs when the modal is confirmed.
+    void requestDelete(EditorContext& ctx, const UUID& id);
+    void renderDeleteConfirm(EditorContext& ctx);
 
     // Tracked by id: duplicate and reorder move scenes to other list positions.
     UUID renamingId_;  // null = not renaming
     char renameBuffer_[128] = "";
+
+    ConfirmPopup deleteConfirm_{"scenedelete"};
+    UUID pendingDeleteId_;  // the scene the open confirmation is about
 
     // The active scene's canvas size as typed; applied when a field is left (ADR-047).
     UUID canvasSceneId_;

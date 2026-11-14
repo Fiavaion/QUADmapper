@@ -9,6 +9,7 @@
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "project/Project.hpp"
+#include "ui/ConfirmPopup.hpp"
 
 #include <imgui.h>
 #include <cstring>
@@ -25,6 +26,35 @@ void ScenePanel::drawContent(EditorContext& ctx) {
     renderCanvasControls(ctx);
     ImGui::Separator();
     renderSceneList(ctx);
+    renderDeleteConfirm(ctx);
+}
+
+void ScenePanel::requestDelete(EditorContext& ctx, const UUID& id) {
+    EditorState& es = ctx.es;
+    if (!es.canDeleteScene()) return;
+    const int index = findSceneIndex(es.scenes, id);
+    if (index < 0) return;
+    const Scene* scene = es.scenes[static_cast<size_t>(index)].get();
+    const size_t quadCount = scene->getQuadManager().getQuadCount();
+    bool shownOnOutput = false;
+    if (ctx.outputManager) {
+        for (const auto& output : ctx.outputManager->getOutputs()) {
+            if (output && output->getSceneId() == id) shownOnOutput = true;
+        }
+    }
+    std::string body = "Delete scene '" + scene->getName() + "' and its " +
+                       std::to_string(quadCount) + (quadCount == 1 ? " quad" : " quads") +
+                       "? This cannot be undone.";
+    if (shownOnOutput) body += " Outputs showing it will go black.";
+    pendingDeleteId_ = id;
+    deleteConfirm_.request("Delete Scene?", std::move(body), "Delete");
+}
+
+void ScenePanel::renderDeleteConfirm(EditorContext& ctx) {
+    if (!deleteConfirm_.draw()) return;
+    const UUID id = pendingDeleteId_;
+    pendingDeleteId_ = UUID::null();
+    ctx.es.deleteScene(id, ctx.outputManager);
 }
 
 void ScenePanel::renderActionButtons(EditorContext& ctx) {
@@ -59,7 +89,7 @@ void ScenePanel::renderActionButtons(EditorContext& ctx) {
 
     ImGui::BeginDisabled(!es.canDeleteScene());
     if (ImGui::Button("Delete")) {
-        es.deleteScene(es.activeSceneId, ctx.outputManager);
+        requestDelete(ctx, es.activeSceneId);
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -166,7 +196,7 @@ void ScenePanel::renderSceneList(EditorContext& ctx) {
             ImGui::SetNextItemWidth(180.0f);
             if (ImGui::InputText("##rename", renameBuffer_, sizeof(renameBuffer_),
                                  ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
-                scene->setName(renameBuffer_);
+                if (!isBlankName(renameBuffer_)) scene->setName(renameBuffer_);
                 renamingId_ = UUID::null();
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
@@ -245,7 +275,7 @@ void ScenePanel::renderSceneList(EditorContext& ctx) {
     ImGui::EndChild();
 
     if (!pendingDelete.isNull()) {
-        es.deleteScene(pendingDelete, ctx.outputManager);
+        requestDelete(ctx, pendingDelete);
     }
     if (!pendingDuplicate.isNull()) {
         es.duplicateScene(pendingDuplicate);

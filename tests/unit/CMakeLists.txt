@@ -108,8 +108,9 @@ endif()
 add_quadmapper_test(test_media
     media/MediaLibraryTest.cpp
     media/ImageLoaderTest.cpp
+    media/ThumbnailCacheTest.cpp
 )
-target_link_libraries(test_media PRIVATE quadmapper_media quadmapper_core)
+target_link_libraries(test_media PRIVATE quadmapper_media quadmapper_core glad)
 
 # Source module tests (QM-055 camera)
 add_quadmapper_test(test_source
@@ -221,6 +222,7 @@ add_quadmapper_test(test_ui
     ui/ShortcutRouterTest.cpp
     ui/EditorUiFrameTest.cpp
     ui/PerformLockUiTest.cpp
+    ui/ListPanelHelpersTest.cpp
 )
 target_link_libraries(test_ui PRIVATE quadmapper_ui glfw)
 

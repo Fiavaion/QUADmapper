@@ -2,6 +2,7 @@
 
 #include "Panel.hpp"
 #include "core/UUID.hpp"
+#include "ui/ConfirmPopup.hpp"
 #include <string>
 
 namespace quadmapper {
@@ -48,6 +49,10 @@ private:
     // Render the properties section for selected output
     void renderOutputProperties();
 
+    // Ask before removing an output; the removal runs when the modal is confirmed.
+    void requestDelete(const UUID& id);
+    void renderDeleteConfirm();
+
     // Render monitor dropdown
     void renderMonitorDropdown(OutputWindow* output);
 
@@ -64,6 +69,10 @@ private:
     bool isRenaming_ = false;
     int renamingIndex_ = -1;
     char renameBuffer_[128] = "";
+
+    ConfirmPopup deleteConfirm_{"outputdelete"};
+    UUID pendingDeleteId_;  // the output the open confirmation is about
+    UUID menuDeleteId_;     // set by a row's menu, picked up after the list loop
 };
 
 } // namespace quadmapper

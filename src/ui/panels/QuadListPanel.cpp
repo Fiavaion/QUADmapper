@@ -15,6 +15,7 @@
 #include "media/MediaItem.hpp"
 #include "core/UUID.hpp"
 #include "project/Project.hpp"
+#include "ui/ConfirmPopup.hpp"
 
 #include <imgui.h>
 #include <unordered_set>
@@ -78,7 +79,7 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
             scene.createGroupFromSelection();
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Create group from selected quads (Ctrl+G)");
+            ImGui::SetTooltip("Create group from selected quads");
         }
     }
 
@@ -130,10 +131,8 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
         // Visibility checkbox
         bool quadVisible = quad->isVisible();
         if (ImGui::Checkbox("##visible", &quadVisible)) {
-            Quad* mutableQuad = quadManager.getQuad(quad->getId());
-            if (mutableQuad) {
-                mutableQuad->setVisible(quadVisible);
-            }
+            es.commandHistory.execute(
+                std::make_unique<SetQuadVisibilityCommand>(es.quadRef(*quad), quadVisible));
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Visible");
@@ -143,10 +142,8 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
         // Lock checkbox
         bool locked = quad->isLocked();
         if (ImGui::Checkbox("##locked", &locked)) {
-            Quad* mutableQuad = quadManager.getQuad(quad->getId());
-            if (mutableQuad) {
-                mutableQuad->setLocked(locked);
-            }
+            es.commandHistory.execute(
+                std::make_unique<SetQuadLockedCommand>(es.quadRef(*quad), locked));
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Locked");
@@ -160,8 +157,10 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (ImGui::InputText("##quadrename", quadNameBuf_, sizeof(quadNameBuf_),
                                  ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
-                es.commandHistory.execute(
-                    std::make_unique<RenameQuadCommand>(es.quadRef(*quad), quadNameBuf_));
+                if (!isBlankName(quadNameBuf_)) {
+                    es.commandHistory.execute(
+                        std::make_unique<RenameQuadCommand>(es.quadRef(*quad), quadNameBuf_));
+                }
                 quadRenaming_ = false;
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape)) quadRenaming_ = false;
@@ -288,6 +287,9 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
     // Track which quads are shown in groups (to avoid duplicates)
     std::unordered_set<UUID> quadsShownInGroups;
 
+    // Deleting a group frees it, so the delete waits until the loop is done.
+    UUID deleteGroupId;
+
     // Render groups first
     for (const auto& groupPtr : scene.getGroups()) {
         QuadGroup* group = groupPtr.get();
@@ -331,14 +333,14 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
             groupNameBuf_[sizeof(groupNameBuf_) - 1] = '\0';
 
             if (ImGui::InputText("Rename", groupNameBuf_, sizeof(groupNameBuf_), ImGuiInputTextFlags_EnterReturnsTrue)) {
-                group->setName(groupNameBuf_);
+                if (!isBlankName(groupNameBuf_)) group->setName(groupNameBuf_);
                 ImGui::CloseCurrentPopup();
             }
 
             ImGui::Separator();
 
             if (ImGui::MenuItem("Delete Group")) {
-                scene.deleteGroup(group->getId());
+                deleteGroupId = group->getId();
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
@@ -376,6 +378,8 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
 
         ImGui::PopID();
     }
+
+    if (!deleteGroupId.isNull()) scene.deleteGroup(deleteGroupId);
 
     // Render ungrouped quads
     bool hasUngroupedQuads = false;

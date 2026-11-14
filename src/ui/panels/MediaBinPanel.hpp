@@ -3,6 +3,7 @@
 #include "Panel.hpp"
 #include "ui/AsyncFileDialog.hpp"
 #include "core/UUID.hpp"
+#include "ui/ConfirmPopup.hpp"
 #include "core/Types.hpp"
 #include <string>
 #include <vector>
@@ -22,6 +23,10 @@ class HapConvertWindow;
 class SourceManager;
 class ThumbnailCache;
 class Texture;
+class Scene;
+
+// How many quads and 3D objects, in every scene, are bound to the media source.
+size_t countMediaUsers(const std::vector<std::unique_ptr<Scene>>& scenes, const UUID& sourceId);
 
 /**
  * The Media tab of the Resources window: imported media items in a thumbnail grid.
@@ -96,6 +101,12 @@ private:
     // (one-shot decode, no persistent decoder). Returns nullptr on failure.
     Texture* getVideoThumbnail(const std::filesystem::path& path);
 
+    // Removing a library item: the context menu records the request, the grid loop
+    // finishes, then the item is removed (asking first when quads use it).
+    void processRemoveRequest();
+    void renderRemoveConfirm();
+    void removeItem(const UUID& id);
+
     // Hover-to-play: after each grid pass, switch/teardown the single dedicated
     // preview decoder so the video under the cursor plays (and reverts when you leave).
     void updateHoverPreview();
@@ -114,6 +125,14 @@ private:
 
     // Context menu state
     UUID contextMenuItemId_;
+
+    ConfirmPopup removeConfirm_{"mediaremove"};
+    UUID removeRequestId_;  // set by the context menu, handled after the grid loop
+    UUID pendingRemoveId_;  // the item the open confirmation is about
+
+    // New thumbnails built so far this frame (image or video); reset by the grid pass.
+    int thumbsBuiltThisFrame_ = 0;
+    static constexpr int MAX_THUMBS_PER_FRAME = 1;
 
     // Procedural edit callback
     ProceduralEditCallback proceduralEditCallback_;

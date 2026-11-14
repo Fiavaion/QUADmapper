@@ -61,6 +61,29 @@ bool ThumbnailCache::isCacheValid(const std::filesystem::path& filePath,
     return sourceTime <= cacheTime;
 }
 
+namespace {
+// A file that cannot be stat'ed (missing) reads as the minimum time, so it too
+// counts as unchanged until it appears.
+std::filesystem::file_time_type lastWriteTimeOrMin(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto writeTime = std::filesystem::last_write_time(path, ec);
+    return ec ? std::filesystem::file_time_type::min() : writeTime;
+}
+}  // namespace
+
+bool ThumbnailCache::failedUnchanged(const std::filesystem::path& filePath,
+                                     const std::string& pathKey) const {
+    auto failed = failedFiles_.find(pathKey);
+    if (failed == failedFiles_.end()) return false;
+    return lastWriteTimeOrMin(filePath) == failed->second;
+}
+
+bool ThumbnailCache::needsGeneration(const std::filesystem::path& filePath) const {
+    std::lock_guard<std::mutex> lock(cacheMutex_);
+    const std::string pathKey = utf8FromPath(filePath);
+    return textureCache_.find(pathKey) == textureCache_.end() && !failedUnchanged(filePath, pathKey);
+}
+
 GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int maxSize) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
 
@@ -71,6 +94,9 @@ GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int m
     if (it != textureCache_.end()) {
         return it->second;
     }
+
+    // A file that failed and has not changed since is not read or decoded again.
+    if (failedUnchanged(filePath, pathKey)) return 0;
 
     // Check disk cache
     std::filesystem::path cachePath = getCachePath(filePath);
@@ -86,6 +112,9 @@ GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int m
     GLuint texId = generateThumbnail(filePath, maxSize);
     if (texId != 0) {
         textureCache_[pathKey] = texId;
+        failedFiles_.erase(pathKey);
+    } else {
+        failedFiles_[pathKey] = lastWriteTimeOrMin(filePath);
     }
     return texId;
 }
@@ -104,6 +133,7 @@ void ThumbnailCache::invalidate(const std::filesystem::path& filePath) {
         glDeleteTextures(1, &it->second);
         textureCache_.erase(it);
     }
+    failedFiles_.erase(pathKey);
 
     // Also remove disk cache
     std::error_code ec;
@@ -117,6 +147,7 @@ void ThumbnailCache::clearMemoryCache() {
         glDeleteTextures(1, &texId);
     }
     textureCache_.clear();
+    failedFiles_.clear();
 }
 
 void ThumbnailCache::clearAllCaches() {

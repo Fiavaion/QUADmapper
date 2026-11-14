@@ -1,4 +1,5 @@
 #include "OutputPanel.hpp"
+#include "ui/ConfirmPopup.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "output/OutputManager.hpp"
@@ -42,6 +43,7 @@ void OutputPanel::renderContent() {
     renderActionButtons();
     ImGui::Separator();
     renderOutputList();
+    renderDeleteConfirm();
 
     // Show properties for selected output
     if (hasSelection()) {
@@ -107,16 +109,7 @@ void OutputPanel::renderActionButtons() {
     // Remove output button
     ImGui::BeginDisabled(!hasSelection() || outputManager_->getOutputCount() <= 1);
     if (ImGui::Button("Remove Output")) {
-        if (hasSelection()) {
-            outputManager_->deleteOutput(es_->selectedOutputId);
-            es_->selectedOutputId = UUID::null();
-
-            // Select first remaining output
-            const auto& outputs = outputManager_->getOutputs();
-            if (!outputs.empty()) {
-                es_->selectedOutputId = outputs[0]->getId();
-            }
-        }
+        if (hasSelection()) requestDelete(es_->selectedOutputId);
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -155,6 +148,36 @@ void OutputPanel::renderOutputList() {
     }
 
     ImGui::EndChild();
+
+    // Asked for from a row's menu: the confirmation opens once the list loop is done.
+    if (!menuDeleteId_.isNull()) {
+        requestDelete(menuDeleteId_);
+        menuDeleteId_ = UUID::null();
+    }
+}
+
+void OutputPanel::requestDelete(const UUID& id) {
+    const OutputWindow* output = outputManager_->getOutput(id);
+    if (!output || outputManager_->getOutputCount() <= 1) return;
+    pendingDeleteId_ = id;
+    deleteConfirm_.request(
+        "Remove Output?",
+        "Remove output '" + output->getName() +
+            "'? Its routing, slices and calibration are removed. This cannot be undone.",
+        "Remove");
+}
+
+void OutputPanel::renderDeleteConfirm() {
+    if (!deleteConfirm_.draw()) return;
+    const UUID id = pendingDeleteId_;
+    pendingDeleteId_ = UUID::null();
+    if (!outputManager_->getOutput(id) || outputManager_->getOutputCount() <= 1) return;
+    outputManager_->deleteOutput(id);
+    if (es_->selectedOutputId == id) {
+        es_->selectedOutputId = UUID::null();
+        const auto& outputs = outputManager_->getOutputs();
+        if (!outputs.empty()) es_->selectedOutputId = outputs[0]->getId();
+    }
 }
 
 void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
@@ -178,7 +201,7 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
         ImGui::SetKeyboardFocusHere();
         if (ImGui::InputText("##rename", renameBuffer_, sizeof(renameBuffer_),
                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
-            output->setName(renameBuffer_);
+            if (!isBlankName(renameBuffer_)) output->setName(renameBuffer_);
             isRenaming_ = false;
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
@@ -231,12 +254,7 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
 
         bool canDelete = outputManager_->getOutputCount() > 1;
         ImGui::BeginDisabled(!canDelete);
-        if (ImGui::MenuItem("Delete")) {
-            outputManager_->deleteOutput(output->getId());
-            if (es_->selectedOutputId == output->getId()) {
-                es_->selectedOutputId = UUID::null();
-            }
-        }
+        if (ImGui::MenuItem("Delete")) menuDeleteId_ = output->getId();
         ImGui::EndDisabled();
 
         ImGui::EndPopup();
