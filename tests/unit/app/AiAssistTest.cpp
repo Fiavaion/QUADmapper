@@ -3,6 +3,7 @@
 // leaves the quads alone. No GL context, camera or Python needed.
 
 #include "app/AiAssist.hpp"
+#include "core/FileSystem.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/PerformLock.hpp"
 #include "ai/SidecarClient.hpp"
@@ -14,10 +15,12 @@
 
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <future>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -42,7 +45,7 @@ TEST(AiAssistTest, DetectSurfaceWithoutSidecarAsksToEnableIt) {
     EditorState es;
     AiAssist ai(es, nullptr);
     ai.detectSurface();
-    EXPECT_STREQ(es.statusMessage, "AI: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_STREQ(es.statusMessage, "AI: turn on AI Assist first (AI > Enable AI Assist)");
     EXPECT_EQ(es.statusTimer, 5.0f);
 }
 
@@ -51,7 +54,7 @@ TEST(AiAssistTest, StoppedSidecarIsInactiveAndDetectAsksToEnableIt) {
     AiAssist ai(es, stoppedSidecar());
     EXPECT_FALSE(ai.isActive());
     ai.detectSurface();
-    EXPECT_STREQ(es.statusMessage, "AI: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_STREQ(es.statusMessage, "AI: turn on AI Assist first (AI > Enable AI Assist)");
 }
 
 TEST(AiAssistTest, OneFlashSolvesWithoutSidecarAskToEnableItAndLeaveTheQuad) {
@@ -64,13 +67,13 @@ TEST(AiAssistTest, OneFlashSolvesWithoutSidecarAskToEnableItAndLeaveTheQuad) {
     AiAssist ai(es, stoppedSidecar());
     ai.solveAndApply(nullptr);
     EXPECT_STREQ(es.statusMessage,
-                 "One-Flash: enable the sidecar first (AI > Enable AI Assist)");
+                 "One-Flash: turn on AI Assist first (AI > Enable AI Assist)");
     EXPECT_EQ(es.statusTimer, 6.0f);
 
     es.statusMessage[0] = '\0';
     ai.anamorphic(nullptr);
     EXPECT_STREQ(es.statusMessage,
-                 "One-Flash: enable the sidecar first (AI > Enable AI Assist)");
+                 "One-Flash: turn on AI Assist first (AI > Enable AI Assist)");
     EXPECT_EQ(quad->getGeometry().getCorners(), before);
 }
 
@@ -212,6 +215,38 @@ TEST(AiAssistTest, AnAppliedWarpIsOneUndoStep) {
     EXPECT_EQ(quad->getGeometry().getCorners(), before);
 }
 
+// /oneflash projects corners through a homography without clamping: a set with a
+// coordinate that is not finite or outside [-4, 5] is refused, and nothing is applied.
+TEST(AiAssistTest, CornersOutOfRangeAreIgnored) {
+    EditorState es;
+    Quad* quad = es.quadManager().createQuad("A");
+    const auto before = quad->getGeometry().getCorners();
+    AiAssist ai(es, nullptr);
+
+    const float inf = std::numeric_limits<float>::infinity();
+    for (float bad : {5.01f, -4.01f, 1e30f, inf, -inf, std::numeric_limits<float>::quiet_NaN()}) {
+        for (int i = 0; i < 8; i += 7) {  // the first x, the last y
+            Corners corners = kWarp;
+            corners[i / 2][i % 2] = bad;
+            AiAssist::Outcome outcome{"One-Flash: warp applied", 6.0f, corners};
+            ASSERT_TRUE(ai.startRequest("One-Flash: solving...", "One-Flash", quad->getId(),
+                                        [outcome] { return outcome; }));
+            ASSERT_TRUE(tickUntilIdle(ai));
+            EXPECT_STREQ(es.statusMessage, "AI: result ignored (corners out of range)") << bad;
+            EXPECT_EQ(quad->getGeometry().getCorners(), before) << bad;
+        }
+    }
+    EXPECT_FALSE(es.commandHistory.canUndo());
+
+    // The edges of the range are accepted.
+    const Corners edge{{{-4.0f, -4.0f}, {5.0f, -4.0f}, {5.0f, 5.0f}, {-4.0f, 5.0f}}};
+    ASSERT_TRUE(ai.startRequest("One-Flash: solving...", "One-Flash", quad->getId(),
+                                [edge] { return AiAssist::Outcome{"One-Flash: warp applied", 6.0f, edge}; }));
+    ASSERT_TRUE(tickUntilIdle(ai));
+    EXPECT_STREQ(es.statusMessage, "One-Flash: warp applied");
+    EXPECT_FLOAT_EQ(quad->getGeometry().getCorners()[2].x, 5.0f);
+}
+
 TEST(AiAssistTest, AResultForADeletedQuadChangesNothing) {
     EditorState es;
     Quad* quad = es.quadManager().createQuad("A");
@@ -289,25 +324,119 @@ void expectWarped(const Quad& quad) {
     }
 }
 
-TEST(AiAssistPickSurfaceTest, TheVenvInterpreterIsPreferredWhenItExists) {
-    namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() / ("qm_locate_" + UUID::generate().toString());
-    const fs::path sidecarDir = root / "tools" / "ai-sidecar";
-    fs::create_directories(sidecarDir);
-    std::ofstream(sidecarDir / "sidecar.py") << "# test\n";
+// ---- Finding the sidecar: from the executable's folder only ---------------------------
 
-    ai::SidecarConfig config = AiAssist::locateSidecarFrom(root);
-    EXPECT_FALSE(config.scriptPath.empty());
-    EXPECT_EQ(config.pythonExe, "python");
+namespace fs = std::filesystem;
 
-    fs::create_directories(sidecarDir / ".venv" / "Scripts");
-    std::ofstream(sidecarDir / ".venv" / "Scripts" / "python.exe") << "";
-    config = AiAssist::locateSidecarFrom(root);
-    EXPECT_EQ(fs::path(config.pythonExe).filename(), "python.exe");
-    EXPECT_EQ(fs::path(config.pythonExe).parent_path().parent_path().filename(), ".venv");
+// A temporary folder tree, removed afterwards.
+struct TempTree {
+    fs::path root = fs::temp_directory_path() / ("qm_locate_" + UUID::generate().toString());
+    TempTree() { fs::create_directories(root); }
+    ~TempTree() {
+        std::error_code ec;
+        fs::remove_all(root, ec);
+    }
+    // An empty file at `relative`, with its folders.
+    fs::path file(const fs::path& relative) const {
+        fs::create_directories((root / relative).parent_path());
+        std::ofstream(root / relative) << "";
+        return root / relative;
+    }
+};
 
-    std::error_code ec;
-    fs::remove_all(root, ec);
+// A developer checkout with its sidecar and environment at `repo`.
+void plantDevSidecar(const TempTree& tree, const fs::path& repo) {
+    tree.file(repo / "tools" / "ai-sidecar" / "sidecar.py");
+    tree.file(repo / "tools" / "ai-sidecar" / ".venv" / "Scripts" / "python.exe");
+}
+
+TEST(AiAssistLocateTest, TheInstalledLayoutWinsAndPassesItsModels) {
+    TempTree tree;
+    const fs::path exe = tree.root / "QUADmapper";
+    plantDevSidecar(tree, "QUADmapper");  // also a dev tree there: the install wins
+    tree.file("QUADmapper/ai/python/python.exe");
+    tree.file("QUADmapper/ai/sidecar/sidecar.py");
+
+    ai::SidecarConfig config = AiAssist::locateSidecarFrom(exe);
+    EXPECT_EQ(fs::path(config.pythonExe), exe / "ai" / "python" / "python.exe");
+    EXPECT_EQ(fs::path(config.scriptPath), exe / "ai" / "sidecar" / "sidecar.py");
+    EXPECT_TRUE(config.modelsDir.empty());  // no models folder
+
+    fs::create_directories(exe / "ai" / "models");
+    config = AiAssist::locateSidecarFrom(exe);
+    EXPECT_EQ(fs::path(config.modelsDir), exe / "ai" / "models");
+}
+
+TEST(AiAssistLocateTest, ADeveloperBuildFindsTheRepositoryAboveTheExecutable) {
+    TempTree tree;
+    plantDevSidecar(tree, "repo");
+    const fs::path exe = tree.root / "repo" / "build" / "debug" / "Debug";
+    fs::create_directories(exe);
+
+    const ai::SidecarConfig config = AiAssist::locateSidecarFrom(exe);
+    EXPECT_EQ(fs::path(config.scriptPath), tree.root / "repo" / "tools" / "ai-sidecar" / "sidecar.py");
+    EXPECT_EQ(fs::path(config.pythonExe),
+              tree.root / "repo" / "tools" / "ai-sidecar" / ".venv" / "Scripts" / "python.exe");
+    EXPECT_TRUE(config.modelsDir.empty());
+}
+
+TEST(AiAssistLocateTest, NothingIsFoundWithoutAnInterpreterOrTooFarUp) {
+    TempTree tree;
+    tree.file("repo/tools/ai-sidecar/sidecar.py");  // a script without its environment
+    tree.file("repo/ai/sidecar/sidecar.py");         // an install without its interpreter
+    fs::create_directories(tree.root / "repo" / "ai");
+    ai::SidecarConfig config = AiAssist::locateSidecarFrom(tree.root / "repo");
+    EXPECT_TRUE(config.pythonExe.empty());
+    EXPECT_TRUE(config.scriptPath.empty());
+
+    // Six levels up is found; seven is not.
+    TempTree far;
+    plantDevSidecar(far, "r");
+    fs::path exe = far.root / "r";
+    for (int level = 0; level < 6; ++level) exe /= "d";
+    fs::create_directories(exe / "d");
+    EXPECT_FALSE(AiAssist::locateSidecarFrom(exe).scriptPath.empty());
+    EXPECT_TRUE(AiAssist::locateSidecarFrom(exe / "d").scriptPath.empty());
+}
+
+// A project double-clicked in a downloaded folder that holds tools\ai-sidecar and a
+// planted python.exe: the current folder is never searched.
+TEST(AiAssistLocateTest, TheCurrentFolderIsNeverSearched) {
+    TempTree planted;
+    plantDevSidecar(planted, "");
+    planted.file("ai/python/python.exe");
+    planted.file("ai/sidecar/sidecar.py");
+    TempTree empty;
+
+    const fs::path before = fs::current_path();
+    fs::current_path(planted.root);
+    const ai::SidecarConfig fromEmpty = AiAssist::locateSidecarFrom(empty.root);
+    const ai::SidecarConfig relative = AiAssist::locateSidecarFrom(".");
+    const ai::SidecarConfig fromExe = AiAssist::locateSidecar();
+    fs::current_path(before);
+
+    EXPECT_TRUE(fromEmpty.pythonExe.empty());
+    EXPECT_TRUE(relative.pythonExe.empty());
+    const std::string plantedRoot = utf8FromPath(planted.root);
+    EXPECT_EQ(fromExe.pythonExe.find(plantedRoot), std::string::npos) << fromExe.pythonExe;
+    EXPECT_EQ(fromExe.scriptPath.find(plantedRoot), std::string::npos) << fromExe.scriptPath;
+}
+
+// No interpreter found: Enable launches nothing and says the AI features are missing.
+TEST(AiAssistLocateTest, EnableWithoutTheAiFeaturesSaysTheyAreNotInstalled) {
+    _putenv_s(ai::SIDECAR_TOKEN_ENV, "");
+    EditorState es;
+    AiAssist ai(es, std::make_unique<ai::SidecarClient>(ai::SidecarConfig{}));
+    ai.enable();
+    EXPECT_STREQ(es.statusMessage, "AI: starting the AI engine...");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::string(es.statusMessage) == "AI: starting the AI engine..." &&
+           std::chrono::steady_clock::now() < deadline) {
+        ai.tick(nullptr);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_STREQ(es.statusMessage, "AI: the AI features are not installed");
+    EXPECT_FALSE(ai.isActive());
 }
 
 TEST(AiAssistPickSurfaceTest, AScanGoesAheadOfOneFlashWhichGoesAheadOfPhotoSpace) {
@@ -391,7 +520,7 @@ TEST(AiAssistPickSurfaceTest, AScanTheSidecarCannotMapFallsBackAndSaysWhy) {
     };
     AiAssist::Outcome o = AiAssist::mapPhotoCorners(PICK_LEAD, kWarp, missing, nullptr);
     EXPECT_EQ(*o.corners, kWarp);
-    EXPECT_EQ(o.status, "Pick Surface: update the AI sidecar to map through the scan - assuming "
+    EXPECT_EQ(o.status, "Pick Surface: update the AI features to map through the scan - assuming "
                         "the camera is at the projector");
 
     const AiAssist::GrayMapFn refused = [](const std::vector<std::array<float, 2>>&) {
@@ -440,11 +569,11 @@ TEST(AiAssistPickSurfaceTest, ASegmentReplyBecomesAProposalAndAStatus) {
     ai::SegmentReply missing;
     missing.endpointMissing = true;
     AiAssist::Outcome o = AiAssist::segmentOutcome(missing);
-    EXPECT_EQ(o.status, "Pick Surface: update the AI sidecar (it cannot segment)");
+    EXPECT_EQ(o.status, "Pick Surface: the AI features are out of date: update or reinstall them");
     EXPECT_FALSE(o.proposal);
 
     o = AiAssist::segmentOutcome(ai::SegmentReply{});
-    EXPECT_EQ(o.status, "Pick Surface: segmentation failed (sidecar error)");
+    EXPECT_EQ(o.status, "Pick Surface: segmentation failed (AI engine error)");
     EXPECT_FALSE(o.proposal);
 
     ai::SegmentResult result;
@@ -472,7 +601,7 @@ TEST(AiAssistPickSurfaceTest, ASegmentReplyBecomesAProposalAndAStatus) {
     o = AiAssist::segmentOutcome(ai::SegmentReply{result, false});
     ASSERT_TRUE(o.proposal);
     EXPECT_FALSE(o.proposal->canApply());
-    EXPECT_EQ(o.status, "Pick Surface: placeholder only - the sidecar has no SAM 2 model");
+    EXPECT_EQ(o.status, "Pick Surface: the AI model files are missing: reinstall the AI features");
 }
 
 TEST(AiAssistPickSurfaceTest, AProposalIsShownAndANewPhotoClearsIt) {
@@ -596,7 +725,7 @@ TEST(AiAssistPickSurfaceTest, ApplyWithAOneFlashPhotoMapsThroughTheSidecar) {
     landProposal(ai, proposalWith(0.8f));
 
     ai.applyProposal();
-    EXPECT_STREQ(es.statusMessage, "Pick Surface: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: turn on AI Assist first (AI > Enable AI Assist)");
     EXPECT_FALSE(ai.isBusy());
     EXPECT_EQ(quad->getGeometry().getCorners(), before);
 }
@@ -708,7 +837,7 @@ TEST(AiAssistScanTest, ScanOutputIsRefusedUnderTheLockBlackoutABusyRequestAndWit
     outputs.setBlackout(false);
 
     ai.scanOutput(&outputs);
-    EXPECT_STREQ(es.statusMessage, "Scan: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_STREQ(es.statusMessage, "Scan: turn on AI Assist first (AI > Enable AI Assist)");
     EXPECT_FALSE(ai.canScan());
     EXPECT_FALSE(ai.isScanning());
     EXPECT_FALSE(ai.isBusy());
@@ -757,7 +886,7 @@ TEST(AiAssistScanTest, TheAssistedClickIsRefusedUnderTheLockAndWithoutItsPrerequ
     photo.photo = "C:/tmp/quadmapper_ai_photo.png";
     land(ai, photo);
     ai.calibrationPixelAt(0.5f, 0.5f, &outputs);
-    EXPECT_STREQ(es.statusMessage, "Calibration: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_STREQ(es.statusMessage, "Calibration: turn on AI Assist first (AI > Enable AI Assist)");
     EXPECT_FALSE(ai.isBusy());
     EXPECT_EQ(output->getCalibrationPoints()[0].pixel, Vec2(5.0f, 5.0f));
 }
@@ -864,7 +993,7 @@ TEST(AiAssistPickSurfaceTest, SegmentingNeedsASidecarThatCanSegment) {
     AiAssist ai(es, stoppedSidecar());
     EXPECT_FALSE(ai.canSegment());
     ai.segmentAt(0.5f, 0.5f);
-    EXPECT_STREQ(es.statusMessage, "Pick Surface: enable the sidecar first (AI > Enable AI Assist)");
+    EXPECT_STREQ(es.statusMessage, "Pick Surface: turn on AI Assist first (AI > Enable AI Assist)");
     EXPECT_FALSE(ai.isBusy());
 
     AiAssist none(es, nullptr);

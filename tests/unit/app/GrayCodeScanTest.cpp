@@ -180,7 +180,7 @@ TEST_F(GrayCodeScanTest, NoDisplayAfterGoingFullscreenOrNoRequestEndsIt) {
     host.requestWorks = false;
     restart();
     tick();
-    EXPECT_EQ(scan->endStatus(), "Scan: could not ask the AI sidecar for the patterns");
+    EXPECT_EQ(scan->endStatus(), "Scan: could not ask the AI engine for the patterns");
     EXPECT_FALSE(host.perform);
 }
 
@@ -196,13 +196,13 @@ TEST_F(GrayCodeScanTest, AFailedPatternsRequestEndsIt) {
     restart();
     tick();
     scan->patternsReplied(std::nullopt);
-    EXPECT_EQ(scan->endStatus(), "Scan: the AI sidecar could not write the patterns");
+    EXPECT_EQ(scan->endStatus(), "Scan: the AI engine could not write the patterns");
 
     host = FakeHost{};
     restart();
     tick();
-    scan->patternsReplied(0, "Scan: update the AI sidecar (it cannot scan)");
-    EXPECT_EQ(scan->endStatus(), "Scan: update the AI sidecar (it cannot scan)");
+    scan->patternsReplied(0, "Scan: the AI features are out of date: update or reinstall them");
+    EXPECT_EQ(scan->endStatus(), "Scan: the AI features are out of date: update or reinstall them");
 }
 
 TEST_F(GrayCodeScanTest, LeavingPerformModeWhilePreparingCancels) {
@@ -398,7 +398,7 @@ TEST_F(GrayCodeScanTest, CameraAndFrameFailuresEndItWithTheReason) {
 TEST_F(GrayCodeScanTest, NoFramesOrNoFullscreenEndsIt) {
     tick();
     scan->patternsReplied(0);
-    EXPECT_EQ(scan->endStatus(), "Scan: the AI sidecar wrote no patterns");
+    EXPECT_EQ(scan->endStatus(), "Scan: the AI engine wrote no patterns");
 
     host = FakeHost{};
     host.performEntryWorks = false;

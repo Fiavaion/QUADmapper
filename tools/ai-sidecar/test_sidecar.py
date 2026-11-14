@@ -14,10 +14,14 @@ import pytest
 import sidecar
 
 
+TOKEN = "0123456789abcdef0123456789abcdef"
+AUTH = {sidecar.TOKEN_HEADER: TOKEN}
+
+
 @pytest.fixture()
 def live_server():
     """Yield (host, port) for a running sidecar bound to an ephemeral port."""
-    server = sidecar.make_server("127.0.0.1", 0)
+    server = sidecar.make_server("127.0.0.1", 0, TOKEN)
     host, port = server.server_address[:2]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -36,12 +40,23 @@ def no_models(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _request(host, port, method, path, body=None):
+def _request(host, port, method, path, body=None, headers=None):
+    """Ask as the app does: the token, and JSON on a POST. `headers` adds to that, and a
+    None value leaves that header out."""
     conn = http.client.HTTPConnection(host, port, timeout=5)
     try:
         payload = json.dumps(body).encode("utf-8") if body is not None else None
-        headers = {"Content-Type": "application/json"} if payload else {}
-        conn.request(method, path, body=payload, headers=headers)
+        sent = dict(AUTH)
+        if method == "POST":
+            sent["Content-Type"] = "application/json"
+        sent.update(headers or {})
+        skip_host = "Host" in sent
+        conn.putrequest(method, path, skip_host=skip_host)
+        for name, value in sent.items():
+            if value is not None:
+                conn.putheader(name, value)
+        conn.putheader("Content-Length", str(len(payload or b"")))
+        conn.endheaders(payload)
         resp = conn.getresponse()
         data = resp.read()
         parsed = json.loads(data) if data else None
@@ -87,7 +102,7 @@ def test_surface_rejects_invalid_json(live_server):
     conn = http.client.HTTPConnection(*live_server, timeout=5)
     try:
         conn.request("POST", "/surface", body=b"{not json",
-                     headers={"Content-Type": "application/json"})
+                     headers={"Content-Type": "application/json", **AUTH})
         resp = conn.getresponse()
         assert resp.status == 400
     finally:
@@ -164,7 +179,76 @@ def test_segment_invalid_json_is_400(live_server):
     conn = http.client.HTTPConnection(*live_server, timeout=5)
     try:
         conn.request("POST", "/segment", body=b"[1, 2]",
-                     headers={"Content-Type": "application/json"})
+                     headers={"Content-Type": "application/json", **AUTH})
         assert conn.getresponse().status == 400
     finally:
         conn.close()
+
+
+# ---- Who may call (ADR-035, amendment of 2026-11-14) -------------------------------
+
+@pytest.mark.parametrize("method,path", [("GET", "/health"), ("POST", "/surface"),
+                                         ("POST", "/graycode/patterns"), ("GET", "/nope")])
+def test_a_request_without_the_token_is_401(live_server, method, path):
+    status, body = _request(*live_server, method, path, {} if method == "POST" else None,
+                            headers={sidecar.TOKEN_HEADER: None})
+    assert status == 401
+    assert "error" in body
+
+
+@pytest.mark.parametrize("token", ["", "wrong", TOKEN[:-1], TOKEN + "0", TOKEN.upper()])
+def test_a_wrong_token_is_401(live_server, token):
+    status, _ = _request(*live_server, "GET", "/health", headers={sidecar.TOKEN_HEADER: token})
+    assert status == 401
+
+
+def test_a_request_with_an_origin_is_403_even_with_the_token(live_server):
+    # A browser adds Origin to every cross-origin POST, no-cors text/plain ones too.
+    for origin in ("https://evil.example", "null", "http://127.0.0.1"):
+        status, _ = _request(*live_server, "POST", "/graycode/patterns",
+                             {"folder": ".", "projector": [64, 32]}, headers={"Origin": origin})
+        assert status == 403
+
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:{port}", "127.0.0.1",
+                                  "127.0.0.1:1", "localhost", "[::1]:{port}", "0.0.0.0:{port}"])
+def test_a_foreign_host_is_403(live_server, host):
+    # DNS rebinding: the page's own name is in Host.
+    status, _ = _request(*live_server, "GET", "/health",
+                         headers={"Host": host.format(port=live_server[1])})
+    assert status == 403
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:{port}", "localhost:{port}"])
+def test_loopback_hosts_are_accepted(live_server, host):
+    status, _ = _request(*live_server, "GET", "/health",
+                         headers={"Host": host.format(port=live_server[1])})
+    assert status == 200
+
+
+@pytest.mark.parametrize("content_type", [None, "text/plain", "application/x-www-form-urlencoded",
+                                          "multipart/form-data; boundary=x"])
+def test_a_post_that_is_not_json_is_415(live_server, content_type):
+    status, _ = _request(*live_server, "POST", "/surface", {"image_path": "x.png"},
+                         headers={"Content-Type": content_type})
+    assert status == 415
+
+
+def test_json_with_a_charset_is_accepted(live_server):
+    status, _ = _request(*live_server, "POST", "/surface", {"image_path": "x.png"},
+                         headers={"Content-Type": "application/json; charset=utf-8"})
+    assert status == 200
+
+
+@pytest.mark.parametrize("projector", [[7681, 4320], [7680, 4321], [8192, 8192]])
+def test_a_projector_beyond_the_apps_output_limit_is_400(live_server, tmp_path, projector):
+    status, body = _request(*live_server, "POST", "/graycode/patterns",
+                            {"folder": str(tmp_path), "projector": projector})
+    assert status == 400
+    assert "7680 x 4320" in body["detail"]
+    assert not list(tmp_path.iterdir())
+
+
+def test_the_server_never_runs_without_a_token():
+    with pytest.raises(ValueError):
+        sidecar.make_server("127.0.0.1", 0, "")

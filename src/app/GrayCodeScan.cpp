@@ -191,11 +191,11 @@ std::string GrayCodeScan::progress() const {
 void GrayCodeScan::patternsReplied(std::optional<int> frameCount, const std::string& failStatus) {
     if (!awaitingPatterns()) return;
     if (!frameCount) {  // the request failed outright
-        fail(failStatus.empty() ? "Scan: the AI sidecar could not write the patterns" : failStatus);
+        fail(failStatus.empty() ? "Scan: the AI engine could not write the patterns" : failStatus);
         return;
     }
     if (*frameCount < 3) {  // at least one pattern, then white and black
-        fail(failStatus.empty() ? "Scan: the AI sidecar wrote no patterns" : failStatus);
+        fail(failStatus.empty() ? "Scan: the AI engine wrote no patterns" : failStatus);
         return;
     }
     frameCount_ = *frameCount;
@@ -258,7 +258,7 @@ void GrayCodeScan::requestPatterns() {
     output_ = *settled;
     patternSize_ = output_.resolution;
     if (!host_.requestPatterns(patternSize_)) {
-        fail("Scan: could not ask the AI sidecar for the patterns");
+        fail("Scan: could not ask the AI engine for the patterns");
         return;
     }
     patternsRequested_ = true;

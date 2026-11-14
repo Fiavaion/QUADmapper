@@ -50,18 +50,36 @@ The `--extra-index-url` line at the top of the lock is how pip finds torch.
 `requirements-sam2.lock` holds sam2's sdist hash from PyPI; update it with the pin.
 
 Re-running `setup.ps1` is safe: it reuses the venv and skips files that are
-already present with the right hash. The app prefers `.venv\Scripts\python.exe`
-when it exists (ADR-053 section 1).
+already present with the right hash. A developer build of the app runs the
+sidecar on `.venv\Scripts\python.exe`, found by walking up from the folder of
+`QUADmapper.exe` (never the current folder); without the venv it reports that
+the AI features are not installed (ADR-035, amendment of 2026-11-14).
 
 ## Run
 
+The app launches the sidecar itself, with a fresh token for each launch. To run
+it by hand (to debug it, or to call it with curl), choose a token and give it to
+both the sidecar and the app:
+
 ```powershell
+$env:QM_SIDECAR_TOKEN = "my-dev-token"   # letters, digits, - and _
 tools\ai-sidecar\.venv\Scripts\python.exe tools\ai-sidecar\sidecar.py --host 127.0.0.1 --port 8765
 # --port 0 lets the OS assign a free port; it is reported on stdout as JSON.
+curl.exe -H "X-QM-Token: my-dev-token" http://127.0.0.1:8765/health
 ```
 
 On start it prints one JSON line to stdout, e.g.
 `{"event": "listening", "host": "127.0.0.1", "port": 8765, "api_version": 1}`.
+Without `QM_SIDECAR_TOKEN` it makes a token and prints it on the next line.
+
+Start the app from a shell where `QM_SIDECAR_TOKEN` is set to the same value:
+only then does it attach to a sidecar it did not launch. Otherwise a sidecar
+already on the port shows "AI: port 8765 is in use by another program".
+
+Every request must carry `X-QM-Token` (401 otherwise). A request with an
+`Origin` header, or a `Host` other than `127.0.0.1:<port>` or `localhost:<port>`,
+gets 403, and a POST whose `Content-Type` is not `application/json` gets 415, so
+web pages cannot drive the sidecar.
 
 Models load lazily on the first request that needs them (GPU when
 `torch.cuda.is_available()`, else CPU) and stay loaded.

@@ -99,11 +99,20 @@ std::optional<GrayMapResult> parseGrayMapResponse(const std::string& body,
 // (ADR-053 §1) can do what it always could: {"surface", "oneflash"}.
 std::vector<std::string> parseCapabilities(const std::string& healthBody);
 
+// The service name a real sidecar reports at /health (sidecar.py SERVICE_NAME).
+constexpr const char* SIDECAR_SERVICE_NAME = "quadmapper-ai-sidecar";
+// The most response body the client reads; a larger answer is an error.
+constexpr size_t MAX_RESPONSE_BYTES = 8u * 1024u * 1024u;
+
 struct SidecarConfig {
     std::string host = "127.0.0.1";   // loopback-only (ADR-035)
     int port = 8765;
-    std::string pythonExe = "python"; // resolved from PATH if not absolute
-    std::string scriptPath;           // absolute path to tools/ai-sidecar/sidecar.py
+    // Absolute paths, found next to the executable (AiAssist::locateSidecar). Either
+    // empty or relative: the AI features are not installed and nothing is launched
+    // (never a bare "python", which Windows looks up in the current folder first).
+    std::string pythonExe;
+    std::string scriptPath;
+    std::string modelsDir;            // non-empty: QM_MODELS_DIR for the child, unless the app has one
     int expectedApiVersion = 1;       // refuse to attach to an unknown version
     int startupTimeoutMs = 8000;      // budget for a freshly launched sidecar to answer /health
     // Per-request ceiling. Requests run off the main thread (AiAssist::startRequest), so
@@ -115,10 +124,23 @@ struct SidecarConfig {
 enum class SidecarState {
     Stopped,   // not started, or stopped
     Starting,  // startAsync() is connecting on a worker thread (not yet usable)
-    Attached,  // a sidecar we did not spawn is answering (we do not own its process)
+    Attached,  // a sidecar we did not spawn is answering (developer token only)
     Launched,  // we spawned it (and will kill it on stop()/destruction)
-    Failed     // start() ran but no healthy sidecar is reachable
+    Failed     // start() found no usable sidecar, or a request lost the connection
 };
+
+// Why the last start() failed (None while it has not failed).
+enum class SidecarFailure {
+    None,
+    NotInstalled,  // no interpreter or script was found
+    PortInUse,     // something the app did not launch answers on the port
+    NoResponse     // the launch failed, or the sidecar never became healthy
+};
+
+// The environment variable that carries the token to the sidecar (ADR-035, amendment
+// of 2026-11-14). Set in the app's own environment, it is a developer's: the app uses
+// it and may attach to a sidecar already running with it.
+constexpr const char* SIDECAR_TOKEN_ENV = "QM_SIDECAR_TOKEN";
 
 // Not copyable: owns a process + job handle. Move is not needed (held by value
 // or unique_ptr in the app).
@@ -130,11 +152,13 @@ public:
     SidecarClient(const SidecarClient&) = delete;
     SidecarClient& operator=(const SidecarClient&) = delete;
 
-    // Attach to an already-running sidecar on host:port, or launch one from
-    // scriptPath. Returns true iff a healthy sidecar (matching api_version) is
-    // reachable afterwards. Safe to call again after a failure. Blocks the
-    // caller for up to startupTimeoutMs while launching/polling — prefer
-    // startAsync() from the UI thread.
+    // Launch the sidecar from pythonExe + scriptPath with a fresh random token, and
+    // wait for it to answer /health as the sidecar (service name, api_version, token
+    // accepted) from a listener inside its job. Never attaches to a server it did not
+    // launch, unless QM_SIDECAR_TOKEN is set in the app's environment (a developer's
+    // hand-started sidecar). Returns true iff it is usable afterwards; failure()
+    // says why not. Safe to call again after a failure. Blocks the caller for up to
+    // startupTimeoutMs while launching/polling — prefer startAsync() from the UI thread.
     bool start();
 
     // Non-blocking start (TD-10): runs the attach/launch/health-poll on a worker
@@ -147,10 +171,16 @@ public:
     // also invoked by the destructor so no child outlives the app.
     void stop();
 
-    // GET /health, validating status and api_version. Cheap; safe any time.
+    // GET /health with the token, validating status, service and api_version. Cheap;
+    // safe any time.
     bool isHealthy() const;
 
+    // A request that loses the connection (refused, reset, or a timeout once the
+    // process has died) sets Failed and ends a launched process, so Enable starts it
+    // again. An HTTP error answer does not.
     SidecarState state() const;
+    SidecarFailure failure() const;
+    int port() const;
 
     // What the sidecar advertised at its last successful health check ("surface",
     // "oneflash", "segment", "depth", "graycode"); empty until one succeeds. Cached: no I/O.

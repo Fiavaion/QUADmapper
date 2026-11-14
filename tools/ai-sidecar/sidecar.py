@@ -21,6 +21,13 @@ Contract (v1):
 
 A request the client got wrong (bad fields, missing captures, no such map) answers 400.
 
+Every request must carry `X-QM-Token: <token>` (401 otherwise). The app makes a fresh
+token for each launch and passes it in the QM_SIDECAR_TOKEN environment variable; run
+by hand without it, the server makes one and prints it. A request with an Origin header
+(every browser cross-origin request has one) or a Host other than 127.0.0.1:<port> or
+localhost:<port> (DNS rebinding) gets 403, and a POST that is not application/json 415
+(ADR-035, amendment of 2026-11-14).
+
 The server binds loopback-only (127.0.0.1) by default. The server itself needs
 only the standard library; the CV modules are imported when a request needs them,
 so /health, the stubs and the contract tests run without torch or a GPU.
@@ -29,10 +36,13 @@ so /health, the stubs and the contract tests run without torch or a GPU.
 from __future__ import annotations
 
 import argparse
+import hmac
 import importlib.util
 import json
 import math
 import os
+import secrets
+import socket
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -41,6 +51,9 @@ from typing import Optional
 # to a sidecar whose api_version it does not understand (graceful version skew).
 SIDECAR_API_VERSION = 1
 SERVICE_NAME = "quadmapper-ai-sidecar"
+# The shared secret: the environment variable the app sets, and the header it sends.
+TOKEN_ENV = "QM_SIDECAR_TOKEN"
+TOKEN_HEADER = "X-QM-Token"
 
 # Max request body we will read for /surface. A path-only request is tiny; this
 # is a sanity bound, not a real image-upload limit (images go by path for now).
@@ -173,7 +186,8 @@ def _oneflash_response(request: dict) -> dict:
 SEGMENT_MODELS = ("small", "tiny")
 # Gray-code limits, here so a bad request is refused without importing numpy.
 GRAYCODE_MIN_PROJECTOR = 2
-GRAYCODE_MAX_PROJECTOR = 8192
+GRAYCODE_MAX_PROJECTOR_WIDTH = 7680   # the app's own output limit (8K UHD)
+GRAYCODE_MAX_PROJECTOR_HEIGHT = 4320
 GRAYMAP_MAX_POINTS = 64
 
 
@@ -262,9 +276,10 @@ def _parse_scan(request: dict) -> tuple:
             or not all(isinstance(v, int) and not isinstance(v, bool) for v in projector)):
         raise BadRequest("projector must be [width, height] integers")
     width, height = projector
-    if not all(GRAYCODE_MIN_PROJECTOR <= v <= GRAYCODE_MAX_PROJECTOR for v in (width, height)):
-        raise BadRequest(f"projector size must be {GRAYCODE_MIN_PROJECTOR}.."
-                         f"{GRAYCODE_MAX_PROJECTOR} pixels")
+    if not (GRAYCODE_MIN_PROJECTOR <= width <= GRAYCODE_MAX_PROJECTOR_WIDTH
+            and GRAYCODE_MIN_PROJECTOR <= height <= GRAYCODE_MAX_PROJECTOR_HEIGHT):
+        raise BadRequest(f"projector size must be {GRAYCODE_MIN_PROJECTOR} to "
+                         f"{GRAYCODE_MAX_PROJECTOR_WIDTH} x {GRAYCODE_MAX_PROJECTOR_HEIGHT} pixels")
     return folder, width, height
 
 
@@ -381,7 +396,24 @@ class SidecarHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _refused(self) -> bool:
+        """Answer and return True when the caller may not use the server (see module doc)."""
+        if self.headers.get("Origin") is not None:
+            self._send_json(403, {"error": "cross-origin requests are refused"})
+            return True
+        port = self.server.server_address[1]
+        if self.headers.get("Host", "") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            self._send_json(403, {"error": "bad Host"})
+            return True
+        given = self.headers.get(TOKEN_HEADER, "").encode("utf-8", "replace")
+        if not hmac.compare_digest(given, self.server.token.encode("utf-8")):
+            self._send_json(401, {"error": f"missing or wrong {TOKEN_HEADER}"})
+            return True
+        return False
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib signature
+        if self._refused():
+            return
         if self.path == "/health":
             self._send_json(200, {
                 "status": "ok",
@@ -393,8 +425,14 @@ class SidecarHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found", "path": self.path})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib signature
+        if self._refused():
+            return
         if self.path not in ("/surface", "/oneflash") and self.path not in _CHECKED_ENDPOINTS:
             self._send_json(404, {"error": "not found", "path": self.path})
+            return
+        media_type = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if media_type != "application/json":
+            self._send_json(415, {"error": "Content-Type must be application/json"})
             return
 
         try:
@@ -426,13 +464,34 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "bad request", "detail": str(exc)})
 
 
-def make_server(host: str, port: int) -> ThreadingHTTPServer:
+class SidecarServer(ThreadingHTTPServer):
+    """The HTTP server, holding the token every request must carry.
+
+    The port is bound exclusively: with SO_REUSEADDR (the stdlib default for
+    HTTPServer) another program on Windows could bind the same port and take requests.
+    """
+
+    allow_reuse_address = False
+
+    def __init__(self, address: tuple, token: str) -> None:
+        self.token = token
+        super().__init__(address, SidecarHandler)
+
+    def server_bind(self) -> None:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows only
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def make_server(host: str, port: int, token: str) -> SidecarServer:
     """Create (but do not serve) a sidecar HTTP server bound to host:port.
 
     Port 0 lets the OS pick a free port; read it back from
     ``server.server_address[1]``. Used by the unit tests for ephemeral servers.
     """
-    return ThreadingHTTPServer((host, port), SidecarHandler)
+    if not token:
+        raise ValueError("the sidecar never runs without a token")
+    return SidecarServer((host, port), token)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -443,7 +502,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="TCP port (default 8765; 0 = OS-assigned)")
     args = parser.parse_args(argv)
 
-    server = make_server(args.host, args.port)
+    # From the app's environment, never the command line (other programs can read
+    # that). Started by hand without one: make one and say it once.
+    token = os.environ.get(TOKEN_ENV, "")
+    generated = not token
+    if generated:
+        token = secrets.token_hex(16)
+
+    server = make_server(args.host, args.port, token)
     bound_host, bound_port = server.server_address[:2]
     # Single line on stdout so a launching parent can confirm readiness and the
     # actual port (useful when --port 0 was requested).
@@ -453,6 +519,9 @@ def main(argv: list[str] | None = None) -> int:
         "port": bound_port,
         "api_version": SIDECAR_API_VERSION,
     }), flush=True)
+    if generated:
+        print(f"{TOKEN_ENV} was not set: requests must send the header "
+              f"{TOKEN_HEADER}: {token}", flush=True)
     try:
         import models
         models.warm_up_in_background()

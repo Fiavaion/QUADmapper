@@ -134,9 +134,12 @@ def test_points_map_through_a_written_map(tmp_path):
 
 # ---- HTTP contract -------------------------------------------------------------------
 
+AUTH = {sidecar.TOKEN_HEADER: "graycode-test-token"}
+
+
 @pytest.fixture()
 def live_server():
-    server = sidecar.make_server("127.0.0.1", 0)
+    server = sidecar.make_server("127.0.0.1", 0, AUTH[sidecar.TOKEN_HEADER])
     host, port = server.server_address[:2]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -152,7 +155,7 @@ def _post(server, path, body):
     conn = http.client.HTTPConnection(*server, timeout=30)
     try:
         conn.request("POST", path, body=json.dumps(body).encode("utf-8"),
-                     headers={"Content-Type": "application/json"})
+                     headers={"Content-Type": "application/json", **AUTH})
         resp = conn.getresponse()
         return resp.status, json.loads(resp.read() or b"null")
     finally:
@@ -161,7 +164,7 @@ def _post(server, path, body):
 
 def test_health_advertises_graycode(live_server):
     conn = http.client.HTTPConnection(*live_server, timeout=5)
-    conn.request("GET", "/health")
+    conn.request("GET", "/health", headers=AUTH)
     body = json.loads(conn.getresponse().read())
     conn.close()
     assert "graycode" in body["capabilities"]
@@ -219,6 +222,7 @@ def test_missing_captures_are_a_400(live_server, tmp_path):
     {"folder": ".", "projector": [True, 32]},
     {"folder": ".", "projector": [1, 32]},
     {"folder": ".", "projector": [64, 100000]},
+    {"folder": ".", "projector": [7681, 32]},
 ])
 def test_bad_scan_requests_are_400(live_server, path, body):
     status, _ = _post(live_server, path, body)

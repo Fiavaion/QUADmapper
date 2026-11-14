@@ -73,9 +73,9 @@ void AiPhotoPanel::drawContent(EditorContext& ctx) {
         ImGui::TextColored(WARNING_COLOR, "Click calibration point %d where it is in the photo.",
                            es.calibration.selected + 1);
     } else if (!services->aiActive()) {
-        ImGui::TextDisabled("Enable the sidecar (AI > Enable AI Assist) to pick a surface.");
+        ImGui::TextDisabled("Turn on AI Assist first (AI > Enable AI Assist) to pick a surface.");
     } else if (!canSegment) {
-        ImGui::TextDisabled("This AI sidecar cannot segment: update it.");
+        ImGui::TextDisabled("The AI features are out of date: update or reinstall them.");
     } else if (busy) {
         ImGui::TextDisabled("Working...");
     } else {
@@ -91,7 +91,7 @@ void AiPhotoPanel::drawContent(EditorContext& ctx) {
             ImGui::TextDisabled("Planarity n/a");
         }
         if (proposal->stub) {
-            ImGui::TextColored(WARNING_COLOR, "Placeholder only: the sidecar has no SAM 2 model.");
+            ImGui::TextColored(WARNING_COLOR, "The AI model files are missing: reinstall the AI features.");
         } else if (!proposal->canApply()) {
             ImGui::TextColored(WARNING_COLOR, "Too uncertain to apply (below %.2f).",
                                AI_MIN_CONFIDENCE);

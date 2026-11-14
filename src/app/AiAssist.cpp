@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
@@ -55,6 +56,20 @@ constexpr const char* CALIBRATION = "Calibration";
 // A decoded map that saw less of the output than this is refused: the camera was not
 // aimed at it.
 constexpr float MIN_SCAN_COVERAGE = 0.02f;
+// Corners from the AI engine (normalized canvas units) outside this range, or not
+// finite, are refused before they reach a quad: /oneflash projects through a homography
+// and does not clamp.
+constexpr float CORNER_MIN = -4.0f;
+constexpr float CORNER_MAX = 5.0f;
+
+bool cornersInRange(const std::array<std::array<float, 2>, 4>& corners) {
+    for (const auto& corner : corners) {
+        for (float v : corner) {
+            if (!std::isfinite(v) || v < CORNER_MIN || v > CORNER_MAX) return false;
+        }
+    }
+    return true;
+}
 
 // The scan's folder for one output: the sidecar writes the frames there and the camera's
 // captures and the map land beside them.
@@ -67,13 +82,13 @@ AiAssist::Outcome scanPatternsOutcome(const ai::GrayReply<ai::GrayPatternsResult
     outcome.seconds = 6.0f;
     outcome.scanFrames = 0;
     if (reply.endpointMissing) {
-        outcome.status = "Scan: update the AI sidecar (it cannot scan)";
+        outcome.status = "Scan: the AI features are out of date: update or reinstall them";
     } else if (!reply.error.empty()) {
         outcome.status = "Scan: " + reply.error;
     } else if (!reply.result) {
-        outcome.status = "Scan: the AI sidecar could not write the patterns";
+        outcome.status = "Scan: the AI engine could not write the patterns";
     } else if (reply.result->stub) {
-        outcome.status = "Scan: the AI sidecar has no OpenCV contrib (run tools/ai-sidecar/setup.ps1)";
+        outcome.status = "Scan: the AI features are out of date: update or reinstall them";
     } else {
         outcome.scanFrames = reply.result->count;
     }
@@ -85,11 +100,11 @@ AiAssist::Outcome scanDecodeOutcome(const ai::GrayReply<ai::GrayCodeResult>& rep
     AiAssist::Outcome outcome;
     outcome.seconds = 8.0f;
     if (reply.endpointMissing) {
-        outcome.status = "Scan: update the AI sidecar (it cannot decode a scan)";
+        outcome.status = "Scan: the AI features are out of date: update or reinstall them";
     } else if (!reply.error.empty()) {
         outcome.status = "Scan: decoding failed - " + reply.error;
     } else if (!reply.result || reply.result->stub) {
-        outcome.status = "Scan: decoding failed (sidecar error)";
+        outcome.status = "Scan: decoding failed (AI engine error)";
     } else if (reply.result->coverage < MIN_SCAN_COVERAGE) {
         outcome.status = "Scan: the camera saw almost none of the output - aim it at the output and scan again";
     } else {
@@ -193,26 +208,41 @@ AiAssist::~AiAssist() {
 }
 
 ai::SidecarConfig AiAssist::locateSidecar() {
-    return locateSidecarFrom(std::filesystem::current_path());
+    return locateSidecarFrom(executableDir());
 }
 
-ai::SidecarConfig AiAssist::locateSidecarFrom(const std::filesystem::path& workingDir) {
+ai::SidecarConfig AiAssist::locateSidecarFrom(const std::filesystem::path& exeDir) {
+    namespace fs = std::filesystem;
     ai::SidecarConfig config;
-    const std::filesystem::path rel("tools/ai-sidecar/sidecar.py");
-    for (const std::filesystem::path& base :
-         {workingDir, workingDir / ".." / "..", workingDir / ".." / ".." / ".."}) {
-        std::error_code ec;
-        std::filesystem::path candidate = base / rel;
-        if (std::filesystem::exists(candidate, ec)) {
-            const std::filesystem::path script = std::filesystem::weakly_canonical(candidate, ec);
-            config.scriptPath = utf8FromPath(script);
-            // The sidecar's own environment (setup.ps1), so its packages never clash
-            // with the global Python's.
-            const std::filesystem::path venvPython =
-                script.parent_path() / ".venv" / "Scripts" / "python.exe";
-            if (std::filesystem::exists(venvPython, ec)) config.pythonExe = utf8FromPath(venvPython);
-            break;
+    if (exeDir.empty() || !exeDir.is_absolute()) return config;  // never the current folder
+    std::error_code ec;
+
+    // The installed layout (ADR-057 §4): the bundled interpreter, script and models.
+    const fs::path installed = exeDir / "ai";
+    if (fs::is_regular_file(installed / "python" / "python.exe", ec) &&
+        fs::is_regular_file(installed / "sidecar" / "sidecar.py", ec)) {
+        config.pythonExe = utf8FromPath(installed / "python" / "python.exe");
+        config.scriptPath = utf8FromPath(installed / "sidecar" / "sidecar.py");
+        if (fs::is_directory(installed / "models", ec)) {
+            config.modelsDir = utf8FromPath(installed / "models");
         }
+        return config;
+    }
+
+    // A developer build: the repository's sidecar with its own environment (setup.ps1),
+    // in a folder above the executable.
+    fs::path dir = exeDir.lexically_normal();
+    if (!dir.has_filename() && dir.has_relative_path()) dir = dir.parent_path();  // "C:\a\b\"
+    for (int level = 0; level <= 6; ++level) {
+        const fs::path sidecar = dir / "tools" / "ai-sidecar";
+        const fs::path python = sidecar / ".venv" / "Scripts" / "python.exe";
+        if (fs::is_regular_file(sidecar / "sidecar.py", ec) && fs::is_regular_file(python, ec)) {
+            config.pythonExe = utf8FromPath(python);
+            config.scriptPath = utf8FromPath(sidecar / "sidecar.py");
+            return config;
+        }
+        if (!dir.has_relative_path()) break;  // at the root
+        dir = dir.parent_path();
     }
     return config;
 }
@@ -278,6 +308,10 @@ void AiAssist::applyOutcome(const Request& request, OutputManager* outputs) {
         return;
     }
     if (outcome.scanFrames) return;  // the frames of a scan cancelled meanwhile
+    if (outcome.corners && !cornersInRange(*outcome.corners)) {
+        setStatus("AI: result ignored (corners out of range)", 6.0f);
+        return;
+    }
     if (outcome.grayMap) grayMaps_[outcome.grayMap->outputId] = *outcome.grayMap;
     if (outcome.photo) {
         photo_.path = *outcome.photo;
@@ -320,7 +354,7 @@ void AiAssist::applyOutcome(const Request& request, OutputManager* outputs) {
 void AiAssist::enable() {
     if (!sidecar_) return;
     sidecar_->startAsync();
-    showStatus(editor_, "AI: connecting to sidecar...", 5.0f);
+    showStatus(editor_, "AI: starting the AI engine...", 5.0f);
 }
 
 void AiAssist::run(EditorServices::AiAction action, OutputManager* outputs) {
@@ -355,10 +389,22 @@ void AiAssist::tick(OutputManager* outputs) {
             if (lastSidecarState_ == ai::SidecarState::Starting) {
                 const bool ok = (s == ai::SidecarState::Attached ||
                                  s == ai::SidecarState::Launched);
-                showStatus(editor_,
-                           ok ? "AI assist enabled (sidecar connected)"
-                              : "AI assist unavailable - sidecar could not start",
-                           5.0f);
+                std::string status = "AI Assist enabled (AI engine connected)";
+                if (!ok) {
+                    switch (sidecar_->failure()) {
+                        case ai::SidecarFailure::NotInstalled:
+                            status = "AI: the AI features are not installed";
+                            break;
+                        case ai::SidecarFailure::PortInUse:
+                            status = formatStatus("AI: port %d is in use by another program",
+                                                  sidecar_->port());
+                            break;
+                        default:
+                            status = "AI Assist could not start: see the log file (Help > Open Log Folder)";
+                            break;
+                    }
+                }
+                showStatus(editor_, status, ok ? 5.0f : 8.0f);
                 if (ok) Logger::info(editor_.statusMessage);
                 else    Logger::warning(editor_.statusMessage);
             }
@@ -439,7 +485,7 @@ void AiAssist::runSelfTest(OutputManager* outputs) {
 void AiAssist::detectSurface(const OutputManager* outputs) {
     // Preconditions: a running sidecar and a target quad to warp.
     if (!sidecarReady()) {
-        setStatus("AI: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+        setStatus("AI: turn on AI Assist first (AI > Enable AI Assist)", 5.0f);
         return;
     }
     Quad* quad = editor_.quadManager().getPrimarySelectedQuad();
@@ -481,7 +527,7 @@ void AiAssist::detectSurface(const OutputManager* outputs) {
 
         auto surface = sidecar->requestSurface(imgPath);
         if (!surface) {
-            return Outcome{"AI: detection failed (sidecar error)", 5.0f, std::nullopt};
+            return Outcome{"AI: detection failed (AI engine error)", 5.0f, std::nullopt};
         }
 
         // Low confidence: do NOT auto-warp onto a possibly-wrong surface — ask the
@@ -531,21 +577,12 @@ void AiAssist::ensurePatternQuad() {
 void AiAssist::emitPattern(const OutputManager& outputs) {
     // Lazily load the calibration pattern + build the fullscreen identity quad.
     if (!calibTexture_) {
-        std::filesystem::path patternPath;
-        const std::filesystem::path rel("resources/patterns/charuco.png");
-        for (const std::filesystem::path& base :
-             {std::filesystem::current_path(),
-              std::filesystem::current_path() / "..",
-              std::filesystem::current_path() / ".." / ".."}) {
-            std::error_code ec;
-            if (std::filesystem::exists(base / rel, ec)) {
-                patternPath = base / rel;
-                break;
-            }
-        }
+        const std::filesystem::path patternPath = resourcePath("patterns/charuco.png");
         auto tex = std::make_unique<Texture>();
-        if (patternPath.empty() || !tex->loadFromFile(patternPath)) {
-            setStatus("One-Flash: pattern asset not found (resources/patterns/charuco.png)", 5.0f);
+        std::error_code ec;
+        if (!std::filesystem::exists(patternPath, ec) || !tex->loadFromFile(patternPath)) {
+            Logger::warning("One-Flash: cannot load " + utf8FromPath(patternPath));
+            setStatus("One-Flash: the calibration pattern file is missing: reinstall QUADmapper", 5.0f);
             return;
         }
         calibTexture_ = std::move(tex);
@@ -606,7 +643,7 @@ void AiAssist::runOneFlash(const OutputManager* outputs,
         return;
     }
     if (!sidecarReady()) {
-        setStatus("One-Flash: enable the sidecar first (AI > Enable AI Assist)", 6.0f);
+        setStatus("One-Flash: turn on AI Assist first (AI > Enable AI Assist)", 6.0f);
         return;
     }
     Quad* quad = editor_.quadManager().getPrimarySelectedQuad();
@@ -696,11 +733,11 @@ void AiAssist::takePhoto() {
 void AiAssist::segmentAt(float x, float y) {
     if (refusedByPerformLock(editor_, "AI assist")) return;
     if (!sidecarReady()) {
-        setStatus("Pick Surface: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+        setStatus("Pick Surface: turn on AI Assist first (AI > Enable AI Assist)", 5.0f);
         return;
     }
     if (!canSegment()) {
-        setStatus("Pick Surface: update the AI sidecar (it cannot segment)", 6.0f);
+        setStatus("Pick Surface: the AI features are out of date: update or reinstall them", 6.0f);
         return;
     }
     if (photo_.path.empty()) {
@@ -720,10 +757,10 @@ void AiAssist::segmentAt(float x, float y) {
 
 AiAssist::Outcome AiAssist::segmentOutcome(const ai::SegmentReply& reply) {
     if (reply.endpointMissing) {
-        return Outcome{"Pick Surface: update the AI sidecar (it cannot segment)", 6.0f, std::nullopt};
+        return Outcome{"Pick Surface: the AI features are out of date: update or reinstall them", 6.0f, std::nullopt};
     }
     if (!reply.result) {
-        return Outcome{"Pick Surface: segmentation failed (sidecar error)", 5.0f, std::nullopt};
+        return Outcome{"Pick Surface: segmentation failed (AI engine error)", 5.0f, std::nullopt};
     }
     const ai::SegmentResult& r = *reply.result;
     AiSurfaceProposal proposal;
@@ -736,7 +773,7 @@ AiAssist::Outcome AiAssist::segmentOutcome(const ai::SegmentReply& reply) {
     Outcome outcome;
     outcome.seconds = 6.0f;
     if (proposal.stub) {
-        outcome.status = "Pick Surface: placeholder only - the sidecar has no SAM 2 model";
+        outcome.status = "Pick Surface: the AI model files are missing: reinstall the AI features";
     } else if (!proposal.canApply()) {
         outcome.status = formatStatus("Pick Surface: low confidence (%.2f) - click elsewhere on the surface",
                                       proposal.confidence);
@@ -767,7 +804,7 @@ AiAssist::Outcome AiAssist::mapPhotoCorners(const std::string& lead, const Corne
             return Outcome{lead + "applied through the scan - nudge with Tab + arrows", 6.0f, corners};
         }
         if (reply.endpointMissing) {
-            passedOver = "update the AI sidecar to map through the scan";
+            passedOver = "update the AI features to map through the scan";
         } else if (reply.result) {
             passedOver = "a corner is outside the scanned area";
         } else if (!reply.error.empty()) {
@@ -847,7 +884,7 @@ void AiAssist::applyProposal(const OutputManager* outputs) {
     OneFlashFn oneFlash;
     const PickMapping mapping = photoMappings(outputs, grayMap, oneFlash);
     if (mapping != PickMapping::CameraAtProjector && !sidecarReady()) {
-        setStatus("Pick Surface: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+        setStatus("Pick Surface: turn on AI Assist first (AI > Enable AI Assist)", 5.0f);
         return;
     }
     // Through startRequest even in photo space, so the lock and deleted-quad rules apply
@@ -917,11 +954,11 @@ void AiAssist::scanOutput(OutputManager* outputs) {
         return;
     }
     if (!sidecarReady()) {
-        setStatus("Scan: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+        setStatus("Scan: turn on AI Assist first (AI > Enable AI Assist)", 5.0f);
         return;
     }
     if (!canScan()) {
-        setStatus("Scan: update the AI sidecar (it cannot scan)", 6.0f);
+        setStatus("Scan: the AI features are out of date: update or reinstall them", 6.0f);
         return;
     }
     // The selected output, else the first enabled one.
@@ -1018,7 +1055,7 @@ void AiAssist::calibrationPixelAt(float x, float y, const OutputManager* outputs
         return;
     }
     if (!sidecarReady()) {
-        setStatus("Calibration: enable the sidecar first (AI > Enable AI Assist)", 5.0f);
+        setStatus("Calibration: turn on AI Assist first (AI > Enable AI Assist)", 5.0f);
         return;
     }
     if (x < 0.0f || x > 1.0f || y < 0.0f || y > 1.0f) return;  // not on the photo
@@ -1029,7 +1066,7 @@ void AiAssist::calibrationPixelAt(float x, float y, const OutputManager* outputs
                  [sidecar, path = map->path, point = std::array<float, 2>{x, y}, target]() -> Outcome {
         const ai::GrayReply<ai::GrayMapResult> reply = sidecar->requestGrayMap(path, {point});
         if (reply.endpointMissing) {
-            return Outcome{"Calibration: update the AI sidecar (it cannot map through a scan)", 6.0f,
+            return Outcome{"Calibration: the AI features are out of date: update or reinstall them", 6.0f,
                            std::nullopt};
         }
         if (!reply.result) {
