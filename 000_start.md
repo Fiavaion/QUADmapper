@@ -116,7 +116,7 @@ step 2):**
 1. **Arrive:** §2–§5. Report the build and test result against the expected counts.
 2. **5090 torch fix** (§4): one small slice; run the sidecar pytest only.
 3. **Owner's hands-on AI test (QM-124).** Launch the app. The checklist is in
-   `notes/CURRENT_STATUS.md`, and the how-to is `docs/ai-features-guide.html`. Fix what the
+   `notes/CURRENT_STATUS.md`, and the how-to is `resources/docs/ai-features-guide.html`. Fix what the
    owner finds.
 4. **Resume the installer (ADR-057)** on `feat/installer` at `9e5aacd`:
    1. Fix the `AiAssistTest.cpp` compile error.

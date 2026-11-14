@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QUADmapper Quick Start</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1f; --muted: #5c5c66;
+    --line: #e2e2e6; --accent: #2f6fdb; --accent-soft: #e8f0fd;
+    --warn: #9a5b00; --warn-soft: #fdf3e2; --code: #f0f0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141417; --panel: #1c1c21; --text: #ececf0; --muted: #a0a0ab;
+      --line: #2e2e36; --accent: #7aa7ff; --accent-soft: #1d2a44;
+      --warn: #f0b860; --warn-soft: #3a2d17; --code: #26262d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141417; --panel: #1c1c21; --text: #ececf0; --muted: #a0a0ab;
+    --line: #2e2e36; --accent: #7aa7ff; --accent-soft: #1d2a44;
+    --warn: #f0b860; --warn-soft: #3a2d17; --code: #26262d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+  header h1 { font-size: 1.9rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--muted); }
+  nav {
+    margin: 24px 0 8px; padding: 12px 16px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  nav ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 32px; }
+  nav a { color: var(--accent); text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  section {
+    margin-top: 20px; padding: 20px 22px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  h2 { font-size: 1.3rem; margin: 0 0 4px; }
+  h3 { font-size: 1.02rem; margin: 18px 0 6px; }
+  .what { color: var(--muted); margin: 0 0 12px; }
+  ol.steps { padding-left: 22px; margin: 8px 0; }
+  ol.steps li { margin: 6px 0; }
+  .menu, kbd {
+    font: 0.88em/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    background: var(--code); border: 1px solid var(--line); border-radius: 5px;
+    padding: 2px 6px; white-space: nowrap;
+  }
+  .note, .warn {
+    margin: 14px 0 0; padding: 10px 14px; border-radius: 8px; font-size: 0.95rem;
+  }
+  .note { background: var(--accent-soft); }
+  .warn { background: var(--warn-soft); }
+  .warn strong { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 0.85rem; text-align: center; }
+  @media (max-width: 600px) {
+    nav ol { columns: 1; }
+    section { padding: 16px; }
+    header h1 { font-size: 1.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>QUADmapper Quick Start</h1>
+  <p>Put an image or video on a quad, warp it to fit a surface, and send it to the projector. About two minutes to read.</p>
+</header>
+
+<nav>
+  <ol>
+    <li><a href="#window">The window</a></li>
+    <li><a href="#first">Your first mapping</a></li>
+    <li><a href="#fine">Finer warping</a></li>
+    <li><a href="#scenes">Scenes and takes</a></li>
+    <li><a href="#outputs">Outputs</a></li>
+    <li><a href="#show">During the show</a></li>
+    <li><a href="#saving">Saving, autosave and recovery</a></li>
+    <li><a href="#keys">Keyboard reference</a></li>
+    <li><a href="#remote">Remote control by OSC and MIDI</a></li>
+    <li><a href="#help">Where to get help</a></li>
+  </ol>
+</nav>
+
+<section id="window">
+  <h2>1. The window</h2>
+  <p class="what">QUADmapper opens with a quad already on the canvas, so you can start at once.</p>
+  <ul>
+    <li><strong>Canvas:</strong> the large area in the middle. You see and edit your quads here.</li>
+    <li><strong>Quad List:</strong> every quad, with tick boxes to show, hide and lock it. Use <span class="menu">+ Add Quad</span>, <span class="menu">Duplicate</span> and <span class="menu">Delete</span> here.</li>
+    <li><strong>Properties:</strong> the settings of whatever is selected: corners, mesh, crop, colour, and the settings of a selected output.</li>
+    <li><strong>Resources:</strong> a window with tabs. The <span class="menu">Media</span> tab holds your files. In Advanced mode it also has the <span class="menu">Project</span>, <span class="menu">Scenes</span>, <span class="menu">Outputs</span> and <span class="menu">Preview</span> tabs.</li>
+    <li><strong>Menus:</strong> <span class="menu">File</span>, <span class="menu">Edit</span>, <span class="menu">Window</span>, <span class="menu">Output</span>, <span class="menu">AI</span> and <span class="menu">Help</span>. A status bar along the bottom of the window shows messages.</li>
+  </ul>
+  <h3>Simple and Advanced mode</h3>
+  <p>The <span class="menu">Simple</span> and <span class="menu">Advanced</span> buttons in the menu bar switch modes. Simple mode shows only what you need for a first mapping, plus the <span class="menu">Apply Test Grid</span> and <span class="menu">Send to Projector (F11)</span> buttons. Advanced mode adds scenes, outputs and the other tabs. QUADmapper starts in the mode you used last. Your panel layout is remembered between runs; <span class="menu">Window &gt; Reset Layout</span> restores the default.</p>
+</section>
+
+<section id="first">
+  <h2>2. Your first mapping</h2>
+  <p class="what">Load a picture or video, pull the quad's corners onto your surface, then send it to the projector.</p>
+
+  <h3>Load media</h3>
+  <ol class="steps">
+    <li>Open the <span class="menu">Media</span> tab. Click <span class="menu">Load Files...</span> for single files, or <span class="menu">Load Folder...</span> for a whole folder.</li>
+    <li>Drag a thumbnail from the tab onto the quad on the canvas.</li>
+  </ol>
+  <p>For a video you can also use the <span class="menu">Video Player</span> panel (open it from the <span class="menu">Window</span> menu): select the quad, then click <span class="menu">Load Video...</span>.</p>
+
+  <h3>Warp it</h3>
+  <ol class="steps">
+    <li>Click a corner of the quad, or press <kbd>Tab</kbd> to select a corner. <kbd>Shift+Tab</kbd> goes the other way round.</li>
+    <li>Press the arrow keys to nudge the corner. Hold <kbd>Shift</kbd> to move 10 times as far. Hold <kbd>Alt</kbd> to move a tenth as far, for fine adjustment.</li>
+    <li>You can also drag a corner with the mouse.</li>
+    <li>Repeat for each corner until the picture sits on your surface.</li>
+  </ol>
+  <div class="note">The arrow keys and <kbd>Tab</kbd> belong to the canvas while a quad is selected. <kbd>Ctrl+Z</kbd> undoes a move.</div>
+  <div class="note">A quad whose lock tick box is on in the Quad List cannot be reshaped or deleted until you unlock it.</div>
+
+  <h3>Send it to the projector</h3>
+  <ol class="steps">
+    <li>Press <kbd>F11</kbd>, or click <span class="menu">Send to Projector (F11)</span> in Simple mode. The same command is in the menu as <span class="menu">Output &gt; Perform Mode</span>.</li>
+    <li>The picture goes fullscreen on the projector.</li>
+    <li>Press <kbd>Esc</kbd> or <kbd>F11</kbd> to come back to the editor.</li>
+  </ol>
+  <div class="note">To choose which screen is the projector, set up the output in Advanced mode first (see <a href="#outputs">Outputs</a>).</div>
+</section>
+
+<section id="fine">
+  <h2>3. Finer warping</h2>
+  <p class="what">Four corners fix a flat surface. For a curved surface, turn the quad into a mesh and move its points.</p>
+  <ol class="steps">
+    <li>Select the quad and press <kbd>Ctrl+M</kbd> (Toggle Mesh Edit). The same switch is the <span class="menu">Edit Mesh Vertices</span> tick box in Properties.</li>
+    <li>Use <kbd>Tab</kbd>, the arrow keys and the mouse as before, now on the mesh points.</li>
+    <li>Press <kbd>Alt+=</kbd> for a finer mesh (Increase Mesh Resolution) and <kbd>Alt+-</kbd> for a coarser one (Decrease Mesh Resolution).</li>
+    <li>Press <kbd>Alt+R</kbd> (Reset Mesh) to put the mesh back to the plain corner-pin shape.</li>
+  </ol>
+</section>
+
+<section id="scenes">
+  <h2>4. Scenes and takes</h2>
+  <p class="what">A scene is one full arrangement of quads. A take puts a scene on air.</p>
+  <ol class="steps">
+    <li>In Advanced mode, use the <span class="menu">Scenes</span> tab to add, duplicate, rename and reorder scenes.</li>
+    <li>Press <kbd>1</kbd> to <kbd>9</kbd> to put that scene on air. The keys work in the editor and on a focused projector window, whatever your keyboard layout.</li>
+    <li>For a crossfade, set <span class="menu">Crossfade (seconds)</span> in <span class="menu">Edit &gt; Preferences...</span> (General tab). 0 is a cut.</li>
+  </ol>
+</section>
+
+<section id="outputs">
+  <h2>5. Outputs</h2>
+  <p class="what">An output is one projector, or one window on a screen. Work in Advanced mode.</p>
+  <ol class="steps">
+    <li>Open the <span class="menu">Outputs</span> tab in the Resources window.</li>
+    <li>Click <span class="menu">Add Output</span>. Click <span class="menu">Refresh Monitors</span> if you plugged in a display after starting.</li>
+    <li>Select the output. In Properties, choose its screen in the <span class="menu">Monitor</span> list, then set its resolution and rotation.</li>
+    <li>In the <span class="menu">Scenes</span> tab, choose which output shows each scene.</li>
+  </ol>
+  <p>An output can show slices of the scene, each with its own warp and edge blending where two projectors overlap. Select the output to edit them in Properties.</p>
+</section>
+
+<section id="show">
+  <h2>6. During the show</h2>
+  <ul>
+    <li><strong>Blackout:</strong> <kbd>Ctrl+B</kbd> turns every projector black. Press it again to bring the picture back. It is also in the <span class="menu">Output</span> menu.</li>
+    <li><strong>Perform Lock:</strong> <kbd>Ctrl+Shift+L</kbd> (or <span class="menu">Output &gt; Perform Lock</span>) stops accidental edits. Locking is immediate. To unlock, QUADmapper asks <span class="menu">Unlock the Show?</span> and you confirm.</li>
+  </ul>
+  <h3>What the lock blocks</h3>
+  <p>Editing quads on the canvas, the Edit commands (including undo and delete), dropping media, New and Open, importing 3D objects, calibration and slice editing, AI assist, MIDI learn and Preferences.</p>
+  <h3>What keeps working</h3>
+  <p>Scene takes and fades, blackout, <kbd>F11</kbd> and <kbd>Esc</kbd>, OSC and MIDI control, the Video Player transport, saving, canvas zoom and pan, and Exit.</p>
+</section>
+
+<section id="saving">
+  <h2>7. Saving, autosave and recovery</h2>
+  <ul>
+    <li><span class="menu">File &gt; Save Project</span> (<kbd>Ctrl+S</kbd>) saves. <span class="menu">Save Project As...</span> (<kbd>Ctrl+Shift+S</kbd>) saves under a new name. Projects are <span class="menu">.qmap</span> files.</li>
+    <li>QUADmapper also saves unsaved work to a recovery file, every minute by default. Change this in <span class="menu">Edit &gt; Preferences...</span> under Auto-save.</li>
+    <li>After a crash, QUADmapper opens a <span class="menu">Recover Unsaved Work</span> window the next time. Click <span class="menu">Restore</span> to get the work back, or <span class="menu">Discard</span> to drop it.</li>
+    <li>If a project's media files have moved, use <span class="menu">File &gt; Relocate Missing Media...</span>. Missing media shows black on the projectors.</li>
+  </ul>
+</section>
+
+<section id="keys">
+  <h2>8. Keyboard reference</h2>
+  <p class="what">You can change most of these in <span class="menu">Edit &gt; Preferences... &gt; Keyboard</span>. <kbd>Tab</kbd>, the arrow keys and <kbd>H</kbd> cannot be reassigned. <kbd>F11</kbd>, <kbd>Esc</kbd> and <kbd>Ctrl+B</kbd> are fixed.</p>
+  <div class="scroll">
+  <table>
+    <tr><th>Keys</th><th>What it does</th></tr>
+    <tr><td><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd></td><td>Select the next or previous corner (or mesh point)</td></tr>
+    <tr><td>Arrow keys</td><td>Nudge the selected corner. <kbd>Shift</kbd> = 10x, <kbd>Alt</kbd> = 0.1x</td></tr>
+    <tr><td><kbd>H</kbd> / <kbd>Shift+H</kbd></td><td>In mesh edit, cycle the grid-line handles of the selected point</td></tr>
+    <tr><td><kbd>Ctrl+M</kbd></td><td>Toggle Mesh Edit</td></tr>
+    <tr><td><kbd>Alt+=</kbd> / <kbd>Alt+-</kbd></td><td>Increase or decrease mesh resolution</td></tr>
+    <tr><td><kbd>Alt+R</kbd></td><td>Reset Mesh</td></tr>
+    <tr><td><kbd>Ctrl+Z</kbd></td><td>Undo</td></tr>
+    <tr><td><kbd>Ctrl+Y</kbd> or <kbd>Ctrl+Shift+Z</kbd></td><td>Redo</td></tr>
+    <tr><td><kbd>Ctrl+A</kbd></td><td>Select All</td></tr>
+    <tr><td><kbd>Delete</kbd></td><td>Delete Selected</td></tr>
+    <tr><td><kbd>Ctrl+]</kbd> / <kbd>Ctrl+[</kbd></td><td>Bring Forward / Send Backward</td></tr>
+    <tr><td><kbd>Ctrl+Shift+]</kbd> / <kbd>Ctrl+Shift+[</kbd></td><td>Bring to Front / Send to Back</td></tr>
+    <tr><td><kbd>1</kbd> to <kbd>9</kbd></td><td>Take Scene 1 to 9</td></tr>
+    <tr><td><kbd>F11</kbd></td><td>Perform Mode on or off</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>Leave perform mode (also ends a calibration or slice edit)</td></tr>
+    <tr><td><kbd>Ctrl+B</kbd></td><td>Blackout</td></tr>
+    <tr><td><kbd>Ctrl+Shift+L</kbd></td><td>Perform Lock</td></tr>
+    <tr><td><kbd>Ctrl+N</kbd> / <kbd>Ctrl+O</kbd></td><td>New Project / Open Project...</td></tr>
+    <tr><td><kbd>Ctrl+S</kbd> / <kbd>Ctrl+Shift+S</kbd></td><td>Save Project / Save Project As...</td></tr>
+    <tr><td><kbd>Ctrl+,</kbd></td><td>Preferences...</td></tr>
+  </table>
+  </div>
+</section>
+
+<section id="remote">
+  <h2>9. Remote control by OSC and MIDI</h2>
+  <p class="what">A lighting desk, a tablet or a MIDI controller can take scenes, trigger blackout and move controls.</p>
+  <ol class="steps">
+    <li>Open <span class="menu">Window &gt; Control (OSC / MIDI)</span>.</li>
+    <li>For OSC, tick <span class="menu">Enable OSC input</span>. QUADmapper listens on the <span class="menu">UDP port</span> shown there (8000 to begin with). Change the port, then click <span class="menu">Apply</span>. OSC is off until you turn it on.</li>
+    <li>For MIDI, tick your device in the MIDI list, then use <span class="menu">MIDI Learn</span> to bind a control to a target.</li>
+  </ol>
+  <p>For example, <span class="menu">/qm/blackout</span> toggles blackout, and <span class="menu">/qm/scene/take</span> takes a scene.</p>
+</section>
+
+<section id="help">
+  <h2>10. Where to get help</h2>
+  <p>The <span class="menu">Help</span> menu has <span class="menu">User Guide</span>, <span class="menu">AI Features Guide</span>, <span class="menu">Keyboard Shortcuts</span>, <span class="menu">Open Log Folder</span>, <span class="menu">Report a Bug</span>, <span class="menu">Open-Source Licences</span> and <span class="menu">About QUADmapper</span>. If you report a bug, attach the log from <span class="menu">Open Log Folder</span>. The AI features have their own guide, <a href="ai-features-guide.html">ai-features-guide.html</a>.</p>
+</section>
+
+<footer>QUADmapper · Quick Start</footer>
+</div>
+</body>
+</html>

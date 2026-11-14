@@ -1,3 +1,93 @@
+# QUADmapper Release Notes
+
+## Unreleased
+
+Everything below was added after v1.0.0. The version number and date are set when the release is made.
+
+### Mapping
+
+- Corner pin is now perspective-correct: textures follow the quad exactly, with no visible bend along the diagonal.
+- Select a corner or mesh point with `Tab` / `Shift+Tab` and move it with the arrow keys. `Shift` moves ten times as far, `Alt` a tenth as far. Dragging with the mouse still works.
+- The mesh grid can have uneven spacing. Add or remove grid divisions in the Properties panel, or click an edge to insert one. Grid lines have curve handles (`H` and `Shift+H` cycle them).
+- Mesh editing has its own keys: `Ctrl+M` toggles mesh edit, `Alt+=` and `Alt+-` change the mesh resolution, `Alt+R` resets the mesh.
+- Each quad can have a crop rectangle, colour correction and a soft edge.
+- Quads can be grouped, locked and hidden from the Quad List. A locked quad cannot be reshaped or deleted until you unlock it.
+- 3D objects: import an OBJ file (File > Import 3D Object (OBJ)...), and calibrate a projector against it by clicking known points on the model and on the canvas (Edit > Calibrate Projector...). Calibration works on any output, however it is sliced.
+- Images now load the right way up. A saved show that used Flip V as a workaround needs Flip V turned off.
+- Undo and redo cover deleting and duplicating quads, 3D objects and calibration points. Redo is on `Ctrl+Y` and `Ctrl+Shift+Z`.
+- Zoom and pan the canvas; the interface has a Simple mode and an Advanced mode.
+- A new look: a refined colour theme with the Hanken Grotesk and JetBrains Mono fonts.
+
+### Media and playback
+
+- HAP and HAP Q video play back, and "Convert to HAP" in the media bin converts other video files.
+- A video is decoded once and can be used by many quads.
+- Video playback uses the graphics card for decoding and colour conversion where it can, so more and larger videos play smoothly.
+- Playback follows the clock: loops wrap without a hitch, Ping-Pong plays backwards properly, and a master timeline lets several videos start and stop together ("Lock to master timeline").
+- Sound from video files, kept in step with the picture, with a short crossfade at each loop point.
+- TIF and TIFF images load.
+- A webcam can be used as a source.
+- Procedural sources: solid colour, gradient, checkerboard, grid, SMPTE bars, noise and plasma.
+- File names with non-English characters work everywhere.
+- Missing media is kept when a project loads. It shows black on the projectors and a magenta check in the editor. Use File > Relocate Missing Media... to find it again.
+
+### Outputs and show control
+
+- A project holds several scenes. Each scene is a canvas that any number of outputs can show.
+- Press `1` to `9` to put a scene on air, in the editor or on a focused projector window. Scenes can be duplicated and reordered.
+- Scene takes can crossfade. Set the default fade time in Edit > Preferences... and use 0 for a cut. Sound crossfades with the picture.
+- Each output can show slices of the canvas, each slice with its own warp. Edge blending, with width, gamma and curve, joins overlapping projectors. Auto-blend sets the blend on edges that face each other. A blend test pattern helps check the overlap.
+- With several displays at different refresh rates, the show is paced by the slowest one.
+- Perform mode (`F11`) sends the show to the projectors. `Esc` or `F11` leaves it.
+- Blackout (`Ctrl+B`) turns every projector black at once.
+- Perform lock (`Ctrl+Shift+L`, or Output > Perform Lock) blocks edits during a show and keeps show controls working. Unlocking asks for confirmation.
+- Keyboard shortcuts can be changed in Edit > Preferences... > Keyboard. Redo and several other actions accept more than one key.
+- A Help menu, a status bar and a remembered panel layout (Window > Reset Layout restores the default).
+
+### External control
+
+- OSC input (off until you turn it on in the Control window, default port 8000) and MIDI input with MIDI learn.
+- OSC feedback to a controller, OSC address patterns with wildcards, and 14-bit MIDI controllers.
+- MIDI mappings are saved in the project.
+
+### AI assist
+
+AI assist is optional. It needs a one-off setup and a webcam. See the AI features guide.
+
+- Detect Surface proposes a quad from a camera photo.
+- Pick Surface: click a surface in a photo and the app outlines it and proposes the corners.
+- Scan Output: the projector shows stripe patterns and the camera maps itself to the projector, so corners land precisely, even on surfaces that are not flat.
+- One-Flash: a single projected pattern and one photo give a flat-surface placement, and an anamorphic warp for a chosen viewpoint.
+- Place From Photo: click calibration points in the photo instead of placing them by hand.
+- AI requests run in the background, so the editor stays usable. Every AI warp is one undo step.
+
+### Reliability
+
+- Saves are written safely, so a crash or power cut cannot leave a half-written project. Autosave writes a recovery file (every minute by default); after a crash, QUADmapper offers to restore it.
+- Unsaved changes are checked before New, Open or exit.
+- Opening, closing and moving through videos no longer freezes the interface.
+- Outputs, media and audio were checked with repeated perform-mode cycles for leaks and hangs.
+- Undo covers the mesh keys and every edit in the Properties panel, one step per drag.
+- Deleting a scene, removing an output and removing media that quads use ask first.
+- Status and error messages show in the status bar in both modes. A failed start and a fatal error show a message.
+- QUADmapper keeps a log, and a crash report after a crash (Help > Open Log Folder). After a crash it tries to save a recovery copy of the show.
+- Drop a `.qmap` file on the window to open it. The window title shows the open show and whether it has unsaved changes.
+- The app no longer depends on the folder it was started from, and its settings, layout and logs are kept in the user's own folders.
+- Greyscale images show in grey (they showed red).
+
+## Known limitations
+
+- Displays at different refresh rates: the show runs at the rate of the slowest display. A faster display repeats frames. An output in exclusive fullscreen at a different rate may tear.
+- No MIDI Timecode or MIDI clock sync. OSC bundle time tags are ignored. OSC feedback and 14-bit MIDI have not been tried with real controllers.
+- Audio delay is estimated, not measured, and the delay of the projector is not compensated. Unplugging or switching an audio device has not been tested on real hardware.
+- Under heavy load, opening or removing a video can still cause a short pause of up to about 0.05 seconds.
+- A Scan Output map can be wrong when an output runs at an exclusive-fullscreen mode that is not the desktop mode. If a warp looks off, scan again.
+- On outputs with slices or rotation, Pick Surface and Detect Surface place corners only approximately. Fix them with `Tab` and the arrow keys.
+- The settle time between scan patterns is not tuned for real webcams. A slow webcam can give a low "camera saw N%" figure.
+- Detect Surface was tuned on three test images. On some venues it may propose a wrong or low-confidence surface. Use Pick Surface instead.
+
+---
+
 # QUADmapper v1.0.0 Release Notes
 
 **Release Date:** December 20, 2025

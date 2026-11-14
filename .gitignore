@@ -58,3 +58,7 @@ CMakeUserPresets.json
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Scratch output and agent worktrees
+.scratch/
+.claude/worktrees/
