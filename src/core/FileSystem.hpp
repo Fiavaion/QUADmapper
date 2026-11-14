@@ -14,6 +14,14 @@ namespace quadmapper {
 std::filesystem::path pathFromUtf8(const std::string& utf8);
 std::string utf8FromPath(const std::filesystem::path& path);
 
+// Where the program and the user's files live. None of these depend on the folder the
+// app was started from: a shortcut, a double-clicked .qmap and an install under
+// Program Files each start it somewhere else, and Program Files cannot be written to.
+std::filesystem::path executableDir();                              // folder of the .exe
+std::filesystem::path resourcePath(const std::string& relative);    // <exe folder>/resources/<relative>
+std::filesystem::path userConfigDir();   // %APPDATA%\QUADmapper: settings that follow the user
+std::filesystem::path userLocalDir();    // %LOCALAPPDATA%\QUADmapper: logs, crash dumps, caches
+
 class FileSystem {
 public:
     // Read entire file to string

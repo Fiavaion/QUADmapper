@@ -1,4 +1,5 @@
 #include "Logger.hpp"
+#include "FileSystem.hpp"
 #include <chrono>
 #include <iomanip>
 #include <sstream>
@@ -6,21 +7,15 @@
 namespace quadmapper {
 
 // Static member initialization
-LogLevel Logger::currentLevel_ = LogLevel::Info;
+std::atomic<LogLevel> Logger::currentLevel_{LogLevel::Info};
 std::unique_ptr<std::ofstream> Logger::logFile_;
 std::string Logger::logFilePath_;
 bool Logger::consoleEnabled_ = true;
 std::mutex Logger::mutex_;
 
-void Logger::setLevel(LogLevel level) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    currentLevel_ = level;
-}
+void Logger::setLevel(LogLevel level) { currentLevel_ = level; }
 
-LogLevel Logger::getLevel() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return currentLevel_;
-}
+LogLevel Logger::getLevel() { return currentLevel_; }
 
 bool Logger::enableFileOutput(const std::string& filePath) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -31,7 +26,7 @@ bool Logger::enableFileOutput(const std::string& filePath) {
         logFile_.reset();
     }
 
-    logFile_ = std::make_unique<std::ofstream>(filePath, std::ios::out | std::ios::app);
+    logFile_ = std::make_unique<std::ofstream>(pathFromUtf8(filePath), std::ios::out | std::ios::app);
     if (!logFile_->is_open()) {
         logFile_.reset();
         logFilePath_.clear();

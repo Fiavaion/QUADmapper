@@ -6,9 +6,70 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shlobj.h>   // SHGetKnownFolderPath
 #endif
 
 namespace quadmapper {
+
+namespace {
+
+// <base>/QUADmapper, created; the temp folder when the base is unknown.
+std::filesystem::path appFolderUnder(std::filesystem::path base) {
+    std::error_code ec;
+    if (base.empty()) base = std::filesystem::temp_directory_path(ec);
+    base /= "QUADmapper";
+    std::filesystem::create_directories(base, ec);
+    return base;
+}
+
+#ifdef _WIN32
+std::filesystem::path knownFolder(REFKNOWNFOLDERID id) {
+    PWSTR raw = nullptr;
+    std::filesystem::path dir;
+    if (SUCCEEDED(SHGetKnownFolderPath(id, 0, nullptr, &raw))) dir = raw;  // wide: no code-page narrowing
+    CoTaskMemFree(raw);  // required even when the call fails; null is a no-op
+    return dir;
+}
+#endif
+
+}  // namespace
+
+std::filesystem::path executableDir() {
+#ifdef _WIN32
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0) break;
+        if (length < buffer.size()) {
+            buffer.resize(length);
+            return std::filesystem::path(buffer).parent_path();
+        }
+        buffer.resize(buffer.size() * 2);  // a long path was cut short: ask again
+    }
+#endif
+    std::error_code ec;
+    return std::filesystem::current_path(ec);
+}
+
+std::filesystem::path resourcePath(const std::string& relative) {
+    return executableDir() / "resources" / pathFromUtf8(relative);
+}
+
+std::filesystem::path userConfigDir() {
+#ifdef _WIN32
+    return appFolderUnder(knownFolder(FOLDERID_RoamingAppData));
+#else
+    return appFolderUnder({});
+#endif
+}
+
+std::filesystem::path userLocalDir() {
+#ifdef _WIN32
+    return appFolderUnder(knownFolder(FOLDERID_LocalAppData));
+#else
+    return appFolderUnder({});
+#endif
+}
 
 std::filesystem::path pathFromUtf8(const std::string& utf8) {
     return std::filesystem::u8path(utf8);
@@ -117,11 +178,19 @@ Result<std::vector<uint8_t>, Error> FileSystem::readBinaryFile(const std::filesy
     }
 
     file.seekg(0, std::ios::end);
-    auto size = file.tellg();
+    const std::streamoff size = file.tellg();
     file.seekg(0, std::ios::beg);
+    if (size < 0) {
+        return Err<std::vector<uint8_t>>("Failed to read file: " + path.u8string());
+    }
 
-    std::vector<uint8_t> data(size);
+    std::vector<uint8_t> data(static_cast<size_t>(size));
     file.read(reinterpret_cast<char*>(data.data()), size);
+    // A file cut short while it is read (a copy or a cloud sync still running) is an
+    // error, not a zero-padded success.
+    if (file.gcount() != size) {
+        return Err<std::vector<uint8_t>>("Failed to read all of file: " + path.u8string());
+    }
 
     return Ok(std::move(data));
 }

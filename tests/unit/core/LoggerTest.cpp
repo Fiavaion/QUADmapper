@@ -1,5 +1,11 @@
 #include <gtest/gtest.h>
 #include "core/Logger.hpp"
+#include "core/FileSystem.hpp"
+#include "core/UUID.hpp"
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace quadmapper {
 namespace test {
@@ -36,6 +42,27 @@ TEST(LoggerTest, FormatStringWorks) {
     EXPECT_NO_THROW(Logger::info("Value: {}", 42));
     EXPECT_NO_THROW(Logger::info("Values: {} and {}", 1, 2));
     EXPECT_NO_THROW(Logger::info("String: {}", "test"));
+}
+
+// The log path is UTF-8: a user folder with a non-ASCII name must still get a log file.
+TEST(LoggerTest, FileOutputOpensInsideNonAsciiFolder) {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("qm_log_" + UUID::generate().toString()) /
+                         pathFromUtf8("Jos\xC3\xA9" " \xD0\x9F");
+    fs::create_directories(dir);
+    const fs::path file = dir / "quadmapper.log";
+
+    ASSERT_TRUE(Logger::enableFileOutput(utf8FromPath(file)));
+    Logger::error("written to the file");
+    Logger::disableFileOutput();
+
+    std::ifstream in(file);
+    std::ostringstream text;
+    text << in.rdbuf();
+    EXPECT_NE(text.str().find("written to the file"), std::string::npos);
+
+    std::error_code ec;
+    fs::remove_all(dir.parent_path(), ec);
 }
 
 } // namespace test

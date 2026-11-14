@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <iostream>
 #include <sstream>
@@ -22,7 +23,7 @@ public:
     static void setLevel(LogLevel level);
     static LogLevel getLevel();
 
-    // File output
+    // File output. The path is UTF-8, like every path held in a string.
     static bool enableFileOutput(const std::string& filePath);
     static void disableFileOutput();
     static bool isFileOutputEnabled();
@@ -81,7 +82,7 @@ public:
     static void flush();
 
 private:
-    static LogLevel currentLevel_;
+    static std::atomic<LogLevel> currentLevel_;  // read by every thread that logs
     static std::unique_ptr<std::ofstream> logFile_;
     static std::string logFilePath_;
     static bool consoleEnabled_;
