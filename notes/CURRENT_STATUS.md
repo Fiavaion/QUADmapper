@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-14 (release-readiness audit, QM-125)
 **Phase / focus:** Release preparation. The audit and its fixes are done. Next: the owner's hands-on test, then the installer and release package (TD-44, ADR-057), then `/release`.
-**Dev:** local `dev` is at `4a3a8af`, nine commits ahead of `origin/dev` (`c933d6d`). **Not pushed.**
+**Dev:** the code on local `dev` is at `4a3a8af` (later commits are notes only); `origin/dev` is at `c933d6d`. **Not pushed.**
 **Gate:** `ctest --test-dir build/debug -C Debug -j 8 | 4a3a8af | 1766 passed, 0 failed` · `pytest tools/ai-sidecar | 4a3a8af | 119 passed`.
 
 ## What the audit changed (QM-125)
