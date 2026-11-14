@@ -664,6 +664,8 @@ public:
         }
         // Back to the first frame after reading the tail or the first frame.
         if (probeEnd || movFamily || probeHardware) seekExact(0.0);
+        // Read the index now, before the decode thread exists: it owns formatCtx_ afterwards.
+        widestKeyGap_ = measureWidestKeyGap();
 
         // The logger substitutes plain {} only (no format specs).
         LOG_INFO("Opened video: {}x{}, {} fps, {} s, {} decoding", info_.width, info_.height,
@@ -1203,10 +1205,10 @@ public:
         }
     }
 
-    std::string checkReverse(size_t cacheBytes) const {
-        if (!isOpen_ || isLive_) return "the source cannot seek.";
-        if (intraOnly_) return {};  // every frame is a keyframe
-
+    // The widest gap between keyframes in the demuxer's index, or none when it has no keyframes
+    // yet. Walks the AVFormatContext, so it runs on the opening thread only.
+    std::optional<double> measureWidestKeyGap() const {
+        if (isLive_ || intraOnly_) return std::nullopt;
         AVStream* stream = formatCtx_->streams[videoStreamIndex_];
         const int entries = avformat_index_get_entries_count(stream);
         double previousKey = std::numeric_limits<double>::quiet_NaN();
@@ -1218,8 +1220,15 @@ public:
             if (!std::isnan(previousKey)) widestGap = std::max(widestGap, t - previousKey);
             previousKey = t;
         }
-        if (std::isnan(previousKey)) return {};  // no index: checked while playing
-        widestGap = std::max(widestGap, info_.duration - previousKey);  // the last group
+        if (std::isnan(previousKey)) return std::nullopt;  // no index: checked while playing
+        return std::max(widestGap, info_.duration - previousKey);  // the last group
+    }
+
+    std::string checkReverse(size_t cacheBytes) const {
+        if (!isOpen_ || isLive_) return "the source cannot seek.";
+        if (intraOnly_) return {};  // every frame is a keyframe
+        if (!widestKeyGap_) return {};  // no index: checked while playing
+        const double widestGap = *widestKeyGap_;
 
         // One group of pictures, plus the reordering delay's frames decoded past it.
         const int64_t frames = static_cast<int64_t>(std::ceil(widestGap / frameSeconds_ - 1e-6)) +
@@ -2259,6 +2268,7 @@ private:
     int64_t frameTicks_ = 1;    // one frame's duration, in time_base units
     double frameSeconds_ = 0.04;  // one frame's duration
     bool intraOnly_ = false;      // every frame is a keyframe (ProRes, MJPEG, ...)
+    std::optional<double> widestKeyGap_;  // keyframe index read at open(); see measureWidestKeyGap()
     // TD-32: an AVI B-frame stream (not H.264/HEVC) whose per-frame pts is only
     // partially back-filled by the demuxer and not trustworthy where present; every
     // frame is treated as if it had no pts (sequential timing instead).

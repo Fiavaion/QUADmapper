@@ -84,3 +84,13 @@ TEST(ControlEventQueueTest, ConcurrentProducersLoseNothingBelowCapacity) {
     EXPECT_EQ(drained, 4u * kPerThread);
     EXPECT_EQ(q.droppedCount(), 0u);
 }
+
+TEST(ControlEventQueueTest, OscIsRefusedAtThreeQuartersSoMidiAlwaysHasRoom) {
+    ControlEventQueue q(8);
+    for (int n = 0; n < 6; ++n) EXPECT_TRUE(q.push(oscEvent("/o")));
+    EXPECT_FALSE(q.push(oscEvent("/o"))) << "OSC stops at 6 of 8";
+    EXPECT_EQ(q.droppedCount(), 1u);
+    EXPECT_TRUE(q.push(midiEvent(1)));
+    EXPECT_TRUE(q.push(midiEvent(2)));
+    EXPECT_FALSE(q.push(midiEvent(3))) << "MIDI uses the rest, then drops";
+}

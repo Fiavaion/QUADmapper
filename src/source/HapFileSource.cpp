@@ -13,6 +13,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <limits>
+#include <exception>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -574,8 +575,25 @@ private:
         std::swap(frameQueue_, empty);
     }
 
-    // Background thread: produce staged BCn frames in timeline order.
+    // Background thread entry: nothing may escape a std::thread (that terminates the app).
     void demuxLoop() {
+        try {
+            runDemux();
+        } catch (const std::exception& e) {
+            failDemux(e.what());
+        } catch (...) {
+            failDemux("unknown error");
+        }
+    }
+
+    void failDemux(const char* what) {
+        Logger::error("HapFileSource: demux thread stopped: {}", what);
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        lastError_ = std::string("Playback stopped: ") + what;
+    }
+
+    // Produce staged BCn frames in timeline order.
+    void runDemux() {
         AVPacket* packet = av_packet_alloc();
         if (!packet) {
             Logger::error("HapFileSource: av_packet_alloc failed on demux thread");

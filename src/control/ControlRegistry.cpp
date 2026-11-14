@@ -100,7 +100,8 @@ const ControlEntity* ControlRegistry::findEntity(const Collection& collection, c
         }
         first = &entity;
     }
-    if (ambiguous && warnedAmbiguous_.insert(address).second) {
+    if (ambiguous && warnedAmbiguous_.size() < kMaxWarnedAddresses &&
+        warnedAmbiguous_.insert(address).second) {
         Logger::warning("Control: {} names more than one {} called '{}'; using the first. "
                         "Address it by id to be exact.", address, collection.name, key);
     }

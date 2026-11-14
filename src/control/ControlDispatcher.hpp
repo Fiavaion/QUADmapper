@@ -23,6 +23,7 @@ class ControlDispatcher {
 public:
     static constexpr size_t kRecentMessages = 20;
     static constexpr size_t kRecentUnknown = 8;
+    static constexpr size_t kMaxWarnedAddresses = 256;  // distinct refused addresses logged
 
     explicit ControlDispatcher(ControlRegistry& registry) : registry_(registry) {}
 
@@ -127,7 +128,8 @@ private:
     std::deque<std::string> recentUnknown_;
     std::string lastMidi_;
     std::string lastRefused_;
-    std::unordered_set<std::string> warnedRefused_;  // addresses already warned about
+    std::unordered_set<std::string> warnedRefused_;  // addresses already warned about (capped)
+    bool warnedRefusedFull_ = false;
     double lastOscTime_ = -1.0;
     double lastMidiTime_ = -1.0;
     std::unordered_map<std::string, double> activity_;

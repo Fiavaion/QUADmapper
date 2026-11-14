@@ -156,6 +156,24 @@ Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desired
     return Ok(std::move(result));
 }
 
+// Grey (1) and grey+alpha (2) images become RGBA: a GL_R8 / GL_RG8 texture would sample
+// as red / red-green in the quad shader. Grey goes to R, G and B; alpha is kept or 255.
+void expandGreyToRgba(ImageData& image) {
+    if (image.channels != 1 && image.channels != 2) return;
+    const size_t pixelCount = static_cast<size_t>(image.width) * image.height;
+    const size_t stride = static_cast<size_t>(image.channels);
+    std::vector<uint8_t> rgba(pixelCount * 4);
+    for (size_t i = 0; i < pixelCount; ++i) {
+        const uint8_t grey = image.pixels[i * stride];
+        rgba[i * 4 + 0] = grey;
+        rgba[i * 4 + 1] = grey;
+        rgba[i * 4 + 2] = grey;
+        rgba[i * 4 + 3] = stride == 2 ? image.pixels[i * stride + 1] : 255;
+    }
+    image.pixels = std::move(rgba);
+    image.channels = 4;
+}
+
 } // namespace
 
 Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
@@ -198,9 +216,10 @@ Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
 
     // Free stb_image's data
     stbi_image_free(data);
+    expandGreyToRgba(result);
 
     Logger::debug("Image loaded: {} ({}x{}, {} channels)",
-                  utf8FromPath(path.filename()), width, height, channels);
+                  utf8FromPath(path.filename()), width, height, result.channels);
 
     return Ok(std::move(result));
 }
@@ -249,6 +268,7 @@ Result<ImageData, Error> ImageLoader::loadWithChannels(
     std::memcpy(result.pixels.data(), data, dataSize);
 
     stbi_image_free(data);
+    if (desiredChannels == 0) expandGreyToRgba(result);
 
     return Ok(std::move(result));
 }

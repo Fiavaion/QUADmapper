@@ -508,3 +508,21 @@ TEST(ControlLearnTest, OscDoesNotEndLearn) {
     EXPECT_TRUE(fx.dispatcher.isLearning());
     EXPECT_EQ(fx.dispatcher.learnTarget(), "/qm/blackout");
 }
+
+TEST(ControlDispatchOscTest, DescribeStopsAfterSixteenArguments) {
+    OscMessage m;
+    m.address = "/a";
+    for (int n = 0; n < 40; ++n) m.args.push_back(t());
+    const std::string text = ControlDispatcher::describe(m);
+    std::string expected = "/a";
+    for (int n = 0; n < 16; ++n) expected += " T";
+    EXPECT_EQ(text, expected + " ...");
+}
+
+TEST(ControlDispatchOscTest, RefusedAddressesBeyondTheCapStillCount) {
+    Fixture fx;
+    const size_t total = ControlDispatcher::kMaxWarnedAddresses + 50;
+    for (size_t n = 0; n < total; ++n) fx.dispatcher.noteRefused("/x/" + std::to_string(n), "locked");
+    EXPECT_EQ(fx.dispatcher.refusals(), total);
+    EXPECT_EQ(fx.dispatcher.lastRefused(), "/x/" + std::to_string(total - 1) + ": locked");
+}

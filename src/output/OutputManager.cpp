@@ -1079,6 +1079,14 @@ IVec2 OutputManager::frameSize(const OutputWindow& output) {
     return output.getResolution();  // no window yet, or it is minimised (0 x 0)
 }
 
+namespace {
+// The size each output's frame last failed to allocate at, so it is reported once per size.
+std::unordered_map<UUID, IVec2>& failedFrameSizes() {
+    static std::unordered_map<UUID, IVec2> sizes;
+    return sizes;
+}
+}  // namespace
+
 void OutputManager::renderFrames(
         Renderer& renderer, const std::function<void(const OutputWindow&, IVec2)>& draw) {
     if (!mainWindow_) {
@@ -1104,6 +1112,7 @@ void OutputManager::renderFrames(
     // Drop the frames of outputs that no longer exist.
     for (auto it = frames_.begin(); it != frames_.end();) {
         if (!getOutput(it->first)) {
+            failedFrameSizes().erase(it->first);
             it = frames_.erase(it);
         } else {
             ++it;
@@ -1118,8 +1127,18 @@ void OutputManager::renderFrames(
         }
         const IVec2 size = frameSize(*output);
         if (!frame->resize(size.x, size.y)) {
+            auto& failed = failedFrameSizes()[output->getId()];
+            if (failed != size) {
+                failed = size;
+                LOG_ERROR("Output '{}': cannot allocate its {}x{} frame; its projector shows black",
+                          output->getName(), size.x, size.y);
+                notify("Projector '" + output->getName() + "': not enough video memory for " +
+                       std::to_string(size.x) + "x" + std::to_string(size.y) +
+                       "; lower its resolution in Outputs");
+            }
             continue;
         }
+        failedFrameSizes().erase(output->getId());
 
         frame->bind();  // also sets the viewport to the frame size
         glDisable(GL_DEPTH_TEST);

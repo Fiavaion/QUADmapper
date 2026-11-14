@@ -98,6 +98,7 @@ bool parseMessage(const uint8_t* data, size_t size, OscMessage& message) {
             default:
                 return false;  // unknown size: the rest cannot be read safely
         }
+        if (message.args.size() >= kMaxArgsPerMessage) return false;
         message.args.push_back(std::move(arg));
     }
     return true;

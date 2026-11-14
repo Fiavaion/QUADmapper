@@ -483,5 +483,91 @@ TEST(ImageLoaderExtensionTest, EveryLoaderFormatIsAMediaLibraryImage) {
     }
 }
 
+// ---- Grey images come out as RGBA (a 1- or 2-channel texture would display red) ----
+
+namespace {
+
+uint32_t crc32Of(const std::vector<uint8_t>& bytes) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (uint8_t b : bytes) {
+        crc ^= b;
+        for (int k = 0; k < 8; ++k) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
+void putBe32(std::vector<uint8_t>& out, uint32_t v) {
+    for (int shift = 24; shift >= 0; shift -= 8) out.push_back(static_cast<uint8_t>(v >> shift));
+}
+
+void putChunk(std::vector<uint8_t>& png, const char* type, const std::vector<uint8_t>& data) {
+    putBe32(png, static_cast<uint32_t>(data.size()));
+    std::vector<uint8_t> body(type, type + 4);
+    body.insert(body.end(), data.begin(), data.end());
+    png.insert(png.end(), body.begin(), body.end());
+    putBe32(png, crc32Of(body));
+}
+
+// An 8-bit PNG (colour type 0 grey or 4 grey+alpha) with stored (uncompressed) deflate.
+std::vector<uint8_t> makeGreyPng(uint32_t w, uint32_t h, uint8_t colorType,
+                                 const std::vector<uint8_t>& samples) {
+    const size_t stride = colorType == 4 ? 2 : 1;
+    std::vector<uint8_t> raw;
+    for (uint32_t y = 0; y < h; ++y) {
+        raw.push_back(0);  // filter: none
+        raw.insert(raw.end(), samples.begin() + y * w * stride, samples.begin() + (y + 1) * w * stride);
+    }
+    uint32_t a = 1, b = 0;
+    for (uint8_t v : raw) { a = (a + v) % 65521u; b = (b + a) % 65521u; }
+    std::vector<uint8_t> z = {0x78, 0x01, 0x01};
+    const uint16_t len = static_cast<uint16_t>(raw.size());
+    z.push_back(static_cast<uint8_t>(len & 0xFF));
+    z.push_back(static_cast<uint8_t>(len >> 8));
+    z.push_back(static_cast<uint8_t>(~len & 0xFF));
+    z.push_back(static_cast<uint8_t>((~len) >> 8));
+    z.insert(z.end(), raw.begin(), raw.end());
+    putBe32(z, (b << 16) | a);
+
+    std::vector<uint8_t> png = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    std::vector<uint8_t> ihdr;
+    putBe32(ihdr, w);
+    putBe32(ihdr, h);
+    ihdr.insert(ihdr.end(), {8, colorType, 0, 0, 0});
+    putChunk(png, "IHDR", ihdr);
+    putChunk(png, "IDAT", z);
+    putChunk(png, "IEND", {});
+    return png;
+}
+
+}  // namespace
+
+TEST_F(ImageLoaderTiffTest, OneChannelPngLoadsAsOpaqueRgbaWithGreyInRgb) {
+    const auto path = write("grey.png", makeGreyPng(2, 2, 0, {0, 64, 128, 255}));
+    for (auto result : {ImageLoader::load(path), ImageLoader::loadWithChannels(path, 0)}) {
+        ASSERT_TRUE(result.isSuccess()) << result.error().message;
+        const ImageData& img = result.value();
+        ASSERT_EQ(img.channels, 4);
+        ASSERT_EQ(img.pixels.size(), 2u * 2u * 4u);
+        const uint8_t grey[4] = {0, 64, 128, 255};
+        for (int i = 0; i < 4; ++i) {
+            EXPECT_EQ(img.pixels[i * 4 + 0], grey[i]);
+            EXPECT_EQ(img.pixels[i * 4 + 1], grey[i]);
+            EXPECT_EQ(img.pixels[i * 4 + 2], grey[i]);
+            EXPECT_EQ(img.pixels[i * 4 + 3], 255);
+        }
+    }
+}
+
+TEST_F(ImageLoaderTiffTest, TwoChannelPngLoadsAsRgbaKeepingItsAlpha) {
+    const auto path = write("grey_alpha.png", makeGreyPng(2, 1, 4, {10, 200, 90, 30}));
+    auto result = ImageLoader::load(path);
+    ASSERT_TRUE(result.isSuccess()) << result.error().message;
+    const ImageData& img = result.value();
+    ASSERT_EQ(img.channels, 4);
+    ASSERT_EQ(img.pixels.size(), 8u);
+    const std::vector<uint8_t> expected = {10, 10, 10, 200, 90, 90, 90, 30};
+    EXPECT_EQ(img.pixels, expected);
+}
+
 } // namespace test
 } // namespace quadmapper

@@ -60,6 +60,10 @@ public:
     int getWidth() const override { return width_; }
     int getHeight() const override { return height_; }
 
+    // The decoder's last error, empty while healthy: a camera that fails or is unplugged says
+    // why. Not an override: getErrorMessage() is declared on PlayableSource, not TextureSource.
+    std::string getErrorMessage() const;
+
     // --- Camera-specific ---
     const std::string& getDeviceName() const { return deviceName_; }
 

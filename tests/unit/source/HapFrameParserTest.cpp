@@ -367,3 +367,36 @@ TEST(SnappyDecoderTest, EmptyPayload) {
     EXPECT_TRUE(ok);
     EXPECT_TRUE(out.empty());
 }
+
+// A chunk-offset table may point every chunk at the same bytes: the decoded size must be
+// capped, not grow without bound (a hostile file would otherwise exhaust memory).
+TEST(HapFrameParserTest, Malformed_OverlappingChunksExceedingTheDecodedLimitAreRejected) {
+    const size_t chunkBytes = 4u * 1024u * 1024u;
+    const uint32_t chunkCount = 40;  // 160 MiB of output from a 4 MiB payload
+    auto le32 = [](std::vector<uint8_t>& v, uint32_t x) {
+        for (int s = 0; s < 32; s += 8) v.push_back(static_cast<uint8_t>(x >> s));
+    };
+    std::vector<uint8_t> compressors(chunkCount, 0x0A), sizes, offsets;
+    for (uint32_t i = 0; i < chunkCount; ++i) {
+        le32(sizes, static_cast<uint32_t>(chunkBytes));
+        le32(offsets, 0);  // every chunk is the same bytes
+    }
+    std::vector<uint8_t> container;
+    appendHeader(container, 0x02, static_cast<uint32_t>(compressors.size()));
+    container.insert(container.end(), compressors.begin(), compressors.end());
+    appendHeader(container, 0x03, static_cast<uint32_t>(sizes.size()));
+    container.insert(container.end(), sizes.begin(), sizes.end());
+    appendHeader(container, 0x04, static_cast<uint32_t>(offsets.size()));
+    container.insert(container.end(), offsets.begin(), offsets.end());
+
+    std::vector<uint8_t> payload;
+    appendHeader(payload, 0x01, static_cast<uint32_t>(container.size()));
+    payload.insert(payload.end(), container.begin(), container.end());
+    payload.insert(payload.end(), chunkBytes, 0x5A);
+
+    std::vector<uint8_t> frame;
+    appendHeader(frame, 0xCB, static_cast<uint32_t>(payload.size()));
+    frame.insert(frame.end(), payload.begin(), payload.end());
+
+    EXPECT_FALSE(parseHapFrame(frame.data(), frame.size()).valid());
+}

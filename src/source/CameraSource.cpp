@@ -101,6 +101,10 @@ void CameraSource::markFrameConsumed() {
     hasNewFrame_ = false;
 }
 
+std::string CameraSource::getErrorMessage() const {
+    return decoder_ ? decoder_->getLastError() : std::string();
+}
+
 SourceCapabilities CameraSource::getCapabilities() const {
     SourceCapabilities caps;
     caps.isStatic = false;

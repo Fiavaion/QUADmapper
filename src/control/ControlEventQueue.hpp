@@ -15,7 +15,8 @@ namespace quadmapper::control {
 // frame. Slots are allocated once up front and events are moved in and out, so a
 // push never allocates: a MIDI event holds no heap memory, and a drained slot is
 // left moved-from (empty), so moving a MIDI event into it frees nothing either.
-// When full, new events are dropped and counted; a flood never grows memory.
+// When full, new events are dropped and counted; a flood never grows memory. OSC
+// events are refused once the ring is three-quarters full, so MIDI always has room.
 class ControlEventQueue {
 public:
     static constexpr size_t kDefaultCapacity = 4096;

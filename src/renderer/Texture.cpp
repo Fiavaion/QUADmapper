@@ -141,6 +141,21 @@ bool Texture::loadFromFile(const std::filesystem::path& path) {
 bool Texture::create(int width, int height, int channels, const unsigned char* data) {
     destroy();
 
+    // Past GL_MAX_TEXTURE_SIZE glTexImage2D fails silently and the quad would sample black.
+    GLint maxSize = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxSize);
+    if (maxSize > 0 && (width > maxSize || height > maxSize)) {
+        // Callers retry every frame; name each oversize image once, not per frame.
+        static thread_local int lastWidth = 0, lastHeight = 0;
+        if (width != lastWidth || height != lastHeight) {
+            lastWidth = width;
+            lastHeight = height;
+            Logger::error("Texture {}x{} is larger than this GPU's limit of {}x{}; it cannot be shown",
+                          width, height, maxSize, maxSize);
+        }
+        return false;
+    }
+
     width_ = width;
     height_ = height;
     channels_ = channels;
