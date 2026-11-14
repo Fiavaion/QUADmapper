@@ -553,27 +553,6 @@ TEST_F(SceneCommandsTest, MoveQuadCommandMerges) {
     }
 }
 
-// SetMeshResolutionCommand tests
-TEST_F(SceneCommandsTest, SetMeshResolutionCommandExecutes) {
-    Quad* quad = manager().createQuad();
-
-    history_->execute(std::make_unique<SetMeshResolutionCommand>(ref(quad), 32));
-
-    EXPECT_EQ(quad->getGeometry().getMeshResolution(), 32);
-}
-
-TEST_F(SceneCommandsTest, SetMeshResolutionCommandUndoRestoresVertices) {
-    Quad* quad = manager().createQuad();
-    int originalRes = quad->getGeometry().getMeshResolution();
-    auto originalVertices = quad->getGeometry().getMeshVertices();
-
-    history_->execute(std::make_unique<SetMeshResolutionCommand>(ref(quad), 32));
-    history_->undo();
-
-    EXPECT_EQ(quad->getGeometry().getMeshResolution(), originalRes);
-    EXPECT_EQ(quad->getGeometry().getMeshVertices().size(), originalVertices.size());
-}
-
 // QuadPropertyCommand tests (template; bezier undo uses it)
 TEST_F(SceneCommandsTest, QuadPropertyCommandWorks) {
     Quad* quad = manager().createQuad();

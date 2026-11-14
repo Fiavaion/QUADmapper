@@ -18,6 +18,7 @@ namespace quadmapper {
 
 struct EditorState;
 class OutputManager;
+class Quad;
 
 namespace action_id {
 // Edit actions (registerEditActions).
@@ -58,6 +59,11 @@ std::string sceneTakeId(int n);
 // scene.
 bool quadEditing(const EditorState& es);
 
+// A locked quad (the Quad List's lock) keeps its shape: corners, mesh, grid and curves.
+// When `quad` is locked, posts "<name> is locked (Quad List)" on the status line and
+// returns true; false, and nothing posted, otherwise.
+bool refusedByQuadLock(EditorState& es, const Quad& quad);
+
 // Undo / redo the next step, scoped by UndoRouting (TD-17). True when a step was taken.
 // A step held back by calibration or slice warp editing posts "Leave <mode> to
 // undo: <step>" on the status line. The actions stay enabled while a step is held
@@ -71,8 +77,9 @@ void selectAllAction(EditorState& es);
 void deselectAllAction(EditorState& es);
 
 // Delete: while calibrating, the selected calibration point of `outputs`' calibrated
-// output (never quads); while editing a slice warp, nothing; else the selected quads,
-// or, with none, the selected 3D object. True when something was deleted.
+// output (never quads); while editing a slice warp, nothing; else the selected quads
+// but the locked ones, or, with none, the selected 3D object. True when something
+// was deleted.
 bool canDeleteSelection(EditorState& es, const OutputManager* outputs);
 bool deleteSelectionAction(EditorState& es, OutputManager* outputs);
 
@@ -81,7 +88,9 @@ bool canMoveZ(EditorState& es);
 void moveZAction(EditorState& es, ZMove move);
 
 // Mesh keys on the primary selected quad: Ctrl+M toggles mesh edit, Alt+= / Alt+-
-// step the resolution within 2..64, Alt+R resets a modified mesh in mesh edit.
+// step the resolution within 2..64, Alt+R resets a modified mesh in mesh edit. A
+// resolution step or reset is one undo step. On a locked quad each is refused
+// (refusedByQuadLock).
 bool canToggleMeshEdit(EditorState& es);
 void toggleMeshEditAction(EditorState& es);
 bool canStepMeshResolution(EditorState& es, int delta);

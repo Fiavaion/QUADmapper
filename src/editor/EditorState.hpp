@@ -14,6 +14,7 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include <cstdio>
 
 #include <glad/glad.h>  // GLuint
 
@@ -181,6 +182,10 @@ struct EditorState {
     }
 
     void setActiveScene(const UUID& id) {
+        // A canvas drag in progress on the scene being left (a take landing mid-drag)
+        // ends where the mouse left it, as its undo step. Not when that scene is gone
+        // (deleted, or replaced by New / Load): its drag went with it.
+        if (findSceneIndex(scenes, activeSceneId) >= 0) commitCanvasDrags(*this);
         activeSceneId = id;
         for (auto& s : scenes) {
             if (s) s->setActive(s->getId() == id);
@@ -191,6 +196,7 @@ struct EditorState {
         cornerHoveredVertex = cornerDraggedVertex = cornerSelectedVertex = -1;
         meshHoveredVertex = meshDraggedVertex = meshSelectedVertex = -1;
         meshSelectedHandle = meshHoveredHandle = meshDraggedHandle = -1;
+        bezierHovered = bezierDragged = -1;
         snapActive = false;
         gridInsert = GridInsert::None;
         gridInsertMouseLatch = false;
@@ -198,12 +204,18 @@ struct EditorState {
     }
 
     // Delete a scene. Outputs showing it (in `outputs`, when given) then show no
-    // scene; they keep their slices for the next scene routed to them.
+    // scene; they keep their slices for the next scene routed to them. Its quads'
+    // legacy textures (the UV grids), saved media paths and seen marks go with it.
     bool deleteScene(const UUID& id, OutputManager* outputs) {
         if (scenes.size() <= 1) return false;  // never delete the last scene
         auto it = std::find_if(scenes.begin(), scenes.end(),
             [&](const std::unique_ptr<Scene>& s) { return s && s->getId() == id; });
         if (it == scenes.end()) return false;
+        for (const auto& quad : (*it)->getQuadManager().getQuads()) {
+            quadTextures.erase(quad->getId());
+            quadTexturePaths.erase(quad->getId());
+            seenQuadIds.erase(quad->getId());
+        }
         if (outputs) {
             outputs->cancelSceneFades(id);
             for (const auto& output : outputs->getOutputs()) {
@@ -567,17 +579,40 @@ struct EditorState {
     // Delete every selected quad of the active scene as ONE undo step, through
     // Scene::deleteQuad (group cleanup). Legacy quadTextures/quadTexturePaths entries
     // are kept so undo brings the quad back with its UV grid and saved media path.
-    void deleteSelectedQuads() {
+    // Locked quads (the Quad List's lock) stay, and the status line says so. Returns
+    // how many stayed.
+    int deleteSelectedQuads() {
         Scene& scene = activeScene();
-        const std::vector<UUID> ids(scene.getQuadManager().getSelectedIds().begin(),
-                                    scene.getQuadManager().getSelectedIds().end());
-        if (ids.empty()) return;
+        QuadManager& quads = scene.getQuadManager();
+        std::vector<UUID> ids;
+        const Quad* locked = nullptr;
+        int lockedCount = 0;
+        for (const UUID& id : quads.getSelectedIds()) {
+            const Quad* quad = quads.getQuad(id);
+            if (quad && quad->isLocked()) {
+                locked = quad;
+                ++lockedCount;
+            } else {
+                ids.push_back(id);
+            }
+        }
+        if (lockedCount == 1) {
+            snprintf(statusMessage, sizeof(statusMessage), "%s is locked (Quad List): not deleted",
+                     locked->getName().c_str());
+            statusTimer = 4.0f;
+        } else if (lockedCount > 1) {
+            snprintf(statusMessage, sizeof(statusMessage),
+                     "%d locked quads were not deleted (Quad List)", lockedCount);
+            statusTimer = 4.0f;
+        }
+        if (ids.empty()) return lockedCount;
         commandHistory.beginCompoundCommand(ids.size() == 1 ? "Delete quad" : "Delete quads");
         for (const UUID& id : ids) {
             commandHistory.execute(std::make_unique<DeleteQuadCommand>(
                 QuadRef{&quadResolver, scene.getId(), id}));
         }
         commandHistory.endCompoundCommand();
+        return lockedCount;
     }
 };
 

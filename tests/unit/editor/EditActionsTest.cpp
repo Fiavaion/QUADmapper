@@ -234,6 +234,90 @@ TEST(EditActionsTest, MeshKeysActOnThePrimarySelectedQuad) {
     EXPECT_EQ(geo.getMeshMode(), MeshMode::CORNERS_ONLY);
 }
 
+// Alt+= / Alt+- rebuild an even grid and Alt+R zeroes the mesh: each is one undo step,
+// and undo puts back the grid lines, residual offsets and tangents exactly.
+TEST(EditActionsTest, MeshKeysAreUndoSteps) {
+    Rig rig;
+    rig.es.quadManager().selectQuad(rig.b->getId());
+    QuadGeometry& geo = rig.b->getGeometry();
+    geo.setMeshMode(MeshMode::MESH_EDIT);
+    geo.setUniformGrid(3);
+    geo.insertUDivision(0.2f);  // uneven columns
+    geo.setMeshVertex(1, 1, Vec2(0.05f, -0.02f));
+    const int vertex = 6;  // an inner vertex: it has handles
+    int handle = 0;
+    while (handle < GRID_HANDLE_COUNT && !((geo.availableHandles(vertex) >> handle) & 1u)) ++handle;
+    ASSERT_LT(handle, GRID_HANDLE_COUNT);
+    geo.setGridHandlePosition(vertex, handle,
+                              geo.gridHandlePosition(vertex, handle) + Vec2(0.03f, 0.01f));
+    ASSERT_TRUE(geo.hasExplicitTangents());
+    const auto u = geo.getUCoords();
+    const auto v = geo.getVCoords();
+    const auto offsets = geo.getMeshVertices();
+    const auto tangents = geo.getVertexTangents();
+    const auto expectRestored = [&] {
+        EXPECT_EQ(geo.getUCoords(), u);
+        EXPECT_EQ(geo.getVCoords(), v);
+        EXPECT_EQ(geo.getMeshVertices(), offsets);
+        EXPECT_EQ(geo.getVertexTangents(), tangents);
+    };
+
+    for (const char* id : {action_id::MESH_FINER, action_id::MESH_COARSER, action_id::RESET_MESH}) {
+        ASSERT_EQ(rig.run(id), Outcome::Ran) << id;
+        EXPECT_FALSE(geo.hasMeshModifications()) << id;
+        EXPECT_EQ(rig.es.commandHistory.getUndoCount(), 1u) << id;
+        ASSERT_EQ(rig.run(action_id::UNDO), Outcome::Ran) << id;
+        expectRestored();
+        rig.es.commandHistory.clear();
+    }
+
+    // A deleted quad makes the step a no-op.
+    rig.run(action_id::MESH_FINER);
+    rig.es.quadManager().deleteQuad(rig.b->getId());
+    EXPECT_FALSE(undoAction(rig.es));
+}
+
+// A locked quad (the Quad List's lock) keeps its shape: the mesh keys are refused and
+// say so; Delete leaves locked quads and says how many stayed.
+TEST(EditActionsTest, LockedQuadsRefuseMeshKeysAndDelete) {
+    Rig rig;
+    rig.es.quadManager().selectQuad(rig.b->getId());
+    QuadGeometry& geo = rig.b->getGeometry();
+    geo.setMeshMode(MeshMode::MESH_EDIT);
+    geo.setUniformGrid(3);
+    geo.setMeshVertex(1, 1, Vec2(0.05f, 0.0f));
+    rig.b->setLocked(true);
+    const auto offsets = geo.getMeshVertices();
+
+    for (const char* id : {action_id::MESH_FINER, action_id::MESH_COARSER, action_id::RESET_MESH,
+                           action_id::TOGGLE_MESH_EDIT}) {
+        rig.es.statusMessage[0] = '\0';
+        rig.run(id);
+        EXPECT_EQ(geo.getMeshResolution(), 3) << id;
+        EXPECT_EQ(geo.getMeshVertices(), offsets) << id;
+        EXPECT_EQ(geo.getMeshMode(), MeshMode::MESH_EDIT) << id;
+        EXPECT_STREQ(rig.es.statusMessage, "B is locked (Quad List)") << id;
+    }
+    EXPECT_FALSE(rig.es.commandHistory.canUndo());
+
+    // Delete: the unlocked quad goes, the locked one stays.
+    rig.es.quadManager().addToSelection(rig.a->getId());
+    EXPECT_EQ(rig.run(action_id::DELETE_SELECTION), Outcome::Ran);
+    EXPECT_EQ(rig.quadCount(), 2u);
+    EXPECT_NE(rig.es.quadManager().getQuad(rig.b->getId()), nullptr);
+    EXPECT_STREQ(rig.es.statusMessage, "B is locked (Quad List): not deleted");
+
+    // Only locked quads selected: nothing is deleted and no empty step is recorded.
+    rig.c->setLocked(true);
+    rig.es.quadManager().selectQuad(rig.b->getId());
+    rig.es.quadManager().addToSelection(rig.c->getId());
+    const size_t steps = rig.es.commandHistory.getUndoCount();
+    EXPECT_FALSE(deleteSelectionAction(rig.es, &rig.om));
+    EXPECT_EQ(rig.quadCount(), 2u);
+    EXPECT_EQ(rig.es.commandHistory.getUndoCount(), steps);
+    EXPECT_STREQ(rig.es.statusMessage, "2 locked quads were not deleted (Quad List)");
+}
+
 // The first chords are the ones the key block used; Redo also has Ctrl+Shift+Z (the
 // owner's decision, 2026-09-30).
 TEST(EditActionsTest, EditActionsKeepTheirChords) {

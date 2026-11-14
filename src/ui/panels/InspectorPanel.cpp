@@ -29,14 +29,183 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <string>
 #include <cstdio>
 #include <cstring>
 #include <cfloat>  // FLT_MIN (full-width button sizing)
 
 namespace quadmapper {
+
+namespace {
+
+constexpr const char* LOCKED_SHAPE_NOTE =
+    "Locked: untick the lock in the Quad List to edit the shape.";
+
+// A quad property the Inspector edits, read and written whole, so that one drag or one
+// click is one undo step (QuadPropertyCommand: keyed by quad id, so a deleted quad
+// makes the step a no-op).
+template <typename T>
+struct QuadProp {
+    const char* name;
+    T (*get)(const Quad&);
+    void (*set)(Quad&, const T&);
+};
+
+// The texture's UV transform: pan, scale (coverage), rotation and flips.
+struct UvTransform {
+    Vec2 offset{0.0f};
+    Vec2 scale{1.0f};
+    float rotation = 0.0f;
+    bool flipH = false;
+    bool flipV = false;
+};
+
+// The Bezier edges: on or off, and the eight control offsets.
+struct Curves {
+    bool enabled = false;
+    std::array<Vec2, 8> offsets{};
+};
+
+const QuadProp<std::array<Vec2, 4>> CORNERS{
+    "Corners", [](const Quad& q) { return q.getGeometry().getCorners(); },
+    [](Quad& q, const std::array<Vec2, 4>& c) { q.getGeometry().setCorners(c); }};
+const QuadProp<UvTransform> UV{
+    "UV Transform",
+    [](const Quad& q) {
+        const TextureBinding& t = q.getTexture();
+        return UvTransform{t.uvOffset, t.uvScale, t.uvRotation, t.flipH, t.flipV};
+    },
+    [](Quad& q, const UvTransform& uv) {
+        TextureBinding& t = q.getTexture();
+        t.uvOffset = uv.offset;
+        t.uvScale = uv.scale;
+        t.uvRotation = uv.rotation;
+        t.flipH = uv.flipH;
+        t.flipV = uv.flipV;
+    }};
+const QuadProp<NormalizedRect> CROP{
+    "Crop", [](const Quad& q) { return q.getTexture().cropRect; },
+    [](Quad& q, const NormalizedRect& r) { q.getTexture().cropRect = r; }};
+const QuadProp<float> OPACITY{
+    "Opacity", [](const Quad& q) { return q.getOpacity(); },
+    [](Quad& q, const float& o) { q.setOpacity(o); }};
+const QuadProp<ColorCorrection> COLOR{
+    "Color Correction", [](const Quad& q) { return q.getColorCorrection(); },
+    [](Quad& q, const ColorCorrection& cc) { q.getColorCorrection() = cc; }};
+const QuadProp<SoftEdge> SOFT_EDGE{
+    "Soft Edge", [](const Quad& q) { return q.getSoftEdge(); },
+    [](Quad& q, const SoftEdge& se) { q.getSoftEdge() = se; }};
+const QuadProp<Curves> CURVES{
+    "Curved Edges",
+    [](const Quad& q) {
+        return Curves{q.getGeometry().isBezierEnabled(), q.getGeometry().getBezierOffsets()};
+    },
+    [](Quad& q, const Curves& c) {
+        q.getGeometry().setBezierEnabled(c.enabled);
+        q.getGeometry().setBezierOffsets(c.offsets);
+    }};
+const QuadProp<MeshMode> MESH_MODE{
+    "Mesh Edit", [](const Quad& q) { return q.getGeometry().getMeshMode(); },
+    [](Quad& q, const MeshMode& m) { q.getGeometry().setMeshMode(m); }};
+const QuadProp<GridSnapshot> EVEN_GRID{
+    "Even Grid", [](const Quad& q) { return captureGrid(q.getGeometry()); }, applyGridSnapshot};
+
+// A click (button, checkbox): `value` becomes the property's value as one undo step.
+template <typename T>
+void setAsStep(EditorState& es, Quad& quad, const QuadProp<T>& prop, const T& value) {
+    es.commandHistory.execute(std::make_unique<QuadPropertyCommand<T>>(
+        prop.name, es.quadRef(quad), prop.get(quad), value, prop.set));
+}
+
+// A drag or slider: `widget` draws one ImGui item that edits `prop` live. The value
+// read before it, on the frame it becomes active, is kept in `pending`; its release
+// after an edit records that value -> the value now as one undo step.
+template <typename T, typename Widget>
+void editAsStep(EditorState& es, Quad& quad, const QuadProp<T>& prop,
+                std::function<void()>& pending, Widget&& widget) {
+    T before = prop.get(quad);
+    widget();
+    if (ImGui::IsItemActivated()) {
+        pending = [&es, ref = es.quadRef(quad), prop, before = std::move(before)]() {
+            if (const Quad* now = ref.quad()) {
+                es.commandHistory.execute(std::make_unique<QuadPropertyCommand<T>>(
+                    prop.name, ref, before, prop.get(*now), prop.set));
+            }
+        };
+    }
+    if (ImGui::IsItemDeactivated()) {
+        if (ImGui::IsItemDeactivatedAfterEdit() && pending) pending();
+        pending = nullptr;
+    }
+}
+
+// Corner pin at the default place (QuadGeometry::resetCorners).
+std::array<Vec2, 4> defaultCorners(const QuadGeometry& geometry) {
+    QuadGeometry reset = geometry;
+    reset.resetCorners();
+    return reset.getCorners();
+}
+
+// Clear Texture as one undo step: the quad's media binding, its legacy texture (the
+// UV grid) and its saved media path go, and undo puts all three back. The command
+// keeps the texture while it is cleared, and its source stays loaded while the step
+// is in the history (collectMediaIds).
+class ClearQuadTextureCommand : public Command {
+public:
+    ClearQuadTextureCommand(EditorState& es, const Quad& quad)
+        : es_(es), target_(es.quadRef(quad)), mediaId_(quad.getTexture().mediaId) {}
+
+    bool execute() override {
+        Quad* quad = resolveForCommand(target_, getDescription());
+        if (!quad) return false;
+        quad->getTexture().mediaId = UUID();
+        auto texture = es_.quadTextures.find(target_.quadId);
+        if (texture != es_.quadTextures.end()) {
+            texture_ = std::move(texture->second);
+            es_.quadTextures.erase(texture);
+        }
+        auto path = es_.quadTexturePaths.find(target_.quadId);
+        hadPath_ = path != es_.quadTexturePaths.end();
+        if (hadPath_) {
+            path_ = path->second;
+            es_.quadTexturePaths.erase(path);
+        }
+        return true;
+    }
+
+    bool undo() override {
+        Quad* quad = resolveForCommand(target_, getDescription());
+        if (!quad) return false;
+        quad->getTexture().mediaId = mediaId_;
+        if (texture_) es_.quadTextures[target_.quadId] = std::move(texture_);
+        if (hadPath_) es_.quadTexturePaths[target_.quadId] = path_;
+        return true;
+    }
+
+    std::string getDescription() const override { return "Clear Texture"; }
+
+    void collectMediaIds(std::unordered_set<UUID>& out) const override {
+        if (!mediaId_.isNull()) out.insert(mediaId_);
+    }
+    void remapMediaId(const UUID& from, const UUID& to) override {
+        if (mediaId_ == from) mediaId_ = to;
+    }
+
+private:
+    EditorState& es_;
+    QuadRef target_;
+    UUID mediaId_;
+    std::unique_ptr<Texture> texture_;
+    std::string path_;
+    bool hadPath_ = false;
+};
+
+}  // namespace
 
 void InspectorPanel::drawContent(EditorContext& ctx) {
     EditorState& es = ctx.es;
@@ -160,9 +329,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         if (boundTex) {
             ImGui::Text("Size: %dx%d", boundTex->getWidth(), boundTex->getHeight());
             if (ImGui::Button("Clear Texture")) {
-                selectedQuad->getTexture().mediaId = UUID();
-                quadTextures.erase(selectedQuad->getId());
-                quadTexturePaths.erase(selectedQuad->getId());
+                es.commandHistory.execute(
+                    std::make_unique<ClearQuadTextureCommand>(es, *selectedQuad));
                 currentTexturePath[0] = '\0';
             }
         }
@@ -209,15 +377,22 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         // UV Controls section
         ImGui::Separator();
         if (ImGui::CollapsingHeader("UV Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
-            TextureBinding& texBinding = selectedQuad->getTexture();
+            Quad& quad = *selectedQuad;
+            TextureBinding& texBinding = quad.getTexture();
+            const auto setUv = [&](UvTransform uv) { setAsStep(es, quad, UV, uv); };
+            const auto editUv = [&](auto&& widget) { editAsStep(es, quad, UV, pendingStep_, widget); };
 
             // Flip buttons at the top
             if (ImGui::Button(texBinding.flipH ? "Flip H [ON]" : "Flip H")) {
-                texBinding.flipH = !texBinding.flipH;
+                UvTransform uv = UV.get(quad);
+                uv.flipH = !uv.flipH;
+                setUv(uv);
             }
             ImGui::SameLine();
             if (ImGui::Button(texBinding.flipV ? "Flip V [ON]" : "Flip V")) {
-                texBinding.flipV = !texBinding.flipV;
+                UvTransform uv = UV.get(quad);
+                uv.flipV = !uv.flipV;
+                setUv(uv);
             }
 
             // Prominent one-click reset for the whole UV transform (offset / coverage
@@ -225,9 +400,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::Spacing();
             if (ImGui::Button("Reset Transform (Offset / Coverage / Scale / Rotation)",
                               ImVec2(-FLT_MIN, 0.0f))) {
-                texBinding.resetUV();   // uvOffset=0, uvScale=1 (=100% coverage), uvRotation=0
-                texBinding.flipH = false;
-                texBinding.flipV = false;
+                setUv(UvTransform{});  // offset 0, scale 1 (=100% coverage), rotation 0, no flips
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Reset pan, coverage/scale, rotation and flips to defaults");
@@ -241,11 +414,13 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::Text("Offset (Pan):");
             ImGui::TextDisabled("Ctrl+Click to type value");
             ImGui::SetNextItemWidth(200.0f);
-            ImGui::DragFloat("Offset X", &texBinding.uvOffset.x,
-                             0.01f, -2.0f, 2.0f, "%.3f");
+            editUv([&] {
+                ImGui::DragFloat("Offset X", &texBinding.uvOffset.x, 0.01f, -2.0f, 2.0f, "%.3f");
+            });
             ImGui::SetNextItemWidth(200.0f);
-            ImGui::DragFloat("Offset Y", &texBinding.uvOffset.y,
-                             0.01f, -2.0f, 2.0f, "%.3f");
+            editUv([&] {
+                ImGui::DragFloat("Offset Y", &texBinding.uvOffset.y, 0.01f, -2.0f, 2.0f, "%.3f");
+            });
 
             ImGui::Spacing();
 
@@ -260,26 +435,30 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 ? (100.0f / texBinding.uvScale.y) : 100.0f;
 
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("U Coverage", &coverageU,
-                                 1.0f, 10.0f, 400.0f, "%.0f%%")) {
-                texBinding.uvScale.x = 100.0f / std::max(coverageU, 1.0f);
-            }
+            editUv([&] {
+                if (ImGui::DragFloat("U Coverage", &coverageU, 1.0f, 10.0f, 400.0f, "%.0f%%")) {
+                    texBinding.uvScale.x = 100.0f / std::max(coverageU, 1.0f);
+                }
+            });
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("V Coverage", &coverageV,
-                                 1.0f, 10.0f, 400.0f, "%.0f%%")) {
-                texBinding.uvScale.y = 100.0f / std::max(coverageV, 1.0f);
-            }
+            editUv([&] {
+                if (ImGui::DragFloat("V Coverage", &coverageV, 1.0f, 10.0f, 400.0f, "%.0f%%")) {
+                    texBinding.uvScale.y = 100.0f / std::max(coverageV, 1.0f);
+                }
+            });
 
             ImGui::Spacing();
 
             // Scale (direct control)
             ImGui::Text("Scale (Zoom):");
             ImGui::SetNextItemWidth(200.0f);
-            ImGui::DragFloat("Scale X", &texBinding.uvScale.x,
-                             0.01f, 0.1f, 10.0f, "%.3f");
+            editUv([&] {
+                ImGui::DragFloat("Scale X", &texBinding.uvScale.x, 0.01f, 0.1f, 10.0f, "%.3f");
+            });
             ImGui::SetNextItemWidth(200.0f);
-            ImGui::DragFloat("Scale Y", &texBinding.uvScale.y,
-                             0.01f, 0.1f, 10.0f, "%.3f");
+            editUv([&] {
+                ImGui::DragFloat("Scale Y", &texBinding.uvScale.y, 0.01f, 0.1f, 10.0f, "%.3f");
+            });
 
             ImGui::Spacing();
 
@@ -287,33 +466,32 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             float rotationDegrees = texBinding.uvRotation * 180.0f / 3.14159265f;
             ImGui::Text("Rotation:");
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat("Rotation##uv", &rotationDegrees,
-                                 0.5f, -180.0f, 180.0f, "%.1f deg")) {
-                texBinding.uvRotation = rotationDegrees * 3.14159265f / 180.0f;
-            }
+            editUv([&] {
+                if (ImGui::DragFloat("Rotation##uv", &rotationDegrees,
+                                     0.5f, -180.0f, 180.0f, "%.1f deg")) {
+                    texBinding.uvRotation = rotationDegrees * 3.14159265f / 180.0f;
+                }
+            });
             // Quick rotation buttons
+            const auto rotateTo = [&](float degrees) {
+                UvTransform uv = UV.get(quad);
+                uv.rotation = degrees * 3.14159265f / 180.0f;
+                setUv(uv);
+            };
             ImGui::SameLine();
-            if (ImGui::Button("0##rot")) {
-                texBinding.uvRotation = 0.0f;
-            }
+            if (ImGui::Button("0##rot")) rotateTo(0.0f);
             ImGui::SameLine();
-            if (ImGui::Button("90##rot")) {
-                texBinding.uvRotation = 90.0f * 3.14159265f / 180.0f;
-            }
+            if (ImGui::Button("90##rot")) rotateTo(90.0f);
             ImGui::SameLine();
-            if (ImGui::Button("180##rot")) {
-                texBinding.uvRotation = 180.0f * 3.14159265f / 180.0f;
-            }
+            if (ImGui::Button("180##rot")) rotateTo(180.0f);
             ImGui::SameLine();
-            if (ImGui::Button("270##rot")) {
-                texBinding.uvRotation = 270.0f * 3.14159265f / 180.0f;
-            }
+            if (ImGui::Button("270##rot")) rotateTo(270.0f);
 
             // Crop (ADR-040) — sample a sub-rectangle of the source, stretched to
             // fill the quad. Collapsed by default to keep the inspector tidy.
             ImGui::Spacing();
             if (ImGui::TreeNode("Crop (source region)")) {
-                renderCropControls(ctx, texBinding);
+                renderCropControls(ctx, quad);
                 ImGui::TreePop();
             }
         }
@@ -321,26 +499,28 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         // Geometry section
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Geometry", ImGuiTreeNodeFlags_DefaultOpen)) {
-            auto& geometry = selectedQuad->getGeometry();
-            auto corners = geometry.getCorners();
-            bool cornersChanged = false;
+            Quad& quad = *selectedQuad;
+            auto& geometry = quad.getGeometry();
+            // A locked quad (the Quad List's lock) keeps its shape.
+            const bool locked = quad.isLocked();
+            if (locked) ImGui::TextDisabled("%s", LOCKED_SHAPE_NOTE);
+            ImGui::BeginDisabled(locked);
 
+            // Each corner field applies live; one drag is one undo step.
             ImGui::Text("Corners (normalized 0-1):");
-            if (ImGui::DragFloat2("Top Left",     &corners[0].x, 0.01f, 0.0f, 1.0f))
-                cornersChanged = true;
-            if (ImGui::DragFloat2("Top Right",    &corners[1].x, 0.01f, 0.0f, 1.0f))
-                cornersChanged = true;
-            if (ImGui::DragFloat2("Bottom Right", &corners[2].x, 0.01f, 0.0f, 1.0f))
-                cornersChanged = true;
-            if (ImGui::DragFloat2("Bottom Left",  &corners[3].x, 0.01f, 0.0f, 1.0f))
-                cornersChanged = true;
-
-            if (cornersChanged) {
-                geometry.setCorners(corners);
+            const char* cornerLabels[4] = {"Top Left", "Top Right", "Bottom Right", "Bottom Left"};
+            for (int i = 0; i < 4; ++i) {
+                editAsStep(es, quad, CORNERS, pendingStep_, [&] {
+                    auto corners = geometry.getCorners();
+                    if (ImGui::DragFloat2(cornerLabels[i], &corners[static_cast<size_t>(i)].x,
+                                          0.01f, 0.0f, 1.0f)) {
+                        geometry.setCorners(corners);
+                    }
+                });
             }
 
             if (ImGui::Button("Reset Corners")) {
-                geometry.resetCorners();
+                setAsStep(es, quad, CORNERS, defaultCorners(geometry));
             }
 
             // Curved (bezier) edges — drag the amber handles on the canvas to bow the
@@ -348,7 +528,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             {
                 bool bez = geometry.isBezierEnabled();
                 if (ImGui::Checkbox("Curved edges (bezier)", &bez)) {
-                    geometry.setBezierEnabled(bez);
+                    setAsStep(es, quad, CURVES, Curves{bez, geometry.getBezierOffsets()});
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Drag the amber edge handles on the canvas to curve the edges");
@@ -356,20 +536,20 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 if (bez) {
                     ImGui::SameLine();
                     if (ImGui::Button("Reset Curves")) {
-                        geometry.resetBezier();
+                        setAsStep(es, quad, CURVES, Curves{});
                     }
                 }
             }
 
             ImGui::Separator();
-            // Even grid (uniform N×N) — the convenience action; resets divisions.
+            // Even grid (uniform N×N) — the convenience action; resets divisions. The
+            // grid follows the slider live; one drag is one undo step.
             int meshRes = geometry.getMeshResolution();
-            if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64)) {
-                GridSnapshot before = captureGrid(geometry);
-                geometry.setUniformGrid(meshRes);
-                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Even Grid",
-                               before, captureGrid(geometry));
-            }
+            editAsStep(es, quad, EVEN_GRID, pendingStep_, [&] {
+                if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64)) {
+                    geometry.setUniformGrid(meshRes);
+                }
+            });
 
             // Non-uniform grid divisions (ADR-038 Tier 1): add/remove division
             // lines at an arbitrary position, then warp the control vertices in
@@ -433,8 +613,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
             bool meshEditMode = (geometry.getMeshMode() == MeshMode::MESH_EDIT);
             if (ImGui::Checkbox("Edit Mesh Vertices", &meshEditMode)) {
-                geometry.setMeshMode(meshEditMode
-                    ? MeshMode::MESH_EDIT : MeshMode::CORNERS_ONLY);
+                setAsStep(es, quad, MESH_MODE,
+                          meshEditMode ? MeshMode::MESH_EDIT : MeshMode::CORNERS_ONLY);
                 // Reset all handle state when toggling mode
                 es.meshDraggedVertex   = -1;
                 es.meshHoveredVertex   = -1;
@@ -456,7 +636,10 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 if (geometry.hasMeshModifications()) {
                     ImGui::SameLine();
                     if (ImGui::Button("Reset Mesh")) {
+                        const GridSnapshot before = captureGrid(geometry);
                         geometry.resetMesh();
+                        pushGridChange(es.commandHistory, es.quadRef(quad), "Reset Mesh", before,
+                                       captureGrid(geometry));
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip(
@@ -471,15 +654,18 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                             geometry.getVertexCount(),
                             meshRes + 1, meshRes + 1);
             }
+            ImGui::EndDisabled();
         }
 
         // Display section
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
             float opacity = selectedQuad->getOpacity();
-            if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f)) {
-                selectedQuad->setOpacity(opacity);
-            }
+            editAsStep(es, *selectedQuad, OPACITY, pendingStep_, [&] {
+                if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f)) {
+                    selectedQuad->setOpacity(opacity);
+                }
+            });
 
             ImGui::Separator();
             ImGui::Text("Z-Order");
@@ -522,12 +708,15 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Color Correction")) {
             ColorCorrection& cc = selectedQuad->getColorCorrection();
-            ImGui::SliderFloat("Brightness", &cc.brightness, -1.0f, 1.0f);
-            ImGui::SliderFloat("Contrast", &cc.contrast, 0.0f, 2.0f);
-            ImGui::SliderFloat("Gamma", &cc.gamma, 0.1f, 4.0f);
-            ImGui::SliderFloat3("RGB Gain", &cc.rgbGain.x, 0.0f, 2.0f);
+            const auto editColor = [&](auto&& widget) {
+                editAsStep(es, *selectedQuad, COLOR, pendingStep_, widget);
+            };
+            editColor([&] { ImGui::SliderFloat("Brightness", &cc.brightness, -1.0f, 1.0f); });
+            editColor([&] { ImGui::SliderFloat("Contrast", &cc.contrast, 0.0f, 2.0f); });
+            editColor([&] { ImGui::SliderFloat("Gamma", &cc.gamma, 0.1f, 4.0f); });
+            editColor([&] { ImGui::SliderFloat3("RGB Gain", &cc.rgbGain.x, 0.0f, 2.0f); });
             if (ImGui::Button("Reset Color")) {
-                cc.reset();
+                setAsStep(es, *selectedQuad, COLOR, ColorCorrection{});
             }
         }
 
@@ -536,13 +725,16 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Soft Edge Blending")) {
             SoftEdge& se = selectedQuad->getSoftEdge();
-            ImGui::SliderFloat("Left", &se.left, 0.0f, 0.5f);
-            ImGui::SliderFloat("Right", &se.right, 0.0f, 0.5f);
-            ImGui::SliderFloat("Top", &se.top, 0.0f, 0.5f);
-            ImGui::SliderFloat("Bottom", &se.bottom, 0.0f, 0.5f);
-            ImGui::SliderFloat("Edge Gamma", &se.gamma, 0.1f, 4.0f);
+            const auto editEdge = [&](auto&& widget) {
+                editAsStep(es, *selectedQuad, SOFT_EDGE, pendingStep_, widget);
+            };
+            editEdge([&] { ImGui::SliderFloat("Left", &se.left, 0.0f, 0.5f); });
+            editEdge([&] { ImGui::SliderFloat("Right", &se.right, 0.0f, 0.5f); });
+            editEdge([&] { ImGui::SliderFloat("Top", &se.top, 0.0f, 0.5f); });
+            editEdge([&] { ImGui::SliderFloat("Bottom", &se.bottom, 0.0f, 0.5f); });
+            editEdge([&] { ImGui::SliderFloat("Edge Gamma", &se.gamma, 0.1f, 4.0f); });
             if (ImGui::Button("Reset Edges")) {
-                se.reset();
+                setAsStep(es, *selectedQuad, SOFT_EDGE, SoftEdge{});
             }
         }
     } else {
@@ -556,8 +748,10 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 // stays normalized {x,y,w,h}; the insets are a pure UI re-parameterization
 // (CropInsets.hpp), shown in source pixels when the source has a real pixel size and
 // as a percentage otherwise (procedural sources, or media not loaded yet).
-void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texBinding) {
-    NormalizedRect& crop = texBinding.cropRect;
+void InspectorPanel::renderCropControls(EditorContext& ctx, Quad& quad) {
+    EditorState& es = ctx.es;
+    const TextureBinding& texBinding = quad.getTexture();
+    NormalizedRect& crop = quad.getTexture().cropRect;
 
     int srcWidth = 0;
     int srcHeight = 0;
@@ -583,10 +777,12 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texB
             int px = cropInsetPixels(crop, c.edge, srcWidth, srcHeight);
             const int maxPx = maxCropInsetPixels(crop, c.edge, srcWidth, srcHeight);
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragInt(c.label, &px, 1.0f, 0, maxPx, "%d px",
-                               ImGuiSliderFlags_AlwaysClamp)) {
-                crop = withCropInsetPixels(crop, c.edge, px, srcWidth, srcHeight);
-            }
+            editAsStep(es, quad, CROP, pendingStep_, [&] {
+                if (ImGui::DragInt(c.label, &px, 1.0f, 0, maxPx, "%d px",
+                                   ImGuiSliderFlags_AlwaysClamp)) {
+                    crop = withCropInsetPixels(crop, c.edge, px, srcWidth, srcHeight);
+                }
+            });
         }
         const int left = cropInsetPixels(crop, CropEdge::Left, srcWidth, srcHeight);
         const int top = cropInsetPixels(crop, CropEdge::Top, srcWidth, srcHeight);
@@ -599,14 +795,16 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texB
         for (const EdgeControl& c : edges) {
             float pct = static_cast<float>(cropInset(crop, c.edge) * 100.0);
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::DragFloat(c.label, &pct, 0.5f, 0.0f, 100.0f, "%.1f%%")) {
-                crop = withCropInset(crop, c.edge, pct / 100.0, 0.01);
-            }
+            editAsStep(es, quad, CROP, pendingStep_, [&] {
+                if (ImGui::DragFloat(c.label, &pct, 0.5f, 0.0f, 100.0f, "%.1f%%")) {
+                    crop = withCropInset(crop, c.edge, pct / 100.0, 0.01);
+                }
+            });
         }
     }
 
     auto setCrop = [&](float x, float y, float w, float h) {
-        crop = NormalizedRect{x, y, w, h};
+        setAsStep(es, quad, CROP, NormalizedRect{x, y, w, h});
     };
     ImGui::TextDisabled("Halves (two-face split):");
     if (ImGui::Button("Left 1/2"))   setCrop(0.0f, 0.0f, 0.5f, 1.0f); ImGui::SameLine();
@@ -623,7 +821,7 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, TextureBinding& texB
     column("3##cq", 0.5f);  ImGui::SameLine();
     column("4##cq", 0.75f); ImGui::SameLine();
     if (ImGui::Button("Full##cq")) {
-        texBinding.resetCrop();
+        setAsStep(es, quad, CROP, NormalizedRect{});
     }
 }
 
@@ -644,23 +842,37 @@ void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) 
     }
     ImGui::Separator();
 
+    EditorState& es = ctx.es;
+    // A locked quad (the Quad List's lock) keeps its shape: no curves, no Reset Quad.
+    const bool locked = quad.isLocked();
+
     // Flip
     if (ImGui::Button(texBinding.flipH ? "Flip U [ON]" : "Flip U")) {
-        texBinding.flipH = !texBinding.flipH;
+        UvTransform uv = UV.get(quad);
+        uv.flipH = !uv.flipH;
+        setAsStep(es, quad, UV, uv);
     }
     ImGui::SameLine();
     if (ImGui::Button(texBinding.flipV ? "Flip V [ON]" : "Flip V")) {
-        texBinding.flipV = !texBinding.flipV;
+        UvTransform uv = UV.get(quad);
+        uv.flipV = !uv.flipV;
+        setAsStep(es, quad, UV, uv);
     }
 
     // Rotation
     float deg = texBinding.uvRotation * 180.0f / kPi;
     ImGui::SetNextItemWidth(200.0f);
-    if (ImGui::DragFloat("Rotation", &deg, 1.0f, -360.0f, 360.0f, "%.0f deg")) {
-        texBinding.uvRotation = deg * kPi / 180.0f;
-    }
+    editAsStep(es, quad, UV, pendingStep_, [&] {
+        if (ImGui::DragFloat("Rotation", &deg, 1.0f, -360.0f, 360.0f, "%.0f deg")) {
+            texBinding.uvRotation = deg * kPi / 180.0f;
+        }
+    });
     auto rotBtn = [&](const char* label, float d) {
-        if (ImGui::Button(label)) { texBinding.uvRotation = d * kPi / 180.0f; }
+        if (ImGui::Button(label)) {
+            UvTransform uv = UV.get(quad);
+            uv.rotation = d * kPi / 180.0f;
+            setAsStep(es, quad, UV, uv);
+        }
     };
     rotBtn("0##r",   0.0f);   ImGui::SameLine();
     rotBtn("90##r",  90.0f);  ImGui::SameLine();
@@ -668,32 +880,37 @@ void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) 
     rotBtn("270##r", 270.0f);
 
     // Curved (bezier) edges — drag the amber handles on the canvas to bow the edges.
+    if (locked) ImGui::TextDisabled("%s", LOCKED_SHAPE_NOTE);
+    ImGui::BeginDisabled(locked);
     bool bez = quad.getGeometry().isBezierEnabled();
     if (ImGui::Checkbox("Curved edges (bezier)", &bez)) {
-        quad.getGeometry().setBezierEnabled(bez);
+        setAsStep(es, quad, CURVES, Curves{bez, quad.getGeometry().getBezierOffsets()});
     }
     if (bez) {
         ImGui::SameLine();
         if (ImGui::Button("Reset Curves")) {
-            quad.getGeometry().resetBezier();
+            setAsStep(es, quad, CURVES, Curves{});
         }
     }
+    ImGui::EndDisabled();
 
     // Crop
     ImGui::Separator();
-    renderCropControls(ctx, texBinding);
+    renderCropControls(ctx, quad);
 
-    // Reset Quad — full reset, keeps the assigned media (confirmed UX).
+    // Reset Quad — full reset, keeps the assigned media (confirmed UX). One undo step.
     ImGui::Separator();
+    ImGui::BeginDisabled(locked);
     if (ImGui::Button("Reset Quad")) {
-        texBinding.resetUV();
-        texBinding.flipH = false;
-        texBinding.flipV = false;
-        texBinding.resetCrop();
-        quad.getGeometry().resetCorners();
-        quad.getGeometry().resetBezier();
+        es.commandHistory.beginCompoundCommand("Reset Quad");
+        setAsStep(es, quad, UV, UvTransform{});
+        setAsStep(es, quad, CROP, NormalizedRect{});
+        setAsStep(es, quad, CORNERS, defaultCorners(quad.getGeometry()));
+        setAsStep(es, quad, CURVES, Curves{});
+        es.commandHistory.endCompoundCommand();
     }
     ImGui::SetItemTooltip("Reset warp, flip, rotation and crop (keeps the assigned media)");
+    ImGui::EndDisabled();
 }
 
 // ============================================================

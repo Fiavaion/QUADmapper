@@ -2,9 +2,12 @@
 
 #include "EditorContext.hpp"
 #include "EditorState.hpp"
+#include "GridUndo.hpp"
+#include "StatusLine.hpp"
 #include "UndoRouting.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
+#include "scene/Quad.hpp"
 #include "scene/QuadGeometry.hpp"
 
 #include <imgui.h>  // ImGuiKey values for the chords; no ImGui calls
@@ -31,10 +34,26 @@ bool historyStep(EditorState& es, bool undo) {
     return false;
 }
 
+Quad* primaryQuad(EditorState& es) {
+    return quadEditing(es) ? es.quadManager().getPrimarySelectedQuad() : nullptr;
+}
+
 QuadGeometry* primaryGeometry(EditorState& es) {
-    if (!quadEditing(es)) return nullptr;
-    Quad* quad = es.quadManager().getPrimarySelectedQuad();
+    Quad* quad = primaryQuad(es);
     return quad ? &quad->getGeometry() : nullptr;
+}
+
+// Replace the primary quad's grid with `change` as one undo step (GridUndo.hpp), so
+// undo puts back the grid lines, residual offsets and tangents exactly. A locked quad
+// keeps its shape and the status line says so.
+void changePrimaryGrid(EditorState& es, const char* description,
+                       const std::function<void(QuadGeometry&)>& change) {
+    Quad* quad = primaryQuad(es);
+    if (!quad || refusedByQuadLock(es, *quad)) return;
+    QuadGeometry& geo = quad->getGeometry();
+    const GridSnapshot before = captureGrid(geo);
+    change(geo);
+    pushGridChange(es.commandHistory, es.quadRef(*quad), description, before, captureGrid(geo));
 }
 
 Action editAction(const char* id, const char* label, std::vector<Chord> chords,
@@ -57,6 +76,12 @@ std::string sceneTakeId(int n) { return "scene.take." + std::to_string(n); }
 
 bool quadEditing(const EditorState& es) {
     return es.calibratingOutputId.isNull() && es.sliceWarpOutputId.isNull();
+}
+
+bool refusedByQuadLock(EditorState& es, const Quad& quad) {
+    if (!quad.isLocked()) return false;
+    postStatus(es, quad.getName() + " is locked (Quad List)");
+    return true;
 }
 
 bool undoAction(EditorState& es) { return historyStep(es, true); }
@@ -94,9 +119,10 @@ bool deleteSelectionAction(EditorState& es, OutputManager* outputs) {
     // Slice warp editing: the quads are hidden, Delete leaves them alone.
     if (!quadEditing(es)) return false;
     // Selecting an object deselects the quads, so a quad selection is newer.
+    // Locked quads stay (deleteSelectedQuads says so on the status line).
     if (es.quadManager().hasSelection()) {
-        es.deleteSelectedQuads();
-        return true;
+        const size_t selected = es.quadManager().getSelectedIds().size();
+        return static_cast<size_t>(es.deleteSelectedQuads()) < selected;
     }
     return es.deleteSelectedObject();
 }
@@ -117,10 +143,11 @@ void moveZAction(EditorState& es, ZMove move) {
 bool canToggleMeshEdit(EditorState& es) { return primaryGeometry(es) != nullptr; }
 
 void toggleMeshEditAction(EditorState& es) {
-    QuadGeometry* geo = primaryGeometry(es);
-    if (!geo) return;
-    const bool isEdit = geo->getMeshMode() == MeshMode::MESH_EDIT;
-    geo->setMeshMode(isEdit ? MeshMode::CORNERS_ONLY : MeshMode::MESH_EDIT);
+    Quad* quad = primaryQuad(es);
+    if (!quad || refusedByQuadLock(es, *quad)) return;
+    QuadGeometry& geo = quad->getGeometry();
+    const bool isEdit = geo.getMeshMode() == MeshMode::MESH_EDIT;
+    geo.setMeshMode(isEdit ? MeshMode::CORNERS_ONLY : MeshMode::MESH_EDIT);
 }
 
 bool canStepMeshResolution(EditorState& es, int delta) {
@@ -132,8 +159,10 @@ bool canStepMeshResolution(EditorState& es, int delta) {
 
 void stepMeshResolutionAction(EditorState& es, int delta) {
     if (!canStepMeshResolution(es, delta)) return;
-    QuadGeometry* geo = primaryGeometry(es);
-    geo->setMeshResolution(geo->getMeshResolution() + (delta > 0 ? 1 : -1));
+    changePrimaryGrid(es, delta > 0 ? "Increase Mesh Resolution" : "Decrease Mesh Resolution",
+                      [delta](QuadGeometry& geo) {
+                          geo.setMeshResolution(geo.getMeshResolution() + (delta > 0 ? 1 : -1));
+                      });
 }
 
 bool canResetMesh(EditorState& es) {
@@ -143,7 +172,8 @@ bool canResetMesh(EditorState& es) {
 
 void resetMeshAction(EditorState& es) {
     // Residuals and grid handles back to the corner-pin surface.
-    if (canResetMesh(es)) primaryGeometry(es)->resetMesh();
+    if (!canResetMesh(es)) return;
+    changePrimaryGrid(es, "Reset Mesh", [](QuadGeometry& geo) { geo.resetMesh(); });
 }
 
 void registerEditActions(ActionRegistry& registry, std::function<void()> historyChanged) {

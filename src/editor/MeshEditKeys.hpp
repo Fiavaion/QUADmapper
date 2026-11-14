@@ -17,14 +17,16 @@ namespace quadmapper {
 // One frame of canvas keys in corner pin (CORNERS_ONLY): Tab / Shift+Tab cycles the
 // four corners (TL, TR, BR, BL), the arrows nudge the selected corner by nudgeStep
 // (Shift 10x, Alt 0.1x). Each nudge is a MoveCornerCommand, which applies it;
-// consecutive nudges of one corner merge into one undo step. Returns true when the
-// geometry changed.
+// consecutive nudges of one corner merge into one undo step. A `locked` quad (the
+// Quad List's lock) still cycles but never moves. Returns true when the geometry
+// changed.
 inline bool applyCornerKeys(const CanvasKeys& keys, const QuadRef& target,
-                            const QuadGeometry& geometry, CommandHistory& history, int& corner) {
+                            const QuadGeometry& geometry, CommandHistory& history, int& corner,
+                            bool locked = false) {
     if (keys.tab) {
         corner = cycleVertex(corner, 4, keys.shift);
     }
-    if (corner < 0 || corner >= 4 || !keys.arrow()) {
+    if (corner < 0 || corner >= 4 || !keys.arrow() || locked) {
         return false;
     }
     const Vec2 oldPos = geometry.getCorners()[static_cast<size_t>(corner)];
@@ -38,10 +40,11 @@ inline bool applyCornerKeys(const CanvasKeys& keys, const QuadRef& target,
 // - the arrows nudge the selected handle, else the selected vertex, by nudgeStep
 //   (Shift 10x, Alt 0.1x).
 // Each nudge is an id-keyed undoable command; consecutive nudges of one vertex, or of
-// one handle, merge into one undo step. Returns true when the geometry changed.
+// one handle, merge into one undo step. A `locked` quad still cycles but never moves.
+// Returns true when the geometry changed.
 inline bool applyMeshEditKeys(const CanvasKeys& keys, const QuadRef& target,
                               QuadGeometry& geometry, CommandHistory& history, int& vertex,
-                              int& handle) {
+                              int& handle, bool locked = false) {
     const int count = geometry.getVertexCount();
     if (keys.tab) {
         vertex = cycleVertex(vertex, count, keys.shift);
@@ -58,7 +61,7 @@ inline bool applyMeshEditKeys(const CanvasKeys& keys, const QuadRef& target,
     if (handle >= 0 && !((available >> handle) & 1u)) {
         handle = -1;  // the grid changed under a stale selection
     }
-    if (!keys.arrow()) {
+    if (!keys.arrow() || locked) {
         return false;
     }
 

@@ -194,5 +194,31 @@ TEST_F(MeshEditKeysTest, CornerKeysCycleBothWaysAndNudgeWithShiftAndAlt) {
     EXPECT_EQ(geometry().getCorners()[3], start);
 }
 
+// A locked quad (the Quad List's lock): Tab still cycles the corners, vertices and
+// handles, and the arrows move nothing and record nothing.
+TEST_F(MeshEditKeysTest, ArrowsNeverMoveALockedQuad) {
+    const auto corners = geometry().getCorners();
+    int corner = -1;
+    EXPECT_FALSE(applyCornerKeys(tab(), ref(), geometry(), history_, corner, /*locked=*/true));
+    EXPECT_EQ(corner, 0);
+    EXPECT_FALSE(applyCornerKeys(right(/*shift=*/true), ref(), geometry(), history_, corner,
+                                 /*locked=*/true));
+    EXPECT_EQ(geometry().getCorners(), corners);
+
+    const auto offsets = geometry().getMeshVertices();
+    const auto tangents = geometry().getVertexTangents();
+    EXPECT_FALSE(applyMeshEditKeys(tab(), ref(), geometry(), history_, vertex_, handle_, true));
+    EXPECT_EQ(vertex_, 0);
+    vertex_ = 4;
+    EXPECT_FALSE(applyMeshEditKeys(h(), ref(), geometry(), history_, vertex_, handle_, true));
+    EXPECT_GE(handle_, 0);
+    EXPECT_FALSE(applyMeshEditKeys(up(), ref(), geometry(), history_, vertex_, handle_, true));
+    handle_ = -1;
+    EXPECT_FALSE(applyMeshEditKeys(right(), ref(), geometry(), history_, vertex_, handle_, true));
+    EXPECT_EQ(geometry().getMeshVertices(), offsets);
+    EXPECT_EQ(geometry().getVertexTangents(), tangents);
+    EXPECT_FALSE(history_.canUndo());
+}
+
 }  // namespace test
 }  // namespace quadmapper

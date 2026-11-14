@@ -18,11 +18,6 @@
 
 namespace quadmapper {
 
-namespace {
-
-// The canvas's drags on the selected quad (ViewportEditor) end where the mouse left
-// them, each as the undo step its release would have recorded; then the grid insert
-// tool is disarmed. Called while the history still records.
 void commitCanvasDrags(EditorState& es) {
     if (Quad* quad = es.quadManager().getPrimarySelectedQuad()) {
         QuadGeometry& geometry = quad->getGeometry();
@@ -71,8 +66,6 @@ void commitCanvasDrags(EditorState& es) {
     es.gridInsertMouseLatch = false;
     es.gridInsertDragIndex = -1;
 }
-
-}  // namespace
 
 void lockPerform(EditorState& es) {
     if (es.performLock.on_) return;

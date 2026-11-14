@@ -7,12 +7,12 @@
 
 #include <glm/glm.hpp>
 
+#include <functional>
 #include <string>
 
 namespace quadmapper {
 
 struct EditorContext;
-struct TextureBinding;
 class Quad;
 
 // The context-sensitive "Properties" dockable window. Dispatches on
@@ -29,7 +29,7 @@ public:
 private:
     void renderQuadProperties(EditorContext& ctx);
     void renderSimpleQuadProperties(EditorContext& ctx, Quad& quad);  // ADR-042 simple mode
-    void renderCropControls(EditorContext& ctx, TextureBinding& texBinding);
+    void renderCropControls(EditorContext& ctx, Quad& quad);
     void renderOutputProperties(EditorContext& ctx);
     void renderMediaProperties(EditorContext& ctx);
     void renderObjectProperties(EditorContext& ctx);  // 3D objects (ADR-052)
@@ -55,6 +55,10 @@ private:
     // The quad and media path the texture Path field last showed (followTexturePath).
     UUID pathFieldQuad_;
     std::string pathFieldPath_;
+
+    // The undo step the active quad drag or slider records when it is released (one
+    // drag is one step); empty while none is active.
+    std::function<void()> pendingStep_;
 };
 
 }  // namespace quadmapper

@@ -278,22 +278,6 @@ private:
     std::string newName_;
 };
 
-// SetMeshResolutionCommand
-class SetMeshResolutionCommand : public Command {
-public:
-    SetMeshResolutionCommand(const QuadRef& target, int newResolution);
-
-    bool execute() override;
-    bool undo() override;
-    std::string getDescription() const override;
-
-private:
-    QuadRef target_;
-    int oldResolution_;
-    int newResolution_;
-    std::vector<Vec2> oldMeshVertices_;
-};
-
 // MoveQuadCommand - moves all corners together
 class MoveQuadCommand : public Command {
 public:

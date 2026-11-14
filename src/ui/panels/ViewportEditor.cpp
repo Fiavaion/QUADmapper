@@ -1,7 +1,9 @@
 #include "ViewportEditor.hpp"
 
+#include "editor/EditActions.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
 #include "editor/TextureResolve.hpp"
 #include "editor/GridUndo.hpp"
 #include "editor/MeshEditKeys.hpp"
@@ -433,40 +435,37 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
         // never grabs it and clicks on overlays above the canvas never reselect quads.
         const bool canvasPress = mousePressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
 
+        // A quad drag the canvas is taken from (lock, slice warp editing, calibration)
+        // ends where the mouse left it, as its undo step; then nothing is hovered.
+        const auto leaveQuadEditing = [&]() {
+            commitCanvasDrags(es);
+            cornerHoveredVertex = meshHoveredVertex = -1;
+            es.meshHoveredHandle = es.bezierHovered = -1;
+            snapActive = false;
+        };
+
         // The perform lock (ADR-051 §4): no picking, dragging or keys. The canvas still
         // shows the show, and zoom and pan (EditorUi's canvas overlay) still work.
         if (es.performLock.isOn()) {
-            cornerHoveredVertex = cornerDraggedVertex = -1;
-            meshHoveredVertex = meshDraggedVertex = -1;
-            es.meshHoveredHandle = es.meshDraggedHandle = -1;
-            es.bezierHovered = es.bezierDragged = -1;
-            snapActive = false;
+            leaveQuadEditing();
             return;
         }
 
         // Slice warp editing: the canvas edits the selected slice's warp corners, and
         // quad vertices stay untouched (as while calibrating).
         if (warpOutput) {
+            leaveQuadEditing();
             editSliceWarp(es, *warpOutput, mouseNorm, mouseDown, canvasPress);
-            cornerHoveredVertex = cornerDraggedVertex = -1;
-            meshHoveredVertex = meshDraggedVertex = -1;
-            es.meshHoveredHandle = es.meshDraggedHandle = -1;
-            es.bezierHovered = es.bezierDragged = -1;
-            snapActive = false;
             return;
         }
 
         // Calibrating: the canvas edits the calibration points of the projector whose
         // frame it shows, and quad vertices stay untouched.
         if (calibrating) {
+            leaveQuadEditing();
             if (calibrationView) {
                 editCalibrationPoints(es, *calibrationView, mouseNorm, mouseDown, canvasPress);
             }
-            cornerHoveredVertex = cornerDraggedVertex = -1;
-            meshHoveredVertex = meshDraggedVertex = -1;
-            es.meshHoveredHandle = es.meshDraggedHandle = -1;
-            es.bezierHovered = es.bezierDragged = -1;
-            snapActive = false;
             return;
         }
 
@@ -512,6 +511,17 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
         if (selectedQuad) {
             QuadGeometry& geometry = selectedQuad->getGeometry();
             MeshMode mode = geometry.getMeshMode();
+
+            // A locked quad (the Quad List's lock) can be selected and its vertices
+            // cycled, but not reshaped: no drag or insert starts on it and no arrow
+            // nudges it; the press or key that was refused says why on the status line.
+            const bool locked = selectedQuad->isLocked();
+            const auto mayStartDrag = [&]() { return !refusedByQuadLock(es, *selectedQuad); };
+            const auto readKeys = [&]() {
+                const CanvasKeys keys = readCanvasKeys();
+                if (keys.arrow() && locked) refusedByQuadLock(es, *selectedQuad);
+                return keys;
+            };
 
             // Reset snap state at start of each frame
             snapActive = false;
@@ -568,7 +578,7 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                     es.gridInsert = EditorState::GridInsert::None;
                     es.gridInsertMouseLatch = false;
                     es.gridInsertDragIndex = -1;
-                } else if (mouseDown && (es.gridInsertMouseLatch || canvasPress)) {
+                } else if (mouseDown && (es.gridInsertMouseLatch || (canvasPress && mayStartDrag()))) {
                     // The surface parameters under the cursor, as drawn (ADR-049).
                     Vec2 uv = geometry.surfaceParamsAt(mouseNorm);
                     if (!es.gridInsertMouseLatch) {
@@ -642,7 +652,7 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
 
                     // Start drag if mouse pressed on a corner (not while the
                     // division-insert tool is armed).
-                    if (canvasPress && cornerHoveredVertex >= 0 && !insertArmed) {
+                    if (canvasPress && cornerHoveredVertex >= 0 && !insertArmed && mayStartDrag()) {
                         cornerDraggedVertex = cornerHoveredVertex;
                         cornerSelectedVertex = cornerHoveredVertex;
                         cornerDragStartMousePos = mouseNorm;
@@ -676,7 +686,7 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                             float d = glm::length(mouseNorm - cp);
                             if (d < best) { best = d; es.bezierHovered = i; }
                         }
-                        if (canvasPress && es.bezierHovered >= 0 && !insertArmed) {
+                        if (canvasPress && es.bezierHovered >= 0 && !insertArmed && mayStartDrag()) {
                             es.bezierDragged = es.bezierHovered;
                             es.bezierDragBefore = geometry.getBezierOffsets();
                         }
@@ -687,8 +697,8 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
 
                 // Keyboard: Tab cycles TL, TR, BR, BL; arrows nudge (MeshEditKeys.hpp).
                 if (canvasOwnsEditingKeys(true)) {
-                    applyCornerKeys(readCanvasKeys(), es.quadRef(*selectedQuad), geometry,
-                                    es.commandHistory, cornerSelectedVertex);
+                    applyCornerKeys(readKeys(), es.quadRef(*selectedQuad), geometry,
+                                    es.commandHistory, cornerSelectedVertex, locked);
                 }
 
                 // Reset mesh state when in corner mode
@@ -776,13 +786,14 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                         }
                     }
 
-                    if (canvasPress && es.meshHoveredHandle >= 0 && !insertArmed) {
+                    if (canvasPress && es.meshHoveredHandle >= 0 && !insertArmed && mayStartDrag()) {
                         es.meshDraggedHandle = es.meshSelectedHandle = es.meshHoveredHandle;
                         es.meshHandleDragStartMousePos = mouseNorm;
                         es.meshHandleDragStartPos =
                             geometry.gridHandlePosition(meshSelectedVertex, es.meshHoveredHandle);
                         es.meshHandleDragBefore = geometry.getVertexTangent(meshSelectedVertex);
-                    } else if (canvasPress && meshHoveredVertex >= 0 && !insertArmed) {
+                    } else if (canvasPress && meshHoveredVertex >= 0 && !insertArmed &&
+                               mayStartDrag()) {
                         if (meshHoveredVertex != meshSelectedVertex) es.meshSelectedHandle = -1;
                         meshDraggedVertex = meshHoveredVertex;
                         meshSelectedVertex = meshHoveredVertex;
@@ -794,9 +805,9 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                 // Keyboard: Tab cycles vertices, H their grid-line handles, arrows nudge.
                 // Not mid handle-drag, which edits the selected vertex's handle.
                 if (es.meshDraggedHandle < 0 && canvasOwnsEditingKeys(true)) {
-                    applyMeshEditKeys(readCanvasKeys(), es.quadRef(*selectedQuad), geometry,
+                    applyMeshEditKeys(readKeys(), es.quadRef(*selectedQuad), geometry,
                                       es.commandHistory, meshSelectedVertex,
-                                      es.meshSelectedHandle);
+                                      es.meshSelectedHandle, locked);
                 }
 
                 // Reset corner state when in mesh mode

@@ -8,6 +8,7 @@
 #include "editor/MeshEditKeys.hpp"
 #include "editor/ProjectReplace.hpp"
 #include "editor/QuadSelection.hpp"
+#include "editor/SceneTakes.hpp"
 #include "editor/SliceEditing.hpp"
 #include "editor/UndoRouting.hpp"
 
@@ -120,6 +121,71 @@ TEST(SceneTakeRoutingTest, DeletingAShownSceneTakesItOffItsOutputs) {
     half->setCanvasSize(IVec2(1600, 540));
     OutputManager::showScene(*rig.right, half, rig.es.scenes);
     EXPECT_EQ(rig.right->getSlices()[0].input, (CanvasRect{640.0f, 0.0f, 960.0f, 540.0f}));
+}
+
+// Deleting a scene forgets its quads' legacy textures, saved media paths and seen
+// marks; other scenes' quads keep theirs.
+TEST(SceneTakeRoutingTest, DeletingASceneForgetsItsQuadsTextures) {
+    BlendedRig rig;
+    const UUID gone = rig.es.scenes[1]->getQuadManager().createQuad("Gone")->getId();
+    const UUID kept = rig.es.quadManager().createQuad("Kept")->getId();
+    for (const UUID& id : {gone, kept}) {
+        rig.es.quadTextures[id] = nullptr;
+        rig.es.quadTexturePaths[id] = "grid.png";
+        rig.es.seenQuadIds.insert(id);
+    }
+    ASSERT_TRUE(rig.es.deleteScene(rig.other, &rig.om));
+    EXPECT_EQ(rig.es.quadTextures.count(gone), 0u);
+    EXPECT_EQ(rig.es.quadTexturePaths.count(gone), 0u);
+    EXPECT_EQ(rig.es.seenQuadIds.count(gone), 0u);
+    EXPECT_EQ(rig.es.quadTextures.count(kept), 1u);
+    EXPECT_EQ(rig.es.quadTexturePaths.count(kept), 1u);
+    EXPECT_EQ(rig.es.seenQuadIds.count(kept), 1u);
+}
+
+// A take landing mid-drag (keys 1-9, OSC, MIDI) keeps the drag where the mouse left it,
+// as its undo step, and no Bezier drag carries over into the next scene.
+TEST(SceneTakeRoutingTest, ATakeMidDragRecordsTheDrag) {
+    BlendedRig rig;
+    Quad* quad = rig.es.quadManager().createQuad("Dragged");
+    rig.es.quadManager().selectQuad(quad->getId());
+    QuadGeometry& geo = quad->getGeometry();
+
+    const Vec2 start = geo.getCorners()[1];
+    rig.es.cornerDraggedVertex = 1;
+    rig.es.cornerDragStartPos = start;
+    geo.setCorner(1, start + Vec2(0.1f, 0.05f));
+    ASSERT_EQ(rig.es.takeScene(3, rig.om).kind, SceneTake::Kind::Route);
+    EXPECT_EQ(rig.es.activeSceneId, rig.next);
+    EXPECT_EQ(rig.es.cornerDraggedVertex, -1);
+    EXPECT_EQ(geo.getCorners()[1], start + Vec2(0.1f, 0.05f)) << "left where the mouse put it";
+    ASSERT_EQ(rig.es.commandHistory.getUndoCount(), 1u);
+    ASSERT_TRUE(rig.es.commandHistory.undo());
+    EXPECT_EQ(geo.getCorners()[1], start);
+
+    rig.es.setActiveScene(rig.wide);
+    geo.setBezierEnabled(true);
+    const std::array<Vec2, 8> before = geo.getBezierOffsets();
+    std::array<Vec2, 8> bent = before;
+    bent[2] = Vec2(0.02f, -0.03f);
+    rig.es.bezierDragged = 2;
+    rig.es.bezierDragBefore = before;
+    geo.setBezierOffsets(bent);
+    rig.es.setActiveScene(rig.other);
+    EXPECT_EQ(rig.es.bezierDragged, -1) << "no Bezier release lands on the next scene's quad";
+    EXPECT_EQ(geo.getBezierOffsets(), bent);
+    ASSERT_TRUE(rig.es.commandHistory.undo());
+    EXPECT_EQ(geo.getBezierOffsets(), before);
+}
+
+// While calibrating a take is not made, and the status line says why.
+TEST(SceneTakeRoutingTest, NoTakeWhileCalibratingAndTheStatusLineSaysWhy) {
+    BlendedRig rig;
+    rig.es.beginCalibration(*rig.side);
+    takeSceneByNumber(rig.es, rig.om, 3, 0.0f);
+    EXPECT_EQ(rig.left->getSceneId(), rig.wide);
+    EXPECT_EQ(rig.es.activeSceneId, rig.other);
+    EXPECT_STREQ(rig.es.statusMessage, "Scene 3 not taken: leave calibration first");
 }
 
 // A take onto a lone output through its default slice gives the scene that output's

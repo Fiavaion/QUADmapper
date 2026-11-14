@@ -35,6 +35,13 @@ private:
     bool confirmingUnlock_ = false;
 };
 
+// The canvas's drags on the selected quad of the active scene (ViewportEditor) end
+// where the mouse left them, each as the undo step its release would have recorded;
+// then the grid insert tool is disarmed. For whatever takes the canvas away mid-drag
+// (the lock, a scene switch, calibration, slice warp editing), while the history
+// still records.
+void commitCanvasDrags(EditorState& es);
+
 // Lock now. An active slice warp edit or calibration ends first, and every canvas drag
 // in progress (a corner, mesh vertex, grid handle, Bezier handle, warp corner or a
 // division being inserted) is kept where it is as its undo step. Then the grid insert

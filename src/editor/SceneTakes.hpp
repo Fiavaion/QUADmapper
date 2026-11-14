@@ -9,6 +9,7 @@
 #include "EditorContext.hpp"
 #include "EditorState.hpp"
 #include "ProjectorFit.hpp"
+#include "StatusLine.hpp"
 #include "core/Logger.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
@@ -42,10 +43,14 @@ struct SceneTakeQueue {
     }
 };
 
-// Put scene `number` on air, fading over `fadeSeconds` (ADR-047 §5); ignored while
-// calibrating, since calibration edits the scene routed to the calibrated output.
+// Put scene `number` on air, fading over `fadeSeconds` (ADR-047 §5); refused while
+// calibrating, since calibration edits the scene routed to the calibrated output (the
+// status line says so).
 inline void takeSceneByNumber(EditorState& es, OutputManager& om, int number, float fadeSeconds) {
-    if (!es.calibratingOutputId.isNull()) return;
+    if (!es.calibratingOutputId.isNull()) {
+        postStatus(es, "Scene " + std::to_string(number) + " not taken: leave calibration first");
+        return;
+    }
     const SceneTake take = es.takeScene(number, om, fadeSeconds);
     if (take.kind == SceneTake::Kind::None) return;
     // Takes run inside the editor frame, after the frame-boundary fit and before this
