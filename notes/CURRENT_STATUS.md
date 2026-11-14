@@ -1,55 +1,57 @@
 # Current Status
 
-**Last updated:** 2026-10-21 (moving to the owner's RTX 5090 test PC: read `000_start.md` there first)
-**Phase / focus:** Release preparation. The AI features from ADR-053 are built. The owner tests them by hand next, then the installer (ADR-057, WIP on `feat/installer` at `9e5aacd`), then release.
-**Dev:** all finished work is on `dev` and pushed. Full ctest 1730/1730 and sidecar pytest 89/89 at `57b833e`; later commits are docs, ADR-057 and owner files only.
-**Before the AI test on the 5090:** move the sidecar to the PyTorch cu128 builds (`000_start.md` §4).
+**Last updated:** 2026-11-14 (release-readiness audit, QM-125)
+**Phase / focus:** Release preparation. The audit and its fixes are done. Next: the owner's hands-on test, then the installer and release package (TD-44, ADR-057), then `/release`.
+**Dev:** local `dev` is at `4a3a8af`, nine commits ahead of `origin/dev` (`c933d6d`). **Not pushed.**
+**Gate:** `ctest --test-dir build/debug -C Debug -j 8 | 4a3a8af | 1766 passed, 0 failed` · `pytest tools/ai-sidecar | 4a3a8af | 119 passed`.
 
-## What is done
+## What the audit changed (QM-125)
 
-- **Editor architecture (ADR-051):** panels, ActionRegistry, shortcuts and rebinding, and the perform lock. The GUI check of the lock and the Keyboard preferences is still pending by hand.
-- **AI requests run off the main thread** (`ae8c4a0`): no more freeze. One request at a time. Request ceiling 120 s, and the sidecar warms its models at start.
-- **ADR-053 accepted and built** (see its Amendment 1):
-  - `tools/ai-sidecar/setup.ps1` builds an isolated venv (5.2 GB) and downloads SAM 2.1 small (184 MB), tiny (156 MB) and Depth Anything V2 Small (99 MB), SHA-256 checked.
-  - Pick Surface with the AI Photo panel (SAM 2). Detect Surface on SAM 2 + Depth Anything V2 Small. Metric3D and Open3D are removed.
-  - Every AI warp is one undo step.
-  - Scan Output (Gray-code, session map). Pick and Detect map through the scan, then One-Flash, then photo space.
-  - Place From Photo in the calibration view.
-- **Nothing in the AI features has been checked by the owner on a real camera.**
+- **Start-up:** fonts, layout (`%APPDATA%\QUADmapper\layout.ini`) and logs (`%LOCALAPPDATA%\QUADmapper\logs\`) no longer depend on the start folder. The window opens maximised with the show name in the title. A `.qmap` opens by double-click or drop.
+- **Crashes:** a crash writes a minidump to `%LOCALAPPDATA%\QUADmapper\crashes\`, tries an emergency save and tells the user.
+- **UI:** status bar with the canvas keys, Help menu (guide, shortcuts, log folder, licences, About), Edit > Arrange and Edit > Mesh, confirmations before deletes, Quad List in front on a first run.
+- **Editor:** mesh keys and Properties edits are undo steps. A locked quad keeps its shape against every edit, AI results included.
+- **Engine:** OSC, audio, image, texture, HAP and video failure paths hardened.
+- **AI engine link:** token header, Origin and Host checks, launch from full paths only, listener checked against our job object.
+- **Docs:** user README, `resources/docs/quick-start.html`, full `THIRD-PARTY-NOTICES.md`.
 
-## Owner's morning test (about 15 minutes, webcam aimed at the display or a projector)
+## Owner's hands-on test (about 20 minutes)
 
-Run `tools/ai-sidecar/setup.ps1` once first.
-1. AI > Enable AI Assist. Wait for "sidecar connected".
-2. Select the output to scan (else the first enabled one is used).
-3. AI > Scan Output. The output goes fullscreen with stripes for about 15 s. Esc stops it.
-4. The app leaves fullscreen and the status reads "Scan: map ready - the camera saw N% of the output (noise X px)". N should be high, X low.
-5. Pick Surface...: take a photo in the AI Photo panel, click the surface, check the outline, press Apply. The status should say the corners went through the scan. Tab and arrows refine; Ctrl+Z undoes.
-6. Calibration view: select a point, Place From Photo, click the same spot in the AI Photo panel. Ctrl+Z undoes it.
-7. Detect Surface: the status begins "AI: surface found (confidence X) - ". Low confidence applies nothing.
-8. Run the success metric once: add a quad, Tab and arrow warp, F11 to a projector.
+Seen working by running the app: start from another folder, fonts, title, status bar, Help menu, saved layout, log file, clean exit. **Not checked by hand:**
 
-Write down anything that looks wrong. Known risks to watch: the 250 ms camera settle time (TD-39), stale maps after a display mode change (TD-37), and misplaced corners on sliced or rotated outputs (TD-38).
+1. Success metric: add a quad, assign media, Tab and arrows to warp, F11 to a projector.
+2. Properties: drag Opacity, a corner value and a crop edge; each is one Ctrl+Z step.
+3. Lock a quad in the Quad List; corners, mesh keys and Properties shape edits are refused with a status line.
+4. Delete a quad, a media item used by quads, and an output: each asks first, none crashes.
+5. AI > Enable AI Assist: the engine starts and connects (token and listener check are new). Then the QM-124 checklist (ADR-053 Amendment 1).
+6. Help menu: each item opens what it names.
+
+## Decisions waiting for the owner
+
+1. Licence: the README and `vcpkg.json` say MIT; there is no `LICENSE` file.
+2. Release version number, and one source for it (three places today).
+3. Release package (TD-44): install rule, VC++ runtime, PDBs, icon and version resource, FFmpeg source offer. All inside the CMake change boundary.
+4. OSC listens on `0.0.0.0` by default: keep, or default to this machine only.
+5. Untrack the root `imgui.ini` and `project.qmap`; personal paths in `src/app/Bench.hpp:44-45`.
+6. Smaller UI items: Ctrl+G to group, Open Recent, a UI-scale preference, grey out mesh menu items for a locked quad.
+7. Push `dev`; PR #3 stays a draft until the hands-on test.
 
 ## What is left before release
 
-1. Fixes from the owner's test (QM-124).
-2. Full ctest, once. Reconfigure and rebuild first (`cmake --preset debug`, then `cmake --build build/debug`), so a stale build does not pass.
-3. Sidecar pytest (`tools/ai-sidecar`).
-4. `/release`.
-5. The `dev`→`master` PR. The prepared body is [docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md); fill in the test counts and the hands-on result.
+1. Fixes from the owner's test (QM-124 and the list above).
+2. Installer and release package: `feat/installer` (`9e5aacd`) does not compile and its sidecar lookup will conflict with the one now on `dev`.
+3. Sidecar to the PyTorch cu128 builds for the RTX 5090 (`000_start.md` §4).
+4. `/release`, then the `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)).
 
 ## Hardware-only items
 
-- 🚩 **QM-061**: One-Flash and the AI features on a real projector, real surface. Runbook: [docs/QM-061-hardware-test-runbook.md](../docs/QM-061-hardware-test-runbook.md).
-- TD-12 present threads, TD-26 audio device latency (hardware remainder).
-- TD-37, TD-39: need a projector and a camera to measure.
-- 3D-B2 (ChArUco camera calibration, stereo, ICP) is future work and needs its own ADR-053 amendment.
+- 🚩 **QM-061**: One-Flash and the AI features on a real projector and surface. Runbook: [docs/QM-061-hardware-test-runbook.md](../docs/QM-061-hardware-test-runbook.md).
+- TD-12 present threads, TD-26 audio device latency, TD-37 and TD-39 (projector and camera).
 
 ## Reference links
 
-- Decisions: @docs/adr/0053-ai-surface-proposals-and-structured-light.md (Amendment 1) · @docs/adr/0035-ai-preshow-sidecar.md
-- Tasks: @TASKS.md (QM-123, QM-124) · Debt: @TECHNICAL_DEBT.md (TD-37..TD-40) · Success metric: @CLAUDE.md#success-metric
+- Tasks: @TASKS.md (QM-124, QM-125) · Debt: @TECHNICAL_DEBT.md (TD-41..TD-44) · Success metric: @CLAUDE.md#success-metric
+- Decisions: @docs/adr/0035-ai-preshow-sidecar.md (amended) · @docs/adr/0053-ai-surface-proposals-and-structured-light.md
 
 <!-- Rewrite this whole file at /end. It is the restart package: the next session reads
 THIS (plus the latest docs/sessions/ log), not the chat history. Keep it to one page. -->

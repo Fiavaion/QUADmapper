@@ -396,6 +396,21 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Status:** TODO — next · **Effort:** S · **Depends On:** QM-123
 - **AC:** the owner runs the checklist in ADR-053 Amendment 1 with a webcam aimed at the display or a projector, and records what works and what does not. Failures go back as fixes before the `dev`→`master` PR.
 
+#### QM-125: Release-readiness audit and fixes
+- **Status:** DONE (software) — **Completed:** 2026-11-14. Branch `dev`, `06b17a6`..`4a3a8af` (local, not pushed).
+- **Effort:** L · **Depends On:** none
+- **Delivered:**
+  - App start: fonts, layout and logs no longer depend on the start folder; a log file and a crash dump with an emergency save; `.qmap` by double-click or drop; window title with the show name and unsaved mark; status bar with the canvas keys; Help menu (`06b17a6`, `9fe251a`, `ebd61d2`).
+  - Engine hardening: OSC, audio, image, texture, HAP and video failure paths (`a16fd80`).
+  - Undo steps for mesh keys and Properties edits; the quad lock holds for every shape edit (`ec41b0a`).
+  - Panels: crashes on delete, confirmations, thumbnail stalls (`38f4b86`).
+  - AI engine link: token, Origin/Host checks, full launch paths, job-object listener check (`9b87089`).
+  - User README, quick-start guide, full third-party notices (`8cc2160`).
+  - One fresh-context review; its seven findings fixed in one pass (`4a3a8af`).
+- **Gate:** `ctest --test-dir build/debug -C Debug -j 8 | 4a3a8af | 1766 passed, 0 failed` (8 disabled, some skipped for missing hardware). `pytest tools/ai-sidecar | 4a3a8af | 119 passed`.
+- **Not verified by hand:** a real AI engine launch with the token, the confirmation dialogs, Properties undo, a real crash through the crash filter. They are on the owner's test list in `notes/CURRENT_STATUS.md`.
+- **Open:** the release package (TD-44) and the smaller gaps in TD-41..TD-43.
+
 #### 3D-B2: ChArUco camera calibration, stereo and ICP (FUTURE)
 - **Status:** not planned · Needs its own ADR-053 amendment before any work (ADR-053 §3, "Deferred to 3D-B2").
 - **Scope:** calibrate the camera with ChArUco, then camera–projector stereo to make a point cloud and register the mesh to it (ICP), for fully automatic 3D calibration.
@@ -1176,6 +1191,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-062 | Audience-perspective anamorphic warp | DONE | Phase 9 |
 | QM-123 | AI proposals and assisted calibration (ADR-053 §1–3) | DONE | Phase 9 |
 | QM-124 | Owner hands-on test of AI features | TODO | Phase 9 |
+| QM-125 | Release-readiness audit and fixes | DONE | Phase 9 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |
