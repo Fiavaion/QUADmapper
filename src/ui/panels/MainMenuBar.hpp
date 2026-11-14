@@ -17,7 +17,7 @@ class PanelHost;
 void actionMenuItem(EditorContext& ctx, const char* id, bool selected = false,
                     std::optional<bool> enabled = std::nullopt);
 
-// Renders the application main menu bar (File / Edit / Window / Output / AI).
+// Renders the application main menu bar (File / Edit / Window / Output / AI / Help).
 // Not a Panel: it is always shown and manages its own ImGui::BeginMainMenuBar /
 // EndMainMenuBar lifetime (ADR-051 §2). EditorUi owns it.
 // Items with a registered action (New, Open, Save, Save As, Undo, Redo, Select All,
@@ -45,6 +45,7 @@ private:
     std::vector<std::string> audioDevices_;
     bool audioComboOpen_ = false;  // the strip's device combo
     bool audioMenuOpen_ = false;   // Output > Audio Output
+    bool showAbout_ = false;       // Help > About was chosen: open the box this frame
 };
 
 }  // namespace quadmapper

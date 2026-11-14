@@ -115,7 +115,14 @@ void PanelHost::drawWindowMenuItems() {
                 panel.visible = true;
             }
         }
+        layoutReset_ = true;
     }
+}
+
+bool PanelHost::takeLayoutReset() {
+    const bool reset = layoutReset_;
+    layoutReset_ = false;
+    return reset;
 }
 
 }  // namespace quadmapper

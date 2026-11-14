@@ -73,7 +73,10 @@ void PreferencesDialog::drawContent(EditorContext& ctx) {
             changed |= renderControlTab(control);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Keyboard")) {
+        const ImGuiTabItemFlags keyboardFlags =
+            selectKeyboardTab_ ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        selectKeyboardTab_ = false;
+        if (ImGui::BeginTabItem("Keyboard", nullptr, keyboardFlags)) {
             keyboardTab = true;
             changed |= renderKeyboardTab(ctx);
             ImGui::EndTabItem();

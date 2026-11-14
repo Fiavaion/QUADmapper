@@ -21,6 +21,7 @@
 #include "../core/FileSystem.hpp"
 #include "../core/GlObjectStats.hpp"
 #include "../core/MainThreadTimings.hpp"
+#include "../core/Version.hpp"
 #include "../project/Project.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/Quad.hpp"
@@ -52,8 +53,11 @@
 #include <imgui.h>
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <optional>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -86,7 +90,29 @@ static void framebufferSizeCallback(GLFWwindow* /*window*/, int width, int heigh
     glViewport(0, 0, width, height);
 }
 
-// GLFW file drop callback for external drag-drop
+static bool isProjectFile(const std::filesystem::path& path) {
+    std::string ext = utf8FromPath(path.extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext == ".qmap";
+}
+
+// The log of a normal run: quadmapper.log in the logs folder under userLocalDir(). Once
+// it is large, the next start keeps it as quadmapper.previous.log and begins a new one.
+static void startLogFile() {
+    namespace fs = std::filesystem;
+    constexpr std::uintmax_t ROTATE_BYTES = 2 * 1024 * 1024;
+    std::error_code ec;
+    const fs::path dir = userLocalDir() / "logs";
+    fs::create_directories(dir, ec);
+    const fs::path file = dir / "quadmapper.log";
+    const std::uintmax_t size = fs::file_size(file, ec);
+    if (!ec && size > ROTATE_BYTES) fs::rename(file, dir / "quadmapper.previous.log", ec);
+    Logger::enableFileOutput(utf8FromPath(file));
+}
+
+// GLFW file drop callback for external drag-drop: media goes into the library, a .qmap
+// is opened as the show.
 static void dropCallback(GLFWwindow* /*window*/, int count, const char** paths) {
     Application& app = Application::instance();
     MediaLibrary* library = app.getMediaLibrary();
@@ -95,6 +121,10 @@ static void dropCallback(GLFWwindow* /*window*/, int count, const char** paths) 
     int imported = 0;
     for (int i = 0; i < count; i++) {
         const std::filesystem::path filePath = pathFromUtf8(paths[i]);  // GLFW drops are UTF-8
+        if (isProjectFile(filePath)) {
+            app.queueProjectLoad(paths[i]);
+            continue;
+        }
         std::string ext = utf8FromPath(filePath.extension());
         if (MediaLibrary::isExtensionSupported(ext)) {
             if (library->addItem(filePath)) {
@@ -121,12 +151,14 @@ Application& Application::instance() {
 }
 
 bool Application::initialize(int argc, char* argv[]) {
-    // Headless harness flags: --stress (QM-081) and --bench (PRD §5 benchmark).
+    // Headless harness flags: --stress (QM-081) and --bench (PRD §5 benchmark). Any
+    // other argument naming a .qmap is the show to open (a double-clicked file).
+    std::string startupProject;
     for (int i = 1; i < argc; ++i) {
-        if (!parseStressArg(argv[i], m_stressConfig)) {
-            parseBenchArg(argv[i], m_benchConfig);
-        }
+        if (parseStressArg(argv[i], m_stressConfig) || parseBenchArg(argv[i], m_benchConfig)) continue;
+        if (startupProject.empty() && isProjectFile(pathFromUtf8(argv[i]))) startupProject = argv[i];
     }
+    if (!isHarnessRun()) startLogFile();
     // Only the harnesses measure the main thread (TD-35): a show never pays for the
     // samples' lock and allocations, nor keeps them for its whole run.
     if (m_stressConfig || m_benchConfig) MainThreadTimings::markMainThread();
@@ -136,7 +168,7 @@ bool Application::initialize(int argc, char* argv[]) {
         Logger::enableFileOutput(m_benchConfig->logPath());
     }
 
-    Logger::info("Initializing QUADmapper...");
+    Logger::info("Initializing QUADmapper {}...", APP_VERSION);
 
     if (!initializeGLFW()) {
         Logger::error("Failed to initialize GLFW");
@@ -165,7 +197,10 @@ bool Application::initialize(int argc, char* argv[]) {
 
     // The stress and bench harnesses measure the render/perform path; they open no
     // ports or devices.
-    if (!m_stressConfig && !m_benchConfig) initializeExternalControl();
+    if (!isHarnessRun()) {
+        initializeExternalControl();
+        if (!startupProject.empty()) queueProjectLoad(startupProject);
+    }
 
     Logger::info("QUADmapper initialized successfully");
     m_running = true;
@@ -192,7 +227,8 @@ bool Application::initializeGLFW() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     glfwWindowHint(GLFW_FOCUSED, GLFW_TRUE);
-    glfwWindowHint(GLFW_MAXIMIZED, GLFW_FALSE);
+    // Maximised for a person; the harnesses keep the fixed size their numbers assume.
+    glfwWindowHint(GLFW_MAXIMIZED, isHarnessRun() ? GLFW_FALSE : GLFW_TRUE);
 
     // Create window
     m_window = glfwCreateWindow(m_windowWidth, m_windowHeight,
@@ -279,6 +315,15 @@ bool Application::initializeImGui() {
     io.ConfigNavCaptureKeyboard = false;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;      // Enable docking
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;    // Enable multi-viewport
+
+    // The window layout is the user's, kept with their settings: never in the folder
+    // the app happened to be started from. The harnesses use the default layout.
+    if (isHarnessRun()) {
+        io.IniFilename = nullptr;
+    } else {
+        m_layoutFile = utf8FromPath(userConfigDir() / "layout.ini");
+        io.IniFilename = m_layoutFile.c_str();
+    }
 
     // Apply QUADmapper "Neon Void" theme
     Theme::apply();
@@ -372,17 +417,12 @@ bool Application::initializeComponents() {
         // Set up folder watcher for live file monitoring
         if (!prefs.general.defaultMediaFolder.empty()) {
             m_folderWatcher = std::make_unique<FolderWatcher>();
+            // On the watcher's thread: the library belongs to the main thread, which
+            // is reading it for the media bin, so the file is only queued here.
             m_folderWatcher->setCallback([this](const std::filesystem::path& path, bool isNew) {
-                if (isNew) {
-                    if (m_mediaLibrary->addItem(path)) {
-                        Logger::info("FolderWatcher: Auto-imported new file: {}",
-                                    utf8FromPath(path.filename()));
-                    }
-                } else {
-                    // File was modified - could reload texture here in the future
-                    Logger::debug("FolderWatcher: File modified: {}",
-                                 utf8FromPath(path.filename()));
-                }
+                if (!isNew) return;
+                std::lock_guard<std::mutex> lock(m_watchedFilesMutex);
+                m_watchedFiles.push_back(path);
             });
             m_folderWatcher->watch(
                 pathFromUtf8(prefs.general.defaultMediaFolder),
@@ -693,7 +733,49 @@ void Application::requestExit() {
     m_editorState->pendingFileAction = EditorState::FileAction::Exit;
 }
 
+void Application::queueProjectLoad(const std::string& path) {
+    EditorState& es = *m_editorState;
+    // A file action already waiting, or its unsaved-changes prompt, wins.
+    if (es.pendingFileAction != EditorState::FileAction::None ||
+        es.unsavedPromptFor != EditorState::FileAction::None) {
+        postStatus(es, "Not opened: another file action is pending");
+        return;
+    }
+    es.pendingLoadPath = path;
+    es.pendingFileAction = EditorState::FileAction::Load;
+}
+
+void Application::importWatchedFiles() {
+    std::vector<std::filesystem::path> files;
+    {
+        std::lock_guard<std::mutex> lock(m_watchedFilesMutex);
+        files.swap(m_watchedFiles);
+    }
+    for (const std::filesystem::path& file : files) {
+        if (m_mediaLibrary->addItem(file)) {
+            Logger::info("FolderWatcher: Auto-imported new file: {}", utf8FromPath(file.filename()));
+        }
+    }
+}
+
+void Application::updateWindowTitle() {
+    // The unsaved check serializes the show (at most twice a second, UnsavedIndicator):
+    // not while the show is on the projectors, and never in a harness run.
+    if (isHarnessRun() || (m_outputManager && m_outputManager->isInPerformMode())) return;
+    const std::string& project = m_project->getFilePath();
+    const bool dirty = unsavedLabelShown();
+    if (m_titleShown && dirty == m_titleDirty && project == m_titleProject) return;
+    m_titleShown = true;
+    m_titleDirty = dirty;
+    m_titleProject = project;
+    const std::string name =
+        project.empty() ? "Untitled" : utf8FromPath(pathFromUtf8(project).filename());
+    m_windowTitle = name + (dirty ? "*" : "") + " - QUADmapper";
+    glfwSetWindowTitle(m_window, m_windowTitle.c_str());
+}
+
 void Application::runFrameBoundaryTasks() {
+    importWatchedFiles();
     if (!m_session->ensureCleanBaseline()) return;
     m_session->processPendingFileAction();
     adoptObjectMeshes(*m_editorState, m_outputManager.get());
@@ -706,6 +788,7 @@ void Application::runFrameBoundaryTasks() {
     if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager, m_mediaLibrary.get());
     fitProjectorsToOutputs();
     m_session->autosaveIfDue();
+    updateWindowTitle();
 }
 
 // See editor/ProjectorFit.hpp (kept framing under the perform lock, TD-36).

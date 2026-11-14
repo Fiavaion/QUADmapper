@@ -2,6 +2,7 @@
 
 add_library(quadmapper_core STATIC
     Types.hpp
+    Version.hpp
     Result.hpp
     UUID.hpp
     UUID.cpp

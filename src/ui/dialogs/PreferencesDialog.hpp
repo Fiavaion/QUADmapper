@@ -50,6 +50,12 @@ public:
     // answer is then refused, with a status (ADR-051 §4 blocks Preferences edits).
     void mediaFolderChosen(EditorContext& ctx, const std::string& folder);
 
+    // Open the window on its Keyboard tab (Help > Keyboard Shortcuts).
+    void showKeyboardTab() {
+        visible = true;
+        selectKeyboardTab_ = true;
+    }
+
     const AppPreferences& getPreferences() const { return preferences_; }
     AppPreferences& getPreferences() { return preferences_; }
 
@@ -82,6 +88,7 @@ private:
     ControlSettingsEditor controlSettings_;     // OSC / MIDI settings, as in the Control window
     std::vector<std::string> audioDevices_;     // enumerated when the Audio tab opens
     bool audioTabOpen_ = false;
+    bool selectKeyboardTab_ = false;  // showKeyboardTab() was called: select it once
     std::string saveError_;                     // shown while the last save failed
 
     // Keyboard tab. A capture replaces chord `captureSlot_` of action `captureId_` (or

@@ -139,14 +139,13 @@ public:
         static constexpr float SizeTitle    = 26.0f;
         static constexpr float SizeHero     = 36.0f;
 
-        // Font file paths (relative to resources). Redesign: Hanken Grotesk (UI) +
+        // Font file paths, relative to the resources folder (resourcePath). Redesign: Hanken Grotesk (UI) +
         // JetBrains Mono (numeric/paths), both OFL — see resources/fonts/README.md.
         // Variable TTFs render at their default (Regular) instance under stb_truetype.
-        static constexpr const char* PathRegular = "resources/fonts/HankenGrotesk-Variable.ttf";
-        static constexpr const char* PathMedium  = "resources/fonts/HankenGrotesk-Variable.ttf";
-        static constexpr const char* PathBold    = "resources/fonts/HankenGrotesk-Variable.ttf";
-        static constexpr const char* PathMono    = "resources/fonts/JetBrainsMono-Variable.ttf";
-        static constexpr const char* PathIcons   = "resources/fonts/FontAwesome-Solid.ttf";
+        static constexpr const char* PathRegular = "fonts/HankenGrotesk-Variable.ttf";
+        static constexpr const char* PathMedium  = "fonts/HankenGrotesk-Variable.ttf";
+        static constexpr const char* PathBold    = "fonts/HankenGrotesk-Variable.ttf";
+        static constexpr const char* PathMono    = "fonts/JetBrainsMono-Variable.ttf";
     };
 
     // Loaded font references

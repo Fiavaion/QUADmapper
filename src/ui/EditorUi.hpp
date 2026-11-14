@@ -39,6 +39,7 @@ namespace quadmapper {
 
 struct EditorContext;
 class PreferencesDialog;
+enum class CanvasKeyOwner;
 
 class EditorUi {
 public:
@@ -58,8 +59,8 @@ public:
     enum class FrameStep {
         CanvasKeys,     // the canvas claims Tab / the arrows / H when it edits
         Canvas,         // ViewportEditor
-        DockSpace,      // with the first-run layout
-        MenuBar,
+        DockSpace,      // with the default layout when none is saved
+        MenuBar,        // and the status bar
         CanvasOverlay,  // zoom, pan and media drop
         Shortcuts,      // ctx.actions through the ShortcutRouter
         SceneTakes,     // `sceneTakes`
@@ -81,6 +82,9 @@ private:
         if (onFrameStep) onFrameStep(step);
     }
     void drawDockSpace(EditorContext& ctx);
+    // The strip along the bottom of the editor: the latest status message while it is
+    // fresh, otherwise the keys that act on the canvas now. Shown in both UI modes.
+    void drawStatusBar(EditorContext& ctx, CanvasKeyOwner keys);
     void drawCanvasOverlay(EditorContext& ctx);
     // The UI mode and the audio device are machine preferences (ADR-042, ADR-050 §5),
     // changed from the menu bar and the Preferences window: save a change.
@@ -106,7 +110,12 @@ private:
     PanelHost host_;
     ViewportEditor viewport_;  // not a Panel: runs before the dockspace (TD-21)
     MainMenuBar menuBar_;      // not a Panel: the menu bar is not a window
-    bool dockLayoutBuilt_ = false;
+    // The first frame looked for a saved dock layout (and built the default without one).
+    bool dockLayoutChecked_ = false;
+    // Frames until the default layout's front tabs are chosen; the tabs exist one frame
+    // after the layout is built.
+    int frontTabsIn_ = 0;
+    bool canvasPanning_ = false;  // a middle-button drag that began on the canvas
 
     // In draw order (PanelHost keeps it).
     QuadListPanel quadList_;

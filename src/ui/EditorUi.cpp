@@ -60,7 +60,8 @@ void EditorUi::frame(EditorContext& ctx, const std::function<void(EditorContext&
     // The canvas takes Tab/arrows for the selected quad's vertices or, while
     // calibrating the projector it shows, for the calibration points (ADR-052), or,
     // while a slice warp is edited, for its corners (ADR-047).
-    claimCanvasEditingKeys(canvasKeyOwner(ctx.es, ctx.outputManager) != CanvasKeyOwner::None);
+    const CanvasKeyOwner keys = canvasKeyOwner(ctx.es, ctx.outputManager);
+    claimCanvasEditingKeys(keys != CanvasKeyOwner::None);
     stepDone(FrameStep::CanvasKeys);
 
     // On-canvas viewport: the corner-pin / mesh-edit warp interaction, then every
@@ -74,6 +75,7 @@ void EditorUi::frame(EditorContext& ctx, const std::function<void(EditorContext&
     drawDockSpace(ctx);
     stepDone(FrameStep::DockSpace);
     menuBar_.render(ctx, host_);
+    drawStatusBar(ctx, keys);
     savePreferenceChanges(ctx);
     stepDone(FrameStep::MenuBar);
     drawCanvasOverlay(ctx);
@@ -118,14 +120,18 @@ void EditorUi::drawDockSpace(EditorContext& ctx) {
     ImGui::Begin("DockSpace", nullptr, dockspaceFlags);
     ImGui::PopStyleVar(3);
 
-    // Create the dockspace
+    // Create the dockspace. The user's layout, which ImGui restored from the layout
+    // file, stands; the default one is built only when there is none (a first run, a
+    // run without a layout file) and when Window > Reset Layout asks for it.
     ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+    bool buildDefault = host_.takeLayoutReset();
+    if (!dockLayoutChecked_) {
+        dockLayoutChecked_ = true;
+        buildDefault = buildDefault || ImGui::DockBuilderGetNode(dockspaceId) == nullptr;
+    }
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
 
-    // The default dock layout, built on the first frame of each run.
-    if (!dockLayoutBuilt_) {
-        dockLayoutBuilt_ = true;
-
+    if (buildDefault) {
         // Clear any existing layout
         ImGui::DockBuilderRemoveNode(dockspaceId);
         ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
@@ -154,6 +160,13 @@ void EditorUi::drawDockSpace(EditorContext& ctx) {
 
         // Finish the layout
         ImGui::DockBuilderFinish(dockspaceId);
+        frontTabsIn_ = 2;
+    }
+    // The tab added last would be in front (Video Player over the Quad List): put the
+    // two panels the warp workflow starts from in front.
+    if (frontTabsIn_ > 0 && --frontTabsIn_ == 0) {
+        es.requestPanelOpen(InspectorPanel::ID);
+        es.requestPanelOpen(QuadListPanel::ID);
     }
 
     // Capture the central node rect (the transparent canvas region between panels)
@@ -166,6 +179,38 @@ void EditorUi::drawDockSpace(EditorContext& ctx) {
         es.canvasRegionSize = Vec2(centralNode->Size.x, centralNode->Size.y);
     }
 
+    ImGui::End();
+}
+
+void EditorUi::drawStatusBar(EditorContext& ctx, CanvasKeyOwner keys) {
+    EditorState& es = ctx.es;
+    if (es.statusTimer > 0.0f) es.statusTimer -= ImGui::GetIO().DeltaTime;
+
+    const char* hint = "Click a quad to select it.  Scroll: zoom the canvas.  Middle-drag: pan.";
+    if (es.performLock.isOn()) {
+        hint = "The show is locked: Output > Perform Lock unlocks it.";
+    } else if (keys != CanvasKeyOwner::None) {
+        hint = "Tab / Shift+Tab: next or previous point    Arrows: nudge    "
+               "Shift+Arrows: 10x    Alt+Arrows: 0.1x";
+    }
+
+    // A menu-bar window, as ImGui's own status bars are: it gets the menu bar's height
+    // and the dockspace above shrinks to make room.
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoNav |
+                                   ImGuiWindowFlags_NoFocusOnAppearing |
+                                   ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (ImGui::BeginViewportSideBar("##StatusBar", ImGui::GetMainViewport(), ImGuiDir_Down,
+                                    ImGui::GetFrameHeight(), flags)) {
+        if (ImGui::BeginMenuBar()) {
+            if (es.statusTimer > 0.0f && es.statusMessage[0] != '\0') {
+                ImGui::TextUnformatted(es.statusMessage);
+            } else {
+                ImGui::TextDisabled("%s", hint);
+            }
+            ImGui::EndMenuBar();
+        }
+    }
     ImGui::End();
 }
 
@@ -205,8 +250,11 @@ void EditorUi::drawCanvasOverlay(EditorContext& ctx) {
         es.canvasZoom = newZoom;
     }
 
-    // Middle-drag pan (per-frame delta in region-normalized units).
-    if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+    // Middle-drag pan (per-frame delta in region-normalized units). Only a drag that
+    // began on the canvas pans it: one that began on a panel leaves the canvas alone.
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) canvasPanning_ = overRegion && !io.WantCaptureMouse;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) canvasPanning_ = false;
+    if (canvasPanning_ && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
         const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Middle);
         ImGui::ResetMouseDragDelta(ImGuiMouseButton_Middle);
         es.canvasPan.x += d.x / regionSz.x;
@@ -235,9 +283,13 @@ void EditorUi::drawCanvasOverlay(EditorContext& ctx) {
     // target can't register over the passthrough central node (no window is hovered
     // there), so detect the drop manually: while a MEDIA_ITEM_ID drag is active,
     // on left-release over the canvas, assign to the topmost quad under the cursor.
-    // Under the perform lock frame() has let go of the drag already.
+    // Under the perform lock frame() has let go of the drag already. While the canvas
+    // shows an output's frame (calibrating, or editing a slice warp) the quads are not
+    // where the cursor is, so nothing is assigned.
+    const bool showsScene = !calibrationViewOutput(es, ctx.outputManager) &&
+                            !sliceWarpOutput(es, ctx.outputManager);
     const ImGuiPayload* drag = ImGui::GetDragDropPayload();
-    if (drag && drag->IsDataType("MEDIA_ITEM_ID") &&
+    if (showsScene && drag && drag->IsDataType("MEDIA_ITEM_ID") &&
         ImGui::IsMouseReleased(ImGuiMouseButton_Left) && overRegion &&
         es.lastViewScale.x != 0.0f && es.lastViewScale.y != 0.0f) {
         UUID mediaId = *(const UUID*)drag->Data;

@@ -7,7 +7,10 @@
 #include "editor/EditorState.hpp"
 #include "editor/MissingMedia.hpp"
 #include "editor/PerformLock.hpp"
+#include "editor/StatusLine.hpp"
 #include "editor/UndoRouting.hpp"
+#include "core/FileSystem.hpp"
+#include "core/Version.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "project/Project.hpp"
@@ -18,12 +21,14 @@
 #include "audio/AudioEngine.hpp"
 #include "ui/PanelHost.hpp"
 #include "ui/ShortcutRouter.hpp"
+#include "ui/dialogs/PreferencesDialog.hpp"
 #include "ui/panels/AiPhotoPanel.hpp"
 
 #include <imgui.h>
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -56,6 +61,19 @@ const char* outputProblem(const AudioEngine& audio) {
         case AudioOutputState::Lost:   return "Audio device lost";
         default:                       return nullptr;
     }
+}
+
+// Open one of the program's own files or folders with its default program. A missing
+// one (a damaged install) is reported on the status line, not ignored.
+void openPath(EditorState& es, const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        postStatus(es, "Not found: " + utf8FromPath(path));
+        return;
+    }
+#ifdef _WIN32
+    ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#endif
 }
 
 }  // namespace
@@ -173,6 +191,22 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         ImGui::Separator();
         actionMenuItem(ctx, action_id::DELETE_SELECTION);
         ImGui::Separator();
+        // The stacking and mesh actions: in the menu so their keys can be found.
+        if (ImGui::BeginMenu("Arrange")) {
+            actionMenuItem(ctx, action_id::BRING_TO_FRONT);
+            actionMenuItem(ctx, action_id::BRING_FORWARD);
+            actionMenuItem(ctx, action_id::SEND_BACKWARD);
+            actionMenuItem(ctx, action_id::SEND_TO_BACK);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Mesh")) {
+            actionMenuItem(ctx, action_id::TOGGLE_MESH_EDIT);
+            actionMenuItem(ctx, action_id::MESH_FINER);
+            actionMenuItem(ctx, action_id::MESH_COARSER);
+            actionMenuItem(ctx, action_id::RESET_MESH);
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
         // Projector calibration (ADR-052): the first output showing the active scene,
         // else the first output.
         OutputWindow* toCalibrate = nullptr;
@@ -202,6 +236,9 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
     }
 
     if (ImGui::BeginMenu("Output")) {
+        // Fullscreen on the projectors (F11), ticked while it is on.
+        actionMenuItem(ctx, action_id::PERFORM_TOGGLE,
+                       ctx.outputManager && ctx.outputManager->isInPerformMode());
         // Master blackout (ADR-048 §3): every projector output goes black.
         actionMenuItem(ctx, action_id::BLACKOUT, ctx.outputManager && ctx.outputManager->isBlackout());
         // The perform lock (ADR-051 §4): locks at once; unlocking asks first.
@@ -247,7 +284,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
                 es.requestPanelOpen(AiPhotoPanel::ID);
             }
             if (!canSegment) {
-                ImGui::SetItemTooltip("This AI sidecar cannot segment: update it (tools/ai-sidecar)");
+                ImGui::SetItemTooltip("This AI engine cannot pick surfaces: update the AI engine");
             }
             // ADR-053 §3: Gray-code patterns on one output, a camera frame of each.
             if (services->aiScanning()) {
@@ -260,7 +297,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
                 ImGui::SetItemTooltip(canScan
                     ? "Map the camera to the selected output (else the first enabled one): it shows "
                       "patterns fullscreen and photographs each, about 15 s"
-                    : "This AI sidecar cannot scan: update it (tools/ai-sidecar)");
+                    : "This AI engine cannot scan: update the AI engine");
             }
             ImGui::Separator();
             if (ImGui::BeginMenu("One-Flash")) {
@@ -272,13 +309,38 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
                 ImGui::EndMenu();
             }
             ImGui::Separator();
-            ImGui::TextDisabled(services->aiBusy() ? "Sidecar connected - request running..."
-                                                   : "Sidecar connected");
+            ImGui::TextDisabled(services->aiBusy() ? "AI engine connected - request running..."
+                                                   : "AI engine connected");
         } else {
             if (ImGui::MenuItem("Enable AI Assist", nullptr, false, aiAllowed)) run(AiAction::Enable);
             ImGui::Separator();
-            ImGui::TextDisabled("Sidecar not running");
+            ImGui::TextDisabled("AI engine not running");
         }
+        ImGui::EndMenu();
+    }
+
+    // Nothing here changes the show: guides, the log and the About box.
+    if (ImGui::BeginMenu("Help")) {
+        if (ImGui::MenuItem("User Guide")) openPath(es, resourcePath("docs/quick-start.html"));
+        if (ImGui::MenuItem("AI Features Guide")) {
+            openPath(es, resourcePath("docs/ai-features-guide.html"));
+        }
+        if (ImGui::MenuItem("Keyboard Shortcuts...")) {
+            if (auto* preferences = dynamic_cast<PreferencesDialog*>(panels.find(PreferencesDialog::ID))) {
+                preferences->showKeyboardTab();
+            }
+            es.requestPanelOpen(PreferencesDialog::ID);
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Open Log Folder")) openPath(es, userLocalDir() / "logs");
+        if (ImGui::MenuItem("Report a Bug...")) {
+            openUrl("https://github.com/Fiavaion/Quadmapper/issues/new?template=bug_report.md");
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Open-Source Licences")) {
+            openPath(es, executableDir() / "THIRD-PARTY-NOTICES.txt");
+        }
+        if (ImGui::MenuItem("About QUADmapper")) showAbout_ = true;
         ImGui::EndMenu();
     }
 
@@ -300,7 +362,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
 
     if (simple) {
         ImGui::Separator();
-        ImGui::BeginDisabled(locked);
+        ImGui::BeginDisabled(locked || !es.quadManager().getPrimarySelectedQuad());
         const bool applyGrid = ImGui::Button("Apply Test Grid");
         ImGui::EndDisabled();
         if (applyGrid) {
@@ -312,7 +374,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
                 q->getTexture().mediaId = UUID();
             }
         }
-        ImGui::SetItemTooltip("Put a calibration grid on the selected quad");
+        ImGui::SetItemTooltip("Put a calibration grid on the selected quad, in place of its media");
         if (ImGui::Button("Send to Projector (F11)") && ctx.actions) {
             ctx.actions->invoke(action_id::PERFORM_TOGGLE, ctx, Source::Menu);
         }
@@ -352,12 +414,26 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
     }
     ImGui::SetItemTooltip("Restart all videos/audio and the master timeline from the beginning");
 
-    if (ImGui::Button("Report Bug")) {
-        openUrl("https://github.com/Fiavaion/Quadmapper/issues/new?template=bug_report.md");
-    }
-    ImGui::SetItemTooltip("Open a new bug report on the QUADmapper GitHub");
-
     ImGui::EndMainMenuBar();
+
+    if (showAbout_) {
+        showAbout_ = false;
+        ImGui::OpenPopup("About QUADmapper");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("About QUADmapper", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("QUADmapper %s", APP_VERSION);
+        ImGui::TextDisabled("Projection mapping for live events and installations");
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Video is decoded with FFmpeg, used under the LGPL, version 2.1 or later.");
+        ImGui::TextUnformatted("Help > Open-Source Licences lists every library, font and AI model.");
+        ImGui::Spacing();
+        if (ImGui::Button("Close", ImVec2(120.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 }
 
 }  // namespace quadmapper

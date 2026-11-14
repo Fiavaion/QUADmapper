@@ -49,13 +49,6 @@ void ProjectTab::drawContent(EditorContext& ctx) {
         es.pendingFileAction = EditorState::FileAction::Load;
     }
     ImGui::EndDisabled();
-
-    // Status message display
-    if (es.statusTimer > 0.0f) {
-        ImGui::Separator();
-        ImGui::TextWrapped("%s", es.statusMessage);
-        es.statusTimer -= ImGui::GetIO().DeltaTime;
-    }
 }
 
 }  // namespace quadmapper

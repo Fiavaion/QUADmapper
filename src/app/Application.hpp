@@ -6,8 +6,10 @@
 #include "../editor/EditorServices.hpp"
 
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -66,6 +68,15 @@ public:
     // mode, from a focused output window only queue the scene number (GLFW callbacks
     // run inside glfwPollEvents); runSceneTakes() takes them under the editing-key guard.
     void queueSceneTake(int number);
+
+    // Open the show at `path` (UTF-8): a .qmap given on the command line or dropped on
+    // the window. Queued as a Load, so it asks about unsaved changes and the perform
+    // lock refuses it like File > Open.
+    void queueProjectLoad(const std::string& path);
+
+    // A headless --stress or --bench run: no user files are read or written (log,
+    // window layout), and nothing waits for a person.
+    bool isHarnessRun() const { return m_stressConfig.has_value() || m_benchConfig.has_value(); }
 
     // Accessors
     GLFWwindow* getWindow() const { return m_window; }
@@ -147,6 +158,10 @@ private:
     // clean baseline, offers startup recovery, runs any pending file action, autosaves.
     void runFrameBoundaryTasks();
     void fitProjectorsToOutputs();
+    // New files the folder watcher saw since the last frame, into the media library.
+    void importWatchedFiles();
+    // "<show>[*] - QUADmapper", changed only when the show's name or unsaved state does.
+    void updateWindowTitle();
 
     // Draw every output's frame (its routed scene, or the armed One-Flash pattern)
     // into the OutputManager's render targets (ADR-054). Called from render() after
@@ -173,6 +188,11 @@ private:
     int m_windowWidth = 1920;
     int m_windowHeight = 1080;
     std::string m_windowTitle = "QUADmapper";
+    std::string m_titleProject;   // what the title was built from
+    bool m_titleDirty = false;
+    bool m_titleShown = false;
+    // Where ImGui keeps the window layout; ImGui holds a pointer to it for the whole run.
+    std::string m_layoutFile;
 
     // Components
     std::unique_ptr<Renderer> m_renderer;
@@ -180,6 +200,9 @@ private:
     std::unique_ptr<OutputManager> m_outputManager;
     std::unique_ptr<Project> m_project;
     std::unique_ptr<FolderWatcher> m_folderWatcher;
+    // The watcher thread only queues; the main thread imports (importWatchedFiles).
+    std::mutex m_watchedFilesMutex;
+    std::vector<std::filesystem::path> m_watchedFiles;
     std::unique_ptr<ThumbnailCache> m_thumbnailCache;
     std::unique_ptr<SourceManager> m_sourceManager;
 

@@ -56,6 +56,15 @@ if(WIN32)
             $<TARGET_FILE_DIR:QUADmapper>/resources
         COMMENT "Copying resources to build directory"
     )
+
+    # The licence notices ship beside the program (Help > Open-Source Licences); .txt
+    # so that every Windows machine has a program to open them with.
+    add_custom_command(TARGET QUADmapper POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/THIRD-PARTY-NOTICES.md
+            $<TARGET_FILE_DIR:QUADmapper>/THIRD-PARTY-NOTICES.txt
+        COMMENT "Copying licence notices to build directory"
+    )
 endif()
 
 set_target_properties(QUADmapper PROPERTIES

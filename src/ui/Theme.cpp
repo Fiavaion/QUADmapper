@@ -1,7 +1,11 @@
 #include "Theme.hpp"
+#include "core/FileSystem.hpp"
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
+#include <string>
+#include <system_error>
 
 namespace quadmapper {
 
@@ -93,7 +97,7 @@ void Theme::configureColors(ImGuiStyle& style) {
 
     // Text
     colors[ImGuiCol_Text]                 = toVec4(Colors::Cloud);
-    colors[ImGuiCol_TextDisabled]         = toVec4(Colors::Steel);
+    colors[ImGuiCol_TextDisabled]         = toVec4(Colors::Silver);
     colors[ImGuiCol_TextSelectedBg]       = toVec4(Colors::CyanGlow);
 
     // Frames (inputs, etc.)
@@ -193,14 +197,18 @@ bool Theme::loadFonts(float dpiScale) {
     float sizeTitle   = FontConfig::SizeTitle * dpiScale;
     float sizeHero    = FontConfig::SizeHero * dpiScale;
 
-    // Check if font files exist before trying to load
-    auto fileExists = [](const char* path) -> bool {
-        FILE* f = fopen(path, "rb");
-        if (f) { fclose(f); return true; }
-        return false;
+    // The fonts ship in the program's resources folder, wherever the app was started
+    // from. ImGui takes UTF-8 paths.
+    const std::string pathRegular = utf8FromPath(resourcePath(FontConfig::PathRegular));
+    const std::string pathMedium = utf8FromPath(resourcePath(FontConfig::PathMedium));
+    const std::string pathBold = utf8FromPath(resourcePath(FontConfig::PathBold));
+    const std::string pathMono = utf8FromPath(resourcePath(FontConfig::PathMono));
+    auto fileExists = [](const std::string& path) -> bool {
+        std::error_code ec;
+        return std::filesystem::is_regular_file(pathFromUtf8(path), ec);
     };
 
-    bool hasCustomFonts = fileExists(FontConfig::PathRegular);
+    bool hasCustomFonts = fileExists(pathRegular);
 
     if (!hasCustomFonts) {
         // No custom fonts - use ImGui default with scaled sizes
@@ -240,45 +248,34 @@ bool Theme::loadFonts(float dpiScale) {
     config.PixelSnapH = true;
 
     // Load custom fonts
-    s_fonts.Regular = io.Fonts->AddFontFromFileTTF(FontConfig::PathRegular, sizeRegular, &config);
-    s_fonts.Small = io.Fonts->AddFontFromFileTTF(FontConfig::PathRegular, sizeSmall, &config);
+    s_fonts.Regular = io.Fonts->AddFontFromFileTTF(pathRegular.c_str(), sizeRegular, &config);
+    s_fonts.Small = io.Fonts->AddFontFromFileTTF(pathRegular.c_str(), sizeSmall, &config);
 
-    if (fileExists(FontConfig::PathMedium)) {
-        s_fonts.Medium = io.Fonts->AddFontFromFileTTF(FontConfig::PathMedium, sizeMedium, &config);
+    if (fileExists(pathMedium)) {
+        s_fonts.Medium = io.Fonts->AddFontFromFileTTF(pathMedium.c_str(), sizeMedium, &config);
     } else {
-        s_fonts.Medium = io.Fonts->AddFontFromFileTTF(FontConfig::PathRegular, sizeMedium, &config);
+        s_fonts.Medium = io.Fonts->AddFontFromFileTTF(pathRegular.c_str(), sizeMedium, &config);
     }
 
-    if (fileExists(FontConfig::PathBold)) {
-        s_fonts.Large = io.Fonts->AddFontFromFileTTF(FontConfig::PathBold, sizeLarge, &config);
-        s_fonts.Title = io.Fonts->AddFontFromFileTTF(FontConfig::PathBold, sizeTitle, &config);
-        s_fonts.Hero = io.Fonts->AddFontFromFileTTF(FontConfig::PathBold, sizeHero, &config);
+    if (fileExists(pathBold)) {
+        s_fonts.Large = io.Fonts->AddFontFromFileTTF(pathBold.c_str(), sizeLarge, &config);
+        s_fonts.Title = io.Fonts->AddFontFromFileTTF(pathBold.c_str(), sizeTitle, &config);
+        s_fonts.Hero = io.Fonts->AddFontFromFileTTF(pathBold.c_str(), sizeHero, &config);
     } else {
-        s_fonts.Large = io.Fonts->AddFontFromFileTTF(FontConfig::PathRegular, sizeLarge, &config);
-        s_fonts.Title = io.Fonts->AddFontFromFileTTF(FontConfig::PathRegular, sizeTitle, &config);
-        s_fonts.Hero = io.Fonts->AddFontFromFileTTF(FontConfig::PathRegular, sizeHero, &config);
+        s_fonts.Large = io.Fonts->AddFontFromFileTTF(pathRegular.c_str(), sizeLarge, &config);
+        s_fonts.Title = io.Fonts->AddFontFromFileTTF(pathRegular.c_str(), sizeTitle, &config);
+        s_fonts.Hero = io.Fonts->AddFontFromFileTTF(pathRegular.c_str(), sizeHero, &config);
     }
 
-    if (fileExists(FontConfig::PathMono)) {
-        s_fonts.Mono = io.Fonts->AddFontFromFileTTF(FontConfig::PathMono, sizeRegular, &config);
-        s_fonts.MonoSmall = io.Fonts->AddFontFromFileTTF(FontConfig::PathMono, sizeSmall, &config);
+    if (fileExists(pathMono)) {
+        s_fonts.Mono = io.Fonts->AddFontFromFileTTF(pathMono.c_str(), sizeRegular, &config);
+        s_fonts.MonoSmall = io.Fonts->AddFontFromFileTTF(pathMono.c_str(), sizeSmall, &config);
     } else {
         s_fonts.Mono = s_fonts.Regular;
         s_fonts.MonoSmall = s_fonts.Small;
     }
 
-    // Icons font (merge with regular - using icon range)
-    if (fileExists(FontConfig::PathIcons)) {
-        ImFontConfig iconConfig;
-        iconConfig.MergeMode = true;
-        iconConfig.PixelSnapH = true;
-        iconConfig.GlyphMinAdvanceX = sizeMedium;
-        static const ImWchar iconRanges[] = { 0xf000, 0xf8ff, 0 };  // FontAwesome range
-        s_fonts.Icons = io.Fonts->AddFontFromFileTTF(FontConfig::PathIcons, sizeMedium,
-                                                      &iconConfig, iconRanges);
-    } else {
-        s_fonts.Icons = nullptr;
-    }
+    s_fonts.Icons = nullptr;  // no icon font is bundled
 
     // Don't call Build() - modern backends handle this automatically
     return s_fonts.isLoaded();

@@ -36,6 +36,9 @@ public:
     // The Window menu's items (call between BeginMenu/EndMenu): a toggle per listed
     // Window panel, then Reset Layout.
     void drawWindowMenuItems();
+    // True once after Reset Layout was chosen: the owner then docks the panels in
+    // their default places again (EditorUi).
+    bool takeLayoutReset();
 
     Panel* find(const std::string& id) const;
     bool isVisible(const std::string& id) const;
@@ -52,6 +55,7 @@ private:
     // Opened by a request this frame: brought to the front, even when already open as a
     // tab behind another panel.
     std::vector<const Panel*> focusNext_;
+    bool layoutReset_ = false;
 };
 
 }  // namespace quadmapper

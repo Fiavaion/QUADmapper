@@ -1228,7 +1228,8 @@ TEST_F(PerformLockSweepTest, SessionModalsChangeNothing) {
 // ---- Menu bar ---------------------------------------------------------------------------
 
 // Every menu, every item in it (and in its submenus), and every button and control on
-// the bar, through the whole editor frame. Report Bug opens a browser and is skipped.
+// the bar, through the whole editor frame. The Help menu is skipped: its items open the
+// browser, the file manager and the About box, and none of them touches the show.
 TEST_F(PerformLockSweepTest, MenuBarChangesOnlyWhatTheLockKeeps) {
     showOnly("");
     const Frame frame = [this] { uiFrame(); };
@@ -1236,7 +1237,7 @@ TEST_F(PerformLockSweepTest, MenuBarChangesOnlyWhatTheLockKeeps) {
     frame();
     ImGuiWindow* bar = ImGui::FindWindowByName(MAIN_MENU_BAR);
     ASSERT_NE(bar, nullptr);
-    const ImGuiID reportBug = ImHashStr("Report Bug", 0, ImHashStr("##MenuBar", 0, bar->ID));
+    const ImGuiID helpMenu = ImHashStr("Help", 0, ImHashStr("##MenuBar", 0, bar->ID));
 
     // Advanced with the AI sidecar connected (the One-Flash menu), and Simple, whose bar
     // has Apply Test Grid and Send to Projector, with it not running.
@@ -1265,7 +1266,7 @@ TEST_F(PerformLockSweepTest, MenuBarChangesOnlyWhatTheLockKeeps) {
         itemsFound_[target.label] = hits.size();
         size_t found = 0;
         for (const Hit& hit : hits) {
-            if (hit.id == reportBug) {
+            if (hit.id == helpMenu) {
                 ++skipped_;
                 continue;
             }
@@ -1339,7 +1340,7 @@ TEST_F(PerformLockSweepTest, MenuBarChangesOnlyWhatTheLockKeeps) {
         }
         enabledFound_[target.label] = found;
     }
-    EXPECT_GE(skipped_, 1u) << "Report Bug was not found: the skip id is stale";
+    EXPECT_GE(skipped_, 1u) << "the Help menu was not found: the skip id is stale";
     report("menu bar");
 }
 
