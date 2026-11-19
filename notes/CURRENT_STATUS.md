@@ -1,47 +1,36 @@
 # Current Status
 
-**Last updated:** 2026-11-14 (release-readiness audit, QM-125)
-**Phase / focus:** Release preparation. The audit and its fixes are done. Next: the owner's hands-on test, then the installer and release package (TD-44, ADR-057), then `/release`.
-**Dev:** the code on local `dev` is at `4a3a8af` (later commits are notes only); `origin/dev` is at `c933d6d`. **Not pushed.**
-**Gate:** `ctest --test-dir build/debug -C Debug -j 8 | 4a3a8af | 1766 passed, 0 failed` · `pytest tools/ai-sidecar | 4a3a8af | 119 passed`.
+**Last updated:** 2026-11-19 (owner's release decisions applied)
+**Phase / focus:** Release 1.0.0. The audit (QM-125) and the owner's decisions are done and pushed. Next: `/release`, the owner's hands-on test, then the installer (AI engine bundle, TD-44).
+**Dev:** `dev` = `origin/dev` (code at `0558a76`; later commits are notes only).
+**Gate:** last full suite `ctest --test-dir build/debug -C Debug -j 8 | 4a3a8af | 1766 passed, 0 failed`. Since then, targeted only: `test_editor` 221, `test_ui` 54, `test_app` 28, `layering_check`, `bench_smoke`, `stress_smoke` all pass (uncommitted tree = `0558a76`).
 
-## What the audit changed (QM-125)
+## Decided 2026-11-19 (owner)
 
-- **Start-up:** fonts, layout (`%APPDATA%\QUADmapper\layout.ini`) and logs (`%LOCALAPPDATA%\QUADmapper\logs\`) no longer depend on the start folder. The window opens maximised with the show name in the title. A `.qmap` opens by double-click or drop.
-- **Crashes:** a crash writes a minidump to `%LOCALAPPDATA%\QUADmapper\crashes\`, tries an emergency save and tells the user.
-- **UI:** status bar with the canvas keys, Help menu (guide, shortcuts, log folder, licences, About), Edit > Arrange and Edit > Mesh, confirmations before deletes, Quad List in front on a first run.
-- **Editor:** mesh keys and Properties edits are undo steps. A locked quad keeps its shape against every edit, AI results included.
-- **Engine:** OSC, audio, image, texture, HAP and video failure paths hardened.
-- **AI engine link:** token header, Origin and Host checks, launch from full paths only, listener checked against our job object.
-- **Docs:** user README, `resources/docs/quick-start.html`, full `THIRD-PARTY-NOTICES.md`.
+- **Licence:** MIT, `LICENSE` (copyright Fiavaion).
+- **Version 1.0.0**, set once in `project(VERSION)`; feeds `core/Version.hpp` and the exe's version resource.
+- **Release package (TD-44):** icon, VERSIONINFO, Release PDB (`symbols` install component), `cmake --install` gives a flat folder with the vcpkg DLLs, app-local VC++ runtime, resources, notices and licence; FFmpeg written offer. Verified: installed exe started from another folder passed `--stress --hidden`. Left: the AI engine bundle (TD-44, narrowed).
+- **OSC** stays on `0.0.0.0` (off until enabled; a tablet controller is the usual use).
+- Root `imgui.ini` and `project.qmap` untracked (still on disk); no machine paths in `Bench.hpp`.
+- **UI:** Ctrl+G group, File > Open Recent, Preferences > Interface size, Edit > Mesh greyed for a locked quad.
 
-## Owner's hands-on test (about 20 minutes)
-
-Seen working by running the app: start from another folder, fonts, title, status bar, Help menu, saved layout, log file, clean exit. **Not checked by hand:**
+## Owner's hands-on test (about 25 minutes)
 
 1. Success metric: add a quad, assign media, Tab and arrows to warp, F11 to a projector.
 2. Properties: drag Opacity, a corner value and a crop edge; each is one Ctrl+Z step.
-3. Lock a quad in the Quad List; corners, mesh keys and Properties shape edits are refused with a status line.
+3. Lock a quad in the Quad List; corners, mesh keys and Properties shape edits are refused with a status line; Edit > Mesh is greyed.
 4. Delete a quad, a media item used by quads, and an output: each asks first, none crashes.
-5. AI > Enable AI Assist: the engine starts and connects (token and listener check are new). Then the QM-124 checklist (ADR-053 Amendment 1).
+5. AI > Enable AI Assist: the engine starts and connects. Then the QM-124 checklist (ADR-053 Amendment 1).
 6. Help menu: each item opens what it names.
-
-## Decisions waiting for the owner
-
-1. Licence: the README and `vcpkg.json` say MIT; there is no `LICENSE` file.
-2. Release version number, and one source for it (three places today).
-3. Release package (TD-44): install rule, VC++ runtime, PDBs, icon and version resource, FFmpeg source offer. All inside the CMake change boundary.
-4. OSC listens on `0.0.0.0` by default: keep, or default to this machine only.
-5. Untrack the root `imgui.ini` and `project.qmap`; personal paths in `src/app/Bench.hpp:44-45`.
-6. Smaller UI items: Ctrl+G to group, Open Recent, a UI-scale preference, grey out mesh menu items for a locked quad.
-7. Push `dev`; PR #3 stays a draft until the hands-on test.
+7. New: Ctrl+G with 2+ quads (names "Group N"); Open Recent after a save, a missing file, Clear Recent; Interface size at 100% and 200% (only fonts scale, not padding).
+8. Explorer: `QUADmapper.exe` shows the icon and version 1.0.0; the window has the icon.
 
 ## What is left before release
 
-1. Fixes from the owner's test (QM-124 and the list above).
-2. Installer and release package: `feat/installer` (`9e5aacd`) does not compile and its sidecar lookup will conflict with the one now on `dev`.
+1. `/release` (full gate), then fixes from the hands-on test.
+2. Installer: `feat/installer` (`9e5aacd`) does not compile and its sidecar lookup conflicts with `dev`; it should use `cmake --install` for the app folder and stage only the AI engine.
 3. Sidecar to the PyTorch cu128 builds for the RTX 5090 (`000_start.md` §4).
-4. `/release`, then the `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)).
+4. `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)); PR #3 stays a draft until the hands-on test.
 
 ## Hardware-only items
 
