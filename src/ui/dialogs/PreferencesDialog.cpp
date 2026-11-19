@@ -111,6 +111,25 @@ bool PreferencesDialog::renderGeneralTab(EditorContext& ctx) {
     ImGui::SameLine();
     appliesNote("(applies now; QUADmapper starts in the mode last used)");
 
+    char sizeLabel[16];
+    snprintf(sizeLabel, sizeof(sizeLabel), "%d%%", general.uiScalePercent);
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::BeginCombo("Interface size", general.uiScalePercent == 0 ? "Automatic" : sizeLabel)) {
+        if (ImGui::Selectable("Automatic", general.uiScalePercent == 0)) {
+            general.uiScalePercent = 0;
+            changed = true;
+        }
+        for (const int percent : UI_SCALE_CHOICES) {
+            snprintf(sizeLabel, sizeof(sizeLabel), "%d%%", percent);
+            if (ImGui::Selectable(sizeLabel, general.uiScalePercent == percent)) {
+                general.uiScalePercent = percent;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    appliesNote("Applies now. Automatic follows the monitor's scale.");
+
     ImGui::SeparatorText("Scene takes");
     ImGui::SetNextItemWidth(200.0f);
     // Applies while dragged; saved once, on release. Ctrl+click types a value.

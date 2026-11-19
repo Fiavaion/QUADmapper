@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <iterator>
 
 #ifdef _WIN32
 #include <ShlObj.h>
@@ -50,7 +51,33 @@ const json* sectionOf(const json& root, const char* name) {
     return it != root.end() && it->is_object() ? &*it : nullptr;
 }
 
+// A path compared as Windows does: ASCII case and the slash direction do not matter.
+std::string pathKey(const std::string& path) {
+    std::string key = path;
+    for (char& c : key) {
+        if (c == '\\') c = '/';
+        else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return key;
+}
+
 }  // namespace
+
+bool removeRecentProject(std::vector<std::string>& recent, const std::string& path) {
+    const std::string key = pathKey(path);
+    const auto it = std::remove_if(recent.begin(), recent.end(),
+                                   [&key](const std::string& entry) { return pathKey(entry) == key; });
+    const bool found = it != recent.end();
+    recent.erase(it, recent.end());
+    return found;
+}
+
+void addRecentProject(std::vector<std::string>& recent, const std::string& path) {
+    if (path.empty()) return;
+    removeRecentProject(recent, path);
+    recent.insert(recent.begin(), path);
+    if (recent.size() > MAX_RECENT_PROJECTS) recent.resize(MAX_RECENT_PROJECTS);
+}
 
 std::filesystem::path AppPreferences::getDefaultConfigPath() {
     std::filesystem::path configDir;
@@ -106,6 +133,12 @@ Result<void, Error> AppPreferences::loadFromFile(const std::filesystem::path& pa
                 MAX_AUTOSAVE_MINUTES);
         readInt(*gen, "uiMode", general.uiMode, 0, 1);
         readFloat(*gen, "sceneFadeSeconds", general.sceneFadeSeconds, 0.0f, MAX_SCENE_FADE_SECONDS);
+        int scale = 0;
+        readInt(*gen, "uiScalePercent", scale, 0, 400);
+        if (scale == 0 || std::find(std::begin(UI_SCALE_CHOICES), std::end(UI_SCALE_CHOICES), scale) !=
+                              std::end(UI_SCALE_CHOICES)) {
+            general.uiScalePercent = scale;
+        }
     }
 
     if (const json* perf = sectionOf(root, "performance")) {
@@ -147,6 +180,21 @@ Result<void, Error> AppPreferences::loadFromFile(const std::filesystem::path& pa
         }
     }
 
+    // Recent shows: anything but a list of non-empty strings is skipped, never an error.
+    recentProjects.clear();
+    auto recent = root.find("recentProjects");
+    if (recent != root.end() && recent->is_array()) {
+        for (const json& entry : *recent) {
+            if (entry.is_string() && !entry.get<std::string>().empty()) {
+                const std::string path = entry.get<std::string>();
+                const std::string key = pathKey(path);
+                const bool repeated = std::any_of(recentProjects.begin(), recentProjects.end(),
+                    [&key](const std::string& have) { return pathKey(have) == key; });
+                if (!repeated && recentProjects.size() < MAX_RECENT_PROJECTS) recentProjects.push_back(path);
+            }
+        }
+    }
+
     Logger::info("Loaded preferences from {}", path.u8string());
     return Result<void, Error>::success();
 }
@@ -163,7 +211,9 @@ Result<void, Error> AppPreferences::saveToFile(const std::filesystem::path& path
     gen["autoSaveIntervalMinutes"] = general.autoSaveIntervalMinutes;
     gen["uiMode"] = general.uiMode;
     gen["sceneFadeSeconds"] = general.sceneFadeSeconds;
+    gen["uiScalePercent"] = general.uiScalePercent;
     root["general"] = gen;
+    root["recentProjects"] = recentProjects;
 
     json perf;
     perf["audioDevice"] = performance.audioDevice;

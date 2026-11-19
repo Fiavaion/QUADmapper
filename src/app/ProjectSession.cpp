@@ -354,6 +354,7 @@ bool ProjectSession::performLoadProject(const std::string& path) {
     const size_t missing = collectMissingMedia(es).size();
     if (missing > 0) es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
     postStatus(es, "Project loaded: " + path + missingMediaNote(missing));
+    if (m_services.projectUsed) m_services.projectUsed(path);
     offerRecovery(path);
     projectReplaced();
     return true;
@@ -395,6 +396,7 @@ bool ProjectSession::writeProjectFile(const std::string& path) {
     discardRecoveryFiles(es, previousFile);
     discardRecoveryFiles(es, path);
     postStatus(es, "Project saved: " + path);
+    if (m_services.projectUsed) m_services.projectUsed(path);
     return true;
 }
 

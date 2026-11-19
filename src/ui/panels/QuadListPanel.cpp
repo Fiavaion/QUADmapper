@@ -76,7 +76,7 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
     if (quadManager.getSelectionCount() >= 2) {
         ImGui::SameLine();
         if (ImGui::Button("Group")) {
-            scene.createGroupFromSelection();
+            scene.createGroupFromSelection(scene.generateUniqueGroupName());
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Create group from selected quads");

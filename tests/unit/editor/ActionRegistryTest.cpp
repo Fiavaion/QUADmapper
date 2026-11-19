@@ -138,7 +138,7 @@ TEST(ActionRegistryTest, EveryShippedChordRegisters) {
     registerEditActions(rig.registry);
     registerFileActions(rig.registry);
     const size_t edits = rig.registry.actions().size();
-    EXPECT_EQ(edits, 16u);
+    EXPECT_EQ(edits, 17u);
     const auto noop = [](EditorContext&) {};
     for (const char* id : {action_id::SAVE, action_id::PREFERENCES, action_id::BLACKOUT,
                            action_id::PERFORM_TOGGLE, action_id::PERFORM_ESCAPE,

@@ -7,6 +7,7 @@
 #include "editor/EditorState.hpp"
 #include "editor/MissingMedia.hpp"
 #include "editor/PerformLock.hpp"
+#include "editor/Preferences.hpp"
 #include "editor/StatusLine.hpp"
 #include "editor/UndoRouting.hpp"
 #include "core/FileSystem.hpp"
@@ -74,6 +75,46 @@ void openPath(EditorState& es, const std::filesystem::path& path) {
 #ifdef _WIN32
     ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #endif
+}
+
+// File > Open Recent. A choice queues the same Load that File > Open queues once its
+// dialog answers, so the unsaved-changes prompt and the perform lock apply. A file that
+// is gone is dropped from the list.
+void renderOpenRecent(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    if (!ctx.prefs) return;
+    std::vector<std::string>& recent = ctx.prefs->recentProjects;
+    if (!ImGui::BeginMenu("Open Recent", !recent.empty() && !es.performLock.isOn())) return;
+
+    std::string chosen;
+    for (size_t i = 0; i < recent.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        const std::string name = utf8FromPath(pathFromUtf8(recent[i]).filename());
+        if (ImGui::MenuItem(name.c_str())) chosen = recent[i];
+        ImGui::SetItemTooltip("%s", recent[i].c_str());
+        ImGui::PopID();
+    }
+    ImGui::Separator();
+    const bool clear = ImGui::MenuItem("Clear Recent");
+    ImGui::EndMenu();
+
+    if (clear) {
+        recent.clear();
+        if (ctx.services) ctx.services->savePreferences();
+    } else if (!chosen.empty()) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(pathFromUtf8(chosen), ec)) {
+            removeRecentProject(recent, chosen);
+            if (ctx.services) ctx.services->savePreferences();
+            postStatus(es, "Not found, removed from Open Recent: " + chosen);
+        } else if (es.pendingFileAction != EditorState::FileAction::None ||
+                   es.unsavedPromptFor != EditorState::FileAction::None) {
+            postStatus(es, "Not opened: another file action is pending");
+        } else {
+            es.pendingLoadPath = chosen;
+            es.pendingFileAction = EditorState::FileAction::Load;
+        }
+    }
 }
 
 }  // namespace
@@ -162,6 +203,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         using FileAction = EditorState::FileAction;
         actionMenuItem(ctx, action_id::NEW_PROJECT);
         actionMenuItem(ctx, action_id::OPEN_PROJECT);
+        renderOpenRecent(ctx);
         ImGui::Separator();
         actionMenuItem(ctx, action_id::SAVE);
         actionMenuItem(ctx, action_id::SAVE_AS);
@@ -190,6 +232,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         actionMenuItem(ctx, action_id::DESELECT_ALL);
         ImGui::Separator();
         actionMenuItem(ctx, action_id::DELETE_SELECTION);
+        actionMenuItem(ctx, action_id::GROUP_SELECTED);
         ImGui::Separator();
         // The stacking and mesh actions: in the menu so their keys can be found.
         if (ImGui::BeginMenu("Arrange")) {
@@ -200,10 +243,20 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Mesh")) {
-            actionMenuItem(ctx, action_id::TOGGLE_MESH_EDIT);
-            actionMenuItem(ctx, action_id::MESH_FINER);
-            actionMenuItem(ctx, action_id::MESH_COARSER);
-            actionMenuItem(ctx, action_id::RESET_MESH);
+            // Greyed out for a locked quad. The keys stay enabled so they can say
+            // "<name> is locked (Quad List)".
+            const Quad* primary = es.quadManager().getPrimarySelectedQuad();
+            const bool quadLocked = primary && primary->isLocked();
+            const auto meshItem = [&](const char* id) {
+                const Action* action = ctx.actions ? ctx.actions->find(id) : nullptr;
+                if (!action) return;
+                actionMenuItem(ctx, id, false,
+                               (!action->enabled || action->enabled(ctx)) && !quadLocked);
+            };
+            meshItem(action_id::TOGGLE_MESH_EDIT);
+            meshItem(action_id::MESH_FINER);
+            meshItem(action_id::MESH_COARSER);
+            meshItem(action_id::RESET_MESH);
             ImGui::EndMenu();
         }
         ImGui::Separator();

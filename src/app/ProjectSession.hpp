@@ -46,6 +46,8 @@ public:
         std::function<void()> dropQueuedSceneTakes;
         // New, Load and Restore replaced the show (after the new one is in place).
         std::function<void()> projectReplaced;
+        // A show was opened from, or saved to, this path (File > Open Recent).
+        std::function<void(const std::string&)> projectUsed;
         // Exit passed the unsaved-changes check: close the editor.
         std::function<void()> confirmExit;
     };

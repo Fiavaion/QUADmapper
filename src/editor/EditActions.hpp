@@ -35,6 +35,7 @@ inline constexpr const char* TOGGLE_MESH_EDIT = "edit.toggleMeshEdit";
 inline constexpr const char* MESH_FINER = "edit.meshFiner";
 inline constexpr const char* MESH_COARSER = "edit.meshCoarser";
 inline constexpr const char* RESET_MESH = "edit.resetMesh";
+inline constexpr const char* GROUP_SELECTED = "edit.groupSelected";
 // File actions (registerFileActions): they queue the File menu's request.
 inline constexpr const char* NEW_PROJECT = "file.new";
 inline constexpr const char* OPEN_PROJECT = "file.open";
@@ -97,6 +98,12 @@ bool canStepMeshResolution(EditorState& es, int delta);
 void stepMeshResolutionAction(EditorState& es, int delta);
 bool canResetMesh(EditorState& es);
 void resetMeshAction(EditorState& es);
+
+// Ctrl+G: the selected quads into a new group (Scene::createGroupFromSelection, as the
+// Quad List's Group button does), named on the status line. Needs two or more selected
+// quads. Not an undo step: group edits have none anywhere else either.
+bool canGroupSelected(EditorState& es);
+void groupSelectedAction(EditorState& es);
 
 // Register every edit action on its chord. `historyChanged` runs after an undo or redo
 // took a step (the app refreshes its unsaved-changes label).

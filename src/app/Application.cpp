@@ -329,9 +329,9 @@ bool Application::initializeImGui() {
     Theme::apply();
 
     // Load custom fonts (will fall back to default if not found)
-    float dpiScale = 1.0f;
-    glfwGetWindowContentScale(m_window, &dpiScale, nullptr);
-    Theme::loadFonts(dpiScale);
+    glfwGetWindowContentScale(m_window, &m_monitorScale, nullptr);
+    if (m_monitorScale <= 0.0f) m_monitorScale = 1.0f;
+    Theme::loadFonts(m_monitorScale);
 
     // When viewports are enabled, ensure consistent appearance
     ImGuiStyle& style = ImGui::GetStyle();
@@ -466,6 +466,11 @@ bool Application::initializeComponents() {
         services.projectReplaced = [this]() {
             EditorContext ctx = editorContext();
             m_ui->projectReplaced(ctx);
+        };
+        services.projectUsed = [this](const std::string& path) {
+            if (isHarnessRun()) return;  // a harness run must not touch the user's preferences
+            addRecentProject(m_preferences->getPreferences().recentProjects, path);
+            savePreferences();
         };
         services.confirmExit = [this]() {
             m_exitConfirmed = true;
@@ -633,6 +638,14 @@ void Application::render() {
         adoptFailedOpens(*m_editorState, *m_sourceManager);  // undecodable clips: missing media
         // Each video's sound follows the clock it just advanced (ADR-050 §2).
         syncAudio();
+    }
+
+    // Interface size: the fonts were loaded at the monitor's scale, so a fixed choice
+    // scales them by choice / monitor scale. Fonts are dynamic (ImGui 1.92): no atlas
+    // rebuild, and it is set here, outside any frame.
+    {
+        const int percent = m_preferences->getPreferences().general.uiScalePercent;
+        ImGui::GetStyle().FontScaleMain = percent == 0 ? 1.0f : (percent / 100.0f) / m_monitorScale;
     }
 
     // Start ImGui frame

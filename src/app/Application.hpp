@@ -193,6 +193,7 @@ private:
     bool m_titleShown = false;
     // Where ImGui keeps the window layout; ImGui holds a pointer to it for the whole run.
     std::string m_layoutFile;
+    float m_monitorScale = 1.0f;  // the monitor's content scale the fonts were loaded at
 
     // Components
     std::unique_ptr<Renderer> m_renderer;

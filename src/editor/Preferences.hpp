@@ -31,11 +31,26 @@ struct GeneralPreferences {
     // Crossfade of a scene take from the 1-9 keys, MIDI and a one-argument OSC take
     // (ADR-047 §5), in seconds, 0 to MAX_SCENE_FADE_SECONDS; 0 = a cut.
     float sceneFadeSeconds = 0.0f;
+
+    // Interface size in percent: 0 = Automatic (the monitor's scale), else one of
+    // UI_SCALE_CHOICES. Applies at once (Application sets style.FontScaleMain).
+    int uiScalePercent = 0;
 };
 
 // Limits the dialog offers and loading enforces.
 constexpr int MIN_AUTOSAVE_MINUTES = 1;
 constexpr int MAX_AUTOSAVE_MINUTES = 30;
+constexpr int UI_SCALE_CHOICES[] = {100, 125, 150, 175, 200};
+
+// The most recent shows kept for File > Open Recent, newest first.
+constexpr size_t MAX_RECENT_PROJECTS = 10;
+
+// Put `path` first in `recent`: an entry for the same file (compared without regard to
+// case, and with / and \ alike, as Windows does) moves up rather than repeating; the
+// list is cut to MAX_RECENT_PROJECTS. An empty path is ignored.
+void addRecentProject(std::vector<std::string>& recent, const std::string& path);
+// Drop the entry for `path` (same comparison); false when it was not there.
+bool removeRecentProject(std::vector<std::string>& recent, const std::string& path);
 
 /**
  * Machine audio setup. Stored under "performance" in the file, the section it has
@@ -72,6 +87,9 @@ struct AppPreferences {
     // "Ctrl+Shift+L". Only the actions off their defaults; applyKeyBindings checks them.
     // Stored under "keyboard"; a file without it keeps every default.
     KeyBindings keyBindings;
+    // File > Open Recent: show (.qmap) paths as UTF-8, newest first. Stored under
+    // "recentProjects"; a file without it, or with it malformed, starts empty.
+    std::vector<std::string> recentProjects;
 
     // <Roaming AppData>/QUADmapper/preferences.json (XDG config elsewhere), built as a
     // wide path so a user name outside the ANSI code page works. Creates the folder.

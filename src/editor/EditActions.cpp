@@ -9,6 +9,8 @@
 #include "output/OutputWindow.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadGeometry.hpp"
+#include "scene/QuadGroup.hpp"
+#include "scene/Scene.hpp"
 
 #include <imgui.h>  // ImGuiKey values for the chords; no ImGui calls
 
@@ -176,6 +178,19 @@ void resetMeshAction(EditorState& es) {
     changePrimaryGrid(es, "Reset Mesh", [](QuadGeometry& geo) { geo.resetMesh(); });
 }
 
+bool canGroupSelected(EditorState& es) {
+    return quadEditing(es) && es.quadManager().getSelectionCount() >= 2;
+}
+
+void groupSelectedAction(EditorState& es) {
+    if (!canGroupSelected(es)) return;
+    const size_t members = es.quadManager().getSelectionCount();
+    Scene& scene = es.activeScene();
+    if (const QuadGroup* group = scene.createGroupFromSelection(scene.generateUniqueGroupName())) {
+        postStatus(es, "Grouped " + std::to_string(members) + " quads as " + group->getName());
+    }
+}
+
 void registerEditActions(ActionRegistry& registry, std::function<void()> historyChanged) {
     // Every default chord is distinct, so an add can only fail on a programming error.
     const auto put = [&registry](Action action) {
@@ -243,6 +258,11 @@ void registerEditActions(ActionRegistry& registry, std::function<void()> history
         action_id::RESET_MESH, "Reset Mesh", {Chord{ImGuiKey_R, MOD_ALT}},
         [](const EditorContext& ctx) { return canResetMesh(ctx.es); },
         [](EditorContext& ctx) { resetMeshAction(ctx.es); }));
+
+    put(editAction(
+        action_id::GROUP_SELECTED, "Group Selected", {Chord{ImGuiKey_G, MOD_CTRL}},
+        [](const EditorContext& ctx) { return canGroupSelected(ctx.es); },
+        [](EditorContext& ctx) { groupSelectedAction(ctx.es); }));
 }
 
 void registerFileActions(ActionRegistry& registry) {

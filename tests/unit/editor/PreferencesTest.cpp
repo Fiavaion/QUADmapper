@@ -263,7 +263,7 @@ TEST(PreferencesFileTest, SettingsThisVersionDroppedAreIgnoredAndNotWrittenBack)
                         "general.autoLoadMediaOnStartup", "general.autoSaveEnabled",
                         "general.autoSaveIntervalMinutes", "general.defaultMediaFolder",
                         "general.recursiveFolderScan", "general.sceneFadeSeconds", "general.uiMode",
-                        "performance.audioDevice"}));
+                        "general.uiScalePercent", "performance.audioDevice"}));
 }
 
 // ---- Rebound keys ("keyboard", owner's decision 2026-09-30) ----------------------------
@@ -449,3 +449,61 @@ TEST(PreferencesFileTest, DefaultPathIsUnderRoamingAppData) {
     EXPECT_EQ(AppPreferences::getDefaultConfigPath().filename(), expected.filename());
 }
 #endif
+
+// File > Open Recent: newest first, no repeats (Windows paths ignore case and slash
+// direction), at most MAX_RECENT_PROJECTS.
+TEST(RecentProjectsTest, AddMovesToFrontDedupesAndCaps) {
+    std::vector<std::string> recent;
+    addRecentProject(recent, "");
+    EXPECT_TRUE(recent.empty());
+
+    addRecentProject(recent, "C:\\Shows\\a.qmap");
+    addRecentProject(recent, "C:\\Shows\\b.qmap");
+    addRecentProject(recent, "c:/shows/A.QMAP");  // the same file as the first
+    EXPECT_EQ(recent, (std::vector<std::string>{"c:/shows/A.QMAP", "C:\\Shows\\b.qmap"}));
+
+    for (int i = 0; i < 15; ++i) addRecentProject(recent, "D:/show" + std::to_string(i) + ".qmap");
+    ASSERT_EQ(recent.size(), MAX_RECENT_PROJECTS);
+    EXPECT_EQ(recent.front(), "D:/show14.qmap");
+    EXPECT_EQ(recent.back(), "D:/show5.qmap");
+}
+
+TEST(RecentProjectsTest, RemoveDropsOnlyTheNamedFile) {
+    std::vector<std::string> recent{"C:\\a.qmap", "C:\\b.qmap"};
+    EXPECT_FALSE(removeRecentProject(recent, "C:\\none.qmap"));
+    EXPECT_TRUE(removeRecentProject(recent, "c:\\A.qmap"));
+    EXPECT_EQ(recent, (std::vector<std::string>{"C:\\b.qmap"}));
+}
+
+TEST(PreferencesFileTest, RecentProjectsAndUiScaleRoundTripAndOldFilesLoadEmpty) {
+    TempPrefsFile file;
+    AppPreferences prefs;
+    prefs.recentProjects = {"C:\\Shows\\a.qmap", "C:\\Shows\\b.qmap"};
+    prefs.general.uiScalePercent = 150;
+    ASSERT_TRUE(prefs.saveToFile(file.path.string()));
+    AppPreferences loaded;
+    ASSERT_TRUE(loaded.loadFromFile(file.path.string()));
+    EXPECT_EQ(loaded.recentProjects, prefs.recentProjects);
+    EXPECT_EQ(loaded.general.uiScalePercent, 150);
+
+    // An old file has neither: Automatic and an empty list.
+    file.write(R"({"version": "1.0", "general": {"uiMode": 1}})");
+    AppPreferences old;
+    ASSERT_TRUE(old.loadFromFile(file.path.string()));
+    EXPECT_TRUE(old.recentProjects.empty());
+    EXPECT_EQ(old.general.uiScalePercent, 0);
+}
+
+TEST(PreferencesFileTest, GarbledRecentProjectsAndUiScaleAreSkipped) {
+    TempPrefsFile file;
+    file.write(R"({"version": "1.0", "recentProjects": "oops", "general": {"uiScalePercent": 137}})");
+    AppPreferences a;
+    ASSERT_TRUE(a.loadFromFile(file.path.string()));
+    EXPECT_TRUE(a.recentProjects.empty());
+    EXPECT_EQ(a.general.uiScalePercent, 0) << "not one of the offered sizes";
+
+    file.write(R"({"version": "1.0", "recentProjects": [1, null, "", "C:/a.qmap", "c:/A.qmap", "C:/b.qmap"]})");
+    AppPreferences b;
+    ASSERT_TRUE(b.loadFromFile(file.path.string()));
+    EXPECT_EQ(b.recentProjects, (std::vector<std::string>{"C:/a.qmap", "C:/b.qmap"}));
+}

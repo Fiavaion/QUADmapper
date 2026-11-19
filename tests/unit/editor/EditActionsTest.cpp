@@ -6,6 +6,8 @@
 #include "editor/EditActions.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "scene/QuadGroup.hpp"
+#include "scene/Scene.hpp"
 
 #include <imgui.h>
 
@@ -352,4 +354,30 @@ TEST(EditActionsTest, EditActionsKeepTheirChords) {
     ASSERT_NE(rig.registry.find(action_id::DESELECT_ALL), nullptr);
     EXPECT_TRUE(rig.registry.find(action_id::DESELECT_ALL)->chords.empty())
         << "Esc is the perform chain, not Deselect All";
+}
+
+// Ctrl+G: the selected quads become one group, named on the status line.
+TEST(EditActionsTest, GroupSelectedNeedsTwoQuadsAndNamesTheGroup) {
+    Rig rig;
+    rig.es.quadManager().selectQuad(rig.a->getId());
+    EXPECT_EQ(rig.run(action_id::GROUP_SELECTED), Outcome::Disabled) << "one quad is not a group";
+    EXPECT_EQ(rig.es.activeScene().getGroupCount(), 0u);
+
+    rig.es.quadManager().addToSelection(rig.b->getId());
+    ASSERT_EQ(rig.es.quadManager().getSelectionCount(), 2u);
+    EXPECT_EQ(rig.run(action_id::GROUP_SELECTED), Outcome::Ran);
+    ASSERT_EQ(rig.es.activeScene().getGroupCount(), 1u);
+    const QuadGroup& group = *rig.es.activeScene().getGroups().front();
+    EXPECT_TRUE(group.hasMember(rig.a->getId()));
+    EXPECT_TRUE(group.hasMember(rig.b->getId()));
+    EXPECT_FALSE(group.hasMember(rig.c->getId()));
+    EXPECT_NE(std::string(rig.es.statusMessage).find(group.getName()), std::string::npos);
+}
+
+TEST(EditActionsTest, GroupSelectedIsRefusedWhileCalibrating) {
+    Rig rig;
+    rig.es.quadManager().selectAll();
+    rig.calibrateWithPoints(0);
+    EXPECT_EQ(rig.run(action_id::GROUP_SELECTED), Outcome::Disabled);
+    EXPECT_EQ(rig.es.activeScene().getGroupCount(), 0u);
 }
