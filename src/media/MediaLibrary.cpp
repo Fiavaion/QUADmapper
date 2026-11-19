@@ -17,7 +17,6 @@ static const std::vector<std::string> VIDEO_EXTENSIONS = {
 };
 
 MediaItem* MediaLibrary::addItem(const std::filesystem::path& path) {
-    // Check if path already exists
     if (hasPath(path)) {
         return nullptr;
     }
