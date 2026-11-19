@@ -1607,8 +1607,12 @@ private:
                 rgbColorKey_ = colorKey;
             }
         }
-        sws_scale(swsCtx_, frame->data, frame->linesize, 0, frame->height, rgbFrame_->data,
-                  rgbFrame_->linesize);
+        // On failure rgbFrame_ still holds the previous frame; leave result empty instead.
+        if (sws_scale(swsCtx_, frame->data, frame->linesize, 0, frame->height, rgbFrame_->data,
+                      rgbFrame_->linesize) <= 0) {
+            LOG_ERROR("Converting a {} frame to RGB failed", av_get_pix_fmt_name(format));
+            return;  // an invalid frame: counted as a decode failure
+        }
 
         const int rowBytes = info_.width * 3;
         result.data.resize(static_cast<size_t>(rowBytes) * info_.height);

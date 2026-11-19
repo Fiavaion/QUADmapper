@@ -407,7 +407,10 @@ private:
         }
         uint8_t* planes[4] = {rgba_.data(), nullptr, nullptr, nullptr};
         int strides[4] = {width_ * 4, 0, 0, 0};
-        sws_scale(sws_, frame->data, frame->linesize, 0, frame->height, planes, strides);
+        if (sws_scale(sws_, frame->data, frame->linesize, 0, frame->height, planes, strides) <= 0) {
+            error = std::string("A ") + av_get_pix_fmt_name(format) + " frame could not be converted.";
+            return false;
+        }
 
         const std::vector<uint8_t> hapFrame = hap::encodeHapFrame(
             rgba_.data(), width_, height_, static_cast<size_t>(width_) * 4, variant_, threads_);
