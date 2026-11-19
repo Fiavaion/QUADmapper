@@ -144,6 +144,8 @@ private:
     bool m_autoSaveEnabled = true;     // false: never this session (the bench), whatever the preferences
     double m_lastAutosaveTime = 0.0;
     std::future<Result<void, Error>> m_autosaveWrite;  // in-flight autosave disk write
+    bool m_autosaveFailureShown = false;  // one status line per run of failures
+    void reportAutosaveFailure(const std::string& message);
     std::unique_ptr<AsyncFileDialog> m_projectDialog;  // Open/Save .qmap, off the render thread
     std::function<void(const std::string&)> m_onProjectFileChosen;
     // Missing-media folder search in flight (declared in this order so the future,

@@ -117,9 +117,11 @@ Result<void, Error> AppPreferences::loadFromFile(const std::filesystem::path& pa
     try {
         root = json::parse(result.value());
     } catch (const json::exception& e) {
+        Logger::warning("Could not parse preferences {}: {}", path.u8string(), e.what());
         return Result<void, Error>::error(Error("Failed to parse preferences: " + std::string(e.what())));
     }
     if (!root.is_object() || !root.contains("version")) {
+        Logger::warning("Preferences {} has no version", path.u8string());
         return Result<void, Error>::error(Error("Missing version in preferences file"));
     }
 

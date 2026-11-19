@@ -489,7 +489,7 @@ void ProjectSession::autosaveIfDue() {
     const fs::path file = recoveryFileFor(m_project.getFilePath(), "autosave");
     auto text = ProjectSerializer::serializeFor(p, file);
     if (!text) {
-        Logger::warning("Autosave failed: {}", text.error().message);
+        reportAutosaveFailure(text.error().message);
         return;
     }
     // The atomic write flushes through to disk (FlushFileBuffers + WRITE_THROUGH),
@@ -510,9 +510,20 @@ void ProjectSession::finishAutosaveWrite() {
     if (!m_autosaveWrite.valid()) return;
     auto result = m_autosaveWrite.get();
     if (!result) {
-        Logger::warning("Autosave failed: {}", result.error().message);
+        reportAutosaveFailure(result.error().message);
         m_autosavedSnapshot.clear();  // retry on the next tick
+    } else {
+        m_autosaveFailureShown = false;
     }
+}
+
+// Every failure goes to the log; the status bar says it once until an autosave works
+// again, so the user knows there is no recovery copy without a line every minute.
+void ProjectSession::reportAutosaveFailure(const std::string& message) {
+    Logger::warning("Autosave failed: {}", message);
+    if (m_autosaveFailureShown) return;
+    m_autosaveFailureShown = true;
+    postStatus(m_editor, "Autosave failed, no recovery copy: " + message);
 }
 
 void ProjectSession::offerRecovery(const std::string& projectPath) {

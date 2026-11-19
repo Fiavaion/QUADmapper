@@ -186,14 +186,27 @@ bool Application::initialize(int argc, char* argv[]) {
     }
 
     // Machine preferences, before the components that read them. No file yet (first
-    // run) or an unreadable one leaves the defaults.
+    // run) or an unreadable one leaves the defaults. An unreadable file is kept aside,
+    // because the next preference change saves over it.
     m_preferences = std::make_unique<PreferencesDialog>();
-    m_preferences->loadPreferences();
+    std::string prefsWarning;
+    if (!m_preferences->loadPreferences()) {
+        const std::filesystem::path prefsPath = AppPreferences::getDefaultConfigPath();
+        std::error_code ec;
+        if (std::filesystem::exists(prefsPath, ec)) {
+            std::filesystem::path kept = prefsPath;
+            kept += ".bad";
+            std::filesystem::copy_file(prefsPath, kept, std::filesystem::copy_options::overwrite_existing, ec);
+            prefsWarning = ec ? "Preferences could not be read; using the defaults"
+                              : "Preferences could not be read; using the defaults (old file kept as preferences.json.bad)";
+        }
+    }
 
     if (!initializeComponents()) {
         Logger::error("Failed to initialize components");
         return false;
     }
+    if (!prefsWarning.empty()) postStatus(*m_editorState, prefsWarning);
 
     // The stress and bench harnesses measure the render/perform path; they open no
     // ports or devices.
