@@ -71,7 +71,7 @@ set_tests_properties(stress_smoke PROPERTIES
 # ---------------------------------------------------------------------------
 # bench_smoke — the PRD §5 benchmark harness (--bench) runs every scenario briefly
 # and writes a report it can read back (exit 0). Performance targets are NOT
-# asserted here: machines vary. Video scenarios report "skipped" when the default
+# asserted here: machines vary. Video scenarios report "skipped" when the test
 # media (D:/testing Videos) is absent. Full runs: see Bench.hpp.
 # ---------------------------------------------------------------------------
 add_test(
@@ -87,6 +87,8 @@ add_test(
         --bench-switch-every=3
         --bench-latency-samples=3
         --bench-drift-seconds=1
+        "--bench-media=D:/testing Videos/greenCrystals_15Sec.mp4"
+        "--bench-hap-media=D:/testing Videos/Hap/5sec_hap.mov"
 )
 set_tests_properties(bench_smoke PROPERTIES
     TIMEOUT 120
