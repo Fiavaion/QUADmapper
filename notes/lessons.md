@@ -17,4 +17,6 @@ skill) so the mistake can't recur — fix the process, not just the instance.
 
 | LESSON-BUILD-007 | BUILD | `ctest` after a PARTIAL build (`cmake --build --target QUADmapper`) runs STALE test binaries: it reported 624/624 green across TD-01/TD-03 while `test_output` had a signature-mismatch compile error and `test_audio` had a real regression (AudioBuffer rounded capacity up to a power of two, breaking the exact-capacity contract). Both only surfaced on the next FULL `cmake --build`. **Always full-build before ctest** so test exes recompile against changed headers. | Adopted full-build-before-ctest in this workflow; both regressions fixed. |
 
+| LESSON-ARCH-008 | ARCH | Putting a running subsystem behind a runtime switch (AI Assist beta): hide its entry points while off, and act only on the on→off *transition* (so test hooks like `QM_AI_SELFTEST` still work), stopping it without destroying it so it can be turned on again. Any watcher that reports "failed to start" must be resynced after a stop you asked for, or the stop shows up as an error. | `AiAssist::disable()` + `Application` `m_aiBetaWasOn` (`31b5e91`). |
+
 <!-- New entries appended by /lessons from LESSON-* tags in source. -->

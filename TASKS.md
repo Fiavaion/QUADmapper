@@ -1,6 +1,6 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-10-10 (ADR-053 built)
+Last Updated: 2026-11-19 (QM-125 audit, QM-126 AI beta switch)
 
 ## Quick Status
 - In Progress: 0
@@ -410,6 +410,17 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Gate:** `ctest --test-dir build/debug -C Debug -j 8 | 4a3a8af | 1766 passed, 0 failed` (8 disabled, some skipped for missing hardware). `pytest tools/ai-sidecar | 4a3a8af | 119 passed`.
 - **Not verified by hand:** a real AI engine launch with the token, the confirmation dialogs, Properties undo, a real crash through the crash filter. They are on the owner's test list in `notes/CURRENT_STATUS.md`.
 - **Open:** the release package (TD-44) and the smaller gaps in TD-41..TD-43.
+
+#### QM-126: AI Assist behind a beta switch, off by default
+- **Status:** DONE (code and tests; GUI check pending) — **Completed:** 2026-11-19. Branch `dev`, `31b5e91` (not pushed).
+- **Effort:** S · **Depends On:** none · **Why:** AI is part of the app but not of the MVP; mapping must not need it.
+- **Delivered:**
+  - `general.aiAssistBeta` in `preferences.json`, default false (old files load as off). Preferences > General > AI Assist (beta).
+  - Off hides the AI (Beta) menu, the AI Photo panel, Help > AI Features Guide and Calibration's Place From Photo.
+  - On→off calls `AiAssist::disable()`: it cancels a scan, clears the pattern and the proposal, and stops the engine, which can be started again.
+  - The user guide, AI guide and release notes say how to turn it on.
+- **Gate:** `test_editor` 220 + 1 flaky (AudioSyncTest real-time, unrelated), `test_ui` 54, `test_app` 28, `layering_check` 1/1 at `31b5e91`.
+- **Not verified by hand:** hands-on item 5 in `notes/CURRENT_STATUS.md`.
 
 #### 3D-B2: ChArUco camera calibration, stereo and ICP (FUTURE)
 - **Status:** not planned · Needs its own ADR-053 amendment before any work (ADR-053 §3, "Deferred to 3D-B2").
@@ -1192,6 +1203,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-123 | AI proposals and assisted calibration (ADR-053 §1–3) | DONE | Phase 9 |
 | QM-124 | Owner hands-on test of AI features | TODO | Phase 9 |
 | QM-125 | Release-readiness audit and fixes | DONE | Phase 9 |
+| QM-126 | AI Assist behind a beta switch | DONE | Phase 9 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |
