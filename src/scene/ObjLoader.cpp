@@ -16,9 +16,10 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Guards against files that would exhaust memory or overflow 32-bit indices.
+// Guards against files that would exhaust memory or overflow 32-bit indices. 16.7M per
+// list is far past any projection model and a quarter of the earlier 2^26 limit.
 constexpr std::uintmax_t kMaxFileBytes = 512ull * 1024 * 1024;
-constexpr size_t kMaxElements = size_t(1) << 26;  // per v/vt/vn list, and per triangle list
+constexpr size_t kMaxElements = size_t(1) << 24;  // per v/vt/vn list, and per triangle list
 
 // One face corner as resolved 0-based indices; -1 = not given.
 struct Corner {

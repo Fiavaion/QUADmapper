@@ -32,17 +32,48 @@ bool isTiff(const std::filesystem::path& path) {
     return ext == ".tif" || ext == ".tiff";
 }
 
+// Checked from the header, before a decode that would take gigabytes. 32768 is the
+// largest GL_MAX_TEXTURE_SIZE in use (NVIDIA); Texture::create checks the card's own.
+// 134 MP still allows a 19200 x 2160 five-projector panorama.
+constexpr long long kMaxImageSide = 32768;
+constexpr long long kMaxImagePixels = 1LL << 27;
+
+// Empty when an image of this size may be decoded, else the reason it may not.
+std::string sizeProblem(long long width, long long height) {
+    if (width <= kMaxImageSide && height <= kMaxImageSide && width * height <= kMaxImagePixels) {
+        return {};
+    }
+    return std::to_string(width) + " x " + std::to_string(height) +
+           " is too large (at most 32768 pixels a side and 134 megapixels)";
+}
+
 // stbi_load() opens its filename in the ANSI code page, so a non-ASCII folder fails.
-// Read the bytes through the wide path and decode from memory instead.
+// Read the bytes through the wide path and decode from memory instead. On failure
+// `why` says what went wrong.
 unsigned char* stbiLoadPath(const std::filesystem::path& path, int* width, int* height,
-                            int* channels, int desiredChannels) {
+                            int* channels, int desiredChannels, std::string& why) {
     auto bytes = FileSystem::readBinaryFile(path);
     if (!bytes || bytes.value().empty() ||
         bytes.value().size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        why = "cannot read the file";
         return nullptr;
     }
-    return stbi_load_from_memory(bytes.value().data(), static_cast<int>(bytes.value().size()),
-                                 width, height, channels, desiredChannels);
+    const auto* raw = bytes.value().data();
+    const int size = static_cast<int>(bytes.value().size());
+    int w = 0, h = 0, c = 0;
+    if (!stbi_info_from_memory(raw, size, &w, &h, &c)) {
+        const char* reason = stbi_failure_reason();
+        why = reason ? reason : "unknown";
+        return nullptr;
+    }
+    why = sizeProblem(w, h);
+    if (!why.empty()) return nullptr;
+    unsigned char* data = stbi_load_from_memory(raw, size, width, height, channels, desiredChannels);
+    if (!data) {
+        const char* reason = stbi_failure_reason();
+        why = reason ? reason : "unknown";
+    }
+    return data;
 }
 
 std::string hresultText(HRESULT hr) {
@@ -128,14 +159,15 @@ Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desired
     hr = rgbaSource->GetSize(&width, &height);
     if (FAILED(hr)) return failHr("unreadable image size", hr);
 
-    // Same per-axis cap as stb_image; the byte count must also fit CopyPixels' UINT.
-    constexpr UINT MAX_DIMENSION = 1u << 24;
+    // Same cap as the stb path; the byte count must also fit CopyPixels' UINT.
     const unsigned long long stride = static_cast<unsigned long long>(width) * 4;
     const unsigned long long byteCount = stride * height;
-    if (width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION ||
-        byteCount > std::numeric_limits<UINT>::max()) {
+    if (width == 0 || height == 0 || byteCount > std::numeric_limits<UINT>::max()) {
         return fail("unsupported size " + std::to_string(width) + "x" +
                     std::to_string(height));
+    }
+    if (const std::string tooLarge = sizeProblem(width, height); !tooLarge.empty()) {
+        return fail(tooLarge);
     }
 
     std::vector<uint8_t> rgba(static_cast<size_t>(byteCount));
@@ -177,7 +209,6 @@ void expandGreyToRgba(ImageData& image) {
 } // namespace
 
 Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
-    // Check if file exists
     if (!std::filesystem::exists(path)) {
         return Err<ImageData>("File not found: " + utf8FromPath(path));
     }
@@ -194,17 +225,15 @@ Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
     // stb user elsewhere cannot change it under us.
     stbi_set_flip_vertically_on_load_thread(false);
 
-    // Load image data
     int width, height, channels;
-    unsigned char* data = stbiLoadPath(path, &width, &height, &channels, 0);
+    std::string why;
+    unsigned char* data = stbiLoadPath(path, &width, &height, &channels, 0, why);
 
     if (!data) {
-        const char* reason = stbi_failure_reason();
-        Logger::error("Failed to load image: {} - {}", utf8FromPath(path), reason ? reason : "unknown");
-        return Err<ImageData>("Failed to load image: " + std::string(reason ? reason : "unknown"));
+        Logger::error("Failed to load image: {} - {}", utf8FromPath(path), why);
+        return Err<ImageData>("Failed to load image: " + why);
     }
 
-    // Create ImageData and copy pixels
     ImageData result;
     result.width = width;
     result.height = height;
@@ -214,7 +243,6 @@ Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
     result.pixels.resize(dataSize);
     std::memcpy(result.pixels.data(), data, dataSize);
 
-    // Free stb_image's data
     stbi_image_free(data);
     expandGreyToRgba(result);
 
@@ -228,12 +256,10 @@ Result<ImageData, Error> ImageLoader::loadWithChannels(
     const std::filesystem::path& path,
     int desiredChannels)
 {
-    // Check if file exists
     if (!std::filesystem::exists(path)) {
         return Err<ImageData>("File not found: " + utf8FromPath(path));
     }
 
-    // Validate desired channels
     if (desiredChannels < 0 || desiredChannels > 4) {
         return Err<ImageData>("Invalid channel count: " + std::to_string(desiredChannels));
     }
@@ -248,11 +274,11 @@ Result<ImageData, Error> ImageLoader::loadWithChannels(
 
     // Load with requested channel count (0 = auto-detect)
     int width, height, channels;
-    unsigned char* data = stbiLoadPath(path, &width, &height, &channels, desiredChannels);
+    std::string why;
+    unsigned char* data = stbiLoadPath(path, &width, &height, &channels, desiredChannels, why);
 
     if (!data) {
-        const char* reason = stbi_failure_reason();
-        return Err<ImageData>("Failed to load image: " + std::string(reason ? reason : "unknown"));
+        return Err<ImageData>("Failed to load image: " + why);
     }
 
     // Use requested channels if specified, otherwise use native

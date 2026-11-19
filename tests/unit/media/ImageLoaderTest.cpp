@@ -386,6 +386,15 @@ TEST_F(ImageLoaderTiffTest, MissingFileReturnsError) {
     EXPECT_NE(result.error().message.find("not found"), std::string::npos);
 }
 
+// The header is checked before decoding: a 20000 x 20000 claim is refused for its size,
+// not after stb has tried to allocate 1.2 GB for it.
+TEST_F(ImageLoaderTiffTest, OversizedImageIsRefusedFromItsHeader) {
+    const auto path = writePpm("huge.ppm", 20000, 20000, {});
+    auto result = ImageLoader::load(path);
+    ASSERT_TRUE(result.isError());
+    EXPECT_NE(result.error().message.find("too large"), std::string::npos) << result.error().message;
+}
+
 // A folder named outside the ANSI code page: stb_image decodes from memory read
 // through the wide path, WIC opens the wide name.
 TEST_F(ImageLoaderTiffTest, LoadsFromNonAsciiFolder) {

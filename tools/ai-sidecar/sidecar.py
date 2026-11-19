@@ -384,6 +384,9 @@ def _oneflash_available() -> bool:
 
 
 class SidecarHandler(BaseHTTPRequestHandler):
+    # A client that stalls mid-request (headers or body) gives up its thread after this.
+    timeout = 30
+
     # Quiet by default; the app captures stdout/stderr for diagnostics.
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - stdlib signature
         sys.stderr.write("[sidecar] " + (fmt % args) + "\n")
@@ -393,6 +396,8 @@ class SidecarHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -422,13 +427,13 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 "capabilities": capabilities(),
             })
             return
-        self._send_json(404, {"error": "not found", "path": self.path})
+        self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib signature
         if self._refused():
             return
         if self.path not in ("/surface", "/oneflash") and self.path not in _CHECKED_ENDPOINTS:
-            self._send_json(404, {"error": "not found", "path": self.path})
+            self._send_json(404, {"error": "not found"})
             return
         media_type = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
         if media_type != "application/json":
