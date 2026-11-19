@@ -1,12 +1,11 @@
 # Current Status
 
-**Last updated:** 2026-11-19 (session end: AI Assist put behind a beta switch)
-**Phase / focus:** Release 1.0.0. The audit (QM-125), the owner's decisions and the AI beta switch (QM-126) are done. Next: `/release`, the owner's hands-on test, then the installer (AI engine bundle, TD-44).
-**Dev:** `dev` is one code commit ahead of `origin/dev`: `31b5e91` (AI beta), plus this session's notes commit. **Not pushed**; the owner decides.
-**Gate:**
-- Last full suite: `ctest --test-dir build/debug -C Debug -j 8 | 4a3a8af | 1766 passed, 0 failed`.
-- Targeted since: `cmake --build build/debug --target QUADmapper test_editor test_ui test_app` then those three exes and `ctest -R layering` | `31b5e91` | `test_editor` 220 passed, 1 flaky failure (below); `test_ui` 54; `test_app` 28; `layering_check` 1/1.
-- `/release` reruns the full suite.
+**Last updated:** 2026-11-19 (`/release` gate passed)
+**Phase / focus:** Release 1.0.0. The audit (QM-125), the owner's decisions, the AI beta switch (QM-126) and `/release` are done. Next: the owner's hands-on test, then the installer (AI engine bundle, TD-44).
+**Dev:** `origin/dev` = `65a6a7f`. Not pushed yet: the four release-fix commits `d34821d..3b86825` and the notes commit. The owner decides.
+**Gate:** `/release` **PASS**; details in [RELEASE_REVIEW.md](RELEASE_REVIEW.md).
+- Full suite: `ctest --test-dir build/debug -C Debug -j 8 | d34821d..3b86825 before the review fixes | 1773 passed, 0 failed`.
+- After the review fixes (ImageLoader, OBJ comment, one sidecar line): ImageLoader 21, Obj 36, `test_sidecar.py` 49 passed, at `3b86825`.
 
 ## Decided 2026-11-19 (owner)
 
@@ -44,14 +43,14 @@
 
 ## What is left before release
 
-1. `/release` (the full gate; the owner types it), then fixes from the hands-on test.
+1. The owner's hands-on test, then its fixes. `/release` passed; its low items are parked in [RELEASE_REVIEW.md](RELEASE_REVIEW.md).
 2. Installer: `feat/installer` (`9e5aacd`) does not compile, and its sidecar lookup conflicts with `dev`. It should use `cmake --install` for the app folder and stage only the AI engine.
 3. Move the sidecar to the PyTorch cu128 builds for the RTX 5090 (`000_start.md` §4).
 4. The `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)). PR #3 stays a draft until the hands-on test.
 
 ## Known gaps
 
-- **Flaky test:** `AudioSyncTest.RealTimeNullDeviceStaysInStepThroughASeekAndAPause` (20 s, real time). It failed once under parallel load on 2026-11-19 and passed alone. It is flagged, not retried; if `/release` trips on it, quarantine it.
+- **Flaky test:** `AudioSyncTest.RealTimeNullDeviceStaysInStepThroughASeekAndAPause` (20 s, real time). It failed once under parallel load on 2026-11-19, then passed alone and in the `/release` full run. If it fails again, quarantine it.
 - **Not yet seen in the GUI:** the AI beta switch (item 5) and the 2026-11-19 UI items (item 7).
 - **Logged deferrals:** TD-41..TD-43 (small undo and log-only gaps) and TD-44 (AI engine bundle), in [TECHNICAL_DEBT.md](../TECHNICAL_DEBT.md).
 
