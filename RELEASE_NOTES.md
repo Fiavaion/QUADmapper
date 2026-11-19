@@ -1,8 +1,8 @@
 # QUADmapper Release Notes
 
-## Unreleased
+## 1.0.0
 
-Everything below was added after v1.0.0. The version number and date are set when the release is made.
+The first public release. The date is set when the release is made. It covers everything since the December 2025 development milestone further down.
 
 ### Mapping
 
@@ -43,6 +43,10 @@ Everything below was added after v1.0.0. The version number and date are set whe
 - Perform lock (`Ctrl+Shift+L`, or Output > Perform Lock) blocks edits during a show and keeps show controls working. Unlocking asks for confirmation.
 - Keyboard shortcuts can be changed in Edit > Preferences... > Keyboard. Redo and several other actions accept more than one key.
 - A Help menu, a status bar and a remembered panel layout (Window > Reset Layout restores the default).
+- `Ctrl+G` groups the selected quads (also Edit > Group Selected).
+- File > Open Recent lists the last ten shows.
+- Edit > Preferences... > Interface size makes the interface larger or smaller than the monitor's own scale.
+- The program has its own icon, and Explorer shows its version.
 
 ### External control
 
@@ -88,9 +92,11 @@ AI assist is optional. It needs a one-off setup and a webcam. See the AI feature
 
 ---
 
-# QUADmapper v1.0.0 Release Notes
+# Development milestone, December 2025 (not published)
 
-**Release Date:** December 20, 2025
+These notes were written for an internal build that was numbered 1.0.0 but never released. The public 1.0.0 is the section at the top.
+
+**Date:** December 20, 2025
 
 ## Overview
 
