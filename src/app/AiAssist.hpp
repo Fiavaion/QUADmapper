@@ -69,6 +69,10 @@ public:
     // AI menu: connect off the UI thread (TD-10) so the menu never freezes 1-3s;
     // tick() reports the outcome.
     void enable();
+    // The AI Assist beta was turned off (Preferences): give the show back (a scan
+    // cancelled, the One-Flash pattern and the photo proposal cleared) and stop the
+    // engine. enable() can start it again.
+    void disable();
 
     // An AI menu item. The perform lock (ADR-051 §4) refuses every one but Clear
     // Pattern, which gives the show back: the rest warp quads or put patterns on the

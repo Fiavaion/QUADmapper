@@ -1138,7 +1138,7 @@ bool AiAssist::renderPatternFrames(OutputManager& outputs, Renderer& renderer) {
     return true;
 }
 
-void AiAssist::stopSidecar() {
+void AiAssist::disable() {
     // A scan gives the outputs back while they still exist.
     if (scan_) {
         scan_->cancel();
@@ -1146,11 +1146,19 @@ void AiAssist::stopSidecar() {
         scanHost_.reset();
         editor_.aiScan.running = false;
     }
-    if (!sidecar_) return;
+    emitPattern_ = false;
+    photo_.proposal.reset();
     // Kill any launched sidecar now (no orphan), even while a running request still
     // holds a share of the client: its HTTP call then fails fast instead of waiting
     // out the request timeout.
-    sidecar_->stop();
+    if (sidecar_) {
+        sidecar_->stop();
+        lastSidecarState_ = sidecar_->state();  // tick() reports no "could not start" for it
+    }
+}
+
+void AiAssist::stopSidecar() {
+    disable();
     sidecar_.reset();
 }
 

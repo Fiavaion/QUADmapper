@@ -56,7 +56,7 @@ The first public release. The date is set when the release is made. It covers ev
 
 ### AI assist
 
-AI assist is optional. It needs a one-off setup and a webcam. See the AI features guide.
+AI assist is a beta and is off until you turn it on in Edit > Preferences... > General > AI Assist (beta). Mapping does not need it. It needs a one-off setup and a webcam. See the AI features guide.
 
 - Detect Surface proposes a quad from a camera photo.
 - Pick Surface: click a surface in a photo and the app outlines it and proposes the corners.

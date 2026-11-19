@@ -209,6 +209,8 @@ private:
 
     // Optional AI pre-show assist (ADR-035, ADR-051 §1): the sidecar and One-Flash.
     std::unique_ptr<AiAssist> m_aiAssist;
+    // Last frame's AI Assist beta preference: switching it off stops the assist.
+    bool m_aiBetaWasOn = false;
 
     // Per-session editor/scene state (was ~40 function-statics in render(); see ADR-031 TD-02)
     std::unique_ptr<EditorState> m_editorState;

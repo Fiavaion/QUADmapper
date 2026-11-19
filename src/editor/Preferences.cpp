@@ -139,6 +139,7 @@ Result<void, Error> AppPreferences::loadFromFile(const std::filesystem::path& pa
                               std::end(UI_SCALE_CHOICES)) {
             general.uiScalePercent = scale;
         }
+        readBool(*gen, "aiAssistBeta", general.aiAssistBeta);
     }
 
     if (const json* perf = sectionOf(root, "performance")) {
@@ -212,6 +213,7 @@ Result<void, Error> AppPreferences::saveToFile(const std::filesystem::path& path
     gen["uiMode"] = general.uiMode;
     gen["sceneFadeSeconds"] = general.sceneFadeSeconds;
     gen["uiScalePercent"] = general.uiScalePercent;
+    gen["aiAssistBeta"] = general.aiAssistBeta;
     root["general"] = gen;
     root["recentProjects"] = recentProjects;
 

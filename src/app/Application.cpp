@@ -571,6 +571,12 @@ int Application::run() {
         if (!pollFrame(deltaTime)) break;  // a confirmed Exit
         presentFrame();
 
+        // AI Assist is a beta: turning it off in Preferences gives the show back and
+        // stops the engine.
+        const bool aiBeta = m_preferences->getPreferences().general.aiAssistBeta;
+        if (m_aiBetaWasOn && !aiBeta) m_aiAssist->disable();
+        m_aiBetaWasOn = aiBeta;
+
         // AI assist: report an async sidecar connect; the QM_AI_SELFTEST hook.
         m_aiAssist->tick(m_outputManager.get());
     }

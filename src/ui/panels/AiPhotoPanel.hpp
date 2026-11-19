@@ -28,6 +28,10 @@ public:
     AiPhotoPanel& operator=(const AiPhotoPanel&) = delete;
 
     const char* id() const override { return ID; }
+    // Opened from AI > Pick Surface... and Calibration's Place From Photo, not the Window
+    // menu; drawn only while AI Assist (a beta, Preferences > General) is on.
+    const char* menuLabel() const override { return nullptr; }
+    bool available(const EditorContext& ctx) const override;
     void drawContent(EditorContext& ctx) override;
 
 private:

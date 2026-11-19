@@ -260,7 +260,7 @@ TEST(PreferencesFileTest, SettingsThisVersionDroppedAreIgnoredAndNotWrittenBack)
                         "control.midiDevices", "control.oscBindAddress", "control.oscEnabled",
                         "control.oscFeedbackEnabled", "control.oscFeedbackHost", "control.oscFeedbackPort",
                         "control.oscFeedbackUseIds", "control.oscPort",
-                        "general.autoLoadMediaOnStartup", "general.autoSaveEnabled",
+                        "general.aiAssistBeta", "general.autoLoadMediaOnStartup", "general.autoSaveEnabled",
                         "general.autoSaveIntervalMinutes", "general.defaultMediaFolder",
                         "general.recursiveFolderScan", "general.sceneFadeSeconds", "general.uiMode",
                         "general.uiScalePercent", "performance.audioDevice"}));
@@ -480,18 +480,21 @@ TEST(PreferencesFileTest, RecentProjectsAndUiScaleRoundTripAndOldFilesLoadEmpty)
     AppPreferences prefs;
     prefs.recentProjects = {"C:\\Shows\\a.qmap", "C:\\Shows\\b.qmap"};
     prefs.general.uiScalePercent = 150;
+    prefs.general.aiAssistBeta = true;
     ASSERT_TRUE(prefs.saveToFile(file.path.string()));
     AppPreferences loaded;
     ASSERT_TRUE(loaded.loadFromFile(file.path.string()));
     EXPECT_EQ(loaded.recentProjects, prefs.recentProjects);
     EXPECT_EQ(loaded.general.uiScalePercent, 150);
+    EXPECT_TRUE(loaded.general.aiAssistBeta);
 
-    // An old file has neither: Automatic and an empty list.
+    // An old file has none of them: Automatic, an empty list and AI Assist off.
     file.write(R"({"version": "1.0", "general": {"uiMode": 1}})");
     AppPreferences old;
     ASSERT_TRUE(old.loadFromFile(file.path.string()));
     EXPECT_TRUE(old.recentProjects.empty());
     EXPECT_EQ(old.general.uiScalePercent, 0);
+    EXPECT_FALSE(old.general.aiAssistBeta);
 }
 
 TEST(PreferencesFileTest, GarbledRecentProjectsAndUiScaleAreSkipped) {

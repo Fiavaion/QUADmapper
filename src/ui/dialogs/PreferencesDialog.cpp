@@ -173,6 +173,11 @@ bool PreferencesDialog::renderGeneralTab(EditorContext& ctx) {
     changed |= ImGui::Checkbox("Include subfolders", &general.recursiveFolderScan);
     ImGui::SetItemTooltip("For the startup import and for watching the folder for new files");
     appliesNote("Applies on restart. New files in the folder are imported while QUADmapper runs.");
+
+    ImGui::SeparatorText("Beta");
+    changed |= ImGui::Checkbox("AI Assist (beta)", &general.aiAssistBeta);
+    ImGui::SetItemTooltip("Camera-based surface detection and auto-warp. Mapping does not need it.");
+    appliesNote("Applies now. Adds the AI menu; turning it off stops the AI engine.");
     return changed;
 }
 

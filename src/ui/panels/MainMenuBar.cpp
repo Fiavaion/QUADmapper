@@ -318,7 +318,9 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         audioMenuOpen_ = false;
     }
 
-    if (ImGui::BeginMenu("AI")) {
+    // AI Assist is a beta (Edit > Preferences > General): no AI menu until it is on.
+    const bool aiBeta = ctx.prefs && ctx.prefs->general.aiAssistBeta;
+    if (aiBeta && ImGui::BeginMenu("AI (Beta)")) {
         using AiAction = EditorServices::AiAction;
         EditorServices* services = ctx.services;
         auto run = [services](AiAction action) {
@@ -375,7 +377,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
     // Nothing here changes the show: guides, the log and the About box.
     if (ImGui::BeginMenu("Help")) {
         if (ImGui::MenuItem("User Guide")) openPath(es, resourcePath("docs/quick-start.html"));
-        if (ImGui::MenuItem("AI Features Guide")) {
+        if (aiBeta && ImGui::MenuItem("AI Features Guide")) {
             openPath(es, resourcePath("docs/ai-features-guide.html"));
         }
         if (ImGui::MenuItem("Keyboard Shortcuts...")) {

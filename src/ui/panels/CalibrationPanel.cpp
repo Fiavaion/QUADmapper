@@ -4,6 +4,7 @@
 #include "editor/EditorContext.hpp"
 #include "editor/EditorServices.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/Preferences.hpp"
 #include "editor/TextureResolve.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
@@ -208,9 +209,11 @@ void CalibrationPanel::render(EditorContext& ctx) {
         ImGui::SetItemTooltip("Aim the uncalibrated projector at the objects with this lens");
 
         // Assisted placement (ADR-053 §3): with a current scan of this projector, the
-        // selected point's pixel comes from a click on the AI photo.
+        // selected point's pixel comes from a click on the AI photo. AI Assist is a beta:
+        // only while it is on.
         EditorServices* services = ctx.services;
-        if (services && services->aiHasScan(output->getId())) {
+        const bool aiBeta = ctx.prefs && ctx.prefs->general.aiAssistBeta;
+        if (aiBeta && services && services->aiHasScan(output->getId())) {
             const bool hasPhoto = !services->aiPhoto().path.empty();
             if (cal.pick == CalibrationSession::Pick::Photo) {
                 if (ImGui::Button("Cancel Photo Pick")) cal.cancelPick();

@@ -107,8 +107,9 @@
 <section id="enable">
   <h2>2. Turn on AI Assist</h2>
   <ol class="steps">
+    <li>AI Assist is a beta and is off until you turn it on: tick <span class="menu">Edit &gt; Preferences... &gt; General &gt; AI Assist (beta)</span>. The <span class="menu">AI (Beta)</span> menu appears; this guide calls it the AI menu. Untick it to hide the menu again, which also stops the AI sidecar.</li>
     <li>Choose <span class="menu">AI &gt; Enable AI Assist</span>. The app starts the AI sidecar in the background, so the editor stays usable.</li>
-    <li>When it's connected, the AI menu shows "Sidecar connected" and the AI items become available.</li>
+    <li>When it's connected, the AI menu shows "AI engine connected" and the AI items become available.</li>
     <li>The sidecar loads its models right after starting. The very first request may still take around 10 seconds; later ones take about a second on a GPU.</li>
   </ol>
   <div class="note">While a request is running, the status line says so, the AI menu shows "request running...", and the items that start a new request are greyed out. The app and projectors keep running normally.</div>
@@ -214,7 +215,8 @@
   <div class="scroll">
   <table>
     <tr><th>What you see</th><th>What to do</th></tr>
-    <tr><td>AI menu says "Sidecar not running"</td><td>Choose Enable AI Assist. If it never connects, re-run <span class="menu">tools\ai-sidecar\setup.ps1</span>.</td></tr>
+    <tr><td>There is no AI menu</td><td>Tick <span class="menu">Edit &gt; Preferences... &gt; General &gt; AI Assist (beta)</span>.</td></tr>
+    <tr><td>AI menu says "AI engine not running"</td><td>Choose Enable AI Assist. If it never connects, re-run <span class="menu">tools\ai-sidecar\setup.ps1</span>.</td></tr>
     <tr><td>Pick Surface or Scan Output is greyed out</td><td>The sidecar is missing that feature (hover for the tooltip), the perform lock is on, or another request is running.</td></tr>
     <tr><td>"update the AI sidecar"</td><td>The sidecar is older than the app. Re-run setup.</td></tr>
     <tr><td>First request is slow</td><td>Normal: the models are loading. Without an NVIDIA GPU, Detect Surface can take 20–30 seconds.</td></tr>

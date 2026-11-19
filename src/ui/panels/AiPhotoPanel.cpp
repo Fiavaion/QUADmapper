@@ -4,6 +4,7 @@
 #include "editor/EditorContext.hpp"
 #include "editor/EditorServices.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/Preferences.hpp"
 #include "renderer/Texture.hpp"
 #include "scene/CalibrationSession.hpp"
 
@@ -27,6 +28,10 @@ constexpr const char* CORNER_LABELS[4] = {"TL", "TR", "BR", "BL"};
 AiPhotoPanel::AiPhotoPanel() { visible = false; }  // AI > Pick Surface... opens it
 
 AiPhotoPanel::~AiPhotoPanel() = default;
+
+bool AiPhotoPanel::available(const EditorContext& ctx) const {
+    return ctx.prefs && ctx.prefs->general.aiAssistBeta;
+}
 
 void AiPhotoPanel::drawContent(EditorContext& ctx) {
     using AiAction = EditorServices::AiAction;

@@ -13,6 +13,7 @@
 - **OSC** stays on `0.0.0.0` (off until enabled; a tablet controller is the usual use).
 - Root `imgui.ini` and `project.qmap` untracked (still on disk); no machine paths in `Bench.hpp`.
 - **UI:** Ctrl+G group, File > Open Recent, Preferences > Interface size, Edit > Mesh greyed for a locked quad.
+- **AI Assist is a beta**, off by default (`general.aiAssistBeta`, Preferences > General > AI Assist (beta)). Off hides the AI (Beta) menu, the AI Photo panel, Help > AI Features Guide and Calibration's Place From Photo; turning it off stops the engine and gives the show back. The `QM_AI_SELFTEST` hook ignores it.
 
 ## Owner's hands-on test (about 25 minutes)
 
@@ -20,7 +21,7 @@
 2. Properties: drag Opacity, a corner value and a crop edge; each is one Ctrl+Z step.
 3. Lock a quad in the Quad List; corners, mesh keys and Properties shape edits are refused with a status line; Edit > Mesh is greyed.
 4. Delete a quad, a media item used by quads, and an output: each asks first, none crashes.
-5. AI > Enable AI Assist: the engine starts and connects. Then the QM-124 checklist (ADR-053 Amendment 1).
+5. With AI Assist (beta) off, there is no AI menu. Tick it in Preferences > General: AI (Beta) appears; AI > Enable AI Assist starts and connects the engine. Untick it: the menu goes and the engine stops. Then, ticked again, the QM-124 checklist (ADR-053 Amendment 1).
 6. Help menu: each item opens what it names.
 7. New: Ctrl+G with 2+ quads (names "Group N"); Open Recent after a save, a missing file, Clear Recent; Interface size at 100% and 200% (only fonts scale, not padding).
 8. Explorer: `QUADmapper.exe` shows the icon and version 1.0.0; the window has the icon.
@@ -31,6 +32,8 @@
 2. Installer: `feat/installer` (`9e5aacd`) does not compile and its sidecar lookup conflicts with `dev`; it should use `cmake --install` for the app folder and stage only the AI engine.
 3. Sidecar to the PyTorch cu128 builds for the RTX 5090 (`000_start.md` §4).
 4. `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)); PR #3 stays a draft until the hands-on test.
+
+Flaky: `AudioSyncTest.RealTimeNullDeviceStaysInStepThroughASeekAndAPause` (20 s real-time) failed once under load on 2026-11-19 and passed alone; flagged, not retried.
 
 ## Hardware-only items
 

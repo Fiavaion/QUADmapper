@@ -35,6 +35,11 @@ struct GeneralPreferences {
     // Interface size in percent: 0 = Automatic (the monitor's scale), else one of
     // UI_SCALE_CHOICES. Applies at once (Application sets style.FontScaleMain).
     int uiScalePercent = 0;
+
+    // AI Assist is a beta, not part of the core mapping workflow. Off: the AI menu, the
+    // AI Photo panel and Help > AI Features Guide are hidden; turning it off stops the
+    // AI engine (Application). Applies at once.
+    bool aiAssistBeta = false;
 };
 
 // Limits the dialog offers and loading enforces.
