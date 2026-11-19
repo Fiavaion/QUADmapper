@@ -1,6 +1,6 @@
 # TODOs
 
-> **Source of truth for tasks is [TASKS.md](../TASKS.md)** (QM-XXX IDs) and `SESSION_STATE.json`.
+> **Source of truth for tasks is [TASKS.md](../TASKS.md)** (QM-XXX IDs).
 > This file only tracks loose code-level `TODO`/`FIXME` comments found by `/todos`, so they
 > don't rot in the source. Promote anything real into a QM task in TASKS.md.
 

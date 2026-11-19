@@ -6,7 +6,7 @@ Last Updated: 2026-11-19 (QM-125 audit, QM-126 AI beta switch)
 - In Progress: 0
 - Todo: owner hands-on test of the AI features (QM-124, next), the GUI check of the perform lock and the Keyboard preferences (QM-122), TD-12 present threads (hardware), TD-14b, TD-29 running-app check
   (calibration on sliced outputs, done in code), TD-32/33 (pre-existing loop bugs), dev→master
-  PR #2, 🚩 QM-061
+  PR #3 (draft; #2 merged), 🚩 QM-061
 - Done: Session 22 added QM-083..QM-099; Session 23 added QM-100..QM-109 (PRD MVP gaps + control);
   2026-09-27/28 added QM-117..QM-121 (ADR-047 canvas/slices/blend/crossfades, ADR-049, ADR-056
   zero-copy), TD-30/31 fixed; quiet-machine gates met (see TECHNICAL_DEBT.md); 2026-09-29

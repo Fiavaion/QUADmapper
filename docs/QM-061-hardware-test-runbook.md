@@ -153,6 +153,6 @@ The notes below are the original port plan, kept for reference:
 ## 8. After it passes
 
 - Update **QM-061 → DONE** in [TASKS.md](../TASKS.md) with the documented result, clear the
-  blocker in [SESSION_STATE.json](../SESSION_STATE.json), and mark Phase 9 fully complete.
+  🚩 item in [notes/CURRENT_STATUS.md](../notes/CURRENT_STATUS.md), and mark Phase 9 fully complete.
 - Open the **`dev`→`master` PR** to bring the wedge (and the v1.1 polish) into `master` — see
   [docs/QM-061-pr-prep.md](QM-061-pr-prep.md) for the ready-to-use PR body.

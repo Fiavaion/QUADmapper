@@ -13,8 +13,9 @@ Rules:
 
 ## Prior decisions (pre-formalization)
 
-ADR-001 through ADR-030 were recorded informally in `SESSION_STATE.json` (`keyDecisions`)
-and `PROJECT_HISTORY.md` during the v1.0.0 build, e.g.:
+ADR-001 through ADR-030 were recorded informally in
+[`../archive/SESSION_STATE.json`](../archive/SESSION_STATE.json) (`keyDecisions`) and
+[`../archive/PROJECT_HISTORY.md`](../archive/PROJECT_HISTORY.md) during the v1.0.0 build, e.g.:
 
 - ADR-027 — Corner pin mode (`CORNERS_ONLY`) is default; mesh edit via checkbox.
 - ADR-028 — Default quad size is 40% of canvas, centered.

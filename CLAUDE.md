@@ -178,9 +178,12 @@ This project uses a session management system for development continuity:
 
 | File | Purpose |
 |------|---------|
-| `PROJECT_HISTORY.md` | Chronological development log |
+| `notes/CURRENT_STATUS.md` | One-page restart package, rewritten at `/end` |
+| `docs/sessions/` | Dated session logs; the latest is the detailed record |
 | `TASKS.md` | Task status tracking (QM-XXX IDs) |
-| `SESSION_STATE.json` | Machine-readable state for auto-continue |
+
+`SESSION_STATE.json` and `PROJECT_HISTORY.md` were retired on 2026-11-19 (owner decision; they
+stopped at Session 20) and kept read-only in [docs/archive/](docs/archive/). Do not update them.
 
 ## Sub-Agent Strategy
 
@@ -379,8 +382,8 @@ Testing serves the success metric; it is not the goal. Spend it in proportion to
 
 ## Session Continuity Layer
 
-Source of truth stays the existing `TASKS.md` / `SESSION_STATE.json` / `PROJECT_HISTORY.md`
-(read by `/start` and `/end`). The bootstrap added only non-overlapping pieces:
+Source of truth is `TASKS.md`, `notes/CURRENT_STATUS.md` and the latest `docs/sessions/` log
+(read by `/start`, written by `/end`). Alongside them:
 [TECHNICAL_DEBT.md](TECHNICAL_DEBT.md), [notes/lessons.md](notes/lessons.md) (the
 `LESSON-{ARCH|BUG|PERF|API|UI|TEST|BUILD}-NNN` ledger), and [notes/TODOs.md](notes/TODOs.md).
 
@@ -388,6 +391,6 @@ The one-page restart package is [notes/CURRENT_STATUS.md](notes/CURRENT_STATUS.m
 (rewritten at `/end`; the next session reads it, not the chat history). `/end` also writes a
 dated log under [docs/sessions/](docs/sessions/) (the latest is the detailed source of truth on
 conflict). Hard-to-reverse decisions get an ADR in [docs/adr/](docs/adr/) — written *before*
-implementation (ADR-031+; ADR-001–030 are recorded informally in `SESSION_STATE.json`).
+implementation (ADR-031+; ADR-001–030 are recorded informally in `docs/archive/SESSION_STATE.json`).
 
 Tag TODOs inline as `TODO[cl]:` so `/end` can sync them. **Fix the process, not the output:** when a mistake is corrected, write the correction into this file, a rule in `.claude/rules/` or a skill so it can't recur.
