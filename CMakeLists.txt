@@ -38,6 +38,10 @@ if(MSVC)
     if(QUADMAPPER_WARNINGS_AS_ERRORS)
         add_compile_options(/WX)
     endif()
+    # Release builds keep a PDB, so a user's crash dump can be read. /DEBUG turns off
+    # /OPT:REF and /OPT:ICF unless they are asked for again.
+    add_compile_options($<$<CONFIG:Release>:/Z7>)
+    add_link_options($<$<CONFIG:Release>:/DEBUG> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
     if(QUADMAPPER_WARNINGS_AS_ERRORS)
@@ -94,13 +98,33 @@ if(QUADMAPPER_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# Installation
-include(GNUInstallDirs)
+# Installation: `cmake --install build/release --prefix <folder>` gives a folder that
+# runs on a machine with nothing else installed. The program looks for resources/ and
+# the notices beside its executable, so everything goes in one flat folder.
 install(TARGETS QUADmapper
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    RUNTIME DESTINATION .
 )
+# The DLLs the executable needs from vcpkg (FFmpeg, GLFW, ...), found by vcpkg's
+# applocal script at install time.
+if(COMMAND x_vcpkg_install_local_dependencies)
+    x_vcpkg_install_local_dependencies(TARGETS QUADmapper DESTINATION .)
+endif()
 install(DIRECTORY resources/
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/quadmapper
+    DESTINATION resources
+)
+install(FILES THIRD-PARTY-NOTICES.md DESTINATION . RENAME THIRD-PARTY-NOTICES.txt)
+install(FILES LICENSE DESTINATION . RENAME LICENSE.txt)
+# The Visual C++ runtime, app-local, so no redistributable install is needed.
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
+set(CMAKE_INSTALL_UCRT_LIBRARIES OFF)  # the Universal CRT is part of Windows 10 and 11
+include(InstallRequiredSystemLibraries)
+# The PDB stays with the developer, not in the package:
+# `cmake --install build/release --component symbols --prefix <folder>`.
+install(FILES $<TARGET_PDB_FILE:QUADmapper>
+    DESTINATION symbols
+    COMPONENT symbols
+    EXCLUDE_FROM_ALL
+    OPTIONAL
 )
 
 # Print configuration summary

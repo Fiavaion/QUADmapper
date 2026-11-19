@@ -1,7 +1,6 @@
 {
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
     "name": "quadmapper",
-    "version": "0.1.0",
     "description": "Professional quad-based projection mapping application for Windows 11",
     "license": "MIT",
     "dependencies": [

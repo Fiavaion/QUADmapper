@@ -45,6 +45,11 @@ if(WIN32)
         WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>
     )
 
+    # The icon and the version resource (Explorer > Properties > Details).
+    set(QUADMAPPER_ICON "${CMAKE_CURRENT_SOURCE_DIR}/QUADmapper.ico")
+    configure_file(QUADmapper.rc.in ${CMAKE_CURRENT_BINARY_DIR}/QUADmapper.rc @ONLY)
+    target_sources(QUADmapper PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/QUADmapper.rc)
+
     # H3 stress harness: working-set query via GetProcessMemoryInfo (psapi).
     # Psapi is a Windows system library — no vcpkg dependency.
     target_link_libraries(QUADmapper PRIVATE Psapi)

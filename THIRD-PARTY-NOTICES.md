@@ -36,8 +36,11 @@ avutil-59, swresample-5, swscale-8).
 repository under `ports/ffmpeg`, at the commit named by the `builtin-baseline` in
 QUADmapper's `vcpkg.json` (https://github.com/microsoft/vcpkg).
 
-The QUADmapper owner keeps a copy of that source available for as long as this
-release is distributed.
+**Written offer.** For at least three years after the last distribution of this
+release, Fiavaion will give anyone who asks a complete copy of the corresponding
+FFmpeg source above, on a medium customarily used for software interchange, for no
+more than the cost of making the copy. Ask through
+https://github.com/Fiavaion/QUADmapper/issues and name the QUADmapper version.
 
 Copyright: FFmpeg is copyright by the FFmpeg developers and its contributors. The
 licence file distributed with the vcpkg port is the LGPL 2.1 text below.

@@ -33,6 +33,12 @@ target_link_libraries(quadmapper_core
         glm::glm
 )
 
+# Version.hpp: the version is set once, by project(VERSION) in the root CMakeLists.txt.
+target_compile_definitions(quadmapper_core
+    PUBLIC
+        QUADMAPPER_VERSION="${PROJECT_VERSION}"
+)
+
 set_target_properties(quadmapper_core PROPERTIES
     FOLDER "Libraries"
 )
