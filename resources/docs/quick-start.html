@@ -99,11 +99,11 @@
     <li><strong>Canvas:</strong> the large area in the middle. You see and edit your quads here.</li>
     <li><strong>Quad List:</strong> every quad, with tick boxes to show, hide and lock it. Use <span class="menu">+ Add Quad</span>, <span class="menu">Duplicate</span> and <span class="menu">Delete</span> here.</li>
     <li><strong>Properties:</strong> the settings of whatever is selected: corners, mesh, crop, colour, and the settings of a selected output.</li>
-    <li><strong>Resources:</strong> a window with tabs. The <span class="menu">Media</span> tab holds your files and the <span class="menu">Outputs</span> tab your projectors. In Advanced mode it also has the <span class="menu">Project</span>, <span class="menu">Scenes</span> and <span class="menu">Preview</span> tabs.</li>
+    <li><strong>Resources:</strong> a window with tabs. The <span class="menu">Media</span> tab holds your files, the <span class="menu">Scenes</span> tab your scenes and the <span class="menu">Outputs</span> tab your projectors. In Advanced mode it also has the <span class="menu">Project</span> and <span class="menu">Preview</span> tabs.</li>
     <li><strong>Menus:</strong> <span class="menu">File</span>, <span class="menu">Edit</span>, <span class="menu">Window</span>, <span class="menu">Output</span>, <span class="menu">AI</span> and <span class="menu">Help</span>. A status bar along the bottom of the window shows messages.</li>
   </ul>
   <h3>Simple and Advanced mode</h3>
-  <p>The <span class="menu">Simple</span> and <span class="menu">Advanced</span> buttons in the menu bar switch modes. Simple mode shows only what you need for a first mapping, plus the <span class="menu">Apply Test Grid</span> and <span class="menu">Send to Projector (F11)</span> buttons. Advanced mode adds scenes, slices and the other tabs. QUADmapper starts in the mode you used last. Your panel layout is remembered between runs; <span class="menu">Window &gt; Reset Layout</span> restores the default.</p>
+  <p>The <span class="menu">Simple</span> and <span class="menu">Advanced</span> buttons in the menu bar switch modes. Simple mode shows only what you need for a first mapping, plus the <span class="menu">Apply Test Grid</span> and <span class="menu">Send to Projector (F11)</span> buttons. Advanced mode adds slices, calibration and the other tabs. QUADmapper starts in the mode you used last. Your panel layout is remembered between runs; <span class="menu">Window &gt; Reset Layout</span> restores the default.</p>
 </section>
 
 <section id="first">
@@ -151,7 +151,8 @@
   <h2>4. Scenes and takes</h2>
   <p class="what">A scene is one full arrangement of quads. A take puts a scene on air.</p>
   <ol class="steps">
-    <li>In Advanced mode, use the <span class="menu">Scenes</span> tab to add, duplicate, rename and reorder scenes.</li>
+    <li>Use the <span class="menu">Scenes</span> tab to add, duplicate, rename and reorder scenes. Click a scene to work on it; the canvas and the Quad List then show its quads.</li>
+    <li>With several projectors, give each one its own scene: in the scene's row, pick the output that shows it. Click between the scenes to work on one projector, then another.</li>
     <li>Press <kbd>1</kbd> to <kbd>9</kbd> to put that scene on air. The keys work in the editor and on a focused projector window, whatever your keyboard layout.</li>
     <li>For a crossfade, set <span class="menu">Crossfade (seconds)</span> in <span class="menu">Edit &gt; Preferences...</span> (General tab). 0 is a cut.</li>
   </ol>
@@ -159,13 +160,13 @@
 
 <section id="outputs">
   <h2>5. Outputs</h2>
-  <p class="what">An output is one projector, or one window on a screen. The Outputs tab is there in both modes; scenes and slices need Advanced mode.</p>
+  <p class="what">An output is one projector, or one window on a screen. The Outputs and Scenes tabs are there in both modes; slices need Advanced mode.</p>
   <ol class="steps">
     <li>Open the <span class="menu">Outputs</span> tab in the Resources window.</li>
     <li>Click <span class="menu">Add Output</span>. Click <span class="menu">Refresh Monitors</span> if you plugged in a display after starting.</li>
     <li>Click <span class="menu">Identify</span>. For 5 seconds each projector shows its output's number, the same number as in the list.</li>
     <li>Select the output and choose its screen in the <span class="menu">Monitor</span> list under the outputs, then set its resolution and rotation.</li>
-    <li>In Advanced mode, choose which output shows each scene in the <span class="menu">Scenes</span> tab.</li>
+    <li>In the <span class="menu">Scenes</span> tab, choose which output shows each scene.</li>
   </ol>
   <p>An output can show slices of the scene, each with its own warp and edge blending where two projectors overlap. Select the output to edit them in Properties.</p>
 </section>

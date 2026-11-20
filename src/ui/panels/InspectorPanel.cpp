@@ -249,11 +249,12 @@ void InspectorPanel::drawContent(EditorContext& ctx) {
     if (es.currentSelectionType == SelectionType::Quad) {
         renderQuadProperties(ctx);
     } else if (es.currentSelectionType == SelectionType::Output) {
-        // Simple mode (ADR-042 amendment): the Outputs tab edits the output; scenes,
-        // slices and calibration stay in Advanced mode.
+        // Simple mode (ADR-042 amendment): the Outputs tab edits the output and the
+        // Scenes tab routes scenes to it; slices and calibration stay in Advanced mode.
         if (es.uiMode == EditorState::UiMode::Simple) {
-            ImGui::TextDisabled("Edit this output in the Outputs tab.");
-            ImGui::TextDisabled("Scenes, slices and calibration: Advanced mode.");
+            ImGui::TextDisabled("Edit this output in the Outputs tab, and choose");
+            ImGui::TextDisabled("what it shows in the Scenes tab.");
+            ImGui::TextDisabled("Slices and calibration: Advanced mode.");
         } else {
             renderOutputProperties(ctx);
         }

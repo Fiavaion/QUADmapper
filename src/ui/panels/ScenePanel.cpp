@@ -17,13 +17,11 @@
 
 namespace quadmapper {
 
-bool ScenePanel::available(const EditorContext& ctx) const {
-    return ctx.es.uiMode == EditorState::UiMode::Advanced;
-}
-
 void ScenePanel::drawContent(EditorContext& ctx) {
     renderActionButtons(ctx);
-    renderCanvasControls(ctx);
+    // Simple mode leaves the canvas size alone: routing gives a scene its
+    // projector's resolution.
+    if (ctx.es.uiMode == EditorState::UiMode::Advanced) renderCanvasControls(ctx);
     ImGui::Separator();
     renderSceneList(ctx);
     renderDeleteConfirm(ctx);

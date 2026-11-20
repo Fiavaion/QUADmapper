@@ -14,7 +14,8 @@ struct EditorContext;
 // assign each scene to an output window. Scenes 1-9 show their take hotkey. The viewport, Quad List and Inspector all edit the active
 // scene (EditorState::activeScene()), so switching here makes them follow.
 //
-// The Scenes tab of the Resources window (Advanced mode); it owns no scene state
+// The Scenes tab of the Resources window, in both UI modes (one scene per projector,
+// switched between while editing; the canvas size only in Advanced); it owns no scene state
 // itself — that lives in EditorState, reached through the per-frame EditorContext.
 // Only transient rename UI state is local.
 class ScenePanel : public Panel {
@@ -25,7 +26,6 @@ public:
 
     const char* id() const override { return ID; }
     PanelKind kind() const override { return PanelKind::Tab; }
-    bool available(const EditorContext& ctx) const override;
     void drawContent(EditorContext& ctx) override;
 
 private:
