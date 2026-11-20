@@ -367,6 +367,9 @@ struct EditorState {
     Vec2 meshHandleDragStartPos{0.0f};
     VertexTangents meshHandleDragBefore;
 
+    // Vertex snapping to other quads' corners and mesh points while a vertex is dragged:
+    // the canvas Snap toggle, a machine preference (general.vertexSnapping).
+    bool vertexSnapping = true;
     // Snap indicator state (visual feedback when snapping)
     bool snapActive = false;
     Vec2 snapTargetPos{0.0f};

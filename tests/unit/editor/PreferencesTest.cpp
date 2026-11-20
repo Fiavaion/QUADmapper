@@ -263,7 +263,7 @@ TEST(PreferencesFileTest, SettingsThisVersionDroppedAreIgnoredAndNotWrittenBack)
                         "general.aiAssistBeta", "general.autoLoadMediaOnStartup", "general.autoSaveEnabled",
                         "general.autoSaveIntervalMinutes", "general.defaultMediaFolder",
                         "general.recursiveFolderScan", "general.sceneFadeSeconds", "general.uiMode",
-                        "general.uiScalePercent", "performance.audioDevice"}));
+                        "general.uiScalePercent", "general.vertexSnapping", "performance.audioDevice"}));
 }
 
 // ---- Rebound keys ("keyboard", owner's decision 2026-09-30) ----------------------------
@@ -481,20 +481,23 @@ TEST(PreferencesFileTest, RecentProjectsAndUiScaleRoundTripAndOldFilesLoadEmpty)
     prefs.recentProjects = {"C:\\Shows\\a.qmap", "C:\\Shows\\b.qmap"};
     prefs.general.uiScalePercent = 150;
     prefs.general.aiAssistBeta = true;
+    prefs.general.vertexSnapping = false;
     ASSERT_TRUE(prefs.saveToFile(file.path.string()));
     AppPreferences loaded;
     ASSERT_TRUE(loaded.loadFromFile(file.path.string()));
     EXPECT_EQ(loaded.recentProjects, prefs.recentProjects);
     EXPECT_EQ(loaded.general.uiScalePercent, 150);
     EXPECT_TRUE(loaded.general.aiAssistBeta);
+    EXPECT_FALSE(loaded.general.vertexSnapping);
 
-    // An old file has none of them: Automatic, an empty list and AI Assist off.
+    // An old file has none of them: Automatic, an empty list, AI Assist off, snapping on.
     file.write(R"({"version": "1.0", "general": {"uiMode": 1}})");
     AppPreferences old;
     ASSERT_TRUE(old.loadFromFile(file.path.string()));
     EXPECT_TRUE(old.recentProjects.empty());
     EXPECT_EQ(old.general.uiScalePercent, 0);
     EXPECT_FALSE(old.general.aiAssistBeta);
+    EXPECT_TRUE(old.general.vertexSnapping);
 }
 
 TEST(PreferencesFileTest, GarbledRecentProjectsAndUiScaleAreSkipped) {

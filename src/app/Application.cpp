@@ -411,6 +411,7 @@ bool Application::initializeComponents() {
         // UI complexity mode (ADR-042): default Simple; persisted choice wins.
         m_editorState->uiMode = (prefs.general.uiMode == 1)
             ? EditorState::UiMode::Advanced : EditorState::UiMode::Simple;
+        m_editorState->vertexSnapping = prefs.general.vertexSnapping;
 
         if (prefs.general.autoLoadMediaOnStartup &&
             !prefs.general.defaultMediaFolder.empty()) {

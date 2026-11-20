@@ -274,6 +274,12 @@ void EditorUi::drawCanvasOverlay(EditorContext& ctx) {
         ImGui::Text("%3.0f%%", es.canvasZoom * 100.0f);
         ImGui::SameLine();
         if (ImGui::SmallButton("+")) es.canvasZoom = std::min(12.0f, es.canvasZoom * 1.12f);
+        ImGui::SameLine();
+        const bool snapping = es.vertexSnapping;
+        if (snapping) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::SmallButton(snapping ? "Snap: On" : "Snap: Off")) es.vertexSnapping = !snapping;
+        if (snapping) ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Snap a dragged vertex to the corners and mesh points of other quads");
     }
     ImGui::End();
 
@@ -324,6 +330,10 @@ void EditorUi::savePreferenceChanges(EditorContext& ctx) {
     const int mode = ctx.es.uiMode == EditorState::UiMode::Advanced ? 1 : 0;
     if (mode != prefs.general.uiMode) {
         prefs.general.uiMode = mode;
+        changed = true;
+    }
+    if (ctx.es.vertexSnapping != prefs.general.vertexSnapping) {
+        prefs.general.vertexSnapping = ctx.es.vertexSnapping;
         changed = true;
     }
     if (changed) ctx.services->savePreferences();

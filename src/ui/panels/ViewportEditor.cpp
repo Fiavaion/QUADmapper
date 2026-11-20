@@ -528,6 +528,7 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
 
             // Helper lambda to find snap target from other quads
             auto findSnapTarget = [&](const Vec2& pos, const UUID& excludeQuadId) -> Vec2 {
+                if (!es.vertexSnapping) return pos;  // the canvas Snap toggle
                 Vec2 snappedPos = pos;
                 float closestSnapDist = SNAP_RADIUS;
 
