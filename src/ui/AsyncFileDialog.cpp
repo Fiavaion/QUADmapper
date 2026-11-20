@@ -99,8 +99,10 @@ void AsyncFileDialog::run(const Request& request) {
     } else {
         const std::wstring filter = widen(request.filter);
         const std::wstring defaultExt = widen(request.defaultExt);
-        // Room for a multi-select list (directory + NUL-separated names).
-        std::vector<wchar_t> buffer(request.kind == Kind::OpenFiles ? 32768 : MAX_PATH, L'\0');
+        // Room for a multi-select list (directory + NUL-separated names). A short buffer
+        // made a long path return nothing; now the open or save that follows says why
+        // it fails.
+        std::vector<wchar_t> buffer(32768, L'\0');
         const std::wstring initialPath = widen(request.initialPath);
         initialPath.copy(buffer.data(), std::min(initialPath.size(), buffer.size() - 1));
 
