@@ -25,7 +25,13 @@ public:
         close();
         const std::string pathStr = path.u8string();
 
-        if (avformat_open_input(&formatCtx_, pathStr.c_str(), nullptr, nullptr) < 0) {
+        // Local protocols only, as video/LocalMediaInput.hpp (audio does not depend on
+        // video): a crafted file cannot make FFmpeg fetch from the network.
+        AVDictionary* options = nullptr;
+        av_dict_set(&options, "protocol_whitelist", "file,crypto,data", 0);
+        const int opened = avformat_open_input(&formatCtx_, pathStr.c_str(), nullptr, &options);
+        av_dict_free(&options);
+        if (opened < 0) {
             LOG_WARNING("Audio: cannot open {}", pathStr);
             return false;
         }

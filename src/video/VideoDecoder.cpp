@@ -37,6 +37,7 @@ extern "C" {
 #include <libavdevice/avdevice.h>
 #endif
 }
+#include "LocalMediaInput.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -448,7 +449,7 @@ public:
         const std::string pathStr = utf8FromPath(path);
 
         // Open input file
-        if (avformat_open_input(&formatCtx_, pathStr.c_str(), nullptr, nullptr) < 0) {
+        if (openLocalMediaInput(&formatCtx_, pathStr.c_str()) < 0) {
             LOG_ERROR("Failed to open video file: {}", pathStr);
             return false;
         }

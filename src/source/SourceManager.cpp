@@ -27,6 +27,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 }
+#include "video/LocalMediaInput.hpp"
 #endif
 
 namespace quadmapper {
@@ -52,7 +53,7 @@ ContainerKind probeContainer(const std::filesystem::path& path) {
 #ifdef QUADMAPPER_HAS_FFMPEG
     AVFormatContext* ctx = nullptr;
     const std::string pathStr = utf8FromPath(path);  // FFmpeg file names are UTF-8
-    if (avformat_open_input(&ctx, pathStr.c_str(), nullptr, nullptr) < 0) {
+    if (openLocalMediaInput(&ctx, pathStr.c_str()) < 0) {
         return ContainerKind::Unreadable;
     }
 

@@ -28,6 +28,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
 }
+#include "video/LocalMediaInput.hpp"
 
 namespace quadmapper {
 
@@ -71,7 +72,7 @@ struct HapFileSource::OpenedFile::Data {
         auto d = std::make_unique<Data>();
         // FFmpeg takes UTF-8 file names on Windows; path::string() is the ANSI code page.
         const std::string pathStr = utf8FromPath(path);
-        if (avformat_open_input(&d->formatCtx, pathStr.c_str(), nullptr, nullptr) < 0) {
+        if (openLocalMediaInput(&d->formatCtx, pathStr.c_str()) < 0) {
             d->formatCtx = nullptr;
             Logger::error("HapFileSource: avformat_open_input failed for '{}'", pathStr);
             return nullptr;

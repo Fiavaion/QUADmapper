@@ -19,6 +19,7 @@ extern "C" {
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
+#include "LocalMediaInput.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -144,7 +145,7 @@ private:
 
     bool openInput(const fs::path& source, std::string& error) {
         const std::string url = utf8FromPath(source);
-        if (avformat_open_input(&in_, url.c_str(), nullptr, nullptr) < 0) {
+        if (openLocalMediaInput(&in_, url.c_str()) < 0) {
             error = "The file could not be opened.";
             return false;
         }
