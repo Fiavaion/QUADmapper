@@ -2,6 +2,7 @@
 
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
+#include "core/MediaLimits.hpp"
 
 #include <algorithm>
 #include <string>
@@ -173,6 +174,10 @@ private:
         height_ = videoDec_->height;
         if (width_ <= 0 || height_ <= 0) {
             error = "The video has no picture size.";
+            return false;
+        }
+        if (const std::string tooLarge = pictureSizeProblem(width_, height_); !tooLarge.empty()) {
+            error = "The video's picture size, " + tooLarge + ".";
             return false;
         }
 

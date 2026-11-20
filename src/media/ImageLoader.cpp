@@ -1,6 +1,7 @@
 #include "ImageLoader.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
+#include "core/MediaLimits.hpp"
 #include <stb_image.h>
 
 #ifndef NOMINMAX
@@ -32,21 +33,6 @@ bool isTiff(const std::filesystem::path& path) {
     return ext == ".tif" || ext == ".tiff";
 }
 
-// Checked from the header, before a decode that would take gigabytes. 32768 is the
-// largest GL_MAX_TEXTURE_SIZE in use (NVIDIA); Texture::create checks the card's own.
-// 134 MP still allows a 19200 x 2160 five-projector panorama.
-constexpr long long kMaxImageSide = 32768;
-constexpr long long kMaxImagePixels = 1LL << 27;
-
-// Empty when an image of this size may be decoded, else the reason it may not.
-std::string sizeProblem(long long width, long long height) {
-    if (width <= kMaxImageSide && height <= kMaxImageSide && width * height <= kMaxImagePixels) {
-        return {};
-    }
-    return std::to_string(width) + " x " + std::to_string(height) +
-           " is too large (at most 32768 pixels a side and 134 megapixels)";
-}
-
 // stbi_load() opens its filename in the ANSI code page, so a non-ASCII folder fails.
 // Read the bytes through the wide path and decode from memory instead. On failure
 // `why` says what went wrong.
@@ -66,7 +52,8 @@ unsigned char* stbiLoadPath(const std::filesystem::path& path, int* width, int* 
         why = reason ? reason : "unknown";
         return nullptr;
     }
-    why = sizeProblem(w, h);
+    // Checked from the header, before a decode that would take gigabytes.
+    why = pictureSizeProblem(w, h);
     if (!why.empty()) return nullptr;
     unsigned char* data = stbi_load_from_memory(raw, size, width, height, channels, desiredChannels);
     if (!data) {
@@ -166,7 +153,7 @@ Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desired
         return fail("unsupported size " + std::to_string(width) + "x" +
                     std::to_string(height));
     }
-    if (const std::string tooLarge = sizeProblem(width, height); !tooLarge.empty()) {
+    if (const std::string tooLarge = pictureSizeProblem(width, height); !tooLarge.empty()) {
         return fail(tooLarge);
     }
 

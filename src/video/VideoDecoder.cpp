@@ -4,6 +4,7 @@
 #include "PlaybackClock.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
+#include "core/MediaLimits.hpp"
 
 #ifdef QUADMAPPER_HAS_FFMPEG
 
@@ -546,6 +547,13 @@ public:
         rgbFrame_ = av_frame_alloc();
         if (!frame_ || !skippedFrame_ || !rgbFrame_) {
             LOG_ERROR("Failed to allocate frames");
+            close();
+            return false;
+        }
+
+        if (const std::string tooLarge = pictureSizeProblem(codecCtx_->width, codecCtx_->height);
+            !tooLarge.empty()) {
+            LOG_ERROR("Video {}", tooLarge);
             close();
             return false;
         }
@@ -1130,10 +1138,10 @@ public:
 
     bool seek(double timeSeconds) {
         if (!isOpen_) return false;
+        stopBackgroundDecoding();  // seekExact moves the demuxer and codec the decode thread uses
         if (!seekExact(timeSeconds)) return false;
         planned_ = false;  // back to plain forward decoding
 
-        // Clear background buffer on seek
         {
             std::lock_guard<std::mutex> lock(bufferMutex_);
             std::queue<VideoFrame> empty;
@@ -2277,7 +2285,7 @@ private:
     // partially back-filled by the demuxer and not trustworthy where present; every
     // frame is treated as if it had no pts (sequential timing instead).
     bool unreliableFramePts_ = false;
-    // Decode thread only (seek() runs while the thread is stopped).
+    // Decode thread only (seek() stops the thread first).
     int64_t seekTargetPts_ = AV_NOPTS_VALUE;  // skip frames before this; NOPTS = no seek pending
     int64_t seekFromPts_ = 0;   // where the demuxer was last asked to seek
     bool checkFirstPacket_ = false;  // next video packet is the first after a demuxer seek
@@ -2290,8 +2298,10 @@ private:
     bool isOpen_ = false;
     bool isLive_ = false;   // live capture device (no seek/duration)
     // Written by the background decode thread, read on the main thread (via the getters /
-    // VideoPlayer::update). Atomic to avoid a data race / UB. Single-writer-at-a-time (seek
-    // joins the decode thread first), so plain load/store ordering is sufficient.
+    // VideoPlayer::update). Atomic to avoid a data race / UB. Single-writer-at-a-time (seek()
+    // joins the decode thread first; a new plan is applied on that thread), so plain
+    // load/store ordering is sufficient. The exception is atEnd_, which startPlayback()
+    // also clears, under bufferMutex_.
     std::atomic<int64_t> currentFrame_{0};
     std::atomic<double> currentTime_{0.0};
     std::atomic<bool> atEnd_{false};

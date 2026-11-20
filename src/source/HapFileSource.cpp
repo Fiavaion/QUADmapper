@@ -6,6 +6,7 @@
 #include "video/VideoDecoder.hpp"  // DecodePlan
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
+#include "core/MediaLimits.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -96,6 +97,11 @@ struct HapFileSource::OpenedFile::Data {
         AVStream* stream = d->formatCtx->streams[d->videoStreamIndex];
         d->width = stream->codecpar->width;
         d->height = stream->codecpar->height;
+        if (const std::string tooLarge = pictureSizeProblem(d->width, d->height);
+            !tooLarge.empty()) {
+            Logger::error("HapFileSource: '{}': {}", pathStr, tooLarge);
+            return nullptr;
+        }
         d->timeBase = av_q2d(stream->time_base);
         // Frame times are relative to the stream start, so pts 0 is the first frame.
         d->startPts = stream->start_time != AV_NOPTS_VALUE ? stream->start_time : 0;
