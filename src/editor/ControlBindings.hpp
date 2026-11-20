@@ -22,6 +22,7 @@
 #include "../scene/SceneFade.hpp"
 #include "../source/SourceManager.hpp"
 #include "../source/TextureSource.hpp"
+#include "ShowTransport.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -197,31 +198,31 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
              if (n < 1) return std::nullopt;
              return static_cast<float>(n);
          }, /*exclusive=*/true});
-    // The master timeline every locked clip follows (ADR-050 §3): the same calls as
-    // the menu bar's Timeline Play/Pause and Restart buttons.
+    // The show transport (ShowTransport.hpp): every video, locked to the master
+    // timeline or not. The same calls as the top bar's Play/Pause and Restart.
     registry.addGlobal("/qm/timeline/play",
         {"", TargetKind::Trigger, 0.0f, 1.0f, true,
-         [host](const std::string&, float) { if (host.sources) host.sources->playMasterTimeline(); },
+         [host](const std::string&, float) { if (host.sources) playShow(*host.sources); },
          nullptr});
     registry.addGlobal("/qm/timeline/pause",
         {"", TargetKind::Trigger, 0.0f, 1.0f, true,
-         [host](const std::string&, float) { if (host.sources) host.sources->pauseMasterTimeline(); },
+         [host](const std::string&, float) { if (host.sources) pauseShow(*host.sources); },
          nullptr});
     registry.addGlobal("/qm/timeline/restart",
         {"", TargetKind::Trigger, 0.0f, 1.0f, true,
-         [host](const std::string&, float) { if (host.sources) host.sources->restartMasterTimeline(); },
+         [host](const std::string&, float) { if (host.sources) restartShow(*host.sources); },
          nullptr});
-    // Running state of the master timeline: a play/pause toggle whose light follows it.
+    // Running state of the show: a play/pause toggle whose light follows it.
     registry.addGlobal("/qm/timeline/running",
         {"", TargetKind::Bool, 0.0f, 1.0f, true,
          [host](const std::string&, float v) {
              if (!host.sources) return;
-             if (v >= 0.5f) host.sources->playMasterTimeline();
-             else           host.sources->pauseMasterTimeline();
+             if (v >= 0.5f) playShow(*host.sources);
+             else           pauseShow(*host.sources);
          },
          [host](const std::string&) -> std::optional<float> {
              if (!host.sources) return std::nullopt;
-             return host.sources->getMasterTimeline().running() ? 1.0f : 0.0f;
+             return showRunning(*host.sources) ? 1.0f : 0.0f;
          }});
 
     // ---- Scenes ------------------------------------------------------------

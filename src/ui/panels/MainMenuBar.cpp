@@ -8,6 +8,7 @@
 #include "editor/MissingMedia.hpp"
 #include "editor/PerformLock.hpp"
 #include "editor/Preferences.hpp"
+#include "editor/ShowTransport.hpp"
 #include "editor/StatusLine.hpp"
 #include "editor/UndoRouting.hpp"
 #include "core/FileSystem.hpp"
@@ -156,14 +157,16 @@ void MainMenuBar::renderAudioStrip(AudioEngine& audio) {
     ImGui::TextDisabled("Audio:");
     const bool muted = audio.masterMuted();
     if (muted) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.25f, 0.2f, 1.0f));
-    if (ImGui::Button(muted ? "Muted##master" : "Mute##master")) {
+    const float muteWidth = ImGui::CalcTextSize("Muted").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    if (ImGui::Button(muted ? "Muted##master" : "Mute##master", ImVec2(muteWidth, 0.0f))) {
         audio.setMasterMuted(!muted);
     }
     if (muted) ImGui::PopStyleColor();
     ImGui::SetItemTooltip(muted ? "All sound is muted: click to unmute" : "Mute all sound");
 
     float percent = audio.masterVolume() * 100.0f;
-    ImGui::SetNextItemWidth(90.0f);
+    const float em = ImGui::GetFontSize();
+    ImGui::SetNextItemWidth(em * 6.5f);
     if (ImGui::SliderFloat("##master volume", &percent, 0.0f, 100.0f, "Vol %.0f%%")) {
         audio.setMasterVolume(percent / 100.0f);
     }
@@ -172,7 +175,7 @@ void MainMenuBar::renderAudioStrip(AudioEngine& audio) {
     const char* problem = outputProblem(audio);
     const std::string active = audio.activeDeviceName();
     const std::string preview = problem ? problem : (active.empty() ? "No output" : active);
-    ImGui::SetNextItemWidth(160.0f);
+    ImGui::SetNextItemWidth(em * 11.0f);
     if (problem) ImGui::PushStyleColor(ImGuiCol_Text, AUDIO_WARNING_COLOR);
     const bool open = ImGui::BeginCombo("##audio output", preview.c_str());
     if (problem) ImGui::PopStyleColor();
@@ -189,7 +192,12 @@ void MainMenuBar::renderAudioStrip(AudioEngine& audio) {
 void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
     EditorState& es = ctx.es;
 
+    // A taller bar: ImGui sizes it from the frame padding in force at BeginMainMenuBar.
+    // In font units, so it grows with Preferences > Interface size.
+    const float em = ImGui::GetFontSize();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(em * 0.8f, em * 0.5f));
     if (!ImGui::BeginMainMenuBar()) {
+        ImGui::PopStyleVar();
         return;
     }
 
@@ -402,6 +410,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
     // ---- Mode toolbar (ADR-042) -------------------------------------------
     // Always-visible Simple/Advanced toggle, plus the two most common Simple-mode
     // actions surfaced as buttons so a new user never has to hunt through menus.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.8f, ImGui::GetStyle().ItemSpacing.y));
     ImGui::Separator();
     ImGui::TextDisabled("Mode:");
     const bool simple = (es.uiMode == EditorState::UiMode::Simple);
@@ -436,23 +445,33 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         ImGui::SetItemTooltip("Toggle fullscreen output on the projector");
     }
 
-    // Master timeline transport (ADR-050 §3), always visible in both modes: the clock
-    // every "Lock to master" source follows. Here beside Reset Playheads, the other
-    // show-wide transport action, so a locked show is started and stopped in one place.
+    // The show transport (editor/ShowTransport.hpp), always visible in both modes: every
+    // video, locked to the master timeline or not. Space taps the same Play/Pause.
     ImGui::Separator();
     if (ctx.sourceManager) {
         SourceManager& sm = *ctx.sourceManager;
-        const PlaybackClock& master = sm.getMasterTimeline();
         ImGui::TextDisabled("Timeline:");
-        if (ImGui::Button(master.running() ? "Pause##timeline" : "Play##timeline")) {
-            if (master.running()) sm.pauseMasterTimeline(); else sm.playMasterTimeline();
+        // As wide as the wider label, so the bar does not shift when it changes.
+        const float playWidth = ImGui::CalcTextSize("Pause").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        if (ImGui::Button(showRunning(sm) ? "Pause##timeline" : "Play##timeline",
+                          ImVec2(playWidth, 0.0f))) {
+            toggleShow(sm);
         }
-        ImGui::SetItemTooltip("Play or pause the master timeline that locked videos follow");
-        if (ImGui::Button("Restart##timeline")) sm.restartMasterTimeline();
-        ImGui::SetItemTooltip("Send the master timeline, and every locked video, back to the start");
-        const double seconds = master.position(std::chrono::steady_clock::now());
+        ImGui::SetItemTooltip("Play or pause every video (Space)");
+        if (ImGui::Button("Restart##timeline")) restartShow(sm);
+        ImGui::SetItemTooltip("Send every video and the master timeline back to the start");
+
+        // A fixed-width slot: proportional digits would move what follows as it counts.
+        const double seconds = sm.getMasterTimeline().position(std::chrono::steady_clock::now());
         const int minutes = static_cast<int>(seconds / 60.0);
-        ImGui::Text("%02d:%04.1f", minutes, seconds - minutes * 60.0);
+        char clock[32];
+        snprintf(clock, sizeof(clock), "%02d:%04.1f", minutes, seconds - minutes * 60.0);
+        const ImVec2 slot(ImGui::CalcTextSize("00:00.0").x * 1.2f, ImGui::GetFrameHeight());
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(slot);
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(at.x, at.y + (slot.y - ImGui::GetFontSize()) * 0.5f),
+            ImGui::GetColorU32(ImGuiCol_Text), clock);
         ImGui::SetItemTooltip("Master timeline position");
     }
 
@@ -461,15 +480,9 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         renderAudioStrip(*ctx.audio);
     }
 
-    // Reset all playheads (available in both modes) — restart every video (and its
-    // synced audio) from the top with one click.
-    ImGui::Separator();
-    if (ImGui::Button("Reset Playheads")) {
-        if (ctx.sourceManager) ctx.sourceManager->seekAllToStart();
-    }
-    ImGui::SetItemTooltip("Restart all videos/audio and the master timeline from the beginning");
-
+    ImGui::PopStyleVar();  // the toolbar's item spacing
     ImGui::EndMainMenuBar();
+    ImGui::PopStyleVar();  // the bar's frame padding
 
     if (showAbout_) {
         showAbout_ = false;

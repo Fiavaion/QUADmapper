@@ -510,6 +510,35 @@ TEST(ControlBindingsTest, MasterTimelineTargetsDriveTheMasterClock) {
     EXPECT_TRUE(master.running());
 }
 
+// The show transport (ADR-050 Amendment 1): the timeline controls reach every video,
+// not only those locked to the master.
+TEST(ControlBindingsTest, TimelineTargetsDriveEveryVideo) {
+    AppFixture fx;
+    fx.clip->play();  // unlocked and playing
+    auto lockedFake = std::make_unique<FakePlayable>("locked.mp4");
+    FakePlayable* locked = lockedFake.get();
+    fx.sources.setTimelineLocked(fx.sources.registerSource(std::move(lockedFake)), true);
+    auto stoppedFake = std::make_unique<FakePlayable>("stopped.mp4");
+    FakePlayable* stopped = stoppedFake.get();
+    stopped->state = PlaybackState::STOPPED;
+    fx.sources.registerSource(std::move(stoppedFake));
+
+    fx.osc("/qm/timeline/pause");
+    EXPECT_EQ(fx.clip->state, PlaybackState::PAUSED) << "an unlocked video pauses with the show";
+    EXPECT_EQ(locked->pauses, 0) << "a locked video follows the master clock instead";
+    EXPECT_FALSE(fx.sources.getMasterTimeline().running());
+
+    fx.osc("/qm/timeline/play");
+    EXPECT_EQ(fx.clip->state, PlaybackState::PLAYING);
+    EXPECT_EQ(locked->plays, 0);
+    EXPECT_EQ(stopped->state, PlaybackState::STOPPED) << "only a paused video is resumed";
+    EXPECT_TRUE(fx.sources.getMasterTimeline().running());
+
+    fx.clip->time = 4.0;
+    fx.osc("/qm/timeline/restart");
+    EXPECT_DOUBLE_EQ(fx.clip->time, 0.0) << "restart sends every video to its start";
+}
+
 TEST(ControlBindingsTest, DeletedQuadMakesItsTargetsUnresolvedAndInert) {
     AppFixture fx;
     const std::string rightVisible = path("quad", fx.right->getId(), "visible");
