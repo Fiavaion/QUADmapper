@@ -1,11 +1,15 @@
 # Current Status
 
-**Last updated:** 2026-11-19 (`/release` gate passed)
-**Phase / focus:** Release 1.0.0. The audit (QM-125), the owner's decisions, the AI beta switch (QM-126) and `/release` are done. Next: the owner's hands-on test, then the installer (AI engine bundle, TD-44).
-**Dev:** `origin/dev` = `65a6a7f`. Not pushed yet: the four release-fix commits `d34821d..3b86825` and the notes commit. The owner decides.
-**Gate:** `/release` **PASS**; details in [RELEASE_REVIEW.md](RELEASE_REVIEW.md).
-- Full suite: `ctest --test-dir build/debug -C Debug -j 8 | d34821d..3b86825 before the review fixes | 1773 passed, 0 failed`.
-- After the review fixes (ImageLoader, OBJ comment, one sidecar line): ImageLoader 21, Obj 36, `test_sidecar.py` 49 passed, at `3b86825`.
+**Last updated:** 2026-11-20 (second `/release` gate passed, on Opus)
+**Phase / focus:** Release 1.0.0. The audit (QM-125), the AI beta switch (QM-126) and two `/release` passes are done. Next: the owner's network-path decision, the hands-on test, then the installer (AI engine bundle, TD-44).
+**Dev:** `origin/dev` = `57c6844`. Not pushed yet: the five fix commits `3cace9d..f13c9cd` and the notes commit. The owner decides.
+**Gate:** `/release` **PASS** (2026-11-20); details in [RELEASE_REVIEW.md](RELEASE_REVIEW.md).
+- Full suite: `ctest --test-dir build/debug -C Debug -j 8 | 3cace9d..f13c9cd before the verify fixes | 1772 passed, 1 flaky failure of 1773`. The zero-copy test passed alone; see Known gaps.
+- After the verify fixes: `test_ai_assist` 57, `test_video_decoder *Seek*` 34 passed, at `f13c9cd`.
+- **Owner decisions open:**
+  - whether to guard network (UNC) paths in a `.qmap`, and the FFmpeg protocol whitelist that goes with it;
+  - whether to remove the unused `VideoDecoder::seekFrame` (a header change).
+  - Both are in RELEASE_REVIEW.md.
 
 ## Decided 2026-11-19 (owner)
 
@@ -43,14 +47,19 @@
 
 ## What is left before release
 
-1. The owner's hands-on test, then its fixes. `/release` passed; its low items are parked in [RELEASE_REVIEW.md](RELEASE_REVIEW.md).
+1. The owner's hands-on test, then its fixes. `/release` passed twice; its low items are parked in [RELEASE_REVIEW.md](RELEASE_REVIEW.md). Also check:
+   - Open and Save with a long folder path give a clear error rather than doing nothing;
+   - after Save, the next start shows no recovery prompt.
 2. Installer: `feat/installer` (`9e5aacd`) does not compile, and its sidecar lookup conflicts with `dev`. It should use `cmake --install` for the app folder and stage only the AI engine.
 3. Move the sidecar to the PyTorch cu128 builds for the RTX 5090 (`000_start.md` §4).
 4. The `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)). PR #3 stays a draft until the hands-on test.
 
 ## Known gaps
 
-- **Flaky test:** `AudioSyncTest.RealTimeNullDeviceStaysInStepThroughASeekAndAPause` (20 s, real time). It failed once under parallel load on 2026-11-19, then passed alone and in the `/release` full run. If it fails again, quarantine it.
+- **Flaky tests (parallel load):**
+  - `AudioSyncTest.RealTimeNullDeviceStaysInStepThroughASeekAndAPause` (20 s, real time): it failed once on 2026-11-19, then passed alone and in both `/release` full runs.
+  - `AsyncSourceLifecycle.AReopenedZeroCopyClipTakesOverTheKeptSharedPlanes` (GPU zero-copy): it got no frame within its wait in the 2026-11-20 full run (19.5 s, with other GPU tests beside it), then passed alone (9.5 s).
+  - If either fails again, quarantine it or give it a longer wait.
 - **Not yet seen in the GUI:** the AI beta switch (item 5) and the 2026-11-19 UI items (item 7).
 - **Logged deferrals:** TD-41..TD-43 (small undo and log-only gaps) and TD-44 (AI engine bundle), in [TECHNICAL_DEBT.md](../TECHNICAL_DEBT.md).
 
