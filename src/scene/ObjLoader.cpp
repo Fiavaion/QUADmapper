@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <new>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -279,7 +280,15 @@ void ObjLoadQueue::run() {
         cancelRunning_ = false;
         lock.unlock();
 
-        Result<MeshData, Error> mesh = loadObj(path, &cancelRunning_);
+        // Past the element caps a large file can still run out of memory; an exception
+        // leaving this thread would end the app.
+        Result<MeshData, Error> mesh = [&]() -> Result<MeshData, Error> {
+            try {
+                return loadObj(path, &cancelRunning_);
+            } catch (const std::bad_alloc&) {
+                return Err<MeshData>(utf8FromPath(path.filename()) + ": not enough memory to import");
+            }
+        }();
 
         lock.lock();
         running_ = 0;

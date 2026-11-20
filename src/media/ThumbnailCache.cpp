@@ -30,8 +30,8 @@ std::filesystem::path ThumbnailCache::getCacheDir() {
         return dir;
     }
     free(appData);
-    // Fallback to temp directory
-    return std::filesystem::temp_directory_path() / "QUADmapper" / "thumbnails";
+    std::error_code ec;
+    return std::filesystem::temp_directory_path(ec) / "QUADmapper" / "thumbnails";
 }
 
 std::filesystem::path ThumbnailCache::getCachePath(const std::filesystem::path& filePath) const {
@@ -52,7 +52,6 @@ bool ThumbnailCache::isCacheValid(const std::filesystem::path& filePath,
         return false;
     }
 
-    // Check if source is newer than cache
     auto cacheTime = std::filesystem::last_write_time(cachePath, ec);
     if (ec) return false;
     auto sourceTime = std::filesystem::last_write_time(filePath, ec);
@@ -186,7 +185,6 @@ size_t ThumbnailCache::getMemoryCacheCount() const {
 }
 
 GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, int maxSize) {
-    // Check if it's a supported image format
     std::string ext = utf8FromPath(filePath.extension());
     if (!MediaLibrary::isExtensionSupported(ext)) {
         return 0;
@@ -219,7 +217,7 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     thumbHeight = std::max(1, thumbHeight);
 
     // Simple nearest-neighbor resize, top row first (the bin draws UV (0,0) at the top).
-    unsigned char* thumbData = new unsigned char[thumbWidth * thumbHeight * 4];
+    std::vector<unsigned char> thumbData(static_cast<size_t>(thumbWidth) * thumbHeight * 4);
     for (int y = 0; y < thumbHeight; ++y) {
         for (int x = 0; x < thumbWidth; ++x) {
             int srcX = (x * width) / thumbWidth;
@@ -239,7 +237,7 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     glGenTextures(1, &texId);
     glBindTexture(GL_TEXTURE_2D, texId);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, thumbWidth, thumbHeight, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, thumbData);
+                 GL_RGBA, GL_UNSIGNED_BYTE, thumbData.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -247,9 +245,7 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     glBindTexture(GL_TEXTURE_2D, 0);
 
     // Save to disk cache
-    saveThumbnailToCache(getCachePath(filePath), thumbData, thumbWidth, thumbHeight);
-
-    delete[] thumbData;
+    saveThumbnailToCache(getCachePath(filePath), thumbData.data(), thumbWidth, thumbHeight);
 
     Logger::debug("ThumbnailCache: Generated thumbnail for: {} ({}x{})",
                  utf8FromPath(filePath.filename()), thumbWidth, thumbHeight);
@@ -316,6 +312,11 @@ void ThumbnailCache::saveThumbnailToCache(const std::filesystem::path& cachePath
     file.write(reinterpret_cast<const char*>(&height), sizeof(int));
     file.write(reinterpret_cast<const char*>(data),
                static_cast<std::streamsize>(width * height * 4));
+    file.close();
+    if (!file) {
+        Logger::debug("ThumbnailCache: Failed to write cache file: {}", utf8FromPath(cachePath.filename()));
+        std::filesystem::remove(cachePath, ec);
+    }
 }
 
 } // namespace quadmapper
