@@ -186,13 +186,6 @@ public:
     bool seek(double timeSeconds);
 
     /**
-     * @brief Seek to a specific frame
-     * @param frameNumber Target frame number
-     * @return true if successful
-     */
-    bool seekFrame(int64_t frameNumber);
-
-    /**
      * @brief Decode the next frame
      * @return Decoded frame, or invalid frame if EOF/error
      */

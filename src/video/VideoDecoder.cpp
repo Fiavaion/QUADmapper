@@ -1152,12 +1152,6 @@ public:
         return true;
     }
 
-    bool seekFrame(int64_t frameNumber) {
-        if (!isOpen_ || info_.frameRate <= 0) return false;
-        double timeSeconds = static_cast<double>(frameNumber) / info_.frameRate;
-        return seek(timeSeconds);
-    }
-
     VideoFrame decodeNextFrame() {
         if (!isOpen_ || !decodeNextRaw()) return VideoFrame{};
         return convertFrame(frame_);
@@ -2359,7 +2353,6 @@ public:
     bool isLive() const { return false; }
     const VideoInfo& getInfo() const { return info_; }
     bool seek(double) { return false; }
-    bool seekFrame(int64_t) { return false; }
     VideoFrame decodeNextFrame() { return VideoFrame{}; }
     double getCurrentTime() const { return 0.0; }
     int64_t getCurrentFrame() const { return 0; }
@@ -2407,7 +2400,6 @@ bool VideoDecoder::isOpen() const { return impl_->isOpen(); }
 bool VideoDecoder::isLive() const { return impl_->isLive(); }
 const VideoInfo& VideoDecoder::getInfo() const { return impl_->getInfo(); }
 bool VideoDecoder::seek(double timeSeconds) { return impl_->seek(timeSeconds); }
-bool VideoDecoder::seekFrame(int64_t frameNumber) { return impl_->seekFrame(frameNumber); }
 VideoFrame VideoDecoder::decodeNextFrame() { return impl_->decodeNextFrame(); }
 double VideoDecoder::getCurrentTime() const { return impl_->getCurrentTime(); }
 int64_t VideoDecoder::getCurrentFrame() const { return impl_->getCurrentFrame(); }
