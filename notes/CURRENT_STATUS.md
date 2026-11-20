@@ -1,15 +1,15 @@
 # Current Status
 
 **Last updated:** 2026-11-20 (second `/release` gate passed, on Opus)
-**Phase / focus:** Release 1.0.0. The audit (QM-125), the AI beta switch (QM-126) and two `/release` passes are done. Next: the owner's network-path decision, the hands-on test, then the installer (AI engine bundle, TD-44).
-**Dev:** `origin/dev` = `57c6844`. Not pushed yet: the five fix commits `3cace9d..f13c9cd` and the notes commit. The owner decides.
+**Phase / focus:** Release 1.0.0. The audit (QM-125), the AI beta switch (QM-126) and two `/release` passes are done. Next: the owner's hands-on test, then the installer (AI engine bundle, TD-44).
+**Dev:** `origin/dev` = `5a9043c` (the second gate's fixes and notes). Not pushed yet: the decisions' commits on top of it. The owner decides.
 **Gate:** `/release` **PASS** (2026-11-20); details in [RELEASE_REVIEW.md](RELEASE_REVIEW.md).
 - Full suite: `ctest --test-dir build/debug -C Debug -j 8 | 3cace9d..f13c9cd before the verify fixes | 1772 passed, 1 flaky failure of 1773`. The zero-copy test passed alone; see Known gaps.
 - After the verify fixes: `test_ai_assist` 57, `test_video_decoder *Seek*` 34 passed, at `f13c9cd`.
-- **Owner decisions open:**
-  - whether to guard network (UNC) paths in a `.qmap`, and the FFmpeg protocol whitelist that goes with it;
-  - whether to remove the unused `VideoDecoder::seekFrame` (a header change).
-  - Both are in RELEASE_REVIEW.md.
+- **Owner decisions (2026-11-20):**
+  - Network (UNC) paths in a `.qmap` stay allowed, with "open projects only from people you trust" in the quick-start and the release notes.
+  - FFmpeg file opens allow only local protocols.
+  - `VideoDecoder::seekFrame` is removed.
 
 ## Decided 2026-11-19 (owner)
 

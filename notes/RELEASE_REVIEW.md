@@ -30,15 +30,10 @@
 | `1f1ddbc` | LOW | `bad_alloc` in the OBJ worker thread ended the app; now it is an import error. A failed thumbnail cache write leaves no partial file; the buffer is a vector. |
 | `f13c9cd`, `1f1ddbc` | style | Six comments that restated the code (one was wrong: "device index" over a device id). |
 
-### Needs the owner
-- **Network paths in a `.qmap` (MEDIUM).** A project can name `\\host\share\clip.mp4`. Opening it makes Windows connect to that host and offer the user's NTLM hash.
-  - Blocking UNC paths would also block media kept on a NAS.
-  - Options: warn and ask once per host on load; or leave it and document it ("open projects only from people you trust").
-  - The check would sit in the load mapping (`editor/ProjectMapping.cpp`), not `ProjectSerializer`.
-- **FFmpeg protocol whitelist (LOW, same class).** Media files are opened with every FFmpeg protocol allowed, so a crafted "video" that is really an HLS playlist can fetch from a web server.
-  - The app never opens URLs.
-  - Passing `protocol_whitelist=file,crypto,data` at the five `avformat_open_input` file opens would close this.
-- **`VideoDecoder::seekFrame` has no callers.** Removing it changes a public header (a Change Boundary).
+### Owner decisions (2026-11-20)
+- **Network paths in a `.qmap` (MEDIUM): left as is, documented.** A project can name `\\host\share\clip.mp4`, and opening it makes Windows connect to that host and offer the user's NTLM hash. Blocking UNC paths would also block media kept on a NAS. The quick-start guide (section 7) and the release notes' known limitations now say "Open projects only from people you trust".
+- **FFmpeg protocol whitelist (LOW): done.** Media files were opened with every FFmpeg protocol allowed, so a crafted "video" that is really an HLS playlist could fetch from a web server. The five `avformat_open_input` file opens now allow only `file,crypto,data` (`video/LocalMediaInput.hpp`; written inline in `AudioDecoder`, which does not depend on video). The camera (dshow) open is unchanged.
+- **`VideoDecoder::seekFrame`: removed** (no callers; header change approved).
 
 ### Already decided, not reopened
 - OSC listens on `0.0.0.0` when enabled, with no sender allowlist (owner, 2026-11-19).
