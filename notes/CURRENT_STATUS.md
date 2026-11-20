@@ -1,8 +1,17 @@
 # Current Status
 
-**Last updated:** 2026-11-20 (second `/release` gate passed, on Opus)
-**Phase / focus:** Release 1.0.0. The audit (QM-125), the AI beta switch (QM-126) and two `/release` passes are done. Next: the owner's hands-on test, then the installer (AI engine bundle, TD-44).
-**Dev:** `origin/dev` = `5a9043c` (the second gate's fixes and notes). Not pushed yet: the decisions' commits on top of it. The owner decides.
+**Last updated:** 2026-11-20 (hands-on round fixes; project moved to the work PC, see [000_SwitchMA.md](../000_SwitchMA.md))
+**Phase / focus:** Release 1.0.0. The audit (QM-125), the AI beta switch (QM-126) and two `/release` passes are done. Now: the owner's how-to videos on the work PC, fixing what they turn up; then the installer (AI engine bundle, TD-44).
+**Dev:** `origin/dev` = the transfer commit on top of `e74afa3`. Everything is pushed.
+
+## Hands-on round 2026-11-20 (owner-requested, owner checked in the app: "all good")
+
+- `e55b44f` The top bar's Play/Pause and Restart drive every video (locked ones through the master clock), ADR-050 Amendment 1. Roomier top bar; nothing shifts when Play becomes Pause.
+- `0424a05` Snap: On/Off toggle on the canvas (`general.vertexSnapping`, default on).
+- `e939196` Space: a tap plays/pauses, held (0.25 s) it is the hand tool for panning.
+- `70d96b7` With one screen, F11 previews the first Automatic output on it (ADR-046 amendment). Outputs tab and Identify (5 s numbers on each projector) in Simple mode (ADR-042 amendment).
+- `e74afa3` Scenes tab in Simple mode: one scene per projector, click between them to work on each.
+- Gate records (targeted, on the trees that became these commits): `test_editor` 222, `test_ui` 54, `test_app` 28, `test_output` 144, all passed. No full suite since `f13c9cd`.
 **Gate:** `/release` **PASS** (2026-11-20); details in [RELEASE_REVIEW.md](RELEASE_REVIEW.md).
 - Full suite: `ctest --test-dir build/debug -C Debug -j 8 | 3cace9d..f13c9cd before the verify fixes | 1772 passed, 1 flaky failure of 1773`. The zero-copy test passed alone; see Known gaps.
 - After the verify fixes: `test_ai_assist` 57, `test_video_decoder *Seek*` 34 passed, at `f13c9cd`.
@@ -51,7 +60,7 @@
    - Open and Save with a long folder path give a clear error rather than doing nothing;
    - after Save, the next start shows no recovery prompt.
 2. Installer: `feat/installer` (`9e5aacd`) does not compile, and its sidecar lookup conflicts with `dev`. It should use `cmake --install` for the app folder and stage only the AI engine.
-3. Move the sidecar to the PyTorch cu128 builds for the RTX 5090 (`000_start.md` §4).
+3. Move the sidecar to the PyTorch cu128 builds for the RTX 5090 (the lock pins `+cu126`, which has no sm_120 kernels; `tools/ai-sidecar/gen_lock.py` `TORCH_INDEX`).
 4. The `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)). PR #3 stays a draft until the hands-on test.
 
 ## Known gaps

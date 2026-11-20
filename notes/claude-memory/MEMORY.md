@@ -12,4 +12,5 @@
 - [Agent worktree stale base](agent-worktree-stale-base.md) — worktree-isolated agents start at stale fb4c85b; prompts must verify + reset to the expected sha; reuse main vcpkg_installed.
 - [Merge conflict guard](merge-conflict-guard.md) — guard `apply --3way` + `commit --only` merges: conflicted files otherwise commit with markers.
 - [Reconfigure before ctest after a merge](merge-reconfigure-before-ctest.md) — full reconfigure+build before ctest after merging a branch; a lower test count than the agent reported = stale build, not a pass.
+- [commit --only and untracking](commit-only-untrack.md) — `commit --only` on a `git rm --cached` path commits the disk file, not the deletion; use a plain commit with only that staged.
 - [Verification budget](verification-budget.md) — owner decision 2026-10-02: full ctest only near release, targeted tests per change, reviews only for risky changes, no routine mutation/stress loops/benches; owner hands-on testing first.
