@@ -451,6 +451,13 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
             return;
         }
 
+        // Space held: the hand tool (EditorUi) pans the canvas with the left button, so
+        // nothing is picked, dragged or nudged here meanwhile.
+        if (es.canvasHandTool) {
+            leaveQuadEditing();
+            return;
+        }
+
         // Slice warp editing: the canvas edits the selected slice's warp corners, and
         // quad vertices stay untouched (as while calibrating).
         if (warpOutput) {

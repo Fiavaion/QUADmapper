@@ -6,6 +6,7 @@
 #include "editor/EditorState.hpp"
 #include "editor/MediaAssign.hpp"
 #include "editor/Preferences.hpp"
+#include "editor/ShowTransport.hpp"
 #include "editor/SliceEditing.hpp"
 #include "input/VertexKeyboard.hpp"
 #include "media/MediaItem.hpp"
@@ -62,6 +63,7 @@ void EditorUi::frame(EditorContext& ctx, const std::function<void(EditorContext&
     // while a slice warp is edited, for its corners (ADR-047).
     const CanvasKeyOwner keys = canvasKeyOwner(ctx.es, ctx.outputManager);
     claimCanvasEditingKeys(keys != CanvasKeyOwner::None);
+    updateSpaceKey(ctx);
     stepDone(FrameStep::CanvasKeys);
 
     // On-canvas viewport: the corner-pin / mesh-edit warp interaction, then every
@@ -189,7 +191,7 @@ void EditorUi::drawStatusBar(EditorContext& ctx, CanvasKeyOwner keys) {
         hint = "The show is locked: Output > Perform Lock unlocks it.";
     } else if (keys != CanvasKeyOwner::None) {
         hint = "Tab / Shift+Tab: next or previous point    Arrows: nudge    "
-               "Shift+Arrows: 10x    Alt+Arrows: 0.1x";
+               "Shift+Arrows: 10x    Alt+Arrows: 0.1x    Space: play/pause (hold: pan)";
     }
 
     // A menu-bar window, as ImGui's own status bars are: it gets the menu bar's height
@@ -210,6 +212,36 @@ void EditorUi::drawStatusBar(EditorContext& ctx, CanvasKeyOwner keys) {
         }
     }
     ImGui::End();
+}
+
+void EditorUi::updateSpaceKey(EditorContext& ctx) {
+    // Held this long without the mouse, Space is the hand tool and its release is no tap.
+    constexpr double SPACE_HOLD_SECONDS = 0.25;
+    const ImGuiIO& io = ImGui::GetIO();
+    // Not while typing, while a widget is being edited, or with a popup open.
+    const bool free = !io.WantTextInput && !io.WantCaptureKeyboard &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    // Owned, so keyboard navigation does not also press the focused button. Ownership
+    // set now applies from the next frame, as for the canvas keys.
+    if (free) ImGui::SetKeyOwner(ImGuiKey_Space, ImHashStr("QUADmapper.SpaceKey"));
+
+    // A bare Space only: a chord with it (Ctrl+Space, ...) may be bound to an action.
+    if (free && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper &&
+        ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
+        spaceHeld_ = true;
+        spaceIsHand_ = false;
+        spacePressedAt_ = ImGui::GetTime();
+    }
+    if (spaceHeld_) {
+        if (!ImGui::IsKeyDown(ImGuiKey_Space)) {
+            spaceHeld_ = false;
+            if (!spaceIsHand_ && ctx.sourceManager) toggleShow(*ctx.sourceManager);
+        } else if (ImGui::GetTime() - spacePressedAt_ >= SPACE_HOLD_SECONDS ||
+                   ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            spaceIsHand_ = true;
+        }
+    }
+    ctx.es.canvasHandTool = spaceHeld_ && spaceIsHand_;
 }
 
 void EditorUi::drawCanvasOverlay(EditorContext& ctx) {
@@ -248,13 +280,25 @@ void EditorUi::drawCanvasOverlay(EditorContext& ctx) {
         es.canvasZoom = newZoom;
     }
 
-    // Middle-drag pan (per-frame delta in region-normalized units). Only a drag that
-    // began on the canvas pans it: one that began on a panel leaves the canvas alone.
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) canvasPanning_ = overRegion && !io.WantCaptureMouse;
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) canvasPanning_ = false;
-    if (canvasPanning_ && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
-        const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Middle);
-        ImGui::ResetMouseDragDelta(ImGuiMouseButton_Middle);
+    // Pan (per-frame delta in region-normalized units): a middle drag, or a left drag
+    // with the hand tool (Space held). Only a drag that began on the canvas pans it: one
+    // that began on a panel leaves the canvas alone.
+    const bool onCanvas = overRegion && !io.WantCaptureMouse;
+    if (es.canvasHandTool && onCanvas) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
+        canvasPanButton_ = ImGuiMouseButton_Middle;
+        canvasPanning_ = onCanvas;
+    } else if (es.canvasHandTool && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        canvasPanButton_ = ImGuiMouseButton_Left;
+        canvasPanning_ = onCanvas;
+    }
+    if (!ImGui::IsMouseDown(canvasPanButton_) ||
+        (canvasPanButton_ == ImGuiMouseButton_Left && !es.canvasHandTool)) {
+        canvasPanning_ = false;
+    }
+    if (canvasPanning_ && ImGui::IsMouseDragging(canvasPanButton_)) {
+        const ImVec2 d = ImGui::GetMouseDragDelta(canvasPanButton_);
+        ImGui::ResetMouseDragDelta(canvasPanButton_);
         es.canvasPan.x += d.x / regionSz.x;
         es.canvasPan.y += d.y / regionSz.y;
     }

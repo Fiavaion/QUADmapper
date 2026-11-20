@@ -86,6 +86,10 @@ private:
     // fresh, otherwise the keys that act on the canvas now. Shown in both UI modes.
     void drawStatusBar(EditorContext& ctx, CanvasKeyOwner keys);
     void drawCanvasOverlay(EditorContext& ctx);
+    // Space: a tap plays or pauses every video; held, it is the hand tool
+    // (es.canvasHandTool). Runs before the canvas, which then leaves the left button to
+    // the overlay's pan.
+    void updateSpaceKey(EditorContext& ctx);
     // The UI mode and the audio device are machine preferences (ADR-042, ADR-050 §5),
     // changed from the menu bar and the Preferences window: save a change.
     void savePreferenceChanges(EditorContext& ctx);
@@ -115,7 +119,11 @@ private:
     // Frames until the Quad List is brought in front of the Video Player's tab, after
     // the default layout was built.
     int focusQuadListIn_ = 0;
-    bool canvasPanning_ = false;  // a middle-button drag that began on the canvas
+    bool canvasPanning_ = false;  // a pan drag that began on the canvas
+    int canvasPanButton_ = 0;     // ImGuiMouseButton: middle, or left with the hand tool
+    bool spaceHeld_ = false;      // Space went down while nothing was typed in
+    bool spaceIsHand_ = false;    // ... and was held or used with the mouse: no tap
+    double spacePressedAt_ = 0.0; // ImGui::GetTime() of that press
 
     // In draw order (PanelHost keeps it).
     QuadListPanel quadList_;

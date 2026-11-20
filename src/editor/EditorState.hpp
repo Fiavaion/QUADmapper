@@ -540,6 +540,9 @@ struct EditorState {
     // Left-button state last frame, for click-to-select edge detection in the
     // viewport (ADR-042). Distinct from the corner/mesh drag latches.
     bool canvasMouseDownPrev = false;
+    // Space held as the hand tool (EditorUi): a left drag pans the canvas, and the
+    // canvas picks, drags and nudges nothing.
+    bool canvasHandTool = false;
 
     // The perform lock (ADR-051 §4, PerformLock.hpp): runtime only, never saved. While
     // it is on, commandHistory is read-only.
