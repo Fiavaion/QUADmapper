@@ -539,8 +539,15 @@ struct SidecarClient::Impl {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
         limits.BasicLimitInformation.LimitFlags =
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits,
-                                sizeof(limits));
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits,
+                                     sizeof(limits))) {
+            // Without kill-on-close a crash would leave the sidecar running.
+            Logger::warning("AI sidecar: job setup failed (error " +
+                            std::to_string(GetLastError()) + ")");
+            CloseHandle(job);
+            job = nullptr;
+            return false;
+        }
 
         // "<python>" "<script>" --host <host> --port <port>, the interpreter also named
         // in full as the application, so nothing is looked up on a search path.

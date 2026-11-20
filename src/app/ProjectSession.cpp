@@ -44,7 +44,11 @@ fs::path recoveryDir() {
         dir = fs::path(base) / "QUADmapper" / "recovery";
     }
     CoTaskMemFree(base);
-    if (dir.empty()) dir = fs::temp_directory_path() / "QUADmapper" / "recovery";
+    std::error_code ec;
+    if (dir.empty()) {
+        const fs::path temp = fs::temp_directory_path(ec);
+        if (!ec) dir = temp / "QUADmapper" / "recovery";
+    }
     return dir;
 }
 
@@ -238,6 +242,8 @@ void ProjectSession::processPendingFileAction() {
     }
 
     // The project being left: its autosave/crash files are settled once we move on.
+    // A write still flushing would put the autosave back after it is deleted.
+    finishAutosaveWrite();
     const std::string leaving = m_project.getFilePath();
     switch (action) {
         case FileAction::New:
@@ -393,6 +399,7 @@ bool ProjectSession::writeProjectFile(const std::string& path) {
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
     markProjectClean();
     // The real file now holds everything the autosave did.
+    finishAutosaveWrite();
     discardRecoveryFiles(es, previousFile);
     discardRecoveryFiles(es, path);
     postStatus(es, "Project saved: " + path);
@@ -471,13 +478,13 @@ void ProjectSession::autosaveIfDue() {
     const double interval = 60.0 * std::max(MIN_AUTOSAVE_MINUTES, general.autoSaveIntervalMinutes);
     const double now = glfwGetTime();
     if (now - m_lastAutosaveTime < interval) return;
-    m_lastAutosaveTime = now;
 
     // The previous write is still flushing: try again next tick.
     if (m_autosaveWrite.valid() &&
         m_autosaveWrite.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
         return;
     }
+    m_lastAutosaveTime = now;
     finishAutosaveWrite();
 
     Project p;

@@ -72,10 +72,30 @@ bool cornersInRange(const std::array<std::array<float, 2>, 4>& corners) {
     return true;
 }
 
+// The temp folder; the working directory if Windows has none (the throwing overload
+// would reach the crash guard). Absolute either way: the sidecar runs in its own folder.
+std::filesystem::path tempFolder() {
+    std::error_code ec;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+    return ec ? std::filesystem::current_path(ec) : temp;
+}
+
+// QM_AI_TEST_IMAGE stands in for the camera (verification, or a photo on disk). `path`
+// is left empty when it is unset; false when it names a file that is not there.
+bool testImageFromEnv(std::string& path) {
+    const char* value = std::getenv("QM_AI_TEST_IMAGE");
+    if (!value) return true;
+    const std::filesystem::path file(value);
+    std::error_code ec;
+    if (!std::filesystem::exists(file, ec)) return false;
+    path = utf8FromPath(file);
+    return true;
+}
+
 // The scan's folder for one output: the sidecar writes the frames there and the camera's
 // captures and the map land beside them.
 std::filesystem::path scanFolder(const UUID& outputId) {
-    return std::filesystem::temp_directory_path() / "quadmapper_scan" / outputId.toString();
+    return tempFolder() / "quadmapper_scan" / outputId.toString();
 }
 
 AiAssist::Outcome scanPatternsOutcome(const ai::GrayReply<ai::GrayPatternsResult>& reply) {
@@ -508,13 +528,9 @@ void AiAssist::detectSurface(const OutputManager* outputs) {
     // frame off the first camera (the QM-055 rail). Camera, capture and inference run
     // off the main thread, so the editor and the projectors keep rendering.
     std::string testImage;
-    if (const char* testImg = std::getenv("QM_AI_TEST_IMAGE")) {
-        const std::filesystem::path path(testImg);
-        if (!std::filesystem::exists(path)) {
-            setStatus("AI: QM_AI_TEST_IMAGE not found", 5.0f);
-            return;
-        }
-        testImage = utf8FromPath(path);
+    if (!testImageFromEnv(testImage)) {
+        setStatus("AI: QM_AI_TEST_IMAGE not found", 5.0f);
+        return;
     }
 
     // Its corners map into projector space as Pick Surface's do (ADR-053 §3).
@@ -526,8 +542,7 @@ void AiAssist::detectSurface(const OutputManager* outputs) {
                  [sidecar, testImage, grayMap, oneFlash]() -> Outcome {
         std::string imgPath = testImage;
         if (imgPath.empty()) {
-            imgPath = utf8FromPath(std::filesystem::temp_directory_path() /
-                                   "quadmapper_ai_capture.png");
+            imgPath = utf8FromPath(tempFolder() / "quadmapper_ai_capture.png");
             std::string err;
             if (!captureCameraFrameToPng(imgPath, err)) {
                 return Outcome{"AI: " + err, 5.0f, std::nullopt};
@@ -611,8 +626,7 @@ void AiAssist::capturePhoto(const OutputManager* outputs) {
         setStatus("One-Flash: Blackout is on - turn it off to capture", 6.0f);
         return;
     }
-    const std::string out = utf8FromPath(std::filesystem::temp_directory_path() /
-                                         "quadmapper_oneflash_capture.png");
+    const std::string out = utf8FromPath(tempFolder() / "quadmapper_oneflash_capture.png");
     startRequest("One-Flash: capturing photo...", "One-Flash", UUID::null(),
                  [out]() -> Outcome {
         std::string err;
@@ -665,13 +679,9 @@ void AiAssist::runOneFlash(const OutputManager* outputs,
     // verification) else a live camera shot of the projected pattern, taken by the
     // worker along with the solve, off the main thread.
     std::string testImage;
-    if (const char* testImg = std::getenv("QM_AI_TEST_IMAGE")) {
-        const std::filesystem::path path(testImg);
-        if (!std::filesystem::exists(path)) {
-            setStatus("One-Flash: QM_AI_TEST_IMAGE not found", 6.0f);
-            return;
-        }
-        testImage = utf8FromPath(path);
+    if (!testImageFromEnv(testImage)) {
+        setStatus("One-Flash: QM_AI_TEST_IMAGE not found", 6.0f);
+        return;
     }
 
     std::optional<std::array<std::array<float, 2>, 4>> target;
@@ -681,8 +691,7 @@ void AiAssist::runOneFlash(const OutputManager* outputs,
                  [sidecar, testImage, target, label = std::string(label)]() -> Outcome {
         std::string patternPath = testImage;
         if (patternPath.empty()) {
-            patternPath = utf8FromPath(std::filesystem::temp_directory_path() /
-                                       "quadmapper_oneflash_capture.png");
+            patternPath = utf8FromPath(tempFolder() / "quadmapper_oneflash_capture.png");
             std::string err;
             if (!captureCameraFrameToPng(patternPath, err)) {
                 return Outcome{"One-Flash: " + err, 6.0f, std::nullopt};
@@ -714,20 +723,15 @@ bool AiAssist::canSegment() const {
 }
 
 void AiAssist::takePhoto() {
-    // QM_AI_TEST_IMAGE stands in for the camera (verification, or a photo on disk).
     std::string testImage;
-    if (const char* testImg = std::getenv("QM_AI_TEST_IMAGE")) {
-        const std::filesystem::path path(testImg);
-        if (!std::filesystem::exists(path)) {
-            setStatus("AI Photo: QM_AI_TEST_IMAGE not found", 5.0f);
-            return;
-        }
-        testImage = utf8FromPath(path);
+    if (!testImageFromEnv(testImage)) {
+        setStatus("AI Photo: QM_AI_TEST_IMAGE not found", 5.0f);
+        return;
     }
     startRequest("AI Photo: taking a photo...", "AI Photo", UUID::null(), [testImage]() -> Outcome {
         std::string path = testImage;
         if (path.empty()) {
-            path = utf8FromPath(std::filesystem::temp_directory_path() / "quadmapper_ai_photo.png");
+            path = utf8FromPath(tempFolder() / "quadmapper_ai_photo.png");
             std::string err;
             if (!captureCameraFrameToPng(path, err)) {
                 return Outcome{"AI Photo: " + err, 5.0f, std::nullopt};
