@@ -87,7 +87,8 @@ public:
     void setMonitor(int m) { monitor_ = m; }
     const MonitorIdentity& getDesiredMonitor() const { return desiredMonitor_; }
     void setDesiredMonitor(const MonitorIdentity& identity) { desiredMonitor_ = identity; }
-    // No display was chosen: the output takes the first one that is not the editor's.
+    // No display was chosen: the output takes the first one that is not the editor's,
+    // or at F11 the editor's when it is the only one (enterPerformMode).
     bool isMonitorAutomatic() const {
         return desiredMonitor_.name.empty() && desiredMonitor_.savedIndex < 0;
     }

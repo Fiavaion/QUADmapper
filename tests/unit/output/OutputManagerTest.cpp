@@ -696,6 +696,55 @@ TEST(OutputManagerTest, ExitPerformModeSucceedsWhenAlreadyExited) {
     EXPECT_TRUE(result.isSuccess());
 }
 
+TEST(OutputManagerTest, IdentifyNeedsAnOutputOnScreen) {
+    OutputManager manager;  // not initialized: no output can go fullscreen
+    manager.createOutput("Test");
+    EXPECT_FALSE(manager.identifyOutputs());
+    EXPECT_FALSE(manager.isIdentifying());
+    EXPECT_FALSE(manager.isInPerformMode());
+    manager.retireIdentify();  // nothing to end
+    EXPECT_FALSE(manager.isInPerformMode());
+}
+
+// Identify's number: a dark panel, the frame's four edges, then one quad per lit
+// segment, all inside the frame and the digits on the panel.
+TEST(IdentifyOverlayTest, PanelEdgesAndSevenSegmentDigits) {
+    auto bounds = [](const Quad& q) {
+        const auto& c = q.getGeometry().getCorners();
+        return std::array<float, 4>{c[0].x, c[0].y, c[2].x, c[2].y};  // x0 y0 x1 y1
+    };
+    const IVec2 hd(1920, 1080);
+    for (const auto& [number, segments] : {std::pair{1, 2}, std::pair{8, 7}, std::pair{12, 7}}) {
+        const std::vector<Quad> quads = makeIdentifyOverlay(number, hd);
+        ASSERT_EQ(quads.size(), 1u + 4u + static_cast<size_t>(segments)) << number;
+        EXPECT_EQ(quads[0].getColorCorrection().rgbGain, Vec3(0.0f)) << "the panel is dark";
+        EXPECT_LT(quads[0].getOpacity(), 1.0f);
+        const auto panel = bounds(quads[0]);
+        for (size_t i = 0; i < quads.size(); ++i) {
+            const auto b = bounds(quads[i]);
+            EXPECT_GE(b[0], 0.0f);
+            EXPECT_GE(b[1], 0.0f);
+            EXPECT_LE(b[2], 1.0f);
+            EXPECT_LE(b[3], 1.0f);
+            EXPECT_LT(b[0], b[2]);
+            EXPECT_LT(b[1], b[3]);
+            if (i >= 5) {  // a segment
+                EXPECT_TRUE(quads[i].getColorCorrection().isIdentity()) << "white";
+                EXPECT_GE(b[0], panel[0]);
+                EXPECT_GE(b[1], panel[1]);
+                EXPECT_LE(b[2], panel[2]);
+                EXPECT_LE(b[3], panel[3]);
+            }
+        }
+    }
+    // A portrait (rotated) frame still fits the number.
+    for (const Quad& q : makeIdentifyOverlay(88, IVec2(1080, 1920))) {
+        const auto b = bounds(q);
+        EXPECT_GE(b[0], 0.0f);
+        EXPECT_LE(b[2], 1.0f);
+    }
+}
+
 TEST(OutputManagerTest, EnterPerformModeIdempotent) {
     OutputManager manager;
 
@@ -752,6 +801,45 @@ TEST(DescribeMonitorChoiceTest, ResolvedChosenAutomaticAndUnresolved) {
     savedIndexOnly.savedIndex = 0;
     output.setDesiredMonitor(savedIndexOnly);
     EXPECT_FALSE(output.isMonitorAutomatic());
+}
+
+// One display (a laptop): an Automatic output previews on it at F11, and says so.
+TEST(DescribeMonitorChoiceTest, AutomaticWithOnlyTheEditorsDisplayNamesIt) {
+    const std::vector<MonitorInfo> laptop = {monitorAt(0, "Laptop", IVec2(0, 0))};
+    OutputWindow output;
+    output.setMonitor(-1);  // resolution skips the editor's display
+    EXPECT_EQ(OutputManager::describeMonitorChoice(laptop, output, /*previewsOnOnlyScreen=*/true),
+              laptop[0].getDisplayString() + " (automatic: the only display)");
+    EXPECT_EQ(OutputManager::describeMonitorChoice(laptop, output), "Not connected")
+        << "another output takes the screen";
+
+    output.setDesiredMonitor({"Epson", IVec2(1920, 0), 1});  // a projector chosen, unplugged
+    EXPECT_EQ(OutputManager::describeMonitorChoice(laptop, output, true), "Epson (not connected)");
+}
+
+TEST(OnlyScreenPreviewTest, FirstEnabledAutomaticOutputOnTheOnlyDisplay) {
+    const std::vector<MonitorInfo> laptop = {monitorAt(0, "Laptop", IVec2(0, 0))};
+    std::vector<std::unique_ptr<OutputWindow>> outputs;
+    auto add = [&](bool enabled, const MonitorIdentity& desired, int resolved) {
+        auto output = std::make_unique<OutputWindow>();
+        output->setEnabled(enabled);
+        output->setDesiredMonitor(desired);
+        output->setMonitor(resolved);
+        outputs.push_back(std::move(output));
+        return outputs.back().get();
+    };
+    add(true, {"Epson", IVec2(1920, 0), 1}, -1);  // a chosen projector, unplugged: never
+    add(false, {}, -1);                             // disabled
+    const OutputWindow* automatic = add(true, {}, -1);
+    add(true, {}, -1);                              // a second Automatic one
+    EXPECT_EQ(OutputManager::onlyScreenPreview(laptop, outputs), automatic);
+
+    const std::vector<MonitorInfo> two = {monitorAt(0, "Laptop", IVec2(0, 0)),
+                                          monitorAt(1, "Epson", IVec2(1920, 0))};
+    EXPECT_EQ(OutputManager::onlyScreenPreview(two, outputs), nullptr) << "a projector is there";
+
+    add(true, {"Laptop", IVec2(0, 0), 0}, 0);  // the screen chosen on purpose for one
+    EXPECT_EQ(OutputManager::onlyScreenPreview(laptop, outputs), nullptr) << "already taken";
 }
 
 TEST(ResolveMonitorTest, ExactNameAndPositionWinOverStaleIndex) {

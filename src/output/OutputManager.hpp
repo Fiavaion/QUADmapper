@@ -82,6 +82,11 @@ struct MonitorResolution {
 // grid lines and two solid white bands, drawn over opaque black.
 std::vector<Quad> makeBlendTestPattern();
 
+// Identify's overlay for output `number` (1-based) on a frame of `frameSize` pixels,
+// in normalized frame space, in draw order: a dark panel in the middle, a white
+// border round the frame, and the number in white seven-segment digits on the panel.
+std::vector<Quad> makeIdentifyOverlay(int number, IVec2 frameSize);
+
 class OutputManager {
 public:
     OutputManager();
@@ -231,11 +236,24 @@ public:
     /**
      * What a monitor picker shows for `output` (the Output panel and the Inspector):
      * the display it resolved to, marked "(automatic)" when none was chosen; else the
-     * chosen display marked "(not connected)"; else "Not connected". Never names a
-     * display the output is not on. Pure.
+     * chosen display marked "(not connected)"; else, when `previewsOnOnlyScreen`
+     * (onlyScreenPreview is this output), the only display marked "(automatic: the
+     * only display)"; else "Not connected". Pure.
      */
     static std::string describeMonitorChoice(const std::vector<MonitorInfo>& monitors,
-                                             const OutputWindow& output);
+                                             const OutputWindow& output,
+                                             bool previewsOnOnlyScreen = false);
+
+    /**
+     * The output that F11 previews on the editor's own screen, or null (owner,
+     * 2026-11-20; ADR-046 amendment): with exactly one display connected and no enabled
+     * output on it, the first enabled Automatic output left unresolved. An output
+     * chosen for a projector that is not plugged in is never one (QM-090), and a
+     * hotplug in perform mode never moves an output onto the editor's screen. Pure.
+     */
+    static const OutputWindow* onlyScreenPreview(
+        const std::vector<MonitorInfo>& monitors,
+        const std::vector<std::unique_ptr<OutputWindow>>& outputs);
 
     /**
      * The user explicitly chose monitor `monitorIndex` for `output` (-1 =
@@ -347,6 +365,19 @@ public:
      * Check if currently in perform mode.
      */
     bool isInPerformMode() const { return performMode_; }
+
+    /**
+     * Identify (owner, 2026-11-20): for IDENTIFY_SECONDS every output shows its number,
+     * its place in the Outputs list, over its picture, so each projector can be matched
+     * to its output. Outside perform mode it enters perform mode for that time and
+     * leaves it again, unless the operator left perform mode meanwhile. False when no
+     * output could be shown.
+     */
+    static constexpr double IDENTIFY_SECONDS = 5.0;
+    bool identifyOutputs();
+    bool isIdentifying() const { return identifyUntil_ > 0.0; }
+    // Once per frame, after setFrameTime: ends Identify when its time is up.
+    void retireIdentify();
 
     // Key event handlers for perform mode (prepared for Phase 7 input system)
 
@@ -644,6 +675,20 @@ private:
     // Scene crossfades in progress, by output (ADR-047 §5), and the frame clock.
     SceneFades sceneFades_;
     double frameTime_ = 0.0;
+
+    // Identify: shown until this frame time (0: off). Each output's overlay is kept
+    // while its number and frame size hold, so its quads keep their ids in the
+    // renderer's cache. identifyLeavesPerform_: Identify entered perform mode itself.
+    double identifyUntil_ = 0.0;
+    bool identifyLeavesPerform_ = false;
+    struct IdentifyOverlay {
+        int number = 0;
+        IVec2 size = IVec2(0, 0);
+        std::vector<Quad> quads;
+    };
+    std::unordered_map<UUID, IdentifyOverlay> identifyOverlays_;
+    void endIdentify();
+    void renderIdentifyOverlay(const OutputWindow& output, int number, IVec2 size, Renderer& renderer);
 
     // During a fade whose scenes have 3D objects, each scene's whole frame (its
     // objects, then its canvas through the output's slices) renders into its own

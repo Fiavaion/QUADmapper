@@ -498,7 +498,8 @@ bool Application::initializeComponents() {
     // ADR-039 P2: create the default output and route the default scene to it. The
     // default output has no chosen monitor, so it resolves to the first display that
     // is not the editor's (the projector) — "launch already aimed at the projector" —
-    // and to none when the editor's screen is the only one (QM-090). There is always
+    // and to none when the editor's screen is the only one (QM-090), where F11
+    // previews it on that screen. There is always
     // >= 1 output, so the F11 lazy-create path becomes a no-op.
     {
         OutputWindow* defaultOutput = m_outputManager->createOutput("Projector 1");
@@ -626,6 +627,7 @@ void Application::presentFrame(FrameMarks* marks) {
         m_outputManager->setFrameTime(
             std::chrono::duration<double>(Clock::now().time_since_epoch()).count());
         m_outputManager->retireSceneFades(m_editorState->scenes);
+        m_outputManager->retireIdentify();
     }
 
     // Render

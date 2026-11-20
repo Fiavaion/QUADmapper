@@ -13,7 +13,8 @@ class OutputManager;
 class OutputWindow;
 
 /**
- * The Outputs tab of the Resources window (Advanced mode): add/remove outputs,
+ * The Outputs tab of the Resources window, in both UI modes (several projectors are
+ * not an Advanced-only need): add/remove outputs, identify them on their projectors,
  * configure resolution/monitor settings, and enter/exit perform mode. The selected
  * output lives in EditorState::selectedOutputId.
  */
@@ -23,7 +24,6 @@ public:
 
     const char* id() const override { return ID; }
     PanelKind kind() const override { return PanelKind::Tab; }
-    bool available(const EditorContext& ctx) const override;
     // Keeps the editor state and the output manager.
     void onAttach(EditorContext& ctx) override;
     // Selecting an output shows it in the Properties window.

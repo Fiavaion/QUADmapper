@@ -11,10 +11,6 @@ namespace quadmapper {
 
 bool OutputPanel::hasSelection() const { return !es_->selectedOutputId.isNull(); }
 
-bool OutputPanel::available(const EditorContext& ctx) const {
-    return ctx.es.uiMode == EditorState::UiMode::Advanced;
-}
-
 void OutputPanel::onAttach(EditorContext& ctx) {
     es_ = &ctx.es;
     outputManager_ = ctx.outputManager;
@@ -133,6 +129,14 @@ void OutputPanel::renderActionButtons() {
     }
 
     ImGui::SameLine();
+
+    if (ImGui::Button("Identify")) {
+        outputManager_->identifyOutputs();
+    }
+    ImGui::SetItemTooltip("Show each output's number on its projector for %.0f seconds",
+                          OutputManager::IDENTIFY_SECONDS);
+
+    ImGui::SameLine();
     ImGui::TextDisabled("(%zu outputs, %zu monitors)",
         outputManager_->getOutputCount(),
         outputManager_->getMonitorCount());
@@ -184,6 +188,10 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
     ImGui::PushID(index);
 
     bool isSelected = (output->getId() == es_->selectedOutputId);
+
+    // The number Identify shows on this output's projector.
+    ImGui::TextDisabled("%d", index + 1);
+    ImGui::SameLine();
 
     // Enabled checkbox
     bool enabled = output->isEnabled();
@@ -288,13 +296,16 @@ void OutputPanel::renderMonitorDropdown(OutputWindow* output) {
 
     int currentMonitor = output->getMonitor();
     const auto& monitors = outputManager_->getMonitors();
-    // No chosen display = automatic: the first one that is not the editor's (QM-090).
+    // No chosen display = automatic: the first one that is not the editor's (QM-090),
+    // or at F11 the editor's when it is the only one.
     const bool automatic = output->isMonitorAutomatic();
-    const std::string previewStr = OutputManager::describeMonitorChoice(monitors, *output);
+    const std::string previewStr = OutputManager::describeMonitorChoice(
+        monitors, *output,
+        OutputManager::onlyScreenPreview(monitors, outputManager_->getOutputs()) == output);
 
     ImGui::SetNextItemWidth(-1);
     if (ImGui::BeginCombo("##monitor", previewStr.c_str())) {
-        if (ImGui::Selectable("Automatic (not the editor's display)", automatic)) {
+        if (ImGui::Selectable("Automatic (a projector, or this screen if it is the only one)", automatic)) {
             outputManager_->assignMonitor(*output, -1);
         }
 

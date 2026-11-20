@@ -249,7 +249,14 @@ void InspectorPanel::drawContent(EditorContext& ctx) {
     if (es.currentSelectionType == SelectionType::Quad) {
         renderQuadProperties(ctx);
     } else if (es.currentSelectionType == SelectionType::Output) {
-        renderOutputProperties(ctx);
+        // Simple mode (ADR-042 amendment): the Outputs tab edits the output; scenes,
+        // slices and calibration stay in Advanced mode.
+        if (es.uiMode == EditorState::UiMode::Simple) {
+            ImGui::TextDisabled("Edit this output in the Outputs tab.");
+            ImGui::TextDisabled("Scenes, slices and calibration: Advanced mode.");
+        } else {
+            renderOutputProperties(ctx);
+        }
     } else if (es.currentSelectionType == SelectionType::Media) {
         renderMediaProperties(ctx);
     } else if (es.currentSelectionType == SelectionType::Object) {
@@ -979,11 +986,14 @@ void InspectorPanel::renderOutputProperties(EditorContext& ctx) {
         const int currentMonitor = selectedOutput->getMonitor();  // -1: none connected
         const bool automatic = selectedOutput->isMonitorAutomatic();
         const std::string monitorPreview =
-            OutputManager::describeMonitorChoice(monitors, *selectedOutput);
+            OutputManager::describeMonitorChoice(
+                monitors, *selectedOutput,
+                OutputManager::onlyScreenPreview(monitors, ctx.outputManager->getOutputs()) ==
+                    selectedOutput);
 
         ImGui::SetNextItemWidth(-1);
         if (ImGui::BeginCombo("##Monitor", monitorPreview.c_str())) {
-            if (ImGui::Selectable("Automatic (not the editor's display)", automatic)) {
+            if (ImGui::Selectable("Automatic (a projector, or this screen if it is the only one)", automatic)) {
                 ctx.outputManager->assignMonitor(*selectedOutput, -1);
             }
             ImGui::Separator();
