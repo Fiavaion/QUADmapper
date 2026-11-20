@@ -223,7 +223,6 @@ public:
         return {};
     }
 
-    // Get the native device ID for a given device index
     const ma_device_id* getNativeDeviceId(const std::string& deviceId) const {
         if (deviceId.empty()) {
             return nullptr;  // Use default

@@ -327,7 +327,6 @@ void OutputPanel::renderResolutionControls(OutputWindow* output) {
     ImGui::SetNextItemWidth(150);
     std::string presetLabel = std::to_string(res.x) + "x" + std::to_string(res.y);
 
-    // Check if matches a preset
     int matchedPreset = -1;
     for (size_t i = 0; i < RESOLUTION_PRESET_COUNT - 1; i++) {  // Exclude "Custom"
         if (RESOLUTION_PRESETS[i].width == res.x && RESOLUTION_PRESETS[i].height == res.y) {

@@ -72,7 +72,6 @@ bool MediaLibrary::hasPath(const std::filesystem::path& path) const {
 int MediaLibrary::scanFolder(const std::filesystem::path& folder, bool recursive) {
     int count = 0;
 
-    // Check if folder exists and is a directory
     std::error_code ec;
     if (!std::filesystem::exists(folder, ec) || !std::filesystem::is_directory(folder, ec)) {
         return 0;

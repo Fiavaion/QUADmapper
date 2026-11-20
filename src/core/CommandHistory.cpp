@@ -78,7 +78,6 @@ void CommandHistory::execute(std::unique_ptr<Command> command) {
         commands_.erase(commands_.begin() + undoIndex_, commands_.end());
     }
 
-    // Check if we can merge with the last command
     if (!commands_.empty() && undoIndex_ > 0) {
         auto& lastCommand = commands_[undoIndex_ - 1];
         if (lastCommand->canMergeWith(*command)) {
