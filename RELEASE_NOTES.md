@@ -89,6 +89,7 @@ AI assist is a beta and is off until you turn it on in Edit > Preferences... > G
 - On outputs with slices or rotation, Pick Surface and Detect Surface place corners only approximately. Fix them with `Tab` and the arrow keys.
 - The settle time between scan patterns is not tuned for real webcams. A slow webcam can give a low "camera saw N%" figure.
 - Detect Surface was tuned on three test images. On some venues it may propose a wrong or low-confidence surface. Use Pick Surface instead.
+- Open projects only from people you trust. A project can point at media on a network share (`\\computer\share\...`), and opening it makes Windows connect to that computer and sign in with your Windows account.
 
 ---
 
