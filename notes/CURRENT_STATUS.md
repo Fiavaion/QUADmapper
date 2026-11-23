@@ -83,7 +83,7 @@
 3. Move the sidecar to the PyTorch cu128 builds for the RTX 5090 (the lock pins `+cu126`, which has no sm_120 kernels; `tools/ai-sidecar/gen_lock.py` `TORCH_INDEX`).
 4. The `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)). PR #3 stays a draft until the hands-on test.
 5. A full-suite gate, since six features landed after the last one.
-6. Website launch blockers (section 1 of [docs/website-launch.md](../docs/website-launch.md)): the GitHub repo is private (Report a Bug and the FFmpeg offer link to it), the exe is not code-signed, and there is no release date.
+6. Website launch (section 1 of [docs/website-launch.md](../docs/website-launch.md)): the repo is public since 2026-11-23 and the v1.0.0 GitHub release is a draft with the setup exe attached (publish it after the hands-on test, tagged on `master` after the merge). Left: the exe is not code-signed, and there is no release date. The 32 `worktree-agent-*` branches were deleted on GitHub; they are kept in `D:\MarkTO\AIprojects\QUADmapper-backups\agent-branches-2026-11-23.bundle`.
 
 ## Known gaps
 
