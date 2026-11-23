@@ -8,6 +8,7 @@
 #include "../editor/MissingMedia.hpp"
 #include "../editor/NewQuads.hpp"
 #include "../editor/ProjectorFit.hpp"
+#include "../editor/ProjectMapping.hpp"
 #include "../editor/SceneTakes.hpp"
 #include "../editor/ReplaceMedia.hpp"
 #include "../editor/MeshLoads.hpp"
@@ -495,23 +496,27 @@ bool Application::initializeComponents() {
                                                      std::move(services));
     }
 
-    // ADR-039 P2: create the default output and route the default scene to it. The
-    // default output has no chosen monitor, so it resolves to the first display that
-    // is not the editor's (the projector) — "launch already aimed at the projector" —
-    // and to none when the editor's screen is the only one (QM-090), where F11
-    // previews it on that screen. There is always
-    // >= 1 output, so the F11 lazy-create path becomes a no-op.
+    // Projectors found at startup (owner, 2026-11-23): every display gets an output at
+    // its own resolution and a scene of its own (Scene 1 on Projector 1), the editor's
+    // screen last (F11 covers the editor too). With the editor's screen the only one, a single Automatic
+    // "Projector 1" (ADR-039 P2) resolves to none (QM-090) and F11 previews it on that
+    // screen. There is always >= 1 output, so the F11 lazy-create path is a no-op.
+    // Harness runs keep the single default output, whatever this computer has.
     {
-        OutputWindow* defaultOutput = m_outputManager->createOutput("Projector 1");
-        if (defaultOutput) {
+        if (!isHarnessRun()) m_outputManager->addOutputsForUnusedDisplays(/*includeEditorScreen=*/true);
+        if (m_outputManager->getOutputCount() == 0) {
+            m_outputManager->createOutput("Projector 1");
             m_outputManager->resolveOutputs();
-            Scene& scene = m_editorState->activeScene();
-            scene.setCanvasSize(defaultOutput->getEffectiveResolution());
-            OutputManager::showScene(*defaultOutput, &scene, m_editorState->scenes);
-            Logger::info("Default scene assigned to output '{}' on monitor {}",
-                         defaultOutput->getName(), defaultOutput->getMonitor());
+        }
+        std::vector<OutputWindow*> outputs;
+        for (auto& output : m_outputManager->getOutputs()) outputs.push_back(output.get());
+        giveOutputsTheirOwnScenes(*m_editorState, *m_outputManager, outputs);
+        for (OutputWindow* output : outputs) {
+            Logger::info("Output '{}' on monitor {} at {}x{}", output->getName(),
+                         output->getMonitor(), output->getResolution().x, output->getResolution().y);
         }
     }
+    m_outputManager->setMonitorChangeCallback([this]() { m_displaysChanged = true; });
 
     registerActions();
 
@@ -822,8 +827,39 @@ void Application::runFrameBoundaryTasks() {
     m_session->pollMissingMediaSearch();
     if (m_sourceManager) releaseUnusedSources(*m_editorState, *m_sourceManager, m_mediaLibrary.get());
     fitProjectorsToOutputs();
+    adoptConnectedDisplays();
     m_session->autosaveIfDue();
     updateWindowTitle();
+}
+
+void Application::adoptConnectedDisplays() {
+    if (!m_displaysChanged || !m_outputManager || isHarnessRun()) return;
+    EditorState& es = *m_editorState;
+    // Outputs are show content: leave them alone while the show runs; done afterwards.
+    if (m_outputManager->isInPerformMode() || es.performLock.isOn() || es.aiScan.running) return;
+    m_displaysChanged = false;
+
+    std::string message;
+    auto say = [&message](const std::string& part) {
+        message += (message.empty() ? "" : "; ") + part;
+    };
+    for (const UUID& id : m_outputManager->takeOutputsPlacedByHotplug()) {
+        OutputWindow* output = m_outputManager->getOutput(id);
+        const MonitorInfo* monitor = output ? m_outputManager->getMonitor(output->getMonitor()) : nullptr;
+        if (monitor && m_outputManager->adoptDisplayResolution(*output)) {
+            say(output->getName() + " now uses " + monitor->name + " at " +
+                std::to_string(monitor->resolution.x) + "x" + std::to_string(monitor->resolution.y));
+        }
+    }
+    const std::vector<OutputWindow*> added = m_outputManager->addOutputsForUnusedDisplays();
+    giveOutputsTheirOwnScenes(es, *m_outputManager, added);
+    for (OutputWindow* output : added) {
+        const MonitorInfo* monitor = m_outputManager->getMonitor(output->getMonitor());
+        const Scene* scene = OutputManager::sceneForOutput(es.scenes, *output);
+        say(output->getName() + " added for " + (monitor ? monitor->name : std::string("a new display")) +
+            (scene ? ", showing " + scene->getName() : std::string()));
+    }
+    if (!message.empty()) postStatus(es, message);
 }
 
 // See editor/ProjectorFit.hpp (kept framing under the perform lock, TD-36).

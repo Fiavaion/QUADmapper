@@ -140,7 +140,7 @@
     <li>The picture goes fullscreen on the projector. With no projector connected, it fills this screen instead, so you can check it before the show.</li>
     <li>Press <kbd>Esc</kbd> or <kbd>F11</kbd> to come back to the editor.</li>
   </ol>
-  <div class="note">To choose which screen is the projector, or to add more projectors, use the <span class="menu">Outputs</span> tab (see <a href="#outputs">Outputs</a>).</div>
+  <div class="note">QUADmapper finds the screens and projectors plugged into this computer by itself: each one gets an output at its own resolution and a scene of its own. To change which screen an output uses, use the <span class="menu">Outputs</span> tab (see <a href="#outputs">Outputs</a>).</div>
 </section>
 
 <section id="fine">
@@ -159,7 +159,7 @@
   <p class="what">A scene is one full arrangement of quads. A take puts a scene on air.</p>
   <ol class="steps">
     <li>Use the <span class="menu">Scenes</span> tab to add, duplicate, rename and reorder scenes. Click a scene to work on it; the canvas and the Quad List then show its quads.</li>
-    <li>With several projectors, give each one its own scene: in the scene's row, pick the output that shows it. Click between the scenes to work on one projector, then another.</li>
+    <li>With several projectors, each one starts with its own scene: Scene 1 on Projector 1, Scene 2 on Projector 2, and so on. Click between the scenes to work on one projector, then another. To change which output shows a scene, pick it in the scene's row.</li>
     <li>Press <kbd>1</kbd> to <kbd>9</kbd> to put that scene on air. The keys work in the editor and on a focused projector window, whatever your keyboard layout.</li>
     <li>For a crossfade, set <span class="menu">Crossfade (seconds)</span> in <span class="menu">Edit &gt; Preferences...</span> (General tab). 0 is a cut.</li>
   </ol>
@@ -168,11 +168,12 @@
 <section id="outputs">
   <h2>5. Outputs</h2>
   <p class="what">An output is one projector, or one window on a screen. The Outputs and Scenes tabs are there in both modes; slices need Advanced mode.</p>
+  <p>When QUADmapper starts, and on <span class="menu">File &gt; New</span>, every screen gets an output named Projector 1, Projector 2 and so on, at that screen's resolution, each with a scene of its own. The screen the editor is on comes last; in perform mode its output covers the editor (<kbd>Esc</kbd> or <kbd>F11</kbd> brings the editor back). Untick that output in the Outputs tab to keep the editor in view. A projector plugged in while QUADmapper runs gets one too, and the status bar says so. With only one screen, F11 shows Projector 1 on it. That waits while you are in perform mode or the show is locked. A saved show opens with its own outputs.</p>
   <ol class="steps">
     <li>Open the <span class="menu">Outputs</span> tab in the Resources window.</li>
-    <li>Click <span class="menu">Add Output</span>. Click <span class="menu">Refresh Monitors</span> if you plugged in a display after starting.</li>
     <li>Click <span class="menu">Identify</span>. For 5 seconds each projector shows its output's number, the same number as in the list.</li>
-    <li>Select the output and choose its screen in the <span class="menu">Monitor</span> list under the outputs, then set its resolution and rotation.</li>
+    <li>To change an output's screen, select it and choose one in the <span class="menu">Monitor</span> list under the outputs. The output takes that screen's resolution. Set its rotation if the projector is on its side.</li>
+    <li>For another window on a screen, click <span class="menu">Add Output</span>.</li>
     <li>In the <span class="menu">Scenes</span> tab, choose which output shows each scene.</li>
   </ol>
   <p>An output can show slices of the scene, each with its own warp and edge blending where two projectors overlap. Select the output to edit them in Properties.</p>

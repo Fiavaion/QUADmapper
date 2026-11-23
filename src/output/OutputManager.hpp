@@ -255,6 +255,48 @@ public:
         const std::vector<MonitorInfo>& monitors,
         const std::vector<std::unique_ptr<OutputWindow>>& outputs);
 
+    // ---- Projector auto-setup (owner, 2026-11-23) ---------------------------------
+    /**
+     * The displays that should get an output of their own: every connected display
+     * other than `editorMonitor` that no output is on (resolved to), in monitor order;
+     * then, with `includeEditorScreen` and more than one display connected, the
+     * editor's display last if no output is on it. Pure.
+     */
+    static std::vector<int> displaysWithoutOutput(
+        const std::vector<MonitorInfo>& monitors,
+        const std::vector<std::unique_ptr<OutputWindow>>& outputs, int editorMonitor,
+        bool includeEditorScreen = false);
+
+    /** "Projector N" with the lowest N >= 1 that no output is named. Pure. */
+    static std::string nextProjectorName(const std::vector<std::unique_ptr<OutputWindow>>& outputs);
+
+    /**
+     * Give each display that displaysWithoutOutput lists (after re-resolving, so an
+     * output waiting for a display takes it first) an output of its own, named by
+     * nextProjectorName, at the display's current resolution. `includeEditorScreen`
+     * (startup and File > New, owner 2026-11-23) gives the editor's screen one too,
+     * last, when another display is connected: in perform mode it covers the editor.
+     * When there was no output at all, the first one stays Automatic, so a show taken
+     * to a one-screen computer still previews on it at F11; every other one, and the
+     * editor's screen's always, is chosen for its display, so projectors never swap
+     * outputs when the display list changes. Does nothing in perform mode. Returns
+     * the outputs added, in that order.
+     */
+    std::vector<OutputWindow*> addOutputsForUnusedDisplays(bool includeEditorScreen = false);
+
+    /**
+     * The Automatic outputs that a hotplug gave a display while they had none, since
+     * the last call (ids; the list is cleared). The editor gives each its display's
+     * resolution when it may change the show (adoptDisplayResolution).
+     */
+    std::vector<UUID> takeOutputsPlacedByHotplug();
+
+    /**
+     * Set `output` to its display's current resolution. False, changing nothing, when
+     * it has no display or already has that resolution.
+     */
+    bool adoptDisplayResolution(OutputWindow& output);
+
     /**
      * The user explicitly chose monitor `monitorIndex` for `output` (-1 =
      * automatic). Records that monitor's current identity as the desired one,
@@ -736,6 +778,7 @@ private:
 
     // Available monitors
     std::vector<MonitorInfo> monitors_;
+    std::vector<UUID> placedByHotplug_;  // see takeOutputsPlacedByHotplug
 
     // Perform mode state
     bool performMode_ = false;

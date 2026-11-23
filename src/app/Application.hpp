@@ -158,6 +158,11 @@ private:
     // clean baseline, offers startup recovery, runs any pending file action, autosaves.
     void runFrameBoundaryTasks();
     void fitProjectorsToOutputs();
+    // A display plugged in or out (m_displaysChanged): outside perform mode, the perform
+    // lock and a scan, give a new display (never the editor's screen: its output may
+    // have been removed on purpose) an output and a scene of its own, and an
+    // Automatic output that was waiting for a display that display's resolution.
+    void adoptConnectedDisplays();
     // New files the folder watcher saw since the last frame, into the media library.
     void importWatchedFiles();
     // "<show>[*] - QUADmapper", changed only when the show's name or unsaved state does.
@@ -243,6 +248,7 @@ private:
     // Show-safe session (ADR-046 §4): file actions, autosave, recovery, dirty state.
     std::unique_ptr<ProjectSession> m_session;
     bool m_exitConfirmed = false;      // Exit passed the unsaved-changes check
+    bool m_displaysChanged = false;    // set by the GLFW monitor callback; adoptConnectedDisplays
 
     // Perform-mode stress harness config (QM-081 H2). Set by --stress CLI flags;
     // absent in normal (interactive) runs.

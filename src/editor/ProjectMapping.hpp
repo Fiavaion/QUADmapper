@@ -10,10 +10,13 @@
 // colour, soft edge) copy whole, so nothing is dropped on round-trip. Each bound
 // SourceManager source is described into the v3.1 "sources" table (ADR-046).
 
+#include <vector>
+
 namespace quadmapper {
 
 struct EditorState;
 class OutputManager;
+class OutputWindow;
 class SourceManager;
 class MediaLibrary;
 class Project;
@@ -26,5 +29,13 @@ void syncEditorToProject(EditorState& es, OutputManager* om, SourceManager* sm, 
 // The sources of the media bin's `library` survive the old project's release.
 void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& project,
                          SourceManager* sm, const MediaLibrary* library);
+
+// ---- One scene per projector (owner, 2026-11-23) ----
+// Each of `outputs` that shows no scene gets the first scene no output shows, else a
+// new scene ("Scene N") with one quad, selected. routeScene sizes each canvas to its
+// output. The active scene (created first if there is none) stays the active one.
+// Returns how many outputs got a scene.
+int giveOutputsTheirOwnScenes(EditorState& es, OutputManager& om,
+                              const std::vector<OutputWindow*>& outputs);
 
 }  // namespace quadmapper

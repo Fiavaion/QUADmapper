@@ -320,7 +320,9 @@ void OutputPanel::renderMonitorDropdown(OutputWindow* output) {
             }
 
             if (ImGui::Selectable(label.c_str(), isSelected)) {
+                // Like the Inspector's picker: the output takes the display's resolution.
                 outputManager_->assignMonitor(*output, static_cast<int>(i));
+                outputManager_->adoptDisplayResolution(*output);
             }
         }
 

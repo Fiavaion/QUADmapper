@@ -436,6 +436,79 @@ const OutputWindow* OutputManager::onlyScreenPreview(
     return nullptr;
 }
 
+std::vector<int> OutputManager::displaysWithoutOutput(
+        const std::vector<MonitorInfo>& monitors,
+        const std::vector<std::unique_ptr<OutputWindow>>& outputs, int editorMonitor,
+        bool includeEditorScreen) {
+    auto used = [&outputs](int i) {
+        return std::any_of(outputs.begin(), outputs.end(),
+            [i](const std::unique_ptr<OutputWindow>& o) { return o && o->getMonitor() == i; });
+    };
+    const int count = static_cast<int>(monitors.size());
+    std::vector<int> displays;
+    for (int i = 0; i < count; ++i) {
+        if (i != editorMonitor && !used(i)) displays.push_back(i);
+    }
+    if (includeEditorScreen && count > 1 && editorMonitor >= 0 && editorMonitor < count &&
+        !used(editorMonitor)) {
+        displays.push_back(editorMonitor);
+    }
+    return displays;
+}
+
+std::string OutputManager::nextProjectorName(const std::vector<std::unique_ptr<OutputWindow>>& outputs) {
+    for (int n = 1; ; ++n) {
+        const std::string name = "Projector " + std::to_string(n);
+        const bool taken = std::any_of(outputs.begin(), outputs.end(),
+            [&name](const std::unique_ptr<OutputWindow>& o) { return o && o->getName() == name; });
+        if (!taken) return name;
+    }
+}
+
+std::vector<OutputWindow*> OutputManager::addOutputsForUnusedDisplays(bool includeEditorScreen) {
+    std::vector<OutputWindow*> added;
+    if (performMode_) return added;
+    resolveOutputs();  // an output waiting for a display takes it first
+    const bool hadNone = outputs_.empty();
+    const int editorMonitor = editorMonitorIndex();
+    for (int index : displaysWithoutOutput(monitors_, outputs_, editorMonitor, includeEditorScreen)) {
+        OutputWindow* output = createOutput(nextProjectorName(outputs_));
+        if (!output) continue;
+        // The very first output stays Automatic; it resolves to this display below,
+        // since every other new output is chosen for its own. Automatic never picks
+        // the editor's screen, so that screen's output is always chosen.
+        if (!(hadNone && added.empty()) || index == editorMonitor) assignMonitor(*output, index);
+        added.push_back(output);
+        LOG_INFO("Display '{}' found: added output '{}'", monitors_[index].name, output->getName());
+    }
+    resolveOutputs();
+    for (OutputWindow* output : added) adoptDisplayResolution(*output);
+    return added;
+}
+
+std::vector<UUID> OutputManager::takeOutputsPlacedByHotplug() {
+    std::vector<UUID> placed;
+    placed.swap(placedByHotplug_);
+    return placed;
+}
+
+bool OutputManager::adoptDisplayResolution(OutputWindow& output) {
+    const MonitorInfo* monitor = getMonitor(output.getMonitor());
+    if (monitor == nullptr || monitor->resolution.x <= 0 || monitor->resolution.y <= 0 ||
+        output.getResolution() == monitor->resolution) {
+        return false;
+    }
+    output.setResolution(monitor->resolution);
+    if (output.isCreated()) {
+        auto result = output.applyResolution();
+        if (!result) {
+            LOG_WARNING("Output '{}': could not apply {}x{}: {}", output.getName(),
+                        monitor->resolution.x, monitor->resolution.y, result.error().message);
+        }
+    }
+    return true;
+}
+
 std::string OutputManager::describeMonitorChoice(const std::vector<MonitorInfo>& monitors,
                                                 const OutputWindow& output,
                                                 bool previewsOnOnlyScreen) {
@@ -1502,10 +1575,26 @@ void OutputManager::reresolveOutputs(bool refreshMonitorList) {
         }
     }
 
+    std::vector<UUID> waiting;  // Automatic outputs with no display before a hotplug
+    for (const auto& output : outputs_) {
+        if (output->getMonitor() < 0 && output->isMonitorAutomatic()) {
+            waiting.push_back(output->getId());
+        }
+    }
+
     if (refreshMonitorList) {
         refreshMonitors();
     }
     resolveOutputs();
+    if (refreshMonitorList) {
+        for (const UUID& id : waiting) {
+            const OutputWindow* output = getOutput(id);
+            if (output != nullptr && output->getMonitor() >= 0 &&
+                std::find(placedByHotplug_.begin(), placedByHotplug_.end(), id) == placedByHotplug_.end()) {
+                placedByHotplug_.push_back(id);
+            }
+        }
+    }
     if (!performMode_) {
         return;
     }

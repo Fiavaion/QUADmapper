@@ -464,4 +464,32 @@ void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& proj
     }
 }
 
+int giveOutputsTheirOwnScenes(EditorState& es, OutputManager& om,
+                              const std::vector<OutputWindow*>& outputs) {
+    es.activeScene();  // a fresh editor's default scene exists before any is handed out
+    int routed = 0;
+    for (OutputWindow* output : outputs) {
+        if (output == nullptr || !output->getSceneId().isNull()) continue;
+        Scene* scene = nullptr;
+        for (auto& s : es.scenes) {
+            if (s && om.firstOutputShowing(s->getId()) == nullptr) {
+                scene = s.get();
+                break;
+            }
+        }
+        if (scene == nullptr) {
+            // Not addScene: that would make it the active scene, mid-edit on a hotplug.
+            auto created = std::make_unique<Scene>();
+            created->setName(es.generateUniqueSceneName());
+            QuadManager& qm = created->getQuadManager();
+            if (Quad* quad = qm.createQuad("Quad 1")) qm.selectQuad(quad->getId());
+            scene = created.get();
+            es.scenes.push_back(std::move(created));
+        }
+        om.routeScene(*output, scene, es.scenes);
+        ++routed;
+    }
+    return routed;
+}
+
 }  // namespace quadmapper

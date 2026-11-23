@@ -393,3 +393,38 @@ TEST(ProjectMappingTest, AnEmptyProjectLoadsAsOneActiveScene) {
     EXPECT_EQ(to.activeSceneId, to.scenes[0]->getId());
     EXPECT_TRUE(to.midiMappings.empty());
 }
+
+// One scene per projector (owner, 2026-11-23): the first output takes the scene no output
+// shows, each further one a new scene with one quad, each canvas at its projector's size.
+TEST(ProjectMappingTest, EachOutputGetsItsOwnSceneSizedToIt) {
+    EditorState es;
+    OutputManager om;
+    OutputWindow* one = om.createOutput("Projector 1");
+    OutputWindow* two = om.createOutput("Projector 2");
+    ASSERT_TRUE(one && two);
+    one->setResolution(IVec2(1280, 800));
+    two->setResolution(IVec2(3840, 2160));
+    ASSERT_TRUE(es.scenes.empty()) << "a fresh editor, as at startup";
+
+    EXPECT_EQ(giveOutputsTheirOwnScenes(es, om, {one, two}), 2);
+    const UUID active = es.activeSceneId;
+
+    ASSERT_EQ(es.scenes.size(), 2u);
+    const Scene* s1 = OutputManager::sceneForOutput(es.scenes, *one);
+    const Scene* s2 = OutputManager::sceneForOutput(es.scenes, *two);
+    ASSERT_TRUE(s1 && s2);
+    EXPECT_EQ(s1->getId(), active) << "the default scene goes to the first projector";
+    EXPECT_EQ(s1->getCanvasSize(), IVec2(1280, 800));
+    EXPECT_EQ(s2->getName(), "Scene 2");
+    EXPECT_EQ(s2->getCanvasSize(), IVec2(3840, 2160));
+    EXPECT_EQ(s2->getQuadManager().getQuadCount(), 1u);
+
+    // Outputs that show a scene are left alone; a shown scene is never handed out again.
+    EXPECT_EQ(giveOutputsTheirOwnScenes(es, om, {one, two}), 0);
+    OutputWindow* three = om.createOutput("Projector 3");
+    ASSERT_NE(three, nullptr);
+    EXPECT_EQ(giveOutputsTheirOwnScenes(es, om, {three}), 1);
+    EXPECT_EQ(es.scenes.size(), 3u);
+    EXPECT_EQ(OutputManager::sceneForOutput(es.scenes, *three), es.scenes.back().get());
+    EXPECT_EQ(es.activeSceneId, active) << "a hotplug never switches the scene being edited";
+}

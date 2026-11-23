@@ -2717,5 +2717,62 @@ TEST(SceneFadeRenderTest, AQuadFadingToAnObjectInItsPlaceDoesNotDip) {
     }
 }
 
+// ---- Projector auto-setup (owner, 2026-11-23) --------------------------------------
+
+TEST(ProjectorAutoSetupTest, DisplaysWithoutOutputSkipTheEditorsAndTakenOnes) {
+    const std::vector<MonitorInfo> monitors = {monitorAt(0, "Laptop", IVec2(0, 0)),
+                                               monitorAt(1, "Epson", IVec2(1920, 0)),
+                                               monitorAt(2, "Optoma", IVec2(3840, 0)),
+                                               monitorAt(3, "BenQ", IVec2(5760, 0))};
+    std::vector<std::unique_ptr<OutputWindow>> outputs;
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 0),
+              (std::vector<int>{1, 2, 3}));
+
+    outputs.push_back(std::make_unique<OutputWindow>());
+    outputs.back()->setMonitor(2);  // Optoma has an output
+    outputs.push_back(std::make_unique<OutputWindow>());
+    outputs.back()->setMonitor(-1);  // waiting for a display: takes none
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 0), (std::vector<int>{1, 3}));
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 3), (std::vector<int>{0, 1}))
+        << "the editor on another screen";
+
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 0, /*includeEditorScreen=*/true),
+              (std::vector<int>{1, 3, 0})) << "startup: the editor's screen too, last";
+    outputs.push_back(std::make_unique<OutputWindow>());
+    outputs.back()->setMonitor(0);
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 0, true), (std::vector<int>{1, 3}))
+        << "the editor's screen already has an output";
+
+    const std::vector<MonitorInfo> laptop = {monitorAt(0, "Laptop", IVec2(0, 0))};
+    EXPECT_TRUE(OutputManager::displaysWithoutOutput(laptop, {}, 0).empty())
+        << "a hotplug never gives the editor's screen an output";
+    EXPECT_TRUE(OutputManager::displaysWithoutOutput(laptop, {}, 0, true).empty())
+        << "alone, the editor's screen keeps the Automatic preview instead";
+}
+
+TEST(ProjectorAutoSetupTest, NextProjectorNameFillsTheLowestGap) {
+    std::vector<std::unique_ptr<OutputWindow>> outputs;
+    EXPECT_EQ(OutputManager::nextProjectorName(outputs), "Projector 1");
+    for (const char* name : {"Projector 1", "Stage left", "Projector 3"}) {
+        outputs.push_back(std::make_unique<OutputWindow>());
+        outputs.back()->setName(name);
+    }
+    EXPECT_EQ(OutputManager::nextProjectorName(outputs), "Projector 2");
+    outputs.push_back(std::make_unique<OutputWindow>());
+    outputs.back()->setName("Projector 2");
+    EXPECT_EQ(OutputManager::nextProjectorName(outputs), "Projector 4");
+}
+
+TEST(ProjectorAutoSetupTest, WithoutDisplaysNothingIsAddedOrAdopted) {
+    OutputManager manager;  // not initialized: no monitors
+    EXPECT_TRUE(manager.addOutputsForUnusedDisplays().empty());
+    EXPECT_EQ(manager.getOutputCount(), 0u);
+    OutputWindow* output = manager.createOutput("Projector 1");
+    ASSERT_NE(output, nullptr);
+    EXPECT_FALSE(manager.adoptDisplayResolution(*output));
+    EXPECT_EQ(output->getResolution(), IVec2(1920, 1080));
+    EXPECT_TRUE(manager.takeOutputsPlacedByHotplug().empty());
+}
+
 } // namespace test
 } // namespace quadmapper

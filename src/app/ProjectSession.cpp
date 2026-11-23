@@ -327,10 +327,13 @@ void ProjectSession::performNewProject() {
     es.setActiveScene(scene.getId());
     Quad* quad = scene.getQuadManager().createQuad("Quad 1");
     if (quad) scene.getQuadManager().selectQuad(quad->getId());
-    if (m_services.outputs && !m_services.outputs->getOutputs().empty()) {
-        OutputWindow& first = *m_services.outputs->getOutputs().front();
-        scene.setCanvasSize(first.getEffectiveResolution());
-        OutputManager::showScene(first, &scene, es.scenes);
+    // Every display without an output gets one, the editor's screen included, and each
+    // output a scene of its own, Scene 1 on the first (owner, 2026-11-23).
+    if (m_services.outputs) {
+        m_services.outputs->addOutputsForUnusedDisplays(/*includeEditorScreen=*/true);
+        std::vector<OutputWindow*> outputs;
+        for (auto& output : m_services.outputs->getOutputs()) outputs.push_back(output.get());
+        giveOutputsTheirOwnScenes(es, *m_services.outputs, outputs);
     }
 
     m_project = Project();
