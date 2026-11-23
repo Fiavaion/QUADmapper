@@ -89,7 +89,7 @@ TEST_F(ProjectPersistenceTest, WriterEmitsV32WithSourcesTable) {
 
     const auto json = nlohmann::json::parse(serializer.serialize(projectWithBoundQuad(src, "")));
 
-    EXPECT_EQ(json["version"], "3.5.0");
+    EXPECT_EQ(json["version"], "3.6.0");
     ASSERT_TRUE(json["sources"].is_array());
     ASSERT_EQ(json["sources"].size(), 1u);
     EXPECT_EQ(json["sources"][0]["kind"], "procedural");
@@ -632,7 +632,7 @@ TEST_F(ProjectPersistenceTest, MeshOutsideTheShowFolderFallsBackToItsAbsolutePat
     const auto& saved = json["scenes"][0]["objects"][0];
     EXPECT_EQ(saved["path"], "../../library/props/column.obj");
     EXPECT_EQ(saved["absPath"], utf8FromPath(mesh));
-    EXPECT_EQ(json["version"], "3.5.0");
+    EXPECT_EQ(json["version"], "3.6.0");
 
     // Round trip in place: the relative path resolves.
     auto loaded = ProjectSerializer::load(file);
@@ -1502,6 +1502,57 @@ TEST(ProjectFixtureTest, WarpModeRoundTripsAndMissingIsPerspective) {
         EXPECT_EQ(p.getScenes()[0].quads[0].getGeometry().getWarpMode(), WarpMode::PERSPECTIVE)
             << extra;
     }
+}
+
+// 3.6 (owner, 2026-11-23): Linear grid points and Crop survive a save and load, are
+// written only when used, and a file without them is all Spline and Warp.
+TEST(ProjectFixtureTest, LinearPointsAndCropRoundTripAndMissingIsSplineWarp) {
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    scene.name = "Scene 1";
+    Quad shaped;
+    QuadGeometry& g = shaped.getGeometry();
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    g.setMeshVertex(1, 1, Vec2(0.02f, 0.01f));
+    g.setVertexLinear(4, true);
+    g.setVertexLinear(7, true);
+    g.setContentMode(ContentMode::CROP);
+    scene.quads.push_back(shaped);
+    scene.quads.push_back(Quad());
+    scene.texturePaths = {"", ""};
+    project.getScenes().push_back(std::move(scene));
+
+    ProjectSerializer serializer;
+    const std::string json = serializer.serialize(project);
+    const size_t linearKey = json.find("\"meshLinear\"");
+    ASSERT_NE(linearKey, std::string::npos);
+    EXPECT_EQ(json.find("\"meshLinear\"", linearKey + 1), std::string::npos);
+    const size_t cropKey = json.find("\"contentMode\"");
+    ASSERT_NE(cropKey, std::string::npos);
+    EXPECT_EQ(json.find("\"contentMode\"", cropKey + 1), std::string::npos);
+
+    Project reloaded;
+    ASSERT_TRUE(serializer.deserialize(json, reloaded).isSuccess());
+    const auto& quads = reloaded.getScenes()[0].quads;
+    ASSERT_EQ(quads.size(), 2u);
+    const QuadGeometry& back = quads[0].getGeometry();
+    EXPECT_EQ(back.getContentMode(), ContentMode::CROP);
+    for (int i = 0; i < back.getVertexCount(); ++i) {
+        EXPECT_EQ(back.isVertexLinear(i), i == 4 || i == 7) << i;
+    }
+    EXPECT_EQ(quads[1].getGeometry().getContentMode(), ContentMode::WARP);
+    EXPECT_FALSE(quads[1].getGeometry().hasLinearVertices());
+
+    // An index the grid does not have is dropped; a malformed list fails the load.
+    const std::string base = R"({"version": "3.6.0", "scenes": [{"quads": [{"geometry": {
+        "corners": [[0.1, 0.1], [0.9, 0.2], [0.8, 0.9], [0.1, 0.9]], "meshResolution": 1)";
+    Project p;
+    ASSERT_TRUE(serializer.deserialize(base + R"(, "meshLinear": [0, 99]}}]}]})", p).isSuccess());
+    EXPECT_TRUE(p.getScenes()[0].quads[0].getGeometry().isVertexLinear(0));
+    EXPECT_FALSE(serializer.deserialize(base + R"(, "meshLinear": 3}}]}]})", p).isSuccess());
+    EXPECT_FALSE(serializer.deserialize(base + R"(, "meshLinear": ["a"]}}]}]})", p).isSuccess());
 }
 
 // The warp mode is read before the residuals, so a meshed, curved Linear quad's

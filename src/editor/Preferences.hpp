@@ -31,6 +31,18 @@ struct GeneralPreferences {
     // Vertex snapping on the canvas (its Snap toggle). The last setting used.
     bool vertexSnapping = true;
 
+    // The test grid on new quads, the first one included (the top bar's Test Grid
+    // toggle, owner 2026-11-23). On by default. The last setting used.
+    bool testGridOnNewQuads = true;
+
+    // Grid warp: new rows and columns get Linear points instead of Spline ones (the
+    // Linear / Spline choice beside Click-add). The last setting used.
+    bool newGridPointsLinear = false;
+
+    // Crop insets shown in percent of the source rather than its pixels (the % / px
+    // choice). Pixels need a source with a size; the last setting used.
+    bool cropInPercent = false;
+
     // Crossfade of a scene take from the 1-9 keys, MIDI and a one-argument OSC take
     // (ADR-047 §5), in seconds, 0 to MAX_SCENE_FADE_SECONDS; 0 = a cut.
     float sceneFadeSeconds = 0.0f;

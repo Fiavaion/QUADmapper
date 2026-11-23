@@ -457,6 +457,12 @@ void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& proj
         }
     }
 
+    // A loaded show's quads keep what they were saved with: no test grid on them.
+    for (const auto& scene : es.scenes) {
+        if (!scene) continue;
+        for (const auto& quad : scene->getQuadManager().getQuads()) es.seenQuadIds.insert(quad->getId());
+    }
+
     // Select the first quad of the active scene (the Inspector's Path field follows it).
     QuadManager& aqm = es.quadManager();
     if (aqm.getQuadCount() > 0) {

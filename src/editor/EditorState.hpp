@@ -204,6 +204,7 @@ struct EditorState {
         gridInsert = GridInsert::None;
         gridInsertMouseLatch = false;
         gridInsertDragIndex = -1;
+        gridLineDragIndex = gridLineHovered = gridPointMenuVertex = -1;
     }
 
     // Delete a scene. Outputs showing it (in `outputs`, when given) then show no
@@ -336,8 +337,10 @@ struct EditorState {
     // UV test-grid toggle (#2): when on, newly-created quads get a colored UV
     // reference grid texture. seenQuadIds tracks which quads have already been
     // reconciled so the grid is applied once, at creation, across every code
-    // path that adds a quad (default, new-project, the Quad List "+").
-    bool uvGridOnNewQuads = false;
+    // path that adds a quad (default, new-project, the Quad List "+"); a loaded
+    // show's quads are marked seen, so they keep what they were saved with. On by
+    // default, a machine preference (general.testGridOnNewQuads, owner 2026-11-23).
+    bool uvGridOnNewQuads = true;
     std::unordered_set<UUID> seenQuadIds;
     char statusMessage[256] = "";
     float statusTimer = 0.0f;
@@ -370,6 +373,23 @@ struct EditorState {
     // Vertex snapping to other quads' corners and mesh points while a vertex is dragged:
     // the canvas Snap toggle, a machine preference (general.vertexSnapping).
     bool vertexSnapping = true;
+    // Grid warp: rows and columns added from now on get Linear points (else Spline),
+    // a machine preference (general.newGridPointsLinear).
+    bool newGridPointsLinear = false;
+    // Crop insets in percent instead of source pixels (general.cropInPercent).
+    bool cropInPercent = false;
+    // A grid line grabbed on the canvas to move it (mesh edit): its column (U) or row
+    // (V) index, -1 for none, and the grid before the drag for the undo step.
+    int gridLineDragIndex = -1;
+    bool gridLineDragIsColumn = false;
+    int gridLineHovered = -1;
+    bool gridLineHoveredIsColumn = false;
+    GridSnapshot gridLineDragBefore;
+    QuadGeometry gridLineDragFrom;  // the quad as the drag began: maps the mouse to (u,v)
+    // The grid point the canvas right-click menu edits (-1: none), and the right
+    // button's state last frame (press edge).
+    int gridPointMenuVertex = -1;
+    bool canvasRightDownPrev = false;
     // Snap indicator state (visual feedback when snapping)
     bool snapActive = false;
     Vec2 snapTargetPos{0.0f};

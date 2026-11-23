@@ -103,7 +103,7 @@
     <li><strong>Menus:</strong> <span class="menu">File</span>, <span class="menu">Edit</span>, <span class="menu">Window</span>, <span class="menu">Output</span>, <span class="menu">AI</span> and <span class="menu">Help</span>. A status bar along the bottom of the window shows messages.</li>
   </ul>
   <h3>Simple and Advanced mode</h3>
-  <p>The <span class="menu">Simple</span> and <span class="menu">Advanced</span> buttons in the menu bar switch modes. Simple mode shows only what you need for a first mapping, plus the <span class="menu">Apply Test Grid</span> and <span class="menu">Send to Projector (F11)</span> buttons. Advanced mode adds slices, calibration and the other tabs. QUADmapper starts in the mode you used last. Your panel layout is remembered between runs; <span class="menu">Window &gt; Reset Layout</span> restores the default.</p>
+  <p>The <span class="menu">Simple</span> and <span class="menu">Advanced</span> buttons in the menu bar switch modes. Simple mode shows only what you need for a first mapping, plus the <span class="menu">Apply Test Grid</span> and <span class="menu">Send to Projector (F11)</span> buttons. In both modes, <span class="menu">Test Grid: On</span> in the menu bar puts the test grid on every new quad, the first one included; click it to turn that off. Quads you already have, and the quads of a show you open, keep what they show. Advanced mode adds slices, calibration and the other tabs. QUADmapper starts in the mode you used last. Your panel layout is remembered between runs; <span class="menu">Window &gt; Reset Layout</span> restores the default.</p>
 </section>
 
 <section id="first">
@@ -145,13 +145,16 @@
 
 <section id="fine">
   <h2>3. Finer warping</h2>
-  <p class="what">Four corners fix a flat surface. For a curved surface, turn the quad into a mesh and move its points.</p>
+  <p class="what">Four corners fix a flat surface. For a curved surface, turn on the quad's grid warp and move its points.</p>
   <ol class="steps">
-    <li>Select the quad and press <kbd>Ctrl+M</kbd> (Toggle Mesh Edit). The same switch is the <span class="menu">Edit Mesh Vertices</span> tick box in Properties.</li>
-    <li>Use <kbd>Tab</kbd>, the arrow keys and the mouse as before, now on the mesh points.</li>
-    <li>Press <kbd>Alt+=</kbd> for a finer mesh (Increase Mesh Resolution) and <kbd>Alt+-</kbd> for a coarser one (Decrease Mesh Resolution).</li>
-    <li>Press <kbd>Alt+R</kbd> (Reset Mesh) to put the mesh back to the plain corner-pin shape.</li>
+    <li>Select the quad and tick <span class="menu">Grid warp</span> in Properties, in Simple or Advanced mode, or press <kbd>Ctrl+M</kbd> (Toggle Mesh Edit). The grid's points appear on the canvas, with the curve handles of the selected point.</li>
+    <li>Drag a point, or use <kbd>Tab</kbd> and the arrow keys as before. Drag a grid line to move the whole line.</li>
+    <li>For more points, click <span class="menu">Add Column</span> or <span class="menu">Add Row</span>: each puts a line in the middle of the widest column or row. To place a line yourself, click <span class="menu">Click-add Column</span> or <span class="menu">Click-add Row</span>, then press on the quad, or on its edge (the top or bottom edge for a column, a side for a row), and drag the line into place. <kbd>Alt+=</kbd> and <kbd>Alt+-</kbd> give an even grid one step finer or coarser.</li>
+    <li>Points are <strong>Spline</strong> (the grid curves smoothly through them) or <strong>Linear</strong> (the grid runs straight between them). The <span class="menu">Spline</span> / <span class="menu">Linear</span> choice beside Click-add sets the type of the lines you add from now on. To change one point, right-click it on the canvas; <span class="menu">All points</span> changes them all. On a Perspective quad, Linear lines bend a little with the perspective; use the Linear warp for dead-straight lines.</li>
+    <li><span class="menu">Image: Warp</span> bends the picture with the grid. <span class="menu">Image: Crop</span> keeps the picture flat on the four corners and uses the bent outline, and curved edges, to cut a shape out of it; outside the picture is transparent.</li>
+    <li><span class="menu">Reset Mesh</span> (<kbd>Alt+R</kbd>) puts every point back on the plain corner-pin shape and keeps the grid lines.</li>
   </ol>
+  <div class="note">Crop in Properties (the source region) can be set in <span class="menu">%</span> of the picture or in <span class="menu">px</span>, its pixels. Pixels need a video or image on the quad.</div>
 </section>
 
 <section id="scenes">

@@ -993,5 +993,152 @@ TEST(QuadGeometryWarpModeTest, SwitchingKeepsEveryControlVertex) {
     }
 }
 
+// ---- Linear / Spline points, Crop, edge and grid-line hits (owner, 2026-11-23) ----
+
+namespace {
+
+// The unit square, Linear warp, an even 2x2 grid in mesh edit with the centre point
+// moved right by 0.1.
+QuadGeometry bentSquare() {
+    QuadGeometry g;
+    g.setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)});
+    g.setWarpMode(WarpMode::LINEAR);
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    g.setMeshVertex(1, 1, Vec2(0.1f, 0.0f));
+    return g;
+}
+
+}  // namespace
+
+TEST(GridPointTypeTest, LinearPointsRunTheGridStraightAndCellsBilinear) {
+    QuadGeometry spline = bentSquare();
+    QuadGeometry linear = bentSquare();
+    linear.setAllVerticesLinear(true);
+    EXPECT_TRUE(linear.hasLinearVertices());
+    EXPECT_FALSE(spline.hasLinearVertices());
+
+    // Along the middle row, halfway from the left edge (0, 0.5) to the moved centre
+    // (0.6, 0.5): Linear lands on the chord, Spline bows away from it.
+    EXPECT_NEAR(linear.surfacePoint(0.25f, 0.5f).x, 0.3f, 1e-5f);
+    EXPECT_GT(std::fabs(spline.surfacePoint(0.25f, 0.5f).x - 0.3f), 1e-3f);
+
+    // A cell with four Linear corners is the bilinear patch of its corners.
+    const Vec2 tl(0.0f, 0.0f), tr(0.5f, 0.0f), bl(0.0f, 0.5f), br(0.6f, 0.5f);
+    const Vec2 bilinear = glm::mix(glm::mix(tl, tr, 0.5f), glm::mix(bl, br, 0.5f), 0.5f);
+    const Vec2 p = linear.surfacePoint(0.25f, 0.25f);
+    EXPECT_NEAR(p.x, bilinear.x, 1e-5f);
+    EXPECT_NEAR(p.y, bilinear.y, 1e-5f);
+
+    // The points themselves stay put whatever their type.
+    const Vec2 centre = linear.surfacePoint(0.5f, 0.5f);
+    EXPECT_NEAR(centre.x, 0.6f, 1e-5f);
+    EXPECT_NEAR(centre.y, 0.5f, 1e-5f);
+}
+
+TEST(GridPointTypeTest, HandlesAndLinearExcludeEachOther) {
+    QuadGeometry g = bentSquare();
+    const int centre = 4;  // row 1, col 1 of a 3x3 vertex grid
+    g.setGridHandlePosition(centre, GRID_HANDLE_U_AFTER, Vec2(0.8f, 0.6f));
+    ASSERT_TRUE(g.getVertexTangent(centre).isExplicit(GRID_HANDLE_U_AFTER));
+
+    g.setVertexLinear(centre, true);
+    EXPECT_TRUE(g.isVertexLinear(centre));
+    EXPECT_EQ(g.getVertexTangent(centre).explicitMask, 0u) << "a Linear point has no handles";
+
+    g.setGridHandlePosition(centre, GRID_HANDLE_V_AFTER, Vec2(0.6f, 0.8f));
+    EXPECT_FALSE(g.isVertexLinear(centre)) << "dragging a handle makes it a Spline again";
+}
+
+TEST(GridPointTypeTest, NewLinesTakeTheChosenTypeAndResetMeshKeepsIt) {
+    QuadGeometry g = bentSquare();
+    const int col = g.insertUDivision(0.25f, /*linear=*/true);
+    ASSERT_EQ(col, 1);
+    for (int row = 0; row < g.vertsPerCol(); ++row) {
+        EXPECT_TRUE(g.isVertexLinear(row * g.vertsPerRow() + col)) << row;
+        EXPECT_FALSE(g.isVertexLinear(row * g.vertsPerRow() + 0)) << "the old lines keep theirs";
+    }
+    const int row = g.insertVDivision(0.75f);  // Spline, the default
+    for (int c = 0; c < g.vertsPerRow(); ++c) {
+        EXPECT_FALSE(g.isVertexLinear(row * g.vertsPerRow() + c)) << c;
+    }
+
+    g.resetMesh();
+    EXPECT_FALSE(g.hasMeshModifications());
+    EXPECT_TRUE(g.isVertexLinear(1)) << "Reset Mesh moves points back, not their type";
+}
+
+TEST(ContentModeTest, CropKeepsTheImageOnTheCornerPin) {
+    QuadGeometry g = bentSquare();
+    const std::vector<float> us{0.0f, 0.5f, 1.0f};
+    const std::vector<float> vs{0.0f, 0.5f, 1.0f};
+    const auto samples = g.sampleSurface(us, vs);
+
+    // Warp: the moved centre samples the image's centre.
+    EXPECT_FALSE(g.cropsImage());
+    Vec3 c = g.imageCoords(us, vs, samples)[4];
+    EXPECT_NEAR(c.x / c.z, 0.5f, 1e-5f);
+    EXPECT_NEAR(c.y / c.z, 0.5f, 1e-5f);
+
+    // Crop: it samples the image where it now sits, (0.6, 0.5).
+    g.setContentMode(ContentMode::CROP);
+    EXPECT_TRUE(g.cropsImage());
+    c = g.imageCoords(us, vs, samples)[4];
+    EXPECT_NEAR(c.x / c.z, 0.6f, 1e-4f);
+    EXPECT_NEAR(c.y / c.z, 0.5f, 1e-4f);
+
+    // With nothing bent, Crop draws as Warp.
+    g.resetMesh();
+    EXPECT_FALSE(g.cropsImage());
+}
+
+TEST(ContentModeTest, CropOnAPerspectiveQuadFindsTheProjectivePoint) {
+    QuadGeometry g;
+    g.setCorners({Vec2(0.1f, 0.1f), Vec2(0.9f, 0.2f), Vec2(0.8f, 0.9f), Vec2(0.2f, 0.8f)});
+    g.setWarpMode(WarpMode::PERSPECTIVE);
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    g.setMeshVertex(1, 1, Vec2(0.05f, -0.03f));
+    g.setContentMode(ContentMode::CROP);
+    const std::vector<float> us{0.5f}, vs{0.5f};
+    const auto samples = g.sampleSurface(us, vs);
+    const Vec3 c = g.imageCoords(us, vs, samples)[0];
+    // The corner pin at the found (s, t) is the moved point.
+    QuadGeometry plane = g;
+    plane.setMeshMode(MeshMode::CORNERS_ONLY);
+    const Vec2 back = plane.basePoint(c.x / c.z, c.y / c.z);
+    EXPECT_NEAR(back.x, samples[0].position.x, 1e-4f);
+    EXPECT_NEAR(back.y, samples[0].position.y, 1e-4f);
+}
+
+TEST(GridHitTest, ThePressNearTheEdgeAndNearAGridLine) {
+    QuadGeometry g;
+    g.setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 1.0f), Vec2(0.0f, 1.0f)});
+    g.setWarpMode(WarpMode::LINEAR);
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+
+    const Vec2 top = g.boundaryParamsNear(Vec2(0.3f, -0.01f), 0.015f);
+    EXPECT_NEAR(top.x, 0.3f, 1e-4f);
+    EXPECT_NEAR(top.y, 0.0f, 1e-4f);
+    const Vec2 left = g.boundaryParamsNear(Vec2(0.005f, 0.7f), 0.015f);
+    EXPECT_NEAR(left.x, 0.0f, 1e-4f);
+    EXPECT_NEAR(left.y, 0.7f, 1e-4f);
+    EXPECT_LT(g.boundaryParamsNear(Vec2(0.5f, -0.2f), 0.015f).x, 0.0f) << "too far";
+
+    bool column = false;
+    EXPECT_EQ(g.gridLineNear(Vec2(0.505f, 0.3f), 0.008f, column), 1);
+    EXPECT_TRUE(column);
+    EXPECT_EQ(g.gridLineNear(Vec2(0.2f, 0.497f), 0.008f, column), 1);
+    EXPECT_FALSE(column);
+    EXPECT_EQ(g.gridLineNear(Vec2(0.25f, 0.25f), 0.008f, column), -1);
+    EXPECT_EQ(g.gridLineNear(Vec2(0.0f, 0.3f), 0.008f, column), -1) << "the outline is not a line to move";
+
+    // A bent line is found where it is drawn.
+    g.setMeshVertex(1, 1, Vec2(0.1f, 0.0f));
+    EXPECT_EQ(g.gridLineNear(Vec2(0.6f, 0.5f + 0.02f), 0.008f, column), 1);
+    EXPECT_TRUE(column);
+}
+
 } // namespace test
 } // namespace quadmapper

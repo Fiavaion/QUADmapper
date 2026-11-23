@@ -445,6 +445,17 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         ImGui::SetItemTooltip("Toggle fullscreen output on the projector");
     }
 
+    // The test grid on new quads (owner, 2026-11-23), in both modes: a machine
+    // preference, on by default. Quads that already exist keep what they show.
+    {
+        ImGui::Separator();
+        const bool on = es.uvGridOnNewQuads;
+        if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button(on ? "Test Grid: On" : "Test Grid: Off")) es.uvGridOnNewQuads = !on;
+        if (on) ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("New quads start with the test grid on them (quads you have already keep theirs)");
+    }
+
     // The show transport (editor/ShowTransport.hpp), always visible in both modes: every
     // video, locked to the master timeline or not. Space taps the same Play/Pause.
     ImGui::Separator();

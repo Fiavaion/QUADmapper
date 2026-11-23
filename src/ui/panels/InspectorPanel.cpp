@@ -118,6 +118,19 @@ const QuadProp<MeshMode> MESH_MODE{
     [](Quad& q, const MeshMode& m) { q.getGeometry().setMeshMode(m); }};
 const QuadProp<GridSnapshot> EVEN_GRID{
     "Even Grid", [](const Quad& q) { return captureGrid(q.getGeometry()); }, applyGridSnapshot};
+const QuadProp<ContentMode> CONTENT_MODE{
+    "Image Warp / Crop", [](const Quad& q) { return q.getGeometry().getContentMode(); },
+    [](Quad& q, const ContentMode& m) { q.getGeometry().setContentMode(m); }};
+
+// The middle of the widest cell along a grid axis: where Add Column / Add Row put a
+// new line, so repeated clicks spread the lines evenly.
+float widestCellMiddle(const std::vector<float>& coords) {
+    size_t widest = 0;
+    for (size_t i = 1; i + 1 < coords.size(); ++i) {
+        if (coords[i + 1] - coords[i] > coords[widest + 1] - coords[widest]) widest = i;
+    }
+    return 0.5f * (coords[widest] + coords[widest + 1]);
+}
 
 // A click (button, checkbox): `value` becomes the property's value as one undo step.
 template <typename T>
@@ -587,118 +600,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             }
 
             ImGui::Separator();
-            // Even grid (uniform N×N) — the convenience action; resets divisions. The
-            // grid follows the slider live; one drag is one undo step.
-            int meshRes = geometry.getMeshResolution();
-            editAsStep(es, quad, EVEN_GRID, pendingStep_, [&] {
-                if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64)) {
-                    geometry.setUniformGrid(meshRes);
-                }
-            });
-
-            // Non-uniform grid divisions (ADR-038 Tier 1): add/remove division
-            // lines at an arbitrary position, then warp the control vertices in
-            // mesh-edit mode. Columns split U (vertical lines), rows split V.
-            ImGui::Text("Grid: %d x %d cells", geometry.getColumns(),
-                        geometry.getRows());
-            ImGui::SetNextItemWidth(160.0f);
-            ImGui::SliderFloat("Insert pos", &gridInsertPos_, 0.02f, 0.98f, "%.2f");
-            if (ImGui::Button("Add Column")) {
-                GridSnapshot before = captureGrid(geometry);
-                geometry.insertUDivision(gridInsertPos_);
-                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Add Column",
-                               before, captureGrid(geometry));
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Add Row")) {
-                GridSnapshot before = captureGrid(geometry);
-                geometry.insertVDivision(gridInsertPos_);
-                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Add Row",
-                               before, captureGrid(geometry));
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Del Column") && geometry.getColumns() > MIN_MESH_RESOLUTION) {
-                GridSnapshot before = captureGrid(geometry);
-                geometry.removeUDivision(geometry.getColumns() - 1);
-                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Delete Column",
-                               before, captureGrid(geometry));
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Del Row") && geometry.getRows() > MIN_MESH_RESOLUTION) {
-                GridSnapshot before = captureGrid(geometry);
-                geometry.removeVDivision(geometry.getRows() - 1);
-                pushGridChange(ctx.es.commandHistory, ctx.es.quadRef(*selectedQuad), "Delete Row",
-                               before, captureGrid(geometry));
-            }
-
-            // Click-on-edge insert tool (ADR-038 Tier 1 batch 3b): arm, then click
-            // in the viewport to place a division where you click. Arming switches
-            // to mesh-edit so the grid is visible.
-            using GridInsert = EditorState::GridInsert;
-            const bool armCol = (ctx.es.gridInsert == GridInsert::Column);
-            const bool armRow = (ctx.es.gridInsert == GridInsert::Row);
-            if (ImGui::Button(armCol ? "Click-add Column [ON]" : "Click-add Column")) {
-                ctx.es.gridInsert = armCol ? GridInsert::None : GridInsert::Column;
-                if (!armCol) geometry.setMeshMode(MeshMode::MESH_EDIT);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button(armRow ? "Click-add Row [ON]" : "Click-add Row")) {
-                ctx.es.gridInsert = armRow ? GridInsert::None : GridInsert::Row;
-                if (!armRow) geometry.setMeshMode(MeshMode::MESH_EDIT);
-            }
-            if (ctx.es.gridInsert != GridInsert::None) {
-                ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                                   "Press in the viewport and drag to position the line "
-                                   "(Esc to cancel)");
-            }
-
-            // Mesh Edit Mode
-            ImGui::Separator();
-            ImGui::Text("Mesh Editing:");
-
-            bool meshEditMode = (geometry.getMeshMode() == MeshMode::MESH_EDIT);
-            if (ImGui::Checkbox("Edit Mesh Vertices", &meshEditMode)) {
-                setAsStep(es, quad, MESH_MODE,
-                          meshEditMode ? MeshMode::MESH_EDIT : MeshMode::CORNERS_ONLY);
-                // Reset all handle state when toggling mode
-                es.meshDraggedVertex   = -1;
-                es.meshHoveredVertex   = -1;
-                es.meshSelectedVertex  = -1;
-                es.meshSelectedHandle = es.meshHoveredHandle = es.meshDraggedHandle = -1;
-                es.cornerDraggedVertex = -1;
-                es.cornerHoveredVertex = -1;
-                es.cornerSelectedVertex = -1;
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip(
-                    "Enable to drag individual mesh vertices for fine-tuned warping");
-            }
-
-            if (meshEditMode) {
-                ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
-                                   "Click and drag vertex handles to edit");
-
-                if (geometry.hasMeshModifications()) {
-                    ImGui::SameLine();
-                    if (ImGui::Button("Reset Mesh")) {
-                        const GridSnapshot before = captureGrid(geometry);
-                        geometry.resetMesh();
-                        pushGridChange(es.commandHistory, es.quadRef(quad), "Reset Mesh", before,
-                                       captureGrid(geometry));
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip(
-                            "Clear every mesh vertex offset and grid-line handle, back"
-                            " to the corner-pin surface");
-                    }
-                }
-                ImGui::TextDisabled("H / Shift+H: the selected vertex's grid-line handles");
-
-                // Show vertex count info
-                ImGui::Text("Vertices: %d (%dx%d grid)",
-                            geometry.getVertexCount(),
-                            meshRes + 1, meshRes + 1);
-            }
+            renderGridWarpControls(ctx, quad);
             ImGui::EndDisabled();
         }
 
@@ -807,13 +709,29 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, Quad& quad) {
             srcHeight = source->getHeight();
         }
     }
-    const bool inPixels = srcWidth > 0 && srcHeight > 0;
+    const bool hasPixelSize = srcWidth > 0 && srcHeight > 0;
+    const bool inPixels = hasPixelSize && !es.cropInPercent;
 
     struct EdgeControl { const char* label; CropEdge edge; };
     constexpr EdgeControl edges[] = {
         {"Crop Left##crop", CropEdge::Left},   {"Crop Right##crop", CropEdge::Right},
         {"Crop Top##crop", CropEdge::Top},     {"Crop Bottom##crop", CropEdge::Bottom},
     };
+
+    // Units (owner, 2026-11-23): percent of the source, or its pixels when it has a size.
+    {
+        ImGui::TextUnformatted("Units:");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("%##cropunits", !inPixels)) es.cropInPercent = true;
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!hasPixelSize);
+        if (ImGui::RadioButton("px##cropunits", inPixels)) es.cropInPercent = false;
+        ImGui::EndDisabled();
+        if (!hasPixelSize) {
+            ImGui::SetItemTooltip("Pixels need a video or image on the quad (a test grid or "
+                                  "generator has no pixel size)");
+        }
+    }
 
     if (inPixels) {
         ImGui::TextDisabled("Crop in from each edge (source pixels, %d x %d)",
@@ -868,6 +786,153 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, Quad& quad) {
     if (ImGui::Button("Full##cq")) {
         setAsStep(es, quad, CROP, NormalizedRect{});
     }
+}
+
+// Grid warp (ADR-038, ADR-049; owner 2026-11-23), shared by both modes so they never
+// drift: the switch (mesh edit: the points and the selected point's curve handles
+// show on the canvas), the grid's divisions, Click-add, Linear / Spline points, Warp /
+// Crop and Reset Mesh. A locked quad shows them greyed out.
+void InspectorPanel::renderGridWarpControls(EditorContext& ctx, Quad& quad) {
+    EditorState& es = ctx.es;
+    QuadGeometry& geometry = quad.getGeometry();
+    ImGui::BeginDisabled(quad.isLocked());
+
+    bool gridWarp = geometry.getMeshMode() == MeshMode::MESH_EDIT;
+    if (ImGui::Checkbox("Grid warp", &gridWarp)) {
+        setAsStep(es, quad, MESH_MODE, gridWarp ? MeshMode::MESH_EDIT : MeshMode::CORNERS_ONLY);
+        es.meshDraggedVertex = es.meshHoveredVertex = es.meshSelectedVertex = -1;
+        es.meshSelectedHandle = es.meshHoveredHandle = es.meshDraggedHandle = -1;
+        es.cornerDraggedVertex = es.cornerHoveredVertex = es.cornerSelectedVertex = -1;
+        es.gridLineDragIndex = es.gridLineHovered = -1;
+    }
+    ImGui::SetItemTooltip("Bend the quad with a grid of points. Off: only the four corners "
+                          "(the grid is kept for when you turn it back on).");
+    if (!gridWarp) {
+        ImGui::EndDisabled();
+        return;
+    }
+    ImGui::TextDisabled("Drag a point or a grid line; right-click a point for Linear / Spline.");
+
+    // Divisions.
+    ImGui::Text("Grid: %d x %d cells", geometry.getColumns(), geometry.getRows());
+    auto gridStep = [&](const char* name, auto&& change) {
+        const GridSnapshot before = captureGrid(geometry);
+        change();
+        pushGridChange(es.commandHistory, es.quadRef(quad), name, before, captureGrid(geometry));
+    };
+    const bool linearNew = es.newGridPointsLinear;
+    if (ImGui::Button("Add Column")) {
+        gridStep("Add Column", [&] {
+            geometry.insertUDivision(widestCellMiddle(geometry.getUCoords()), linearNew);
+        });
+    }
+    ImGui::SetItemTooltip("A vertical line across the quad, in the middle of the widest column");
+    ImGui::SameLine();
+    if (ImGui::Button("Add Row")) {
+        gridStep("Add Row", [&] {
+            geometry.insertVDivision(widestCellMiddle(geometry.getVCoords()), linearNew);
+        });
+    }
+    ImGui::SetItemTooltip("A horizontal line across the quad, in the middle of the widest row");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(geometry.getColumns() <= MIN_MESH_RESOLUTION);
+    if (ImGui::Button("Del Column")) {
+        gridStep("Delete Column", [&] { geometry.removeUDivision(geometry.getColumns() - 1); });
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(geometry.getRows() <= MIN_MESH_RESOLUTION);
+    if (ImGui::Button("Del Row")) {
+        gridStep("Delete Row", [&] { geometry.removeVDivision(geometry.getRows() - 1); });
+    }
+    ImGui::EndDisabled();
+
+    // Even grid (uniform N x N) resets the divisions and the warp; one drag, one step.
+    int meshRes = geometry.getMeshResolution();
+    ImGui::SetNextItemWidth(160.0f);
+    editAsStep(es, quad, EVEN_GRID, pendingStep_, [&] {
+        if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64)) {
+            geometry.setUniformGrid(meshRes);
+            if (linearNew) geometry.setAllVerticesLinear(true);
+        }
+    });
+    ImGui::SetItemTooltip("Start again with an even grid: clears the warp");
+
+    // Click-add (ADR-038): arm, then press on the quad or its edge and drag the new
+    // line into place. One line per arming; Esc cancels.
+    using GridInsert = EditorState::GridInsert;
+    const bool armCol = es.gridInsert == GridInsert::Column;
+    const bool armRow = es.gridInsert == GridInsert::Row;
+    if (ImGui::Button(armCol ? "Click-add Column [ON]" : "Click-add Column")) {
+        es.gridInsert = armCol ? GridInsert::None : GridInsert::Column;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(armRow ? "Click-add Row [ON]" : "Click-add Row")) {
+        es.gridInsert = armRow ? GridInsert::None : GridInsert::Row;
+    }
+    ImGui::SameLine();
+    // New points: Linear or Spline, for every line added from now on.
+    if (ImGui::RadioButton("Spline##newpts", !linearNew)) es.newGridPointsLinear = false;
+    ImGui::SetItemTooltip("Lines you add from now on curve smoothly through their points");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Linear##newpts", linearNew)) es.newGridPointsLinear = true;
+    ImGui::SetItemTooltip("Lines you add from now on run straight between their points");
+    if (es.gridInsert != GridInsert::None) {
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f),
+                           "Press on the quad or its edge and drag to place the line (Esc cancels)");
+    }
+
+    // Every point at once, and the selected point.
+    ImGui::TextUnformatted("All points:");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Spline##allpts")) {
+        gridStep("All Points Spline", [&] { geometry.setAllVerticesLinear(false); });
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Linear##allpts")) {
+        gridStep("All Points Linear", [&] { geometry.setAllVerticesLinear(true); });
+    }
+    const int point = es.meshSelectedVertex;
+    if (point >= 0 && point < geometry.getVertexCount()) {
+        const bool linear = geometry.isVertexLinear(point);
+        ImGui::SameLine();
+        ImGui::Text("  Point %d:", point + 1);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Spline##selpt", !linear) && linear) {
+            gridStep("Point Spline", [&] { geometry.setVertexLinear(point, false); });
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Linear##selpt", linear) && !linear) {
+            gridStep("Point Linear", [&] { geometry.setVertexLinear(point, true); });
+        }
+    }
+
+    // What the warp does to the image.
+    const ContentMode content = geometry.getContentMode();
+    ImGui::TextUnformatted("Image:");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Warp##content", content == ContentMode::WARP) &&
+        content != ContentMode::WARP) {
+        setAsStep(es, quad, CONTENT_MODE, ContentMode::WARP);
+    }
+    ImGui::SetItemTooltip("The image bends with the grid");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Crop##content", content == ContentMode::CROP) &&
+        content != ContentMode::CROP) {
+        setAsStep(es, quad, CONTENT_MODE, ContentMode::CROP);
+    }
+    ImGui::SetItemTooltip("The image stays flat on the four corners and the bent outline cuts "
+                          "a shape out of it (curved edges cut too)");
+
+    if (geometry.hasMeshModifications()) {
+        if (ImGui::Button("Reset Mesh")) {
+            gridStep("Reset Mesh", [&] { geometry.resetMesh(); });
+        }
+        ImGui::SetItemTooltip("Put every point back on the corner-pin surface (keeps the grid lines)");
+        ImGui::SameLine();
+    }
+    ImGui::TextDisabled("H / Shift+H: the selected point's curve handles");
+    ImGui::EndDisabled();
 }
 
 // Simple-mode quad panel (ADR-042): only the handful of controls a basic projection
@@ -939,6 +1004,10 @@ void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) 
         }
     }
     ImGui::EndDisabled();
+
+    // Grid warp (owner, 2026-11-23): the same controls as Advanced mode.
+    ImGui::Separator();
+    renderGridWarpControls(ctx, quad);
 
     // Crop
     ImGui::Separator();

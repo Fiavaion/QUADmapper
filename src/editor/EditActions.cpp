@@ -161,9 +161,12 @@ bool canStepMeshResolution(EditorState& es, int delta) {
 
 void stepMeshResolutionAction(EditorState& es, int delta) {
     if (!canStepMeshResolution(es, delta)) return;
+    // The new even grid's points are Linear or Spline as the Grid warp choice says.
+    const bool linear = es.newGridPointsLinear;
     changePrimaryGrid(es, delta > 0 ? "Increase Mesh Resolution" : "Decrease Mesh Resolution",
-                      [delta](QuadGeometry& geo) {
+                      [delta, linear](QuadGeometry& geo) {
                           geo.setMeshResolution(geo.getMeshResolution() + (delta > 0 ? 1 : -1));
+                          if (linear) geo.setAllVerticesLinear(true);
                       });
 }
 

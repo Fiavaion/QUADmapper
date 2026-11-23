@@ -41,6 +41,12 @@ void commitCanvasDrags(EditorState& es) {
                     "Bezier Edge", es.quadRef(*quad), es.bezierDragBefore, geometry.getBezierOffsets(),
                     [](Quad& q, const std::array<Vec2, 8>& o) { q.getGeometry().setBezierOffsets(o); }));
             }
+        } else if (es.gridLineDragIndex >= 0) {
+            const GridSnapshot after = captureGrid(geometry);
+            if (after.u != es.gridLineDragBefore.u || after.v != es.gridLineDragBefore.v) {
+                pushGridChange(history, es.quadRef(*quad), "Move Grid Line", es.gridLineDragBefore,
+                               after);
+            }
         } else if (es.meshDraggedHandle >= 0 && es.meshSelectedVertex >= 0) {
             const VertexTangents after = geometry.getVertexTangent(es.meshSelectedVertex);
             if (after != es.meshHandleDragBefore) {
@@ -62,6 +68,7 @@ void commitCanvasDrags(EditorState& es) {
     es.meshDraggedVertex = -1;
     es.meshDraggedHandle = -1;
     es.bezierDragged = -1;
+    es.gridLineDragIndex = -1;
     es.gridInsert = EditorState::GridInsert::None;
     es.gridInsertMouseLatch = false;
     es.gridInsertDragIndex = -1;

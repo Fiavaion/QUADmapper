@@ -1,6 +1,8 @@
 #include "QuadGeometry.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <unordered_set>
 
 namespace quadmapper {
 
@@ -126,8 +128,10 @@ int cellOf(const std::vector<float>& grid, float t, float& local) {
 
 // The residual R (ADR-049 §1): per cell a bicubic Hermite patch through the control
 // vertices' residuals, with the effective one-sided tangents (explicit, or
-// Catmull-Rom from the neighbours) and a twist shared by the four cells around each
-// vertex. Values and derivatives on a shared cell edge come only from that edge's two
+// Catmull-Rom from the neighbours, or the chord to the neighbour for a Linear point)
+// and a twist shared by the four cells around each vertex (a Linear corner uses the
+// cell's own bilinear twist instead, so a cell with four Linear corners is exactly
+// bilinear). Values and derivatives on a shared cell edge come only from that edge's two
 // vertices, so the surface is C0 everywhere and C1 wherever the two sides' tangents
 // agree (always, with auto tangents). With every tangent auto this is the
 // tensor-product Catmull-Rom surface.
@@ -147,8 +151,16 @@ public:
                 const Vec2 autoU = (at(row, ch) - at(row, cl)) / (u_[ch] - u_[cl]);
                 const Vec2 autoV = (at(rh, col) - at(rl, col)) / (v_[rh] - v_[rl]);
                 const VertexTangents& t = tangents[static_cast<size_t>(k)];
+                // A Linear point's sides: the chords to the previous and next vertex.
+                const std::array<Vec2, GRID_HANDLE_COUNT> chords{
+                    col > 0 ? (at(row, col) - at(row, cl)) / (u_[col] - u_[cl]) : autoU,
+                    col < cols_ - 1 ? (at(row, ch) - at(row, col)) / (u_[ch] - u_[col]) : autoU,
+                    row > 0 ? (at(row, col) - at(rl, col)) / (v_[row] - v_[rl]) : autoV,
+                    row < rows_ - 1 ? (at(rh, col) - at(row, col)) / (v_[rh] - v_[row]) : autoV};
+                if (t.linear) linear_.insert(k);
                 for (int h = 0; h < GRID_HANDLE_COUNT; ++h) {
-                    const Vec2 automatic = (h < GRID_HANDLE_V_BEFORE) ? autoU : autoV;
+                    const Vec2 automatic = t.linear ? chords[static_cast<size_t>(h)]
+                                         : (h < GRID_HANDLE_V_BEFORE) ? autoU : autoV;
                     tangent_[static_cast<size_t>(k) * GRID_HANDLE_COUNT + h] =
                         t.isExplicit(h) ? t.derivative[static_cast<size_t>(h)] : automatic;
                 }
@@ -194,8 +206,11 @@ public:
         const Vec2 alongV =
             hv.t0 * (hu.v0 * tangent(k00, GRID_HANDLE_V_AFTER) + hu.v1 * tangent(k10, GRID_HANDLE_V_AFTER)) +
             hv.t1 * (hu.v0 * tangent(k01, GRID_HANDLE_V_BEFORE) + hu.v1 * tangent(k11, GRID_HANDLE_V_BEFORE));
-        const Vec2 cross = hv.t0 * (hu.t0 * twist(k00) + hu.t1 * twist(k10)) +
-                           hv.t1 * (hu.t0 * twist(k01) + hu.t1 * twist(k11));
+        // A Linear corner takes this cell's bilinear twist.
+        const Vec2 cellTwist = (at(k11) - at(k10) - at(k01) + at(k00)) / (wu * wv);
+        auto twistAt = [&](int k) { return linear_.count(k) ? cellTwist : twist(k); };
+        const Vec2 cross = hv.t0 * (hu.t0 * twistAt(k00) + hu.t1 * twistAt(k10)) +
+                           hv.t1 * (hu.t0 * twistAt(k01) + hu.t1 * twistAt(k11));
         return value + wu * alongU + wv * alongV + (wu * wv) * cross;
     }
 
@@ -225,6 +240,7 @@ private:
     int rows_;
     std::vector<Vec2> tangent_;  // GRID_HANDLE_COUNT per vertex
     std::vector<Vec2> twist_;
+    std::unordered_set<int> linear_;  // indices of the Linear points
 };
 
 }  // namespace
@@ -312,7 +328,7 @@ float QuadGeometry::getVCoord(int row) const {
 
 // Insert a division at u. Each new control vertex takes the residual R already has at
 // its parameters, so it lands on the current surface; its tangents start automatic.
-int QuadGeometry::insertUDivision(float u) {
+int QuadGeometry::insertUDivision(float u, bool linear) {
     if (u <= 0.0f || u >= 1.0f) return -1;
     // Reject near-duplicates.
     for (float c : uCoords_) {
@@ -336,6 +352,7 @@ int QuadGeometry::insertUDivision(float u) {
                 nextTangents[dst] = tangents_[src];
             }
             next[static_cast<size_t>(r) * (oldCols + 1) + k] = residual.eval(u, vCoords_[r]);
+            nextTangents[static_cast<size_t>(r) * (oldCols + 1) + k].linear = linear;
         }
     }
     uCoords_.insert(uCoords_.begin() + k, u);
@@ -344,7 +361,7 @@ int QuadGeometry::insertUDivision(float u) {
     return k;
 }
 
-int QuadGeometry::insertVDivision(float v) {
+int QuadGeometry::insertVDivision(float v, bool linear) {
     if (v <= 0.0f || v >= 1.0f) return -1;
     for (float c : vCoords_) {
         if (std::abs(c - v) < 1e-4f) return -1;
@@ -369,6 +386,7 @@ int QuadGeometry::insertVDivision(float v) {
         }
         for (int c = 0; c < cols; ++c) {
             next[static_cast<size_t>(k) * cols + c] = residual.eval(uCoords_[c], v);
+            nextTangents[static_cast<size_t>(k) * cols + c].linear = linear;
         }
     }
     vCoords_.insert(vCoords_.begin() + k, v);
@@ -470,7 +488,32 @@ Vec2 QuadGeometry::getMeshVertexByIndex(int index) const {
 
 void QuadGeometry::resetMesh() {
     std::fill(meshVertices_.begin(), meshVertices_.end(), Vec2(0.0f));
-    std::fill(tangents_.begin(), tangents_.end(), VertexTangents{});
+    for (VertexTangents& t : tangents_) {
+        const bool linear = t.linear;
+        t = VertexTangents{};
+        t.linear = linear;
+    }
+}
+
+bool QuadGeometry::isVertexLinear(int index) const {
+    return index >= 0 && index < static_cast<int>(tangents_.size()) &&
+           tangents_[static_cast<size_t>(index)].linear;
+}
+
+void QuadGeometry::setVertexLinear(int index, bool linear) {
+    if (index < 0 || index >= static_cast<int>(tangents_.size())) return;
+    VertexTangents& t = tangents_[static_cast<size_t>(index)];
+    t.linear = linear;
+    if (linear) t.explicitMask = 0;  // straight lines have no handles to keep
+}
+
+void QuadGeometry::setAllVerticesLinear(bool linear) {
+    for (int i = 0; i < static_cast<int>(tangents_.size()); ++i) setVertexLinear(i, linear);
+}
+
+bool QuadGeometry::hasLinearVertices() const {
+    return std::any_of(tangents_.begin(), tangents_.end(),
+                       [](const VertexTangents& t) { return t.linear; });
 }
 
 bool QuadGeometry::hasMeshModifications() const {
@@ -615,6 +658,7 @@ void QuadGeometry::setGridHandlePosition(int index, int handle, const Vec2& pos)
     t.derivative[static_cast<size_t>(handle)] =
         surfaceDerivative - baseDerivative(index, handle < GRID_HANDLE_V_BEFORE);
     t.explicitMask |= 1u << handle;
+    t.linear = false;  // a handle bends the line: the point is a Spline again
 }
 
 Vec2 QuadGeometry::transformUVToPosition(const Vec2& uv) const {
@@ -667,6 +711,46 @@ Vec2 QuadGeometry::basePoint(float u, float v) const {
 
 bool QuadGeometry::hasResidualSurface() const {
     return meshMode_ == MeshMode::MESH_EDIT && hasMeshModifications();
+}
+
+bool QuadGeometry::cropsImage() const {
+    return contentMode_ == ContentMode::CROP && (hasResidualSurface() || hasBezierEdges());
+}
+
+std::vector<Vec3> QuadGeometry::imageCoords(const std::vector<float>& us,
+                                            const std::vector<float>& vs,
+                                            const std::vector<SurfaceSample>& samples) const {
+    std::vector<Vec3> coords(samples.size());
+    const bool crop = cropsImage();
+    // The image's plane: the corner pin without curved edges or mesh.
+    const CornerSurface plane(corners_, nullptr, warpMode_);
+    for (size_t r = 0; r < vs.size(); ++r) {
+        for (size_t c = 0; c < us.size(); ++c) {
+            const size_t i = r * us.size() + c;
+            Vec2 st(us[c], vs[r]);
+            float q = samples[i].q;
+            if (crop) {
+                // Newton's method from the sample's own parameters: the plane point
+                // under the sample. The plane is a homography or bilinear patch, so
+                // a few steps converge; a degenerate Jacobian keeps the last guess.
+                const Vec2 target = samples[i].position;
+                constexpr float H = 1e-4f;
+                for (int step = 0; step < 12; ++step) {
+                    const Vec2 p = plane.point(st.x, st.y);
+                    const Vec2 err = target - p;
+                    if (glm::dot(err, err) < 1e-14f) break;
+                    const Vec2 du = (plane.point(st.x + H, st.y) - p) / H;
+                    const Vec2 dv = (plane.point(st.x, st.y + H) - p) / H;
+                    const float det = du.x * dv.y - du.y * dv.x;
+                    if (std::fabs(det) < 1e-12f) break;
+                    st += Vec2(err.x * dv.y - err.y * dv.x, du.x * err.y - du.y * err.x) / det;
+                }
+                q = plane.sample(st.x, st.y).q;
+            }
+            coords[i] = Vec3(st.x * q, st.y * q, q);
+        }
+    }
+    return coords;
 }
 
 Vec2 QuadGeometry::surfacePoint(float u, float v) const {
@@ -784,6 +868,83 @@ Vec2 QuadGeometry::surfaceParamsAt(const Vec2& p) const {
         }
     }
     return Vec2(-1.0f);
+}
+
+namespace {
+
+// Distance from p to the polyline through `points`, and the parameter at the nearest
+// point (interpolated between the neighbouring entries of `params`).
+float polylineDistance(const std::vector<QuadGeometry::SurfaceSample>& points,
+                       const std::vector<Vec2>& params, const Vec2& p, Vec2& nearestParam) {
+    float best = std::numeric_limits<float>::max();
+    for (size_t i = 0; i + 1 < points.size(); ++i) {
+        const Vec2 a = points[i].position, b = points[i + 1].position;
+        const Vec2 ab = b - a;
+        const float len2 = glm::dot(ab, ab);
+        const float t = len2 > 0.0f ? std::clamp(glm::dot(p - a, ab) / len2, 0.0f, 1.0f) : 0.0f;
+        const float d = glm::length(p - (a + t * ab));
+        if (d < best) {
+            best = d;
+            nearestParam = glm::mix(params[i], params[i + 1], t);
+        }
+    }
+    return best;
+}
+
+}  // namespace
+
+Vec2 QuadGeometry::boundaryParamsNear(const Vec2& p, float maxDistance) const {
+    const std::vector<float> us = tessellationU();
+    const std::vector<float> vs = tessellationV();
+    float best = maxDistance;
+    Vec2 result(-1.0f);
+    auto side = [&](const std::vector<float>& su, const std::vector<float>& sv) {
+        std::vector<Vec2> params;
+        for (float v : sv) {
+            for (float u : su) params.emplace_back(u, v);
+        }
+        Vec2 uv;
+        const float d = polylineDistance(sampleSurface(su, sv), params, p, uv);
+        if (d <= best) {
+            best = d;
+            result = uv;
+        }
+    };
+    side(us, {0.0f});
+    side(us, {1.0f});
+    side({0.0f}, vs);
+    side({1.0f}, vs);
+    return result;
+}
+
+int QuadGeometry::gridLineNear(const Vec2& p, float maxDistance, bool& isColumn) const {
+    const std::vector<float> us = tessellationU();
+    const std::vector<float> vs = tessellationV();
+    float best = maxDistance;
+    int line = -1;
+    for (int col = 1; col < getColumns(); ++col) {
+        std::vector<Vec2> params;
+        for (float v : vs) params.emplace_back(uCoords_[col], v);
+        Vec2 uv;
+        const float d = polylineDistance(sampleSurface({uCoords_[col]}, vs), params, p, uv);
+        if (d <= best) {
+            best = d;
+            line = col;
+            isColumn = true;
+        }
+    }
+    for (int row = 1; row < getRows(); ++row) {
+        std::vector<Vec2> params;
+        for (float u : us) params.emplace_back(u, vCoords_[row]);
+        Vec2 uv;
+        const float d = polylineDistance(sampleSurface(us, {vCoords_[row]}), params, p, uv);
+        if (d <= best) {
+            best = d;
+            line = row;
+            isColumn = false;
+        }
+    }
+    return line;
 }
 
 std::vector<Vec2> QuadGeometry::generateMeshPositions() const {

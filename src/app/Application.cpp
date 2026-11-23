@@ -413,6 +413,9 @@ bool Application::initializeComponents() {
         m_editorState->uiMode = (prefs.general.uiMode == 1)
             ? EditorState::UiMode::Advanced : EditorState::UiMode::Simple;
         m_editorState->vertexSnapping = prefs.general.vertexSnapping;
+        m_editorState->uvGridOnNewQuads = prefs.general.testGridOnNewQuads;
+        m_editorState->newGridPointsLinear = prefs.general.newGridPointsLinear;
+        m_editorState->cropInPercent = prefs.general.cropInPercent;
 
         if (prefs.general.autoLoadMediaOnStartup &&
             !prefs.general.defaultMediaFolder.empty()) {

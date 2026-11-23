@@ -383,6 +383,26 @@ TEST(ProjectMappingTest, OutputsKeepTheSceneTheyShowAndTheirSettings) {
     EXPECT_FALSE(back.isEnabled());
 }
 
+// The test grid on new quads (on by default) never lands on a loaded show's quads:
+// loading marks every one of them seen, in every scene (owner, 2026-11-23).
+TEST(ProjectMappingTest, LoadedQuadsAreSeenSoTheyGetNoTestGrid) {
+    EditorState from;
+    Quad* wall = from.addScene("Stage")->getQuadManager().createQuad("Wall");
+    Quad* floor = from.addScene("Floor")->getQuadManager().createQuad("Floor");
+    ASSERT_TRUE(wall && floor);
+    EditorState to;
+    EXPECT_TRUE(to.uvGridOnNewQuads) << "on by default";
+    roundTrip(from, to);
+    int quads = 0;
+    for (const auto& scene : to.scenes) {
+        for (const auto& quad : scene->getQuadManager().getQuads()) {
+            EXPECT_TRUE(to.seenQuadIds.count(quad->getId())) << quad->getName();
+            ++quads;
+        }
+    }
+    EXPECT_GE(quads, 2);
+}
+
 TEST(ProjectMappingTest, AnEmptyProjectLoadsAsOneActiveScene) {
     EditorState to;
     to.addScene("Old");

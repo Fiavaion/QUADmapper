@@ -287,7 +287,9 @@ void ViewportEditor::render(EditorContext& ctx) {
     double mouseX = 0.0, mouseY = 0.0;
     glfwGetCursorPos(ctx.window, &mouseX, &mouseY);
     const bool leftDown = glfwGetMouseButton(ctx.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-    render(ctx, Pointer{Vec2(static_cast<float>(mouseX), static_cast<float>(mouseY)), leftDown});
+    const bool rightDown = glfwGetMouseButton(ctx.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    render(ctx, Pointer{Vec2(static_cast<float>(mouseX), static_cast<float>(mouseY)), leftDown,
+                        rightDown});
 }
 
 void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
@@ -434,6 +436,9 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
         // start only on such a press, so a slider or a bin clip dragged across a handle
         // never grabs it and clicks on overlays above the canvas never reselect quads.
         const bool canvasPress = mousePressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
+        const bool rightPressed = pointer.rightDown && !es.canvasRightDownPrev;
+        es.canvasRightDownPrev = pointer.rightDown;
+        const bool canvasRightPress = rightPressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
 
         // A quad drag the canvas is taken from (lock, slice warp editing, calibration)
         // ends where the mouse left it, as its undo step; then nothing is hovered.
@@ -478,6 +483,8 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
 
         constexpr float HIT_RADIUS = 0.015f;  // Slightly larger hit radius for corners
         constexpr float SNAP_RADIUS = 0.02f;  // Snap threshold for vertex snapping
+        constexpr float EDGE_RADIUS = 0.015f;  // a press this near the outline is on the edge
+        constexpr float LINE_RADIUS = 0.008f;  // a press this near a grid line grabs it
 
         Quad* selectedQuad = quadManager.getPrimarySelectedQuad();
 
@@ -504,6 +511,9 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                             onSelectedHandle = true;
                             break;
                         }
+                    // A grid line of the selected quad is grabbed, not a quad behind it.
+                    bool column = false;
+                    if (g.gridLineNear(mouseNorm, LINE_RADIUS, column) >= 0) onSelectedHandle = true;
                 }
             }
             if (pickQuadOnCanvas(es, quadManager, mouseNorm, onSelectedHandle)) {
@@ -587,18 +597,25 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                     es.gridInsertMouseLatch = false;
                     es.gridInsertDragIndex = -1;
                 } else if (mouseDown && (es.gridInsertMouseLatch || (canvasPress && mayStartDrag()))) {
-                    // The surface parameters under the cursor, as drawn (ADR-049).
+                    // The surface parameters under the cursor, as drawn (ADR-049); on
+                    // or just outside the outline, those of the nearest edge point
+                    // (owner, 2026-11-23), and while dragging, wherever the mouse goes.
                     Vec2 uv = geometry.surfaceParamsAt(mouseNorm);
+                    if (uv.x < 0.0f) {
+                        uv = geometry.boundaryParamsNear(
+                            mouseNorm, es.gridInsertMouseLatch ? 1e9f : EDGE_RADIUS);
+                    }
                     if (!es.gridInsertMouseLatch) {
                         // Press edge: snapshot the grid (for one-step undo), then
-                        // insert the new line where the user clicked.
+                        // insert the new line where the user clicked: a column from
+                        // the top or bottom edge, a row from the left or right.
                         es.gridInsertMouseLatch = true;
                         es.gridInsertBefore = captureGrid(geometry);
-                        if (uv.x > 0.001f && uv.x < 0.999f &&
-                            uv.y > 0.001f && uv.y < 0.999f) {
+                        const float t = isColumn ? uv.x : uv.y;
+                        if (t > 0.001f && t < 0.999f) {
                             es.gridInsertDragIndex = isColumn
-                                ? geometry.insertUDivision(uv.x)
-                                : geometry.insertVDivision(uv.y);
+                                ? geometry.insertUDivision(uv.x, es.newGridPointsLinear)
+                                : geometry.insertVDivision(uv.y, es.newGridPointsLinear);
                         }
                     } else if (es.gridInsertDragIndex >= 0 && uv.x >= 0.0f) {
                         // Held over the surface: drag the just-inserted line to
@@ -721,6 +738,24 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                 auto basePositions = geometry.generateBasePositions();
                 constexpr float MESH_HIT_RADIUS = 0.012f;  // mesh handles are smaller
 
+                // A grid line dragged to a new place (owner, 2026-11-23): the mouse
+                // maps to (u,v) on the quad as the drag began, so moving the line does
+                // not move what it is measured against. One undo step on release.
+                if (es.gridLineDragIndex >= 0) {
+                    if (mouseDown) {
+                        Vec2 uv = es.gridLineDragFrom.surfaceParamsAt(mouseNorm);
+                        if (uv.x < 0.0f) uv = es.gridLineDragFrom.boundaryParamsNear(mouseNorm, 1e9f);
+                        if (uv.x >= 0.0f) {
+                            if (es.gridLineDragIsColumn) geometry.moveUDivision(es.gridLineDragIndex, uv.x);
+                            else geometry.moveVDivision(es.gridLineDragIndex, uv.y);
+                        }
+                        ImGui::SetMouseCursor(es.gridLineDragIsColumn ? ImGuiMouseCursor_ResizeEW
+                                                                      : ImGuiMouseCursor_ResizeNS);
+                    } else {
+                        commitCanvasDrags(es);
+                    }
+                }
+
                 // Grid-line handles of the selected vertex (ADR-049 §3). A handle drag
                 // records one undo step on release, as a vertex drag does.
                 if (es.meshDraggedHandle >= 0) {
@@ -740,8 +775,9 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                     }
                 }
 
-                if (es.meshDraggedHandle >= 0) {
-                    meshHoveredVertex = -1;  // a handle drag owns the mouse
+                if (es.meshDraggedHandle >= 0 || es.gridLineDragIndex >= 0) {
+                    meshHoveredVertex = -1;  // a handle or line drag owns the mouse
+                    es.gridLineHovered = -1;
                 } else if (meshDraggedVertex >= 0) {
                     if (mouseDown) {
                         Vec2 mouseDelta = mouseNorm - meshDragStartMousePos;
@@ -794,7 +830,31 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                         }
                     }
 
-                    if (canvasPress && es.meshHoveredHandle >= 0 && !insertArmed && mayStartDrag()) {
+                    // Nothing nearer: a grid line under the mouse can be dragged.
+                    es.gridLineHovered = -1;
+                    if (meshHoveredVertex < 0 && es.meshHoveredHandle < 0 && !insertArmed) {
+                        bool column = false;
+                        es.gridLineHovered = geometry.gridLineNear(mouseNorm, LINE_RADIUS, column);
+                        es.gridLineHoveredIsColumn = column;
+                        if (es.gridLineHovered >= 0) {
+                            ImGui::SetMouseCursor(column ? ImGuiMouseCursor_ResizeEW
+                                                         : ImGuiMouseCursor_ResizeNS);
+                        }
+                    }
+
+                    // Right-click a point: its Linear / Spline menu.
+                    if (canvasRightPress && meshHoveredVertex >= 0) {
+                        if (meshHoveredVertex != meshSelectedVertex) es.meshSelectedHandle = -1;
+                        meshSelectedVertex = es.gridPointMenuVertex = meshHoveredVertex;
+                        ImGui::OpenPopup("##GridPointMenu");
+                    }
+
+                    if (canvasPress && es.gridLineHovered >= 0 && mayStartDrag()) {
+                        es.gridLineDragIndex = es.gridLineHovered;
+                        es.gridLineDragIsColumn = es.gridLineHoveredIsColumn;
+                        es.gridLineDragBefore = captureGrid(geometry);
+                        es.gridLineDragFrom = geometry;
+                    } else if (canvasPress && es.meshHoveredHandle >= 0 && !insertArmed && mayStartDrag()) {
                         es.meshDraggedHandle = es.meshSelectedHandle = es.meshHoveredHandle;
                         es.meshHandleDragStartMousePos = mouseNorm;
                         es.meshHandleDragStartPos =
@@ -835,6 +895,41 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
         }
     };
     handleInput();
+
+    // A grid point's menu (right-click on the canvas, owner 2026-11-23): Linear or
+    // Spline for it or for every point, one undo step each.
+    if (ImGui::BeginPopup("##GridPointMenu")) {
+        Quad* quad = quadManager.getPrimarySelectedQuad();
+        const int point = es.gridPointMenuVertex;
+        if (quad && quad->getGeometry().getMeshMode() == MeshMode::MESH_EDIT && point >= 0 &&
+            point < quad->getGeometry().getVertexCount()) {
+            QuadGeometry& g = quad->getGeometry();
+            const bool editable = !quad->isLocked() && !es.performLock.isOn();
+            auto step = [&](const char* name, auto&& change) {
+                const GridSnapshot before = captureGrid(g);
+                change();
+                pushGridChange(es.commandHistory, es.quadRef(*quad), name, before, captureGrid(g));
+            };
+            const bool linear = g.isVertexLinear(point);
+            ImGui::TextDisabled("Point %d", point + 1);
+            if (ImGui::MenuItem("Spline", nullptr, !linear, editable) && linear) {
+                step("Point Spline", [&] { g.setVertexLinear(point, false); });
+            }
+            if (ImGui::MenuItem("Linear", nullptr, linear, editable) && !linear) {
+                step("Point Linear", [&] { g.setVertexLinear(point, true); });
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("All points Spline", nullptr, false, editable)) {
+                step("All Points Spline", [&] { g.setAllVerticesLinear(false); });
+            }
+            if (ImGui::MenuItem("All points Linear", nullptr, false, editable)) {
+                step("All Points Linear", [&] { g.setAllVerticesLinear(true); });
+            }
+        } else {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 
     // Disable depth test for 2D rendering
     glDisable(GL_DEPTH_TEST);

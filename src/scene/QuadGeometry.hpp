@@ -38,16 +38,28 @@ enum class WarpMode : int {
     LINEAR = 1,
 };
 
+// What a quad's mesh warp does to its image (owner, 2026-11-23).
+// WARP: the image follows the surface, so bending the mesh bends the picture.
+// CROP: the image stays on the plain corner pin (no curved edges, no mesh) and the
+// bent outline cuts a shape out of it; outside the image is transparent.
+enum class ContentMode : int {
+    WARP = 0,
+    CROP = 1,
+};
+
 // Explicit tangents of one control vertex, indexed by GridHandle: the derivative of
 // the residual along u (U handles) or v (V handles) on that side. A handle whose bit
-// is clear in explicitMask uses the Catmull-Rom tangent instead.
+// is clear in explicitMask uses the automatic tangent instead: Catmull-Rom for a
+// Spline point, the one-sided chord to the neighbour for a Linear one (owner,
+// 2026-11-23), so the grid runs straight between Linear points.
 struct VertexTangents {
     std::array<Vec2, GRID_HANDLE_COUNT> derivative{Vec2(0.0f), Vec2(0.0f), Vec2(0.0f), Vec2(0.0f)};
     unsigned explicitMask = 0;
+    bool linear = false;  // Linear point: straight grid lines to its neighbours
 
     bool isExplicit(int handle) const { return (explicitMask >> handle) & 1u; }
     bool operator==(const VertexTangents& o) const {
-        return explicitMask == o.explicitMask && derivative == o.derivative;
+        return explicitMask == o.explicitMask && linear == o.linear && derivative == o.derivative;
     }
     bool operator!=(const VertexTangents& o) const { return !(*this == o); }
 };
@@ -100,10 +112,11 @@ public:
 
     // Insert a division line at normalized position p (0<p<1). No-op if it would
     // duplicate an existing line. New control vertices take the residual the
-    // surface already has there, so they land on it. Returns the index of the
-    // inserted line (its column/row), or -1 if rejected (out of range / dup).
-    int insertUDivision(float u);
-    int insertVDivision(float v);
+    // surface already has there, so they land on it, and are Linear or Spline points
+    // as `linear` says. Returns the index of the inserted line (its column/row), or
+    // -1 if rejected (out of range / dup).
+    int insertUDivision(float u, bool linear = false);
+    int insertVDivision(float v, bool linear = false);
     // Move an existing interior division line to a new normalized position, clamped
     // strictly between its neighbours (endpoints are pinned and cannot move). Used
     // for drag-to-position placement. No-op for endpoint indices.
@@ -131,6 +144,13 @@ public:
     WarpMode getWarpMode() const { return warpMode_; }
     void setWarpMode(WarpMode mode);
 
+    // Warp or Crop (ContentMode). Default WARP.
+    ContentMode getContentMode() const { return contentMode_; }
+    void setContentMode(ContentMode mode) { contentMode_ = mode; }
+    // True when the image is not drawn on the surface itself: CROP, and the surface
+    // differs from the plain corner pin (a mesh residual or curved edges).
+    bool cropsImage() const;
+
     // --- Bezier edges (ADR-043) --------------------------------------------
     // Optional cubic-bezier edges on the 4 corners. Each of the 4 edges has 2 control
     // points, stored as OFFSETS from the straight-line 1/3 and 2/3 points — so zero
@@ -156,7 +176,14 @@ public:
     void setMeshVertexByIndex(int index, const Vec2& offset);
     Vec2 getMeshVertex(int row, int col) const;
     Vec2 getMeshVertexByIndex(int index) const;
-    void resetMesh();  // zero every residual and drop every explicit tangent
+    void resetMesh();  // zero every residual and drop every explicit tangent; keeps Linear
+
+    // Linear / Spline control points (owner, 2026-11-23). Making a point Linear drops
+    // its explicit handles; dragging a handle makes the point Spline again.
+    bool isVertexLinear(int index) const;
+    void setVertexLinear(int index, bool linear);
+    void setAllVerticesLinear(bool linear);
+    bool hasLinearVertices() const;
 
     // True when any residual is non-zero or any tangent handle is explicit.
     bool hasMeshModifications() const;
@@ -230,6 +257,22 @@ public:
     // p is outside the surface. Hit-testing and click-to-insert use this.
     Vec2 surfaceParamsAt(const Vec2& p) const;
 
+    // The (u,v) of the point of the drawn outline nearest p, when that point is within
+    // maxDistance of p; else (-1,-1). Click-add uses it for a press on the edge.
+    Vec2 boundaryParamsNear(const Vec2& p, float maxDistance) const;
+
+    // The interior grid line drawn nearest p within maxDistance: its column index
+    // (isColumn, a U line) or row index (a V line), else -1. Lines are drawn on S, so
+    // this follows the warp.
+    int gridLineNear(const Vec2& p, float maxDistance, bool& isColumn) const;
+
+    // Image coordinates for samples of S taken at (us, vs) by sampleSurface: where
+    // each lands in the image, as (s*q, t*q, q) for quad.frag. Without cropsImage()
+    // that is the sample's own (u*q, v*q, q). With it, the point of the plain corner
+    // pin under the sample (outside [0,1] when the outline leaves the image).
+    std::vector<Vec3> imageCoords(const std::vector<float>& us, const std::vector<float>& vs,
+                                  const std::vector<SurfaceSample>& samples) const;
+
     // Control-vertex positions on S (residuals only in MESH_EDIT).
     std::vector<Vec2> generateMeshPositions() const;
 
@@ -242,6 +285,7 @@ private:
     std::vector<float> vCoords_;   // V division lines, sorted, [0..1] inclusive
     MeshMode meshMode_;
     WarpMode warpMode_ = WarpMode::PERSPECTIVE;
+    ContentMode contentMode_ = ContentMode::WARP;
     std::vector<Vec2> meshVertices_;        // residuals from B (row-major)
     std::vector<VertexTangents> tangents_;  // per control vertex (row-major)
 

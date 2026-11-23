@@ -42,6 +42,7 @@ public:
     struct Pointer {
         Vec2 position{0.0f, 0.0f};
         bool leftDown = false;
+        bool rightDown = false;  // a right click on a grid point opens its menu
     };
 
     // Call once per frame, right after ImGui::NewFrame(), from Application::render().

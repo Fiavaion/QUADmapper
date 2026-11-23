@@ -376,10 +376,16 @@ void EditorUi::savePreferenceChanges(EditorContext& ctx) {
         prefs.general.uiMode = mode;
         changed = true;
     }
-    if (ctx.es.vertexSnapping != prefs.general.vertexSnapping) {
-        prefs.general.vertexSnapping = ctx.es.vertexSnapping;
-        changed = true;
-    }
+    auto follow = [&changed](bool editor, bool& saved) {
+        if (editor != saved) {
+            saved = editor;
+            changed = true;
+        }
+    };
+    follow(ctx.es.vertexSnapping, prefs.general.vertexSnapping);
+    follow(ctx.es.uvGridOnNewQuads, prefs.general.testGridOnNewQuads);
+    follow(ctx.es.newGridPointsLinear, prefs.general.newGridPointsLinear);
+    follow(ctx.es.cropInPercent, prefs.general.cropInPercent);
     if (changed) ctx.services->savePreferences();
 }
 

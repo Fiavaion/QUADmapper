@@ -9,6 +9,11 @@ The first public release. The date is set when the release is made. It covers ev
 - Each quad has a Warp choice in Properties. Linear, the default for new quads, lines up quads that are snapped together across their shared edge. Perspective makes the corner pin perspective-correct: textures follow a tilted quad exactly, with no visible bend along the diagonal. Shows saved before this choice existed open in Perspective. Project files are now format 3.5; an older build opens them with every quad in Perspective.
 - Select a corner or mesh point with `Tab` / `Shift+Tab` and move it with the arrow keys. `Shift` moves ten times as far, `Alt` a tenth as far. Dragging with the mouse still works.
 - The mesh grid can have uneven spacing. Add or remove grid divisions in the Properties panel, or click an edge to insert one. Grid lines have curve handles (`H` and `Shift+H` cycle them).
+- Grid warp in both modes: tick Grid warp on a quad and its points show on the canvas. Add Column and Add Row put a line in the middle of the widest column or row. Click-add also works on the quad's edge, and any grid line can be dragged to a new place.
+- Grid points are Spline (smooth) or Linear (straight lines between points). Choose the type for new lines beside Click-add, right-click a point to change it, or change all points at once.
+- Image: Crop keeps the picture flat on the four corners and uses the bent outline to cut a shape out of it; Image: Warp (the default) bends the picture with the grid. Project files are now format 3.6; an older build opens them with every point Spline and every quad Warp.
+- New quads start with the test grid on them, the first quad included. Test Grid: On / Off in the menu bar turns that off, and the choice is remembered.
+- Crop insets can be shown in percent or in source pixels.
 - Mesh editing has its own keys: `Ctrl+M` toggles mesh edit, `Alt+=` and `Alt+-` change the mesh resolution, `Alt+R` resets the mesh.
 - Each quad can have a crop rectangle, colour correction and a soft edge.
 - Quads can be grouped, locked and hidden from the Quad List. A locked quad cannot be reshaped or deleted until you unlock it.

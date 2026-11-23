@@ -29,6 +29,7 @@ public:
 private:
     void renderQuadProperties(EditorContext& ctx);
     void renderSimpleQuadProperties(EditorContext& ctx, Quad& quad);  // ADR-042 simple mode
+    void renderGridWarpControls(EditorContext& ctx, Quad& quad);      // both modes
     void renderCropControls(EditorContext& ctx, Quad& quad);
     void renderOutputProperties(EditorContext& ctx);
     void renderMediaProperties(EditorContext& ctx);
@@ -50,7 +51,6 @@ private:
     float objectScale_ = 1.0f;
 
     // Normalized position (0..1) for inserting a grid division (ADR-038 Tier 1).
-    float gridInsertPos_ = 0.5f;
 
     // The quad and media path the texture Path field last showed (followTexturePath).
     UUID pathFieldQuad_;

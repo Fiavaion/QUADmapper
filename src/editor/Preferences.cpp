@@ -135,6 +135,9 @@ Result<void, Error> AppPreferences::loadFromFile(const std::filesystem::path& pa
                 MAX_AUTOSAVE_MINUTES);
         readInt(*gen, "uiMode", general.uiMode, 0, 1);
         readBool(*gen, "vertexSnapping", general.vertexSnapping);
+        readBool(*gen, "testGridOnNewQuads", general.testGridOnNewQuads);
+        readBool(*gen, "newGridPointsLinear", general.newGridPointsLinear);
+        readBool(*gen, "cropInPercent", general.cropInPercent);
         readFloat(*gen, "sceneFadeSeconds", general.sceneFadeSeconds, 0.0f, MAX_SCENE_FADE_SECONDS);
         int scale = 0;
         readInt(*gen, "uiScalePercent", scale, 0, 400);
@@ -215,6 +218,9 @@ Result<void, Error> AppPreferences::saveToFile(const std::filesystem::path& path
     gen["autoSaveIntervalMinutes"] = general.autoSaveIntervalMinutes;
     gen["uiMode"] = general.uiMode;
     gen["vertexSnapping"] = general.vertexSnapping;
+    gen["testGridOnNewQuads"] = general.testGridOnNewQuads;
+    gen["newGridPointsLinear"] = general.newGridPointsLinear;
+    gen["cropInPercent"] = general.cropInPercent;
     gen["sceneFadeSeconds"] = general.sceneFadeSeconds;
     gen["uiScalePercent"] = general.uiScalePercent;
     gen["aiAssistBeta"] = general.aiAssistBeta;

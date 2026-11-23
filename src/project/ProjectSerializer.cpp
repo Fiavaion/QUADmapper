@@ -64,10 +64,17 @@ namespace quadmapper {
 //   3.5 = additive quad geometry "warpMode": "linear" (ADR-058), written only for a
 //         Linear quad (new quads are Linear). Missing = "perspective", the only warp
 //         before 3.5; a 3.4 reader ignores the key and draws the quad in perspective.
+//   3.6 = additive quad geometry (owner, 2026-11-23):
+//         - "meshLinear": [vertex indices] of the Linear grid points (straight grid
+//           lines to their neighbours), written only when there is one. Missing =
+//           every point Spline, as before 3.6.
+//         - "contentMode": "crop" when the bent outline cuts the image instead of
+//           warping it, written only for Crop. Missing = Warp.
+//         A 3.5 reader ignores both and draws the quad as Spline + Warp.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
-static constexpr const char* kSceneFormatVersion = "3.5.0";
+static constexpr const char* kSceneFormatVersion = "3.6.0";
 
 // Load-time clamps for untrusted values (ADR-046 §3).
 static constexpr int kMaxMonitorIndex = 63;
@@ -187,6 +194,8 @@ static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
     j["meshMode"] = static_cast<int>(geometry.getMeshMode());
     // Warp mode (ADR-058): written only for Linear; missing = Perspective.
     if (geometry.getWarpMode() == WarpMode::LINEAR) j["warpMode"] = "linear";
+    // Crop (3.6): written only for Crop; missing = Warp.
+    if (geometry.getContentMode() == ContentMode::CROP) j["contentMode"] = "crop";
 
     // Non-uniform control grid (ADR-038): persist the division coordinates.
     // Uniform grids stay byte-clean (reconstructed from meshResolution on load).
@@ -223,6 +232,15 @@ static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
         j["meshTangents"] = tangentsJson;
     }
 
+    // Linear grid points (3.6): only when there is one.
+    if (geometry.hasLinearVertices()) {
+        nlohmann::json linearJson = nlohmann::json::array();
+        for (int i = 0; i < geometry.getVertexCount(); ++i) {
+            if (geometry.isVertexLinear(i)) linearJson.push_back(i);
+        }
+        j["meshLinear"] = linearJson;
+    }
+
     // Bezier edges (ADR-043): persist only when enabled, so pre-bezier files and
     // straight-edge quads stay byte-clean and old readers ignore the extra keys.
     if (geometry.isBezierEnabled()) {
@@ -252,6 +270,10 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
     const auto warpMode = j.find("warpMode");
     geometry.setWarpMode(warpMode != j.end() && *warpMode == "linear" ? WarpMode::LINEAR
                                                                        : WarpMode::PERSPECTIVE);
+    // Crop (3.6). Missing or anything but "crop" = Warp.
+    const auto contentMode = j.find("contentMode");
+    geometry.setContentMode(contentMode != j.end() && *contentMode == "crop" ? ContentMode::CROP
+                                                                             : ContentMode::WARP);
 
     // Control grid (ADR-038): prefer explicit division coords; otherwise migrate
     // the legacy uniform meshResolution into an even grid. Either way this sets
@@ -313,6 +335,24 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
                 tangents.explicitMask |= 1u << h;
             }
             geometry.setVertexTangent(static_cast<int>(vertex), tangents);
+        }
+    }
+
+    // Linear grid points (3.6), after the handles (setVertexTangent replaces the
+    // whole entry). An index the grid does not have is dropped; a non-array or a
+    // non-integer entry is an error, as for meshTangents.
+    if (j.contains("meshLinear")) {
+        const auto& linearJson = j["meshLinear"];
+        if (!linearJson.is_array()) {
+            throw std::runtime_error("Malformed project file: meshLinear must be an array");
+        }
+        for (const auto& entry : linearJson) {
+            if (!entry.is_number_integer()) {
+                throw std::runtime_error("Malformed project file: bad meshLinear entry");
+            }
+            const long long vertex = entry.get<long long>();
+            if (vertex < 0 || vertex >= geometry.getVertexCount()) continue;
+            geometry.setVertexLinear(static_cast<int>(vertex), true);
         }
     }
 

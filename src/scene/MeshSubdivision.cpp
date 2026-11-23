@@ -30,6 +30,7 @@ IVec2 MeshSubdivision::generateMesh(const QuadGeometry& geometry,
     const std::vector<float> us = geometry.tessellationU();
     const std::vector<float> vs = geometry.tessellationV();
     const std::vector<QuadGeometry::SurfaceSample> samples = geometry.sampleSurface(us, vs);
+    const std::vector<Vec3> image = geometry.imageCoords(us, vs, samples);
 
     vertices.resize(samples.size());
     for (size_t r = 0; r < vs.size(); ++r) {
@@ -38,6 +39,7 @@ IVec2 MeshSubdivision::generateMesh(const QuadGeometry& geometry,
             const QuadGeometry::SurfaceSample& s = samples[index];
             vertices[index].position = s.position;
             vertices[index].texCoord = Vec3(us[c] * s.q, vs[r] * s.q, s.q);
+            vertices[index].imageCoord = image[index];
         }
     }
     const IVec2 cells(static_cast<int>(us.size()) - 1, static_cast<int>(vs.size()) - 1);

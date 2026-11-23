@@ -176,7 +176,7 @@ void Renderer::applyViewUniforms(ShaderProgram& shader) {
 // unchanged quad costs no tessellation and no buffer upload. A corner-pin patch
 // draws with the Renderer's shared index buffer (every patch has the same
 // triangles, TD-22); only a mesh warp of another tessellation size owns its indices.
-static_assert(sizeof(MeshVertex) == 5 * sizeof(float), "MeshVertex is uploaded as 5 packed floats");
+static_assert(sizeof(MeshVertex) == 8 * sizeof(float), "MeshVertex is uploaded as 8 packed floats");
 struct GpuQuad {
     GLuint vao = 0;
     GLuint vbo = 0;
@@ -197,6 +197,8 @@ struct GpuQuad {
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)offsetof(MeshVertex, position));
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)offsetof(MeshVertex, texCoord));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)offsetof(MeshVertex, imageCoord));
         glBindVertexArray(0);
     }
     ~GpuQuad() {
@@ -252,6 +254,7 @@ namespace {
 // tessellate() reads (all of QuadGeometry's state).
 bool sameSurface(const QuadGeometry& a, const QuadGeometry& b) {
     return a.getMeshMode() == b.getMeshMode() && a.getWarpMode() == b.getWarpMode() &&
+           a.getContentMode() == b.getContentMode() &&
            a.getCorners() == b.getCorners() &&
            a.isBezierEnabled() == b.isBezierEnabled() &&
            a.getBezierOffsets() == b.getBezierOffsets() && a.getUCoords() == b.getUCoords() &&
@@ -442,6 +445,8 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
 
     applySurfaceUniforms(quadShader_, quad.getTexture(), quad.getOpacity(),
                          quad.getColorCorrection(), quad.getSoftEdge(), texture);
+    // Crop mode: the outline cuts the image, and outside the image is transparent.
+    quadShader_.setInt("u_ImageCut", quad.getGeometry().cropsImage() ? 1 : 0);
 
     glBindVertexArray(gpu.vao);
     glDrawElements(GL_TRIANGLES, gpu.indexCount, GL_UNSIGNED_INT, nullptr);
@@ -625,6 +630,7 @@ void Renderer::renderMeshObject(const MeshObject& object, const ProjectorCamera&
     applyViewUniforms(mesh3dShader_);
     mesh3dShader_.setInt("u_OutputRotation", static_cast<int>(outputRotation_) / 90);
     // Objects carry no colour correction or soft edge of their own: identity.
+    mesh3dShader_.setInt("u_ImageCut", 0);
     applySurfaceUniforms(mesh3dShader_, object.getTexture(), object.getOpacity(),
                          ColorCorrection{}, SoftEdge{}, texture);
 

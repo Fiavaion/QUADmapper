@@ -7,6 +7,7 @@ layout(location = 0) in vec3 a_Position;  // model space
 layout(location = 1) in vec2 a_TexCoord;
 
 out vec3 v_TexCoordQ;  // (u, v, 1): quad.frag divides by .z, a no-op here
+out vec3 v_ImageCoordQ;  // the same: an object samples its texture where it lies
 
 // projection(near, far) * view * model, from the output's ProjectorCamera.
 uniform mat4 u_MVP;
@@ -38,4 +39,5 @@ void main() {
     }
     gl_Position = vec4(xy, clip.z, clip.w);
     v_TexCoordQ = vec3(a_TexCoord, 1.0);
+    v_ImageCoordQ = v_TexCoordQ;
 }
