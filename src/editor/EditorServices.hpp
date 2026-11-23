@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../core/UUID.hpp"
+#include "VideoExportPlan.hpp"
 
 #include <array>
 #include <optional>
@@ -87,6 +88,17 @@ public:
     // Assisted calibration: place the selected calibration point's pixel where a click
     // on the AI photo (normalized, top-left origin) maps through the scan.
     virtual void aiCalibrationPixelAt(float x, float y) = 0;
+
+    // ---- Video export (ADR-060) ----------------------------------------------------
+    // Start rendering the show to MP4 files (app/VideoExport); false with the reason.
+    virtual bool startVideoExport(const VideoExportRequest& request, std::string& error) {
+        (void)request;
+        error = "Video export is not available here.";
+        return false;
+    }
+    // The running export, or how the last one ended.
+    virtual VideoExportStatus videoExportStatus() const { return {}; }
+    virtual void cancelVideoExport() {}
 };
 
 }  // namespace quadmapper

@@ -223,6 +223,10 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
                             !locked && !collectMissingMedia(es).empty())) {
             es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
         }
+        // Render the show to MP4 files for a media player (ADR-060).
+        if (ImGui::MenuItem("Export Video...")) {
+            es.requestPanelOpen(EditorState::EXPORT_VIDEO_PANEL_ID);
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4")) {
             es.pendingFileAction = FileAction::Exit;

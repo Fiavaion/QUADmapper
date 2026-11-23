@@ -344,6 +344,14 @@ public:
     void toggleBlackout() { setBlackout(!blackout_); }
     bool isBlackout() const { return blackout_; }
 
+    // Video export (owner, 2026-11-23): while on, every output's frame is drawn at the
+    // output's own resolution (not its window's size), and neither blackout nor
+    // Identify is drawn, so the file is the show itself. The export turns it on around
+    // its own renderOutputFrames calls only.
+    void setExportRendering(bool on) { exportRendering_ = on; }
+    // The pixel size an output is exported at: its resolution, rounded down to even.
+    static IVec2 exportFrameSize(const OutputWindow& output);
+
     // True for the blackout shortcut: a Ctrl+B press, no Shift/Alt/Super. Pure, like
     // sceneTakeNumber, so the editor and output windows share one testable rule.
     static bool isBlackoutKey(int key, int action, int mods);
@@ -656,8 +664,10 @@ private:
     bool sceneOnAnOutput(const UUID& sceneId) const;
 
     // The size an output's frame is drawn at: its window's framebuffer, or its
-    // resolution while it has no window or the window is minimised.
-    static IVec2 frameSize(const OutputWindow& output);
+    // resolution while it has no window or the window is minimised, or while
+    // exporting (exportRendering_).
+    IVec2 frameSize(const OutputWindow& output) const;
+    bool exportRendering_ = false;
 
     // The monitor the editor window's centre is on; the primary monitor if the
     // editor is off every monitor (e.g. minimised), -1 if unknown.

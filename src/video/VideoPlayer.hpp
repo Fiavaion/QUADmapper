@@ -168,6 +168,8 @@ public:
      * @brief Replace the clock's time source (tests); default std::chrono::steady_clock
      */
     void setTimeSource(PlaybackTransport::TimeSource source);
+    // See PlayableSource::framesCoverClock.
+    bool framesCoverClock() const;
 
     /**
      * @brief Get video info

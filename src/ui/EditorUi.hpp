@@ -17,6 +17,7 @@
 
 #include "ui/PanelHost.hpp"
 #include "ui/dialogs/MissingMediaWindow.hpp"
+#include "ui/dialogs/ExportVideoWindow.hpp"
 #include "ui/dialogs/SessionDialogs.hpp"
 #include "ui/panels/AiPhotoPanel.hpp"
 #include "ui/panels/Banners.hpp"
@@ -138,6 +139,7 @@ private:
     ControlPanel control_;
     AiPhotoPanel aiPhoto_;
     MissingMediaWindow missingMedia_;
+    ExportVideoWindow exportVideo_;
     CalibrationPanel calibration_;
     Banners banners_;
     Conversions conversions_{mediaBin_};

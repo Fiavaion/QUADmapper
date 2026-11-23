@@ -49,6 +49,8 @@ add_library(quadmapper_ui STATIC
     dialogs/HapConvertWindow.cpp
     dialogs/MissingMediaWindow.hpp
     dialogs/MissingMediaWindow.cpp
+    dialogs/ExportVideoWindow.hpp
+    dialogs/ExportVideoWindow.cpp
     dialogs/SessionDialogs.hpp
     dialogs/SessionDialogs.cpp
 )

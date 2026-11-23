@@ -244,6 +244,18 @@ public:
     PlaybackTimePoint now() const { return transport_.now(); }
     void setTimeSource(PlaybackTransport::TimeSource source) { transport_.setTimeSource(std::move(source)); }
 
+    // See PlayableSource::framesCoverClock (and VideoPlayer::framesCoverClock).
+    bool framesCoverClock() const {
+        if (!isOpen_) return false;
+        const bool playing = transport_.state() == PlaybackState::PLAYING;
+        if (!playing && !refreshPending_) return true;
+        if (refreshPending_) return false;
+        const double timeline = transport_.clock().timeline(transport_.now());
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        if (!frameQueue_.empty()) return frameQueue_.front().due > timeline;
+        return atEnd_.load();
+    }
+
     // Take the staged frames that are due on the clock; the newest due one is returned
     // in out. Same rule as VideoPlayer::update (FrameSelection.hpp): never ahead of the
     // clock, late frames dropped.
@@ -749,6 +761,7 @@ public:
     const PlaybackClock& clock() const { return clock_; }
     PlaybackTimePoint now() const { return std::chrono::steady_clock::now(); }
     void setTimeSource(PlaybackTransport::TimeSource) {}
+    bool framesCoverClock() const { return true; }
     void seek(double) {}
     bool update(FrameData&) { return false; }
     std::string lastError() const { return {}; }
@@ -905,6 +918,8 @@ PlaybackTimePoint HapFileSource::getClockNow() const { return impl_->now(); }
 void HapFileSource::setTimeSource(std::function<PlaybackTimePoint()> source) {
     impl_->setTimeSource(std::move(source));
 }
+
+bool HapFileSource::framesCoverClock() const { return impl_->framesCoverClock(); }
 
 std::string HapFileSource::getErrorMessage() const {
     if (openFailed_) return "The video file could not be opened.";

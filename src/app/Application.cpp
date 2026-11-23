@@ -47,6 +47,7 @@
 #include "../audio/AudioEngine.hpp"
 #include "../audio/AudioMixer.hpp"
 #include "../editor/SourceAudio.hpp"
+#include "VideoExport.hpp"
 #include "../video/VideoPlayer.hpp"
 
 #include <glad/glad.h>
@@ -574,6 +575,31 @@ void Application::aiCalibrationPixelAt(float x, float y) {
     m_aiAssist->calibrationPixelAt(x, y, m_outputManager.get());
 }
 
+bool Application::startVideoExport(const VideoExportRequest& request, std::string& error) {
+    if (m_videoExport && m_videoExport->active()) {
+        error = "An export is already running.";
+        return false;
+    }
+    if (!m_outputManager || !m_sourceManager || !m_editorState) {
+        error = "Video export is not available.";
+        return false;
+    }
+    const float master =
+        !m_audioEngine ? 1.0f : (m_audioEngine->masterMuted() ? 0.0f : m_audioEngine->masterVolume());
+    auto job = std::make_unique<VideoExport>(request, master);
+    if (!job->start(*m_editorState, *m_outputManager, *m_sourceManager, error)) return false;
+    m_videoExport = std::move(job);
+    return true;
+}
+
+VideoExportStatus Application::videoExportStatus() const {
+    return m_videoExport ? m_videoExport->status() : m_lastExportStatus;
+}
+
+void Application::cancelVideoExport() {
+    if (m_videoExport) m_videoExport->cancel();
+}
+
 int Application::run() {
     // QM-081 H2: stress harness runs as a sibling branch, not a hijack of the UI loop.
     if (m_stressConfig) {
@@ -699,7 +725,16 @@ void Application::render() {
     // < 16 ms). The output windows copy these after the editor's swap; the Preview tab
     // recorded the same textures above and ImGui samples them below, so it shows this
     // frame's image (a resize keeps the texture names, see Framebuffer::resize).
-    renderProjectorFrames();
+    // While a video export runs, it draws the projector frames instead (ADR-060).
+    if (m_videoExport && m_videoExport->active() && m_renderer) {
+        m_videoExport->step(*m_editorState, *m_outputManager, *m_renderer);
+        if (!m_videoExport->active()) {
+            m_lastExportStatus = m_videoExport->status();
+            m_videoExport.reset();  // frees its sources here, with the editor's context current
+        }
+    } else {
+        renderProjectorFrames();
+    }
 
     // Finalize ImGui rendering
     ImGui::Render();
@@ -928,6 +963,7 @@ void Application::shutdown() {
     // Sources after the audio engine: each video's audio is freed once the mixer can no
     // longer reach it; then the decode and copier threads stop and the textures, YUV
     // planes and pixel buffers are deleted.
+    m_videoExport.reset();  // aborts an unfinished export (its .part files are deleted)
     m_sourceManager.reset();
     m_thumbnailCache.reset();
     m_aiAssist.reset();  // the One-Flash pattern texture; holds an EditorState&, so goes first

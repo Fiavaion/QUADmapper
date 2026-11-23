@@ -355,6 +355,15 @@ public:
      * updating it, so a locked source's position is the master time mapped onto its clip.
      */
     const PlaybackClock& getMasterTimeline() const { return masterTimeline_; }
+
+    // Offline rendering (video export): the master timeline and every playable source,
+    // present and future, read `source` instead of the steady clock. An export runs
+    // its own SourceManager with this set, so the live show's clocks are untouched.
+    void setTimeSource(std::function<PlaybackTimePoint()> source);
+    PlaybackTimePoint clockNow() const;
+    // True when every ready playable source has taken the frame for its clock's
+    // current time (PlayableSource::framesCoverClock).
+    bool framesCoverClock() const;
     void playMasterTimeline();
     void pauseMasterTimeline();
     void restartMasterTimeline();  // back to 0, keeping play/pause
@@ -406,6 +415,7 @@ private:
 
     std::unordered_map<UUID, SourceEntry> sources_;
     PlaybackClock masterTimeline_;
+    std::function<PlaybackTimePoint()> timeSource_;  // empty: the steady clock
     UploadStats uploadStats_;
     std::unique_ptr<YuvConverter> yuvConverter_;  // YUV -> RGBA pass for video frames
     std::unique_ptr<CompressedUploader> compressedUploader_;  // BCn uploads of HAP frames

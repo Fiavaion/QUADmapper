@@ -45,6 +45,7 @@ The first public release. The date is set when the release is made. It covers ev
 - Projectors are found by themselves. At startup and on File > New, every screen gets an output at its own resolution and a scene of its own (Scene 1 on Projector 1, Scene 2 on Projector 2). The editor's screen comes last, and in perform mode its output covers the editor; untick it to keep the editor in view. A projector plugged in while the app runs gets one too, except during perform mode or the perform lock. Choosing a screen for an output in the Outputs tab now sets its resolution, as Properties already did.
 - Each output can show slices of the canvas, each slice with its own warp. Edge blending, with width, gamma and curve, joins overlapping projectors. Auto-blend sets the blend on edges that face each other. A blend test pattern helps check the overlap.
 - With several displays at different refresh rates, the show is paced by the slowest one.
+- File > Export Video... renders the show to MP4 files (H.264, with the videos' sound), one per output at its own resolution and rotation, to play from a media player without the PC. The length is the video's own when only one video is mapped, or a length you set. Every frame is rendered, however busy the PC is.
 - Perform mode (`F11`) sends the show to the projectors. `Esc` or `F11` leaves it.
 - Blackout (`Ctrl+B`) turns every projector black at once.
 - Perform lock (`Ctrl+Shift+L`, or Output > Perform Lock) blocks edits during a show and keeps show controls working. Unlocking asks for confirmation.

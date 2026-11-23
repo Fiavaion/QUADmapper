@@ -185,6 +185,17 @@ PlaybackTimePoint VideoPlayer::now() const {
     return transport_.now();
 }
 
+bool VideoPlayer::framesCoverClock() const {
+    if (!isLoaded()) return false;  // still opening (or failed: the caller times out)
+    const bool playing = transport_.state() == PlaybackState::PLAYING;
+    if (!playing && !refreshPending_) return true;  // holds its frame
+    if (refreshPending_) return false;              // the frame after a seek is not in yet
+    const double timeline = transport_.clock().timeline(transport_.now());
+    double nextDue = 0.0;
+    if (decoder_->peekBufferedDue(nextDue)) return nextDue > timeline;
+    return decoder_->isAtEnd();  // nothing buffered: only covered when nothing more comes
+}
+
 void VideoPlayer::setTimeSource(PlaybackTransport::TimeSource source) {
     transport_.setTimeSource(std::move(source));
 }

@@ -42,6 +42,9 @@ struct StressConfig {
     // Test only: each video file opens this much later (on the opener thread), to show
     // that a slow open is not counted as a wedge. 0 = disabled.
     int  openDelayMs    = 0;
+    // Video export (ADR-060): after the cycles, export 2 s of the first output into
+    // this folder and check that the file was written. "" = disabled.
+    std::string exportCheck = "";
 };
 
 // Consume one command-line argument if it is a --stress flag (the first one seen

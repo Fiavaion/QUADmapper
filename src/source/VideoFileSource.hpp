@@ -96,6 +96,8 @@ public:
     // --- PlayableSource: Clock ---
     const PlaybackClock& getClock() const override;
     PlaybackTimePoint getClockNow() const override;
+    void setTimeSource(std::function<PlaybackTimePoint()> source) override;
+    bool framesCoverClock() const override;
 
     // --- PlayableSource: Health ---
     std::string getErrorMessage() const override;

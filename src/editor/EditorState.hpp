@@ -423,6 +423,7 @@ struct EditorState {
     // The Missing Media window's panel id (its ImGui window name). It closes itself
     // once nothing is missing.
     static constexpr const char* MISSING_MEDIA_PANEL_ID = "Missing Media##relocate";
+    static constexpr const char* EXPORT_VIDEO_PANEL_ID = "Export Video##export";
 
     // Current selection
     SelectionType currentSelectionType = SelectionType::Quad;

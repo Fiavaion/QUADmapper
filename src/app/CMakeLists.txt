@@ -15,6 +15,8 @@ add_executable(QUADmapper
     Bench.cpp
     ProjectSession.hpp
     ProjectSession.cpp
+    VideoExport.hpp
+    VideoExport.cpp
 )
 
 target_link_libraries(QUADmapper

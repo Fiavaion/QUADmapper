@@ -4,6 +4,7 @@
 #include "core/Types.hpp"
 #include "FrameData.hpp"
 #include "video/PlaybackClock.hpp"
+#include <functional>
 #include <string>
 #include <cstdint>
 
@@ -232,6 +233,17 @@ public:
     // discontinuity count (seeks, wraps, reflections) for anything slaved to playback.
     virtual const PlaybackClock& getClock() const = 0;
     virtual PlaybackTimePoint getClockNow() const = 0;
+
+    // --- Offline rendering (video export, owner 2026-11-23) ---
+
+    // Drive the source's clock with `source` instead of the steady clock.
+    virtual void setTimeSource(std::function<PlaybackTimePoint()> source) { (void)source; }
+    // True once the frame for the clock's current time has been taken by update(), so
+    // the texture shows exactly that frame: the next decoded frame is due later, the
+    // clip has no more frames, or the source holds a frame (paused). False while it
+    // opens or while the frame is still being decoded. Export calls update() until it
+    // is true before each frame it renders.
+    virtual bool framesCoverClock() const { return true; }
 
     // --- Health ---
 

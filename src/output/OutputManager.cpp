@@ -1013,7 +1013,7 @@ void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& sc
             ++it;
         }
     }
-    if (blackout_) {
+    if (blackout_ && !exportRendering_) {
         return;  // every frame is black; the canvases are kept for when it lifts
     }
 
@@ -1166,7 +1166,7 @@ void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>
     };
     renderFrames(renderer, [&](const OutputWindow& output, IVec2 effectiveSize) {
         drawScene(output, effectiveSize);
-        if (!isIdentifying()) return;
+        if (!isIdentifying() || exportRendering_) return;
         for (size_t i = 0; i < outputs_.size(); ++i) {
             if (outputs_[i].get() == &output) {
                 renderIdentifyOverlay(output, static_cast<int>(i) + 1, effectiveSize, renderer);
@@ -1271,7 +1271,13 @@ void OutputManager::renderPatternFrames(const Quad& patternQuad, const Texture* 
     });
 }
 
-IVec2 OutputManager::frameSize(const OutputWindow& output) {
+IVec2 OutputManager::exportFrameSize(const OutputWindow& output) {
+    const IVec2 r = output.getResolution();
+    return IVec2(std::max(r.x, 2) & ~1, std::max(r.y, 2) & ~1);
+}
+
+IVec2 OutputManager::frameSize(const OutputWindow& output) const {
+    if (exportRendering_) return exportFrameSize(output);
     if (output.isCreated()) {
         int width = 0, height = 0;
         glfwGetFramebufferSize(output.getGLFWwindow(), &width, &height);
@@ -1347,7 +1353,7 @@ void OutputManager::renderFrames(
         glDisable(GL_DEPTH_TEST);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        if (blackout_) {
+        if (blackout_ && !exportRendering_) {
             continue;  // the projector shows black, and so does its preview
         }
         const Rotation rotation = output->getRotation();
@@ -1425,7 +1431,8 @@ void OutputManager::presentOutputs() {
         // Black unless there is a frame to show (in blackout the frame is black).
         const Framebuffer* frame = outputFrame(output->getId());
         bool shown = false;
-        if (frame != nullptr) {
+        // Blackout: black, also over an export's frame (drawn without blackout).
+        if (frame != nullptr && !blackout_) {
             if (framesDrawn_ != nullptr) {
                 glWaitSync(framesDrawn_, 0, GL_TIMEOUT_IGNORED);
             }

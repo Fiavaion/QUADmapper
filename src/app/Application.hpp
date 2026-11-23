@@ -26,6 +26,7 @@ class FolderWatcher;
 class ThumbnailCache;
 class SourceManager;
 class AudioEngine;
+class VideoExport;
 struct EditorState;
 class EditorUi;
 class PreferencesDialog;
@@ -128,6 +129,9 @@ private:
     bool aiScanning() const override;
     bool aiHasScan(const UUID& outputId) const override;
     void aiCalibrationPixelAt(float x, float y) override;
+    bool startVideoExport(const VideoExportRequest& request, std::string& error) override;
+    VideoExportStatus videoExportStatus() const override;
+    void cancelVideoExport() override;
 
     // Ctrl+S: only queues a deferred EditorState::FileAction (as the File menu does);
     // the work runs in processPendingFileAction() at the next frame boundary (ADR-046).
@@ -211,6 +215,9 @@ private:
     std::vector<std::filesystem::path> m_watchedFiles;
     std::unique_ptr<ThumbnailCache> m_thumbnailCache;
     std::unique_ptr<SourceManager> m_sourceManager;
+    // Video export (ADR-060): while it runs, it draws the projector frames.
+    std::unique_ptr<VideoExport> m_videoExport;
+    VideoExportStatus m_lastExportStatus;
 
     // Optional AI pre-show assist (ADR-035, ADR-051 §1): the sidecar and One-Flash.
     std::unique_ptr<AiAssist> m_aiAssist;

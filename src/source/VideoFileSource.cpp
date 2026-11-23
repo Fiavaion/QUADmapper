@@ -239,6 +239,14 @@ PlaybackTimePoint VideoFileSource::getClockNow() const {
     return player_->now();
 }
 
+void VideoFileSource::setTimeSource(std::function<PlaybackTimePoint()> source) {
+    player_->setTimeSource(std::move(source));
+}
+
+bool VideoFileSource::framesCoverClock() const {
+    return player_->framesCoverClock();
+}
+
 std::string VideoFileSource::getErrorMessage() const {
     if (openFailed_) return "The video file could not be opened.";
     return player_ ? player_->getErrorMessage() : std::string();

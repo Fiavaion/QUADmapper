@@ -33,6 +33,7 @@ add_library(quadmapper_editor STATIC
     SourceAudio.hpp
     StatusLine.hpp
     TextureResolve.hpp
+    VideoExportPlan.hpp
     UndoRouting.hpp
     UnsavedIndicator.hpp
 )

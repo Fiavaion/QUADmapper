@@ -293,6 +293,9 @@ UUID SourceManager::registerSource(std::unique_ptr<TextureSource> source) {
 
 UUID SourceManager::addEntry(std::unique_ptr<TextureSource> source) {
     const UUID id = source->getId();
+    if (timeSource_) {
+        if (auto* playable = dynamic_cast<PlayableSource*>(source.get())) playable->setTimeSource(timeSource_);
+    }
 
     SourceEntry entry;
     entry.source = std::move(source);
@@ -689,15 +692,40 @@ void SourceManager::seekAllToStart() {
 }
 
 void SourceManager::playMasterTimeline() {
-    masterTimeline_.play(std::chrono::steady_clock::now());
+    masterTimeline_.play(clockNow());
 }
 
 void SourceManager::pauseMasterTimeline() {
-    masterTimeline_.pause(std::chrono::steady_clock::now());
+    masterTimeline_.pause(clockNow());
 }
 
 void SourceManager::restartMasterTimeline() {
-    masterTimeline_.seek(0.0, std::chrono::steady_clock::now());
+    masterTimeline_.seek(0.0, clockNow());
+}
+
+PlaybackTimePoint SourceManager::clockNow() const {
+    return timeSource_ ? timeSource_() : std::chrono::steady_clock::now();
+}
+
+void SourceManager::setTimeSource(std::function<PlaybackTimePoint()> source) {
+    timeSource_ = std::move(source);
+    for (auto& [id, entry] : sources_) {
+        if (auto* playable = dynamic_cast<PlayableSource*>(entry.source.get())) {
+            if (timeSource_) playable->setTimeSource(timeSource_);
+        }
+    }
+}
+
+bool SourceManager::framesCoverClock() const {
+    for (const auto& [id, entry] : sources_) {
+        const auto* playable = dynamic_cast<const PlayableSource*>(entry.source.get());
+        if (!playable || !playable->isReady()) continue;
+        if (!playable->framesCoverClock()) return false;
+        // Taken is not yet shown: a zero-copy stream's first frame reaches the texture
+        // a few updates later (showsCurrentFrame).
+        if (!entry.hasFrame || entry.uploadDeferred) return false;
+    }
+    return true;
 }
 
 void SourceManager::setTimelineLocked(const UUID& id, bool locked) {

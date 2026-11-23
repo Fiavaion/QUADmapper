@@ -2,6 +2,8 @@
 
 #include "StressHarness.hpp"
 #include "Application.hpp"
+#include "VideoExport.hpp"
+#include "../core/FileSystem.hpp"
 #include "../editor/EditorState.hpp"
 #include "../editor/TextureResolve.hpp"
 #include "../editor/SourceAudio.hpp"
@@ -108,6 +110,8 @@ bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
         config().audioChurn = true;
     } else if (std::strncmp(arg, "--open-delay-ms=", 16) == 0) {
         config().openDelayMs = std::atoi(arg + 16);
+    } else if (std::strncmp(arg, "--export-check=", 15) == 0) {
+        config().exportCheck = arg + 15;
     } else {
         return false;
     }
@@ -583,6 +587,47 @@ int Application::runStress(const StressConfig& cfg) {
                       "after pause/resume (LESSON-BUG-006 repro).");
     }
 
+    // --export-check (ADR-060): export 2 s of the first output, with sound, the way the
+    // app's frame loop steps it, and check the file.
+    bool exportFailed = false;
+    if (!cfg.exportCheck.empty() && !m_outputManager->getOutputs().empty()) {
+        VideoExportRequest request;
+        request.folder = pathFromUtf8(cfg.exportCheck);
+        request.baseName = "stress-export";
+        request.outputIds = {m_outputManager->getOutputs().front()->getId()};
+        request.fps = 30;
+        request.seconds = 2.0;
+        request.audio = true;
+        std::string error;
+        VideoExportStatus status;
+        // Paused first: the export plays the show from its start whatever its state.
+        if (playable) playable->pause();
+        const double exportStart = glfwGetTime();
+        if (startVideoExport(request, error)) {
+            while (m_videoExport && m_videoExport->active()) {
+                if (glfwGetTime() - exportStart > 120.0) m_videoExport->cancel();
+                glfwPollEvents();
+                m_sourceManager->updateAll(0.0);
+                m_videoExport->step(es, *m_outputManager, *m_renderer);
+                m_outputManager->presentOutputs();
+            }
+            status = m_videoExport->status();
+            m_videoExport.reset();
+        } else {
+            status.failed = true;
+            status.message = error;
+        }
+        std::error_code ec;
+        const bool written = status.written.size() == 1 && std::filesystem::file_size(status.written.front(), ec) > 0;
+        exportFailed = status.failed || status.cancelled || !written;
+        if (exportFailed) {
+            Logger::error("[STRESS] STRESS FAIL (export) — {}", status.message);
+        } else {
+            Logger::info("[STRESS] Export: {} ({} bytes) in {} s", utf8FromPath(status.written.front()),
+                         std::filesystem::file_size(status.written.front(), ec), static_cast<int>(glfwGetTime() - exportStart));
+        }
+    }
+
     // ADR-056: once the video source is gone, nothing D3D11 is held for it: no interop
     // target (shared planes, opened frames, views, registrations), no decoded frame left
     // on the GPU, no readback staging texture or copy event query. Not counted: the
@@ -613,7 +658,8 @@ int Application::runStress(const StressConfig& cfg) {
         }
     }
 
-    if (anyLeak || anyWedge || wsExceeded || pauseResumeWedge || audioLeak || openFailed || d3dLeak) {
+    if (anyLeak || anyWedge || wsExceeded || pauseResumeWedge || audioLeak || openFailed || d3dLeak ||
+        exportFailed) {
         return 1;
     }
 

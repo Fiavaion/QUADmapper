@@ -9,6 +9,8 @@ add_library(quadmapper_video STATIC
     HapFrameEncoder.cpp
     HapExport.hpp
     HapExport.cpp
+    Mp4Writer.hpp
+    Mp4Writer.cpp
     VideoPlayer.hpp
     VideoPlayer.cpp
     VideoPlaybackState.hpp

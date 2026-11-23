@@ -101,7 +101,8 @@ public:
     // --- HAP-specific ---
     const std::filesystem::path& getPath() const { return path_; }
     // Replace the playback clock's time source (tests); default steady_clock.
-    void setTimeSource(std::function<PlaybackTimePoint()> source);
+    void setTimeSource(std::function<PlaybackTimePoint()> source) override;
+    bool framesCoverClock() const override;
 
     // --- Opening off the main thread (TD-35) ---
     // initialize() opens the file here and now. SourceManager instead calls beginOpen(),

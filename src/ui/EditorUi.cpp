@@ -38,6 +38,7 @@ EditorUi::EditorUi(PreferencesDialog& preferences) {
     host_.add(aiPhoto_);
     host_.add(preferences);
     host_.add(missingMedia_);
+    host_.add(exportVideo_);
     host_.add(calibration_);
     host_.add(banners_);
     host_.add(conversions_);

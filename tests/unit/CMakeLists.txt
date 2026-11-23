@@ -61,8 +61,9 @@ add_quadmapper_test(test_audio
     audio/AudioDeviceTest.cpp
     audio/AudioDriftControllerTest.cpp
     audio/SyncedAudioSourceTest.cpp
+    audio/OfflineAudioMixTest.cpp  # export sound; fixtures written with video/Mp4Writer
 )
-target_link_libraries(test_audio PRIVATE quadmapper_audio quadmapper_core)
+target_link_libraries(test_audio PRIVATE quadmapper_audio quadmapper_video quadmapper_core)
 
 # Input module tests
 add_quadmapper_test(test_input
@@ -89,6 +90,7 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
         source/HapPlaybackTest.cpp
         source/AsyncSourceLifecycleTest.cpp  # TD-35: opening and freeing sources off the main thread
         video/HapExportTest.cpp          # QM-082 Convert to HAP, end to end
+        video/Mp4WriterTest.cpp          # Export video: H.264 MP4 writer
         video/RealMediaPlaybackBench.cpp  # opt-in (DISABLED_), needs local media
         video/HardwareDecodeTest.cpp      # ADR-055; needs local media + a D3D11 video decoder
         video/ColourBarsPlaybackTest.cpp  # ADR-055 colour gate; needs a GL 3.3 context
@@ -201,6 +203,7 @@ add_quadmapper_test(test_editor
     editor/SceneTakeRoutingTest.cpp
     editor/GridUndoTest.cpp
     editor/ProjectMappingTest.cpp
+    editor/VideoExportPlanTest.cpp
     editor/PerformLockTest.cpp
     editor/OutputPersistenceTest.cpp
     editor/UnsavedIndicatorTest.cpp
