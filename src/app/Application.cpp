@@ -414,6 +414,7 @@ bool Application::initializeComponents() {
             ? EditorState::UiMode::Advanced : EditorState::UiMode::Simple;
         m_editorState->vertexSnapping = prefs.general.vertexSnapping;
         m_editorState->uvGridOnNewQuads = prefs.general.testGridOnNewQuads;
+        m_editorState->showOtherScenes = prefs.general.showOtherScenes;
         m_editorState->newGridPointsLinear = prefs.general.newGridPointsLinear;
         m_editorState->cropInPercent = prefs.general.cropInPercent;
 

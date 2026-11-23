@@ -6,6 +6,7 @@
 #include "editor/ProjectMapping.hpp"
 #include "editor/ControlBindings.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/SceneGhosts.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "project/Project.hpp"
@@ -447,4 +448,47 @@ TEST(ProjectMappingTest, EachOutputGetsItsOwnSceneSizedToIt) {
     EXPECT_EQ(es.scenes.size(), 3u);
     EXPECT_EQ(OutputManager::sceneForOutput(es.scenes, *three), es.scenes.back().get());
     EXPECT_EQ(es.activeSceneId, active) << "a hotplug never switches the scene being edited";
+}
+
+// ---- Other scenes on the canvas (editor/SceneGhosts.hpp, owner 2026-11-23) ----
+
+TEST(SceneGhostsTest, OtherScenesQuadsArePlacedByPixelInTheActiveCanvas) {
+    EditorState es;
+    Scene* landscape = es.addScene("Front");
+    Scene* portrait = es.addScene("Side");
+    landscape->setCanvasSize(IVec2(3840, 2160));
+    portrait->setCanvasSize(IVec2(1920, 2160));
+    es.setActiveScene(landscape->getId());
+
+    Quad* side = portrait->getQuadManager().createQuad("Side wall");
+    side->getGeometry().setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(1.0f, 0.5f), Vec2(0.0f, 0.5f)});
+    side->getGeometry().setUniformGrid(2);
+    side->getGeometry().setMeshMode(MeshMode::MESH_EDIT);
+    side->getGeometry().setMeshVertex(1, 1, Vec2(0.1f, 0.0f));
+    Quad* hidden = portrait->getQuadManager().createQuad("Hidden");
+    hidden->setVisible(false);
+    landscape->getQuadManager().createQuad("Own");
+
+    const std::vector<Quad> ghosts = otherSceneGhosts(es);
+    ASSERT_EQ(ghosts.size(), 1u) << "only the other scene's visible quads";
+    EXPECT_EQ(ghosts[0].getName(), "Side wall");
+    // Pixel (1920, 1080) of the 1920-wide canvas is pixel (1920, 1080) of the 3840 one.
+    const auto& corners = ghosts[0].getGeometry().getCorners();
+    EXPECT_FLOAT_EQ(corners[2].x, 0.5f);
+    EXPECT_FLOAT_EQ(corners[2].y, 0.5f);
+    // The bent surface scales with it: the moved centre point lands where it is drawn.
+    const Vec2 centre = side->getGeometry().surfacePoint(0.5f, 0.5f);
+    const Vec2 ghostCentre = ghosts[0].getGeometry().surfacePoint(0.5f, 0.5f);
+    EXPECT_NEAR(ghostCentre.x, centre.x * 0.5f, 1e-5f);
+    EXPECT_NEAR(ghostCentre.y, centre.y, 1e-5f);
+
+    // Snap points: the corners, then the mesh points of a quad in mesh edit.
+    const std::vector<Vec2> points = snapPointsOf(ghosts[0]);
+    EXPECT_EQ(points.size(), 4u + 9u);
+    EXPECT_NEAR(points[4 + 4].x, ghostCentre.x, 1e-5f);
+
+    es.setActiveScene(portrait->getId());
+    const std::vector<Quad> fromSide = otherSceneGhosts(es);
+    ASSERT_EQ(fromSide.size(), 1u);
+    EXPECT_EQ(fromSide[0].getName(), "Own");
 }

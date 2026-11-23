@@ -31,6 +31,10 @@ struct GeneralPreferences {
     // Vertex snapping on the canvas (its Snap toggle). The last setting used.
     bool vertexSnapping = true;
 
+    // Other scenes' quads outlined on the canvas, and snapped to (the canvas Other
+    // scenes toggle, owner 2026-11-23). Off by default. The last setting used.
+    bool showOtherScenes = false;
+
     // The test grid on new quads, the first one included (the top bar's Test Grid
     // toggle, owner 2026-11-23). On by default. The last setting used.
     bool testGridOnNewQuads = true;

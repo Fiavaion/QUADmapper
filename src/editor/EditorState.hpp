@@ -373,6 +373,9 @@ struct EditorState {
     // Vertex snapping to other quads' corners and mesh points while a vertex is dragged:
     // the canvas Snap toggle, a machine preference (general.vertexSnapping).
     bool vertexSnapping = true;
+    // Other scenes' quads outlined on the canvas and snapped to (SceneGhosts.hpp), a
+    // machine preference (general.showOtherScenes).
+    bool showOtherScenes = false;
     // Grid warp: rows and columns added from now on get Linear points (else Spline),
     // a machine preference (general.newGridPointsLinear).
     bool newGridPointsLinear = false;

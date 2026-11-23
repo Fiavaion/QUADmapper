@@ -135,6 +135,7 @@ Result<void, Error> AppPreferences::loadFromFile(const std::filesystem::path& pa
                 MAX_AUTOSAVE_MINUTES);
         readInt(*gen, "uiMode", general.uiMode, 0, 1);
         readBool(*gen, "vertexSnapping", general.vertexSnapping);
+        readBool(*gen, "showOtherScenes", general.showOtherScenes);
         readBool(*gen, "testGridOnNewQuads", general.testGridOnNewQuads);
         readBool(*gen, "newGridPointsLinear", general.newGridPointsLinear);
         readBool(*gen, "cropInPercent", general.cropInPercent);
@@ -218,6 +219,7 @@ Result<void, Error> AppPreferences::saveToFile(const std::filesystem::path& path
     gen["autoSaveIntervalMinutes"] = general.autoSaveIntervalMinutes;
     gen["uiMode"] = general.uiMode;
     gen["vertexSnapping"] = general.vertexSnapping;
+    gen["showOtherScenes"] = general.showOtherScenes;
     gen["testGridOnNewQuads"] = general.testGridOnNewQuads;
     gen["newGridPointsLinear"] = general.newGridPointsLinear;
     gen["cropInPercent"] = general.cropInPercent;

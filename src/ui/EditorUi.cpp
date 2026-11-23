@@ -324,6 +324,18 @@ void EditorUi::drawCanvasOverlay(EditorContext& ctx) {
         if (ImGui::SmallButton(snapping ? "Snap: On" : "Snap: Off")) es.vertexSnapping = !snapping;
         if (snapping) ImGui::PopStyleColor();
         ImGui::SetItemTooltip("Snap a dragged vertex to the corners and mesh points of other quads");
+        if (es.scenes.size() > 1) {
+            ImGui::SameLine();
+            const bool others = es.showOtherScenes;
+            if (others) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if (ImGui::SmallButton(others ? "Other scenes: On" : "Other scenes: Off")) {
+                es.showOtherScenes = !others;
+            }
+            if (others) ImGui::PopStyleColor();
+            ImGui::SetItemTooltip("Outline the quads of the other scenes (other projectors) here, and snap "
+                                  "to them. For projectors stacked on one surface; placed by pixel from "
+                                  "the top-left.");
+        }
     }
     ImGui::End();
 
@@ -384,6 +396,7 @@ void EditorUi::savePreferenceChanges(EditorContext& ctx) {
     };
     follow(ctx.es.vertexSnapping, prefs.general.vertexSnapping);
     follow(ctx.es.uvGridOnNewQuads, prefs.general.testGridOnNewQuads);
+    follow(ctx.es.showOtherScenes, prefs.general.showOtherScenes);
     follow(ctx.es.newGridPointsLinear, prefs.general.newGridPointsLinear);
     follow(ctx.es.cropInPercent, prefs.general.cropInPercent);
     if (changed) ctx.services->savePreferences();

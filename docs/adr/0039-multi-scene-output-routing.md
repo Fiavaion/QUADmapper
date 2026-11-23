@@ -116,3 +116,9 @@ The owner asked that the projectors plugged in are set up by themselves, so the 
 - **Hotplug**: the GLFW monitor callback only sets a flag. At the frame boundary, outside perform mode, the perform lock and a Gray-code scan (outputs are show content), a new display gets an output and a scene the same way, and an Automatic output that a hotplug gave a display while it had none takes that display's resolution. The status line says what changed. A display that comes back resolves to its own output (Exact), so a projector waking from standby adds nothing.
 - **Unchanged**: opening a saved show uses the file's outputs. Harness runs (`--stress`, `--bench`) keep the single default output, so they do not depend on the computer's displays.
 - Choosing a display in the Output panel sets the output to that display's resolution, as the Inspector's picker already did.
+
+## Amendment (2026-11-23, owner): other scenes on the canvas
+The owner asked for snapping across scenes, so two projectors can be mapped onto one surface, and chose ghost outlines and snapping over a shared-image link.
+- **Other scenes: On / Off** on the canvas toolbar (shown with more than one scene; a machine preference, off by default). On: every visible quad of the other scenes is drawn as a faint orange outline (its grid too while it is in mesh edit). With Snap on, a dragged corner or mesh point also snaps to those quads' corners and mesh points (`editor/SceneGhosts.hpp`).
+- **Placement by pixel**: each scene's quads are normalized to its own canvas, so a ghost is scaled by the ratio of the two canvases, top-left aligned. Projectors of the same resolution stacked on one surface therefore line up. Projectors elsewhere see the surface from another angle; their outlines are a reference only, and snapping to them does not make the pictures meet on the surface.
+- Ghosts are not hit by clicks and are not drawn on the outputs.

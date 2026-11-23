@@ -14,6 +14,7 @@ The first public release. The date is set when the release is made. It covers ev
 - Image: Crop keeps the picture flat on the four corners and uses the bent outline to cut a shape out of it; Image: Warp (the default) bends the picture with the grid. Project files are now format 3.6; an older build opens them with every point Spline and every quad Warp.
 - New quads start with the test grid on them, the first quad included. Test Grid: On / Off in the menu bar turns that off, and the choice is remembered.
 - Crop insets can be shown in percent or in source pixels.
+- Other scenes: On shows the other scenes' quads as outlines on the canvas, and dragged points snap to them, for two projectors stacked on one surface.
 - Mesh editing has its own keys: `Ctrl+M` toggles mesh edit, `Alt+=` and `Alt+-` change the mesh resolution, `Alt+R` resets the mesh.
 - Each quad can have a crop rectangle, colour correction and a soft edge.
 - Quads can be grouped, locked and hidden from the Quad List. A locked quad cannot be reshaped or deleted until you unlock it.

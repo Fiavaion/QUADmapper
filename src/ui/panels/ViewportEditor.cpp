@@ -4,6 +4,7 @@
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/PerformLock.hpp"
+#include "editor/SceneGhosts.hpp"
 #include "editor/TextureResolve.hpp"
 #include "editor/GridUndo.hpp"
 #include "editor/MeshEditKeys.hpp"
@@ -403,6 +404,10 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
     // Projector calibration suspends quad editing (ADR-052 §6).
     const bool calibrating = !es.calibratingOutputId.isNull();
 
+    // Other scenes' quads in this canvas (SceneGhosts.hpp): outlined and snapped to.
+    const std::vector<Quad> ghosts =
+        es.showOtherScenes && es.scenes.size() > 1 ? otherSceneGhosts(es) : std::vector<Quad>{};
+
     // ---- Interaction -------------------------------------------------------
     // Mouse and keyboard editing runs BEFORE the canvas is drawn, so a drag or a
     // key handled this frame is already in this frame's picture and in the output
@@ -572,6 +577,17 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                                 closestSnapDist = dist;
                                 snappedPos = meshPos;
                             }
+                        }
+                    }
+                }
+
+                // The other scenes' quads too, when they are shown.
+                for (const Quad& ghost : ghosts) {
+                    for (const Vec2& point : snapPointsOf(ghost)) {
+                        const float dist = glm::length(pos - point);
+                        if (dist < closestSnapDist) {
+                            closestSnapDist = dist;
+                            snappedPos = point;
                         }
                     }
                 }
@@ -999,6 +1015,14 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                                       texturePtrs);
 
         m_renderer->renderQuads(quadManager, texturePtrs);
+        // Other scenes' quads as faint outlines (their grid too while in mesh edit).
+        for (const Quad& ghost : ghosts) {
+            Quad outline = ghost;
+            if (outline.getGeometry().getMeshMode() != MeshMode::MESH_EDIT) {
+                outline.getGeometry().setUniformGrid(1);  // the outline only
+            }
+            m_renderer->renderMeshGrid(outline, glm::vec4(1.0f, 0.55f, 0.15f, 0.55f), 1.5f);
+        }
         drawSliceInputOverlay(es, *m_renderer, m_outputManager);
 
         // Render handles for selected quad based on mode (none while calibrating, when

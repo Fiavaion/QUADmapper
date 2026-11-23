@@ -261,8 +261,10 @@ TEST(PreferencesFileTest, SettingsThisVersionDroppedAreIgnoredAndNotWrittenBack)
                         "control.oscFeedbackEnabled", "control.oscFeedbackHost", "control.oscFeedbackPort",
                         "control.oscFeedbackUseIds", "control.oscPort",
                         "general.aiAssistBeta", "general.autoLoadMediaOnStartup", "general.autoSaveEnabled",
-                        "general.autoSaveIntervalMinutes", "general.defaultMediaFolder",
-                        "general.recursiveFolderScan", "general.sceneFadeSeconds", "general.uiMode",
+                        "general.autoSaveIntervalMinutes", "general.cropInPercent",
+                        "general.defaultMediaFolder", "general.newGridPointsLinear",
+                        "general.recursiveFolderScan", "general.sceneFadeSeconds",
+                        "general.showOtherScenes", "general.testGridOnNewQuads", "general.uiMode",
                         "general.uiScalePercent", "general.vertexSnapping", "performance.audioDevice"}));
 }
 
