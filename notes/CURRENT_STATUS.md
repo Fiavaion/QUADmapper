@@ -1,8 +1,20 @@
 # Current Status
 
-**Last updated:** 2026-11-20 (hands-on round fixes; project moved to the work PC, see [000_SwitchMA.md](../000_SwitchMA.md))
-**Phase / focus:** Release 1.0.0. The audit (QM-125), the AI beta switch (QM-126) and two `/release` passes are done. Now: the owner's how-to videos on the work PC, fixing what they turn up; then the installer (AI engine bundle, TD-44).
-**Dev:** `origin/dev` = the transfer commit on top of `e74afa3`. Everything is pushed.
+**Last updated:** 2026-11-23 (six features on the work PC; website launch kit)
+**Phase / focus:** Release 1.0.0. The audit (QM-125), the AI beta switch (QM-126) and two `/release` passes are done. Now: the owner's hands-on test, which must now include the 2026-11-23 features; then the installer (AI engine bundle, TD-44).
+**Dev:** `590bedb` plus two docs commits (website kit, this note). `origin/dev` = `590bedb` until those are pushed.
+
+## Features 2026-11-23 (work PC; automated tests only, not yet seen in the GUI)
+
+- `eb4fdae` Per-quad Warp: Linear / Perspective, Linear for new quads, so snapped quads' shared edges line up (ADR-058). `.qmap` 3.5.
+- `db1c46c` At startup and on File > New, every connected display gets an output at its own resolution and its own scene; a projector plugged in while running gets one too.
+- `d6c22f4` Grid warp panel in Simple and Advanced mode, Spline / Linear points, Image: Warp / Crop, test grid on by default for new quads (ADR-059). `.qmap` 3.6.
+- `8e6a30c` Other scenes: On / Off on the canvas, outlines other scenes' quads and snaps to them (ADR-039 amendment).
+- `3affcf4` File > Export Video...: one H.264 MP4 per output with AAC sound, rendered offline (ADR-060). `--stress --export-check=<folder>`.
+- `590bedb` Compositions: Timeline / Switch cue sources with a GPU crossfade, on any quad, driven by OSC / MIDI (ADR-061). `.qmap` 3.7.
+- Gate record (in `eb4fdae`'s message): `test_scene` 383, `test_project` 105, `test_render_gl` 52 (+2 skipped), `test_ui` 54, `test_editor` 209 (+13 skipped, no test media), `test_output` 144, `test_app` 28, `test_ai_assist` 57, `test_renderer` 7, all passed. The other five commits record no counts. No full suite since `f13c9cd`.
+- The `.qmap` format went 3.4 → 3.7 (additive; older files load). No fresh-context review is recorded for those format changes; give them one before release.
+- [docs/website-launch.md](../docs/website-launch.md): launch kit for the website (copy, facts, the fix-before-launch list).
 
 ## Hands-on round 2026-11-20 (owner-requested, owner checked in the app: "all good")
 
@@ -53,15 +65,25 @@
    - Open Recent after a save, with a missing file, and Clear Recent.
    - Interface size at 100% and 200% (only fonts scale, not padding).
 8. Explorer: `QUADmapper.exe` shows the icon and version 1.0.0; the window has the icon.
+9. The 2026-11-23 features:
+   - Warp Linear / Perspective on two quads snapped edge to edge: the test grid lines up at the join.
+   - Start with a projector connected, and plug one in while running: each gets an output and a scene.
+   - Grid warp: add a column and a row, drag a line, Spline / Linear, Warp / Crop.
+   - Other scenes On: outlines show and a dragged corner snaps to them.
+   - File > Export Video: the MP4 plays in a media player, with sound.
+   - A composition on a quad: Timeline and Switch, and Next / Cue n over OSC or MIDI.
+   - A `.qmap` saved before today still opens unchanged.
 
 ## What is left before release
 
-1. The owner's hands-on test, then its fixes. `/release` passed twice; its low items are parked in [RELEASE_REVIEW.md](RELEASE_REVIEW.md). Also check:
+1. The owner's hands-on test, then its fixes, plus a fresh-context review of the `.qmap` 3.5–3.7 changes. `/release` passed twice; its low items are parked in [RELEASE_REVIEW.md](RELEASE_REVIEW.md). Also check:
    - Open and Save with a long folder path give a clear error rather than doing nothing;
    - after Save, the next start shows no recovery prompt.
 2. Installer: `feat/installer` (`9e5aacd`) does not compile, and its sidecar lookup conflicts with `dev`. It should use `cmake --install` for the app folder and stage only the AI engine.
 3. Move the sidecar to the PyTorch cu128 builds for the RTX 5090 (the lock pins `+cu126`, which has no sm_120 kernels; `tools/ai-sidecar/gen_lock.py` `TORCH_INDEX`).
 4. The `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)). PR #3 stays a draft until the hands-on test.
+5. A full-suite gate, since six features landed after the last one.
+6. Website launch blockers (section 1 of [docs/website-launch.md](../docs/website-launch.md)): the GitHub repo is private (Report a Bug and the FFmpeg offer link to it), the exe is not code-signed, and there is no release date.
 
 ## Known gaps
 
@@ -69,7 +91,7 @@
   - `AudioSyncTest.RealTimeNullDeviceStaysInStepThroughASeekAndAPause` (20 s, real time): it failed once on 2026-11-19, then passed alone and in both `/release` full runs.
   - `AsyncSourceLifecycle.AReopenedZeroCopyClipTakesOverTheKeptSharedPlanes` (GPU zero-copy): it got no frame within its wait in the 2026-11-20 full run (19.5 s, with other GPU tests beside it), then passed alone (9.5 s).
   - If either fails again, quarantine it or give it a longer wait.
-- **Not yet seen in the GUI:** the AI beta switch (item 5) and the 2026-11-19 UI items (item 7).
+- **Not yet seen in the GUI:** the AI beta switch (item 5), the 2026-11-19 UI items (item 7) and the 2026-11-23 features (item 9).
 - **Logged deferrals:** TD-41..TD-43 (small undo and log-only gaps) and TD-44 (AI engine bundle), in [TECHNICAL_DEBT.md](../TECHNICAL_DEBT.md).
 
 ## Hardware-only items
