@@ -251,7 +251,8 @@ namespace {
 // True when two geometries tessellate identically: compares every field
 // tessellate() reads (all of QuadGeometry's state).
 bool sameSurface(const QuadGeometry& a, const QuadGeometry& b) {
-    return a.getMeshMode() == b.getMeshMode() && a.getCorners() == b.getCorners() &&
+    return a.getMeshMode() == b.getMeshMode() && a.getWarpMode() == b.getWarpMode() &&
+           a.getCorners() == b.getCorners() &&
            a.isBezierEnabled() == b.isBezierEnabled() &&
            a.getBezierOffsets() == b.getBezierOffsets() && a.getUCoords() == b.getUCoords() &&
            a.getVCoords() == b.getVCoords() && a.getMeshVertices() == b.getMeshVertices() &&

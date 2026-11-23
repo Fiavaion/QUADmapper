@@ -42,9 +42,11 @@ bool squareToQuad(const std::array<Vec2, 4>& q, Homography& hm) {
 class CornerSurface {
 public:
     // controls: the 8 effective bezier control points, or nullptr for straight edges.
-    CornerSurface(const std::array<Vec2, 4>& corners, const std::array<Vec2, 8>* controls)
+    // mode LINEAR always uses the bilinear patch (ADR-058).
+    CornerSurface(const std::array<Vec2, 4>& corners, const std::array<Vec2, 8>* controls,
+                  WarpMode mode)
         : corners_(corners), controls_(controls) {
-        projective_ = squareToQuad(corners_, hm_);
+        projective_ = mode == WarpMode::PERSPECTIVE && squareToQuad(corners_, hm_);
         if (projective_) w_ = {1.0f, 1.0f + hm_.g, 1.0f + hm_.g + hm_.h, 1.0f + hm_.h};
     }
 
@@ -492,7 +494,7 @@ void QuadGeometry::initializeMeshVertices() {
 
 void QuadGeometry::convertBilinearOffsetsToResiduals() {
     const std::array<Vec2, 8> controls = bezierControls();
-    const CornerSurface base(corners_, bezierEnabled_ ? &controls : nullptr);
+    const CornerSurface base(corners_, bezierEnabled_ ? &controls : nullptr, warpMode_);
     for (int row = 0; row < vertsPerCol(); ++row) {
         for (int col = 0; col < vertsPerRow(); ++col) {
             const Vec2 uv(uCoords_[col], vCoords_[row]);
@@ -500,6 +502,27 @@ void QuadGeometry::convertBilinearOffsetsToResiduals() {
             offset = transformUVToPosition(uv) + offset - base.point(uv.x, uv.y);
         }
     }
+}
+
+void QuadGeometry::setWarpMode(WarpMode mode) {
+    if (mode == warpMode_) return;
+    if (!hasMeshModifications()) {
+        warpMode_ = mode;
+        return;
+    }
+    // Keep each control vertex's absolute position: residual = (old B + residual) - new B.
+    const std::array<Vec2, 8> controls = bezierControls();
+    const std::array<Vec2, 8>* curves = bezierEnabled_ ? &controls : nullptr;
+    const CornerSurface before(corners_, curves, warpMode_);
+    const CornerSurface after(corners_, curves, mode);
+    for (int row = 0; row < vertsPerCol(); ++row) {
+        for (int col = 0; col < vertsPerRow(); ++col) {
+            const float u = uCoords_[col], v = vCoords_[row];
+            Vec2& offset = meshVertices_[static_cast<size_t>(vertexIndex(row, col))];
+            offset += before.point(u, v) - after.point(u, v);
+        }
+    }
+    warpMode_ = mode;
 }
 
 void QuadGeometry::setVertexTangents(const std::vector<VertexTangents>& tangents) {
@@ -553,7 +576,7 @@ Vec2 QuadGeometry::baseDerivative(int index, bool alongU) const {
     // Central difference of B, one-sided at the quad's edges.
     constexpr float H = 1e-3f;
     const std::array<Vec2, 8> controls = bezierControls();
-    const CornerSurface base(corners_, bezierEnabled_ ? &controls : nullptr);
+    const CornerSurface base(corners_, bezierEnabled_ ? &controls : nullptr, warpMode_);
     const float u = uCoords_[static_cast<size_t>(index % vertsPerRow())];
     const float v = vCoords_[static_cast<size_t>(index / vertsPerRow())];
     if (alongU) {
@@ -639,7 +662,7 @@ bool QuadGeometry::hasBezierEdges() const {
 
 Vec2 QuadGeometry::basePoint(float u, float v) const {
     const std::array<Vec2, 8> controls = bezierControls();
-    return CornerSurface(corners_, bezierEnabled_ ? &controls : nullptr).point(u, v);
+    return CornerSurface(corners_, bezierEnabled_ ? &controls : nullptr, warpMode_).point(u, v);
 }
 
 bool QuadGeometry::hasResidualSurface() const {
@@ -655,7 +678,7 @@ Vec2 QuadGeometry::surfacePoint(float u, float v) const {
 std::vector<QuadGeometry::SurfaceSample> QuadGeometry::sampleSurface(
     const std::vector<float>& us, const std::vector<float>& vs) const {
     const std::array<Vec2, 8> controls = bezierControls();
-    const CornerSurface base(corners_, bezierEnabled_ ? &controls : nullptr);
+    const CornerSurface base(corners_, bezierEnabled_ ? &controls : nullptr, warpMode_);
     std::vector<SurfaceSample> samples;
     samples.reserve(us.size() * vs.size());
     for (float v : vs) {
@@ -775,7 +798,7 @@ std::vector<Vec2> QuadGeometry::generateMeshPositions() const {
 
 std::vector<Vec2> QuadGeometry::generateBasePositions() const {
     const std::array<Vec2, 8> controls = bezierControls();
-    const CornerSurface base(corners_, bezierEnabled_ ? &controls : nullptr);
+    const CornerSurface base(corners_, bezierEnabled_ ? &controls : nullptr, warpMode_);
     std::vector<Vec2> positions(static_cast<size_t>(getVertexCount()));
     for (int row = 0; row < vertsPerCol(); ++row) {
         for (int col = 0; col < vertsPerRow(); ++col) {

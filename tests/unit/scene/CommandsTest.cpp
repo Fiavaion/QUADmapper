@@ -574,6 +574,40 @@ TEST_F(SceneCommandsTest, QuadPropertyCommandWorks) {
     EXPECT_FALSE(cmd->execute());
 }
 
+// The Properties warp switch (ADR-058): one step that undoes and redoes the mode and
+// leaves a meshed quad's control vertices where they are.
+TEST_F(SceneCommandsTest, WarpModeChangeUndoesAndRedoesWithoutMovingTheMesh) {
+    Quad* quad = manager().createQuad();
+    QuadGeometry& geo = quad->getGeometry();
+    geo.setCorners({Vec2(0.1f, 0.2f), Vec2(0.8f, 0.1f), Vec2(0.9f, 0.9f), Vec2(0.2f, 0.7f)});
+    geo.setUniformGrid(2);
+    geo.setMeshMode(MeshMode::MESH_EDIT);
+    geo.setMeshVertex(1, 1, Vec2(0.02f, 0.03f));
+    const std::vector<Vec2> positions = geo.generateMeshPositions();
+    const WarpMode before = geo.getWarpMode();
+    ASSERT_EQ(before, WarpMode::LINEAR);
+
+    history_->execute(std::make_unique<QuadPropertyCommand<WarpMode>>(
+        "Warp Mode", ref(quad), before, WarpMode::PERSPECTIVE,
+        [](Quad& q, const WarpMode& m) { q.getGeometry().setWarpMode(m); }));
+    auto expectMeshUnmoved = [&](const char* when) {
+        const std::vector<Vec2> now = geo.generateMeshPositions();
+        ASSERT_EQ(now.size(), positions.size()) << when;
+        for (size_t i = 0; i < now.size(); ++i) {
+            EXPECT_NEAR(now[i].x, positions[i].x, 1e-5f) << when << " vertex " << i;
+            EXPECT_NEAR(now[i].y, positions[i].y, 1e-5f) << when << " vertex " << i;
+        }
+    };
+    EXPECT_EQ(geo.getWarpMode(), WarpMode::PERSPECTIVE);
+    expectMeshUnmoved("after the change");
+    history_->undo();
+    EXPECT_EQ(geo.getWarpMode(), WarpMode::LINEAR);
+    expectMeshUnmoved("after undo");
+    history_->redo();
+    EXPECT_EQ(geo.getWarpMode(), WarpMode::PERSPECTIVE);
+    expectMeshUnmoved("after redo");
+}
+
 // Grid-line handle moves (ADR-049 §3): consecutive moves of one handle merge into one
 // step, another handle is its own step, and a deleted quad makes them no-ops.
 TEST_F(SceneCommandsTest, MoveGridHandleMergesPerHandleAndIsSafeAfterDelete) {

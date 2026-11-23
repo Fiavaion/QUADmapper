@@ -6,7 +6,7 @@ The first public release. The date is set when the release is made. It covers ev
 
 ### Mapping
 
-- Corner pin is now perspective-correct: textures follow the quad exactly, with no visible bend along the diagonal.
+- Each quad has a Warp choice in Properties. Linear, the default for new quads, lines up quads that are snapped together across their shared edge. Perspective makes the corner pin perspective-correct: textures follow a tilted quad exactly, with no visible bend along the diagonal. Shows saved before this choice existed open in Perspective. Project files are now format 3.5; an older build opens them with every quad in Perspective.
 - Select a corner or mesh point with `Tab` / `Shift+Tab` and move it with the arrow keys. `Shift` moves ten times as far, `Alt` a tenth as far. Dragging with the mouse still works.
 - The mesh grid can have uneven spacing. Add or remove grid divisions in the Properties panel, or click an edge to insert one. Grid lines have curve handles (`H` and `Shift+H` cycle them).
 - Mesh editing has its own keys: `Ctrl+M` toggles mesh edit, `Alt+=` and `Alt+-` change the mesh resolution, `Alt+R` resets the mesh.

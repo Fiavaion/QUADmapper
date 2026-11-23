@@ -89,7 +89,7 @@ TEST_F(ProjectPersistenceTest, WriterEmitsV32WithSourcesTable) {
 
     const auto json = nlohmann::json::parse(serializer.serialize(projectWithBoundQuad(src, "")));
 
-    EXPECT_EQ(json["version"], "3.4.0");
+    EXPECT_EQ(json["version"], "3.5.0");
     ASSERT_TRUE(json["sources"].is_array());
     ASSERT_EQ(json["sources"].size(), 1u);
     EXPECT_EQ(json["sources"][0]["kind"], "procedural");
@@ -632,7 +632,7 @@ TEST_F(ProjectPersistenceTest, MeshOutsideTheShowFolderFallsBackToItsAbsolutePat
     const auto& saved = json["scenes"][0]["objects"][0];
     EXPECT_EQ(saved["path"], "../../library/props/column.obj");
     EXPECT_EQ(saved["absPath"], utf8FromPath(mesh));
-    EXPECT_EQ(json["version"], "3.4.0");
+    EXPECT_EQ(json["version"], "3.5.0");
 
     // Round trip in place: the relative path resolves.
     auto loaded = ProjectSerializer::load(file);
@@ -1464,6 +1464,74 @@ TEST(ProjectFixtureTest, GridHandlesRoundTrip) {
     const QuadGeometry& back = reloaded.getScenes()[0].quads[0].getGeometry();
     EXPECT_EQ(back.getVertexTangents(), g.getVertexTangents());
     EXPECT_EQ(back.getMeshVertices(), g.getMeshVertices());
+}
+
+TEST(ProjectFixtureTest, WarpModeRoundTripsAndMissingIsPerspective) {
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    scene.name = "Scene 1";
+    Quad linear;
+    linear.getGeometry().setWarpMode(WarpMode::LINEAR);
+    scene.quads.push_back(linear);
+    scene.quads.push_back(Quad());  // Perspective, the default
+    scene.texturePaths = {"", ""};
+    project.getScenes().push_back(std::move(scene));
+
+    ProjectSerializer serializer;
+    const std::string json = serializer.serialize(project);
+    // Written only for the Linear quad (ADR-058).
+    const size_t first = json.find("\"warpMode\"");
+    ASSERT_NE(first, std::string::npos);
+    EXPECT_EQ(json.find("\"warpMode\"", first + 1), std::string::npos);
+    Project reloaded;
+    ASSERT_TRUE(serializer.deserialize(json, reloaded).isSuccess());
+    const auto& quads = reloaded.getScenes()[0].quads;
+    ASSERT_EQ(quads.size(), 2u);
+    EXPECT_EQ(quads[0].getGeometry().getWarpMode(), WarpMode::LINEAR);
+    EXPECT_EQ(quads[1].getGeometry().getWarpMode(), WarpMode::PERSPECTIVE);
+
+    // A file without the key (every file before 3.5), or with an unknown value, is
+    // Perspective.
+    for (const char* extra : {"", R"(, "warpMode": "spline")"}) {
+        const std::string old = std::string(R"({"version": "3.4.0", "scenes": [{"quads": [{"geometry": {
+            "corners": [[0.1, 0.1], [0.9, 0.2], [0.8, 0.9], [0.1, 0.9]], "meshResolution": 1)") +
+                                extra + "}}]}]}";
+        Project p;
+        ASSERT_TRUE(serializer.deserialize(old, p).isSuccess()) << extra;
+        EXPECT_EQ(p.getScenes()[0].quads[0].getGeometry().getWarpMode(), WarpMode::PERSPECTIVE)
+            << extra;
+    }
+}
+
+// The warp mode is read before the residuals, so a meshed, curved Linear quad's
+// control vertices land where they were saved (ADR-058).
+TEST(ProjectFixtureTest, MeshedLinearQuadKeepsItsControlVerticesThroughSaveAndLoad) {
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    scene.name = "Scene 1";
+    Quad quad;
+    QuadGeometry& g = quad.getGeometry();
+    g.setCorners({Vec2(0.10f, 0.20f), Vec2(0.80f, 0.10f), Vec2(0.95f, 0.90f), Vec2(0.05f, 0.70f)});
+    g.setWarpMode(WarpMode::LINEAR);
+    g.setBezierEnabled(true);
+    g.setBezierControl(0, 0, g.getBezierControl(0, 0) + Vec2(0.0f, -0.05f));
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    g.setMeshVertex(1, 1, Vec2(0.03f, -0.02f));
+    g.setMeshVertex(0, 1, Vec2(-0.01f, 0.02f));
+    const std::vector<Vec2> expected = g.generateMeshPositions();
+    scene.quads.push_back(quad);
+    scene.texturePaths.push_back("");
+    project.getScenes().push_back(std::move(scene));
+
+    ProjectSerializer serializer;
+    Project reloaded;
+    ASSERT_TRUE(serializer.deserialize(serializer.serialize(project), reloaded).isSuccess());
+    const QuadGeometry& back = reloaded.getScenes()[0].quads[0].getGeometry();
+    EXPECT_EQ(back.getWarpMode(), WarpMode::LINEAR);
+    expectPositions(back.generateMeshPositions(), expected, "reloaded");
 }
 
 TEST(ProjectFixtureTest, MalformedGridHandlesAreRejected) {

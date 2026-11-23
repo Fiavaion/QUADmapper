@@ -17,7 +17,11 @@
 #include "renderer/ShaderProgram.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/Framebuffer.hpp"
+#include "renderer/Renderer.hpp"
+#include "scene/Quad.hpp"
 #include "ShaderSources.hpp"  // generated: quadmapper::shaders::QUAD_VERT / QUAD_FRAG
+
+#include <vector>
 
 using namespace quadmapper;
 
@@ -156,4 +160,71 @@ TEST(CropRenderTest, RightQuarterStripSamplesGreen) {
     RGB c = renderCropCentre(0.75f, 0.25f);
     EXPECT_GT(c.g, 200);
     EXPECT_LT(c.r, 60);
+}
+
+// Warp mode (ADR-058) through the real Renderer: switching only the mode of a quad must
+// rebuild its cached GPU mesh, or the projector keeps the old warp until the next
+// corner edit. Same file as the crop tests because it is the same readback check.
+TEST(WarpModeRenderTest, SwitchingTheModeRedrawsTheQuad) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    constexpr int N = 32;
+
+    // 16x1 source: left half red, right half green, so u < 0.5 is red.
+    std::vector<unsigned char> texels;
+    for (int i = 0; i < 16; ++i) {
+        texels.insert(texels.end(), {static_cast<unsigned char>(i < 8 ? 255 : 0),
+                                     static_cast<unsigned char>(i < 8 ? 0 : 255), 0});
+    }
+    Texture tex;
+    ASSERT_TRUE(tex.create(16, 1, 3, texels.data()));
+
+    Quad quad;  // Perspective by default
+    quad.getGeometry().setCorners(
+        {Vec2(0.0f, 0.0f), Vec2(1.0f, 0.0f), Vec2(0.95f, 1.0f), Vec2(0.45f, 0.8f)});
+
+    // A pixel the two warps put on opposite sides of u = 0.5, with margin.
+    QuadGeometry linear = quad.getGeometry();
+    linear.setWarpMode(WarpMode::LINEAR);
+    int pickX = -1, pickY = -1;
+    bool perspectiveRed = false;
+    for (int y = 0; y < N && pickX < 0; ++y) {
+        for (int x = 0; x < N; ++x) {
+            const Vec2 p((x + 0.5f) / N, 1.0f - (y + 0.5f) / N);  // canvas y runs down
+            const float up = quad.getGeometry().surfaceParamsAt(p).x;
+            const float ul = linear.surfaceParamsAt(p).x;
+            if (up < 0.0f || ul < 0.0f) continue;
+            if ((up < 0.45f && ul > 0.55f) || (up > 0.55f && ul < 0.45f)) {
+                pickX = x;
+                pickY = y;
+                perspectiveRed = up < 0.5f;
+                break;
+            }
+        }
+    }
+    ASSERT_GE(pickX, 0) << "the corners must separate the two warps somewhere";
+
+    Renderer renderer;
+    ASSERT_TRUE(renderer.initialize());
+    auto pixel = [&]() {
+        Framebuffer fbo;
+        EXPECT_TRUE(fbo.resize(N, N));
+        fbo.bind();
+        glViewport(0, 0, N, N);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        renderer.renderQuad(quad, &tex);
+        unsigned char px[4] = {0, 0, 0, 0};
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(pickX, pickY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        Framebuffer::unbind();
+        return RGB{px[0], px[1], px[2]};
+    };
+
+    const RGB first = pixel();
+    EXPECT_EQ(first.r > first.g, perspectiveRed) << first.r << "," << first.g;
+    quad.getGeometry().setWarpMode(WarpMode::LINEAR);  // same quad id, same cache slot
+    const RGB second = pixel();
+    EXPECT_EQ(second.r > second.g, !perspectiveRed) << second.r << "," << second.g;
+    renderer.shutdown();
 }

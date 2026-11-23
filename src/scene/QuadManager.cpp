@@ -16,6 +16,8 @@ Quad* QuadManager::createQuad() {
 Quad* QuadManager::createQuad(const std::string& name) {
     auto quad = std::make_unique<Quad>();
     quad->setName(name);
+    // New quads warp linearly so snapped neighbours line up (ADR-058).
+    quad->getGeometry().setWarpMode(WarpMode::LINEAR);
     quad->setZOrder(static_cast<int>(quads_.size()));
 
     Quad* ptr = quad.get();

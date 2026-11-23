@@ -24,6 +24,16 @@ TEST_F(QuadManagerTest, CreateQuadAddsToManager) {
     EXPECT_FALSE(manager.isEmpty());
 }
 
+TEST_F(QuadManagerTest, CreatedQuadsWarpLinearlyAndDuplicatesKeepTheMode) {
+    Quad* quad = manager.createQuad();
+    EXPECT_EQ(quad->getGeometry().getWarpMode(), WarpMode::LINEAR);  // ADR-058
+
+    quad->getGeometry().setWarpMode(WarpMode::PERSPECTIVE);
+    Quad* copy = manager.duplicateQuad(quad->getId());
+    ASSERT_NE(copy, nullptr);
+    EXPECT_EQ(copy->getGeometry().getWarpMode(), WarpMode::PERSPECTIVE);
+}
+
 TEST_F(QuadManagerTest, CreateQuadWithNameSetsName) {
     Quad* quad = manager.createQuad("My Quad");
 

@@ -61,10 +61,13 @@ namespace quadmapper {
 //         and one full-canvas slice with no warp and no blend on every output that
 //         shows a scene. A 3.4 output with a sceneId and no slices gets one
 //         full-canvas slice. Canvases are clamped to MAX_CANVAS_DIMENSION.
+//   3.5 = additive quad geometry "warpMode": "linear" (ADR-058), written only for a
+//         Linear quad (new quads are Linear). Missing = "perspective", the only warp
+//         before 3.5; a 3.4 reader ignores the key and draws the quad in perspective.
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
-static constexpr const char* kSceneFormatVersion = "3.4.0";
+static constexpr const char* kSceneFormatVersion = "3.5.0";
 
 // Load-time clamps for untrusted values (ADR-046 §3).
 static constexpr int kMaxMonitorIndex = 63;
@@ -182,6 +185,8 @@ static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
 
     j["meshResolution"] = geometry.getMeshResolution();
     j["meshMode"] = static_cast<int>(geometry.getMeshMode());
+    // Warp mode (ADR-058): written only for Linear; missing = Perspective.
+    if (geometry.getWarpMode() == WarpMode::LINEAR) j["warpMode"] = "linear";
 
     // Non-uniform control grid (ADR-038): persist the division coordinates.
     // Uniform grids stay byte-clean (reconstructed from meshResolution on load).
@@ -241,6 +246,12 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
         }
         geometry.setCorners(corners);
     }
+
+    // Warp mode (ADR-058), set before any residuals load so none are re-expressed.
+    // Missing (every file before 3.5) or anything but "linear" = Perspective.
+    const auto warpMode = j.find("warpMode");
+    geometry.setWarpMode(warpMode != j.end() && *warpMode == "linear" ? WarpMode::LINEAR
+                                                                       : WarpMode::PERSPECTIVE);
 
     // Control grid (ADR-038): prefer explicit division coords; otherwise migrate
     // the legacy uniform meshResolution into an even grid. Either way this sets

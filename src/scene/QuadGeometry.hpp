@@ -29,6 +29,15 @@ enum GridHandle : int {
 };
 constexpr int GRID_HANDLE_COUNT = 4;
 
+// How the corner-pin base B maps the unit square onto the corners (ADR-058).
+// PERSPECTIVE: the homography, perspective-correct inside the quad (ADR-043).
+// LINEAR: the bilinear patch, evenly spaced along every edge, so two quads that share
+// an edge always line up along it.
+enum class WarpMode : int {
+    PERSPECTIVE = 0,
+    LINEAR = 1,
+};
+
 // Explicit tangents of one control vertex, indexed by GridHandle: the derivative of
 // the residual along u (U handles) or v (V handles) on that side. A handle whose bit
 // is clear in explicitMask uses the Catmull-Rom tangent instead.
@@ -116,6 +125,12 @@ public:
     MeshMode getMeshMode() const { return meshMode_; }
     void setMeshMode(MeshMode mode) { meshMode_ = mode; }
 
+    // Warp mode (ADR-058). Default PERSPECTIVE; QuadManager::createQuad makes LINEAR
+    // quads. Switching keeps every control vertex where it is: residuals are
+    // re-expressed against the new base.
+    WarpMode getWarpMode() const { return warpMode_; }
+    void setWarpMode(WarpMode mode);
+
     // --- Bezier edges (ADR-043) --------------------------------------------
     // Optional cubic-bezier edges on the 4 corners. Each of the 4 edges has 2 control
     // points, stored as OFFSETS from the straight-line 1/3 and 2/3 points — so zero
@@ -176,11 +191,11 @@ public:
     // stored their mesh offsets against it (convertBilinearOffsetsToResiduals).
     Vec2 transformUVToPosition(const Vec2& uv) const;
 
-    // The base B at parametric (u,v) in [0,1] (ADR-043): the projective map
-    // (homography) of the unit square onto the corners, so a corner-pinned flat
-    // surface is perspective-correct; concave or degenerate corners fall back to the
-    // bilinear patch. With bezier edges enabled, the edge curves' deviations from
-    // their chords are blended over it as a Coons patch.
+    // The base B at parametric (u,v) in [0,1] (ADR-043): in PERSPECTIVE the projective
+    // map (homography) of the unit square onto the corners, so a corner-pinned flat
+    // surface is perspective-correct; LINEAR, concave or degenerate corners use the
+    // bilinear patch (ADR-058). With bezier edges enabled, the edge curves' deviations
+    // from their chords are blended over it as a Coons patch.
     Vec2 basePoint(float u, float v) const;
 
     // The surface S = B + R at (u,v); R only in MESH_EDIT.
@@ -226,6 +241,7 @@ private:
     std::vector<float> uCoords_;   // U division lines, sorted, [0..1] inclusive
     std::vector<float> vCoords_;   // V division lines, sorted, [0..1] inclusive
     MeshMode meshMode_;
+    WarpMode warpMode_ = WarpMode::PERSPECTIVE;
     std::vector<Vec2> meshVertices_;        // residuals from B (row-major)
     std::vector<VertexTangents> tangents_;  // per control vertex (row-major)
 

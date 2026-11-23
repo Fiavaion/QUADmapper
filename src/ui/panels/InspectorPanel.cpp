@@ -110,6 +110,9 @@ const QuadProp<Curves> CURVES{
         q.getGeometry().setBezierEnabled(c.enabled);
         q.getGeometry().setBezierOffsets(c.offsets);
     }};
+const QuadProp<WarpMode> WARP_MODE{
+    "Warp Mode", [](const Quad& q) { return q.getGeometry().getWarpMode(); },
+    [](Quad& q, const WarpMode& m) { q.getGeometry().setWarpMode(m); }};
 const QuadProp<MeshMode> MESH_MODE{
     "Mesh Edit", [](const Quad& q) { return q.getGeometry().getMeshMode(); },
     [](Quad& q, const MeshMode& m) { q.getGeometry().setMeshMode(m); }};
@@ -121,6 +124,23 @@ template <typename T>
 void setAsStep(EditorState& es, Quad& quad, const QuadProp<T>& prop, const T& value) {
     es.commandHistory.execute(std::make_unique<QuadPropertyCommand<T>>(
         prop.name, es.quadRef(quad), prop.get(quad), value, prop.set));
+}
+
+// Warp: Perspective / Linear (ADR-058), one undo step per click. Both panels use it.
+void warpModeChoice(EditorState& es, Quad& quad) {
+    const WarpMode mode = quad.getGeometry().getWarpMode();
+    ImGui::TextUnformatted("Warp:");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Perspective##warp", mode == WarpMode::PERSPECTIVE) &&
+        mode != WarpMode::PERSPECTIVE) {
+        setAsStep(es, quad, WARP_MODE, WarpMode::PERSPECTIVE);
+    }
+    ImGui::SetItemTooltip("True perspective inside the quad. Best for one flat surface on its own.");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Linear##warp", mode == WarpMode::LINEAR) && mode != WarpMode::LINEAR) {
+        setAsStep(es, quad, WARP_MODE, WarpMode::LINEAR);
+    }
+    ImGui::SetItemTooltip("Even along every edge, so quads snapped together line up across the join.");
 }
 
 // A drag or slider: `widget` draws one ImGui item that edits `prop` live. The value
@@ -546,6 +566,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 setAsStep(es, quad, CORNERS, defaultCorners(geometry));
             }
 
+            warpModeChoice(es, quad);
+
             // Curved (bezier) edges — drag the amber handles on the canvas to bow the
             // four edges. Only meaningful in corner-pin (CORNERS_ONLY) mode.
             {
@@ -902,9 +924,10 @@ void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) 
     rotBtn("180##r", 180.0f); ImGui::SameLine();
     rotBtn("270##r", 270.0f);
 
-    // Curved (bezier) edges — drag the amber handles on the canvas to bow the edges.
     if (locked) ImGui::TextDisabled("%s", LOCKED_SHAPE_NOTE);
     ImGui::BeginDisabled(locked);
+    warpModeChoice(es, quad);
+    // Curved (bezier) edges — drag the amber handles on the canvas to bow the edges.
     bool bez = quad.getGeometry().isBezierEnabled();
     if (ImGui::Checkbox("Curved edges (bezier)", &bez)) {
         setAsStep(es, quad, CURVES, Curves{bez, quad.getGeometry().getBezierOffsets()});

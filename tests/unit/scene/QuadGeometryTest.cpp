@@ -938,5 +938,60 @@ TEST(QuadGeometryEvaluatorTest, ResetMeshClearsResidualsAndHandles) {
     EXPECT_EQ(g.surfacePoint(0.3f, 0.6f), g.basePoint(0.3f, 0.6f));
 }
 
+// --- Warp mode (ADR-058) ---------------------------------------------------------
+
+// Two quads tilted opposite ways that share the edge A.TR-A.BR = B.TL-B.BL, as the
+// owner snapped them (2026-11-23).
+std::array<QuadGeometry, 2> foldedPair(WarpMode mode) {
+    QuadGeometry a, b;
+    a.setCorners({Vec2(0.10f, 0.25f), Vec2(0.62f, 0.30f), Vec2(0.60f, 0.70f), Vec2(0.11f, 0.85f)});
+    b.setCorners({Vec2(0.62f, 0.30f), Vec2(0.90f, 0.15f), Vec2(0.95f, 0.80f), Vec2(0.60f, 0.70f)});
+    a.setWarpMode(mode);
+    b.setWarpMode(mode);
+    return {a, b};
+}
+
+TEST(QuadGeometryWarpModeTest, DefaultIsPerspective) {
+    EXPECT_EQ(QuadGeometry().getWarpMode(), WarpMode::PERSPECTIVE);
+}
+
+TEST(QuadGeometryWarpModeTest, LinearQuadsAgreeAlongTheirSharedEdge) {
+    const auto linear = foldedPair(WarpMode::LINEAR);
+    for (int i = 0; i <= 8; ++i) {
+        const float t = i / 8.0f;
+        const Vec2 a = linear[0].basePoint(1.0f, t), b = linear[1].basePoint(0.0f, t);
+        EXPECT_NEAR(a.x, b.x, 1e-6f) << t;
+        EXPECT_NEAR(a.y, b.y, 1e-6f) << t;
+    }
+    // The bug this fixes: in perspective the same row lands at different places.
+    const auto perspective = foldedPair(WarpMode::PERSPECTIVE);
+    EXPECT_GT(glm::length(perspective[0].basePoint(1.0f, 0.5f) - perspective[1].basePoint(0.0f, 0.5f)),
+              0.01f);
+}
+
+TEST(QuadGeometryWarpModeTest, LinearSamplesHaveNoProjectiveWeight) {
+    QuadGeometry g = keystonedQuad();
+    g.setWarpMode(WarpMode::LINEAR);
+    for (const auto& s : g.sampleSurface({0.0f, 0.4f, 1.0f}, {0.0f, 0.7f, 1.0f})) {
+        EXPECT_EQ(s.q, 1.0f);
+    }
+    EXPECT_EQ(g.basePoint(0.3f, 0.6f), g.transformUVToPosition(Vec2(0.3f, 0.6f)));
+}
+
+TEST(QuadGeometryWarpModeTest, SwitchingKeepsEveryControlVertex) {
+    QuadGeometry g = warpedMesh();
+    const auto before = g.generateMeshPositions();
+    for (WarpMode mode : {WarpMode::LINEAR, WarpMode::PERSPECTIVE}) {
+        g.setWarpMode(mode);
+        EXPECT_EQ(g.getWarpMode(), mode);
+        const auto after = g.generateMeshPositions();
+        ASSERT_EQ(after.size(), before.size());
+        for (size_t i = 0; i < before.size(); ++i) {
+            EXPECT_NEAR(after[i].x, before[i].x, 1e-5f) << i;
+            EXPECT_NEAR(after[i].y, before[i].y, 1e-5f) << i;
+        }
+    }
+}
+
 } // namespace test
 } // namespace quadmapper
