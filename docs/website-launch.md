@@ -13,7 +13,7 @@ These affect what the site can promise or link to.
 | # | Item | Why it matters for the site | Where |
 |---|---|---|---|
 | 1 | **The GitHub repo is private.** | Help > Report a Bug in the app opens `https://github.com/Fiavaion/Quadmapper/issues/new`, and the FFmpeg written offer in the notices sends people to the GitHub issues page. Visitors can reach neither. Make the repo public, or point both at a page on the website (a contact form or email). Changing them means editing `MainMenuBar.cpp:404` and `THIRD-PARTY-NOTICES.md`. | app + notices |
-| 2 | **There is no installer yet.** | `cmake --install` makes a complete app folder (exe, DLLs, VC++ runtime, docs, notices, licence), so a **zip download** works today. The installer branch (`feat/installer`) does not compile. | TD-44 |
+| 2 | **The installer has no AI engine.** | `packaging/build-installer.ps1` makes `QUADmapper-Setup-1.0.0.exe` (10.5 MB, Inno Setup): Program Files or per-user, Start-menu shortcuts, an uninstaller. It is the file to put on the download page. It was tested by a silent install, a stress run and a video export from the installed copy, and an uninstall. | TD-44 |
 | 3 | **The AI features are not in the release folder.** | The AI engine (Python, models) is not packaged yet, so the download has no AI. Either leave AI off the launch page or label it "coming soon". | TD-44 |
 | 4 | **The exe is not code-signed.** | Windows SmartScreen will show "Windows protected your PC" on first run. Either sign it, or add a "More info > Run anyway" note on the download page (section 8 has the text). | none set up |
 | 5 | **No release date yet.** | The release notes say "the date is set when the release is made". | RELEASE_NOTES.md |

@@ -79,7 +79,7 @@
 1. The owner's hands-on test, then its fixes, plus a fresh-context review of the `.qmap` 3.5–3.7 changes. `/release` passed twice; its low items are parked in [RELEASE_REVIEW.md](RELEASE_REVIEW.md). Also check:
    - Open and Save with a long folder path give a clear error rather than doing nothing;
    - after Save, the next start shows no recovery prompt.
-2. Installer: `feat/installer` (`9e5aacd`) does not compile, and its sidecar lookup conflicts with `dev`. It should use `cmake --install` for the app folder and stage only the AI engine.
+2. Installer: `packaging/build-installer.ps1` builds `packaging/out/QUADmapper-Setup-1.0.0.exe` (10.5 MB, Inno Setup 6.7.3, no AI engine). Checked 2026-11-23: silent per-user install, `--stress --hidden` and `--export-check` from the installed copy started in `%TEMP%` (exit 0), silent uninstall left no folder, shortcut or uninstall entry. Not yet: the wizard clicked through by hand, an admin install to Program Files, code signing. Left: the AI engine as a later add-on (TD-44); `feat/installer` (`9e5aacd`) is superseded, `dev` already finds `ai\` beside the exe.
 3. Move the sidecar to the PyTorch cu128 builds for the RTX 5090 (the lock pins `+cu126`, which has no sm_120 kernels; `tools/ai-sidecar/gen_lock.py` `TORCH_INDEX`).
 4. The `dev`→`master` PR ([docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)). PR #3 stays a draft until the hands-on test.
 5. A full-suite gate, since six features landed after the last one.
