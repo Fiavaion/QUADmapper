@@ -96,8 +96,11 @@ void audioControls(PlayableSource& video, const UUID& id, EditorContext& ctx, fl
     if (const char* reason = audioSilenceReason(video)) {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", reason);
         ImGui::SetItemTooltip("Sound plays only at 1x forward; it resumes in step at 1x");
-    } else if (ctx.outputManager &&
-               !heardSourceGains(ctx.es.scenes, ctx.es.activeSceneId, *ctx.outputManager).count(id)) {
+    } else if (ctx.outputManager && ![&] {
+                   auto gains = heardSourceGains(ctx.es.scenes, ctx.es.activeSceneId, *ctx.outputManager);
+                   if (ctx.sourceManager) addCompositionCueGains(*ctx.sourceManager, gains);  // ADR-061
+                   return gains.count(id) > 0;
+               }()) {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Silent: not in the active or a live scene");
         ImGui::SetItemTooltip("Heard only while a scene using it is the active scene or is assigned "
                               "to an enabled output; it stays in step meanwhile");

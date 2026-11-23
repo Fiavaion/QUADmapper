@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TextureSource.hpp"
+#include "CompositionSource.hpp"
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include <chrono>
@@ -134,6 +135,16 @@ public:
      * @return UUID of the registered source
      */
     UUID registerSource(std::unique_ptr<TextureSource> source);
+
+    /**
+     * @brief Create a composition (ADR-061): cues of other sources, crossfaded on the GPU
+     *
+     * A cue that names a composition is dropped (no nesting). Compositions are kept in
+     * creation order (getCompositionIds): the panel's list and the order a name
+     * shared by two resolves in (OSC /qm/composition/<name>/...).
+     */
+    UUID createCompositionSource(CompositionSettings settings);
+    const std::vector<UUID>& getCompositionIds() const { return compositionOrder_; }
 
     // --- Source Removal ---
 
@@ -416,6 +427,7 @@ private:
     std::unordered_map<UUID, SourceEntry> sources_;
     PlaybackClock masterTimeline_;
     std::function<PlaybackTimePoint()> timeSource_;  // empty: the steady clock
+    std::vector<UUID> compositionOrder_;             // see getCompositionIds()
     UploadStats uploadStats_;
     std::unique_ptr<YuvConverter> yuvConverter_;  // YUV -> RGBA pass for video frames
     std::unique_ptr<CompressedUploader> compressedUploader_;  // BCn uploads of HAP frames

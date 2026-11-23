@@ -9,6 +9,7 @@
 #include "scene/QuadManager.hpp"
 #include "scene/Scene.hpp"
 #include "scene/SceneFade.hpp"
+#include "source/CompositionSource.hpp"
 #include "source/HapFileSource.hpp"
 #include "source/SourceManager.hpp"
 #include "source/TextureSource.hpp"
@@ -153,6 +154,31 @@ std::unordered_map<UUID, float> heardSourceGains(const SceneList& scenes, const 
         activeSceneId, outputs.getOutputs(), [&outputs](const auto& o) { return outputs.sceneFade(o); },
         outputs.frameTime());
     return sourceSceneGains(scenes, weights);
+}
+
+// A composition's sound (ADR-061) is its cues' clips: the cue coming on is heard at the
+// composition's gain times how far it has faded in, the one going out at the rest, the
+// other cues not at all. Raises (never lowers) `gains`, at most 1.
+inline void addCompositionCueGains(SourceManager& sources, std::unordered_map<UUID, float>& gains) {
+    for (const UUID& id : sources.getCompositionIds()) {
+        const auto heard = gains.find(id);
+        if (heard == gains.end()) continue;
+        const float gain = heard->second;
+        const auto* composition = sources.getSourceAs<CompositionSource>(id);
+        if (!composition) continue;
+        const CompositionSettings& s = composition->settings();
+        const CompositionPlayhead& p = composition->playhead();
+        const float mix = static_cast<float>(p.fadeMix(s));
+        auto raise = [&](int index, float weight) {
+            if (index < 0 || index >= static_cast<int>(s.cues.size()) || !(weight > 0.0f)) return;
+            const UUID& cue = s.cues[static_cast<size_t>(index)].sourceId;
+            if (cue.isNull()) return;
+            float& g = gains[cue];
+            g = std::min(1.0f, std::max(g, gain * weight));
+        };
+        raise(p.current(), p.previous() >= 0 ? mix : 1.0f);
+        raise(p.previous(), 1.0f - mix);
+    }
 }
 
 // Once per frame, after SourceManager::updateAll(): keep every video source's audio on

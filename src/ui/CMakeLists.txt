@@ -29,6 +29,8 @@ add_library(quadmapper_ui STATIC
     panels/QuadListPanel.cpp
     panels/ScenePanel.hpp
     panels/ScenePanel.cpp
+    panels/CompositionPanel.hpp
+    panels/CompositionPanel.cpp
     panels/SliceEditor.hpp
     panels/SliceEditor.cpp
     panels/OutputPreviewPanel.hpp

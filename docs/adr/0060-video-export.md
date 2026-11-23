@@ -55,5 +55,6 @@
 - The outputs' scene routing is read live: a scene take during the export changes that output's picture in the file, while its sound stays with the scene it started with. Take scenes before exporting, not during.
 - If one file of several fails to finish, the files already finished stay and are listed.
 - Variable-speed or reverse sound is silent, as it is live.
+- Compositions (ADR-061) are drawn exactly, but their sound is not in the file yet.
 - Generators step by one frame (1 / fps) per exported frame. A camera shows whatever it sees while the export runs.
 - `quadmapper_audio` (OfflineAudioMix) calls `mapTimeline` from `quadmapper_video`. Targets that use it link both, as the app and `test_audio` do.

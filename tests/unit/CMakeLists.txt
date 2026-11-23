@@ -118,6 +118,7 @@ target_link_libraries(test_media PRIVATE quadmapper_media quadmapper_core glad)
 add_quadmapper_test(test_source
     source/CameraSourceTest.cpp
     source/SourceReleaseTest.cpp
+    source/CompositionPlayheadTest.cpp
 )
 target_link_libraries(test_source PRIVATE quadmapper_source quadmapper_core)
 

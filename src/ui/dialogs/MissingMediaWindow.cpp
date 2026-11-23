@@ -38,7 +38,7 @@ void MissingMediaWindow::beforeBegin(EditorContext& /*ctx*/) {
 void MissingMediaWindow::drawContent(EditorContext& ctx) {
     EditorState& es = ctx.es;
     EditorServices* services = ctx.services;
-    const std::vector<MissingMediaItem> items = collectMissingMedia(es);
+    const std::vector<MissingMediaItem> items = collectMissingMedia(es, ctx.sourceManager);
     const bool isSearching = searching(ctx);
 
     ImGui::TextWrapped("%zu file%s used by this project could not be opened. What uses them "
@@ -83,6 +83,10 @@ void MissingMediaWindow::drawContent(EditorContext& ctx) {
                 if (!usedBy.empty()) usedBy += ", ";
                 usedBy += std::to_string(item.objectUses) +
                           (item.objectUses == 1 ? " 3D object" : " 3D objects");
+            }
+            if (item.cueUses > 0) {
+                if (!usedBy.empty()) usedBy += ", ";
+                usedBy += std::to_string(item.cueUses) + (item.cueUses == 1 ? " cue" : " cues");
             }
             if (item.kind == MissingMediaItem::Kind::Mesh) usedBy += " (mesh)";
             ImGui::TextUnformatted(usedBy.c_str());

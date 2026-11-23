@@ -6,6 +6,7 @@
 #include "editor/ProjectMapping.hpp"
 #include "editor/ControlBindings.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/MissingMedia.hpp"
 #include "editor/SceneGhosts.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
@@ -491,4 +492,70 @@ TEST(SceneGhostsTest, OtherScenesQuadsArePlacedByPixelInTheActiveCanvas) {
     const std::vector<Quad> fromSide = otherSceneGhosts(es);
     ASSERT_EQ(fromSide.size(), 1u);
     EXPECT_EQ(fromSide[0].getName(), "Own");
+}
+
+
+// Compositions (ADR-061, .qmap 3.7): every one is saved, on a quad or not, in order,
+// with its cues (a missing file's cue kept), and a quad showing one shows it again.
+TEST(ProjectMappingTest, CompositionsAreSavedWithTheirCuesAndOrder) {
+    SourceManager sources;
+    EditorState from;
+    Scene* scene = from.addScene("Stage");
+    Quad* quad = scene->getQuadManager().createQuad("Screen");
+
+    Project::SourceData clip;  // a cue whose file is gone
+    clip.id = UUID::generate();
+    clip.kind = "video";
+    clip.path = "C:/qm_absent_show/cue.mp4";
+    clip.missing = true;
+    from.missingSources.emplace(clip.id, clip);
+
+    CompositionSettings unused;
+    unused.name = "Spare";
+    const UUID spareId = sources.createCompositionSource(unused);
+    CompositionSettings shown;
+    shown.name = "Loop";
+    shown.mode = CompositionMode::Switch;
+    shown.fadeSeconds = 1.25;
+    shown.loop = false;
+    shown.restartOnCue = false;
+    shown.width = 1280;
+    shown.height = 720;
+    shown.cues = {{clip.id, 3.5}, {UUID(), 0.0}};
+    const UUID shownId = sources.createCompositionSource(shown);
+    quad->getTexture().mediaId = shownId;
+
+    EditorState to;
+    const Project project = roundTrip(from, to, &sources);
+    ASSERT_GE(project.getSources().size(), 3u);
+    EXPECT_EQ(project.getSources()[0].id, spareId);  // compositions first, in order
+    EXPECT_EQ(project.getSources()[1].id, shownId);
+
+    const std::vector<UUID>& ids = sources.getCompositionIds();
+    ASSERT_EQ(ids.size(), 2u);
+    const auto* spare = sources.getSourceAs<CompositionSource>(ids[0]);
+    const auto* loop = sources.getSourceAs<CompositionSource>(ids[1]);
+    ASSERT_TRUE(spare && loop);
+    EXPECT_EQ(spare->getName(), "Spare");
+    const CompositionSettings& s = loop->settings();
+    EXPECT_EQ(s.name, "Loop");
+    EXPECT_EQ(s.mode, CompositionMode::Switch);
+    EXPECT_DOUBLE_EQ(s.fadeSeconds, 1.25);
+    EXPECT_FALSE(s.loop);
+    EXPECT_FALSE(s.restartOnCue);
+    EXPECT_EQ(s.width, 1280);
+    EXPECT_EQ(s.height, 720);
+    ASSERT_EQ(s.cues.size(), 2u);
+    EXPECT_DOUBLE_EQ(s.cues[0].holdSeconds, 3.5);
+    EXPECT_TRUE(to.missingSources.count(s.cues[0].sourceId)) << "the missing cue keeps a missing-source id";
+    const std::vector<MissingMediaItem> missing = collectMissingMedia(to, &sources);
+    ASSERT_EQ(missing.size(), 1u) << "listed to relocate";
+    EXPECT_EQ(missing[0].sourceId, s.cues[0].sourceId);
+    EXPECT_EQ(missing[0].cueUses, 1);
+    EXPECT_TRUE(s.cues[1].sourceId.isNull());
+
+    const Scene* stage = sceneNamed(to, "Stage");
+    ASSERT_NE(stage, nullptr);
+    ASSERT_EQ(stage->getQuadManager().getQuads().size(), 1u);
+    EXPECT_EQ(stage->getQuadManager().getQuads().front()->getTexture().mediaId, ids[1]);
 }

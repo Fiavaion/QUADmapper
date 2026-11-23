@@ -20,6 +20,7 @@
 #include "../scene/Quad.hpp"
 #include "../scene/Scene.hpp"
 #include "../scene/SceneFade.hpp"
+#include "../source/CompositionSource.hpp"
 #include "../source/SourceManager.hpp"
 #include "../source/TextureSource.hpp"
 #include "ShowTransport.hpp"
@@ -104,7 +105,7 @@ inline UUID parseUuid(const std::string& text) {
 }
 
 inline Quad* findQuad(std::vector<std::unique_ptr<Scene>>& scenes, const std::string& id) {
-    const UUID uuid = parseUuid(id);
+    const UUID uuid = control_bindings::parseUuid(id);
     if (uuid.isNull()) return nullptr;
     for (auto& scene : scenes) {
         if (!scene) continue;
@@ -114,7 +115,7 @@ inline Quad* findQuad(std::vector<std::unique_ptr<Scene>>& scenes, const std::st
 }
 
 inline int sceneNumber(const std::vector<std::unique_ptr<Scene>>& scenes, const std::string& id) {
-    const UUID uuid = parseUuid(id);
+    const UUID uuid = control_bindings::parseUuid(id);
     for (size_t i = 0; i < scenes.size(); ++i) {
         if (scenes[i] && scenes[i]->getId() == uuid) return static_cast<int>(i) + 1;
     }
@@ -123,7 +124,7 @@ inline int sceneNumber(const std::vector<std::unique_ptr<Scene>>& scenes, const 
 
 inline PlayableSource* findPlayable(SourceManager* sources, const std::string& id) {
     if (!sources) return nullptr;
-    const UUID uuid = parseUuid(id);
+    const UUID uuid = control_bindings::parseUuid(id);
     if (uuid.isNull()) return nullptr;
     return dynamic_cast<PlayableSource*>(sources->getSource(uuid));
 }
@@ -145,6 +146,12 @@ inline PlayableSource* unlockedPlayable(const ControlBindingHost& host, const st
 }
 
 }  // namespace control_bindings
+
+inline CompositionSource* findComposition(SourceManager* sources, const std::string& id) {
+    if (!sources) return nullptr;
+    const UUID uuid = control_bindings::parseUuid(id);
+    return uuid.isNull() ? nullptr : sources->getSourceAs<CompositionSource>(uuid);
+}
 
 inline void registerControlTargets(control::ControlRegistry& registry, const ControlBindingHost& host) {
     using control::ControlTarget;
@@ -308,6 +315,63 @@ inline void registerControlTargets(control::ControlRegistry& registry, const Con
              const PlayableSource* p = findPlayable(host.sources, id);
              return p ? std::optional<float>(p->isAudioMuted() ? 1.0f : 0.0f) : std::nullopt;
          }});
+
+    // ---- Compositions (ADR-061): /qm/composition/<name or id>/... ----------
+    registry.addEntityTarget("composition",
+        {"next", TargetKind::Trigger, 0.0f, 1.0f, true,
+         [host](const std::string& id, float) {
+             if (CompositionSource* c = findComposition(host.sources, id)) c->playhead().next(c->settings());
+         },
+         nullptr});
+    registry.addEntityTarget("composition",
+        {"prev", TargetKind::Trigger, 0.0f, 1.0f, true,
+         [host](const std::string& id, float) {
+             if (CompositionSource* c = findComposition(host.sources, id)) c->playhead().prev(c->settings());
+         },
+         nullptr});
+    // /qm/composition/<n>/cue i k: cue k (1-based); feedback sends the cue showing.
+    registry.addEntityTarget("composition",
+        {"cue", TargetKind::Index, 1.0f, 1000.0f, true,
+         [host](const std::string& id, float v) {
+             CompositionSource* c = findComposition(host.sources, id);
+             if (!c || !std::isfinite(v)) return;
+             c->playhead().cue(static_cast<int>(std::lround(v)) - 1, c->settings());
+         },
+         [host](const std::string& id) -> std::optional<float> {
+             const CompositionSource* c = findComposition(host.sources, id);
+             if (!c || c->settings().cues.empty()) return std::nullopt;
+             return static_cast<float>(c->playhead().current() + 1);
+         }});
+    registry.addEntityTarget("composition",
+        {"play", TargetKind::Trigger, 0.0f, 1.0f, true,
+         [host](const std::string& id, float) {
+             if (CompositionSource* c = findComposition(host.sources, id)) c->playhead().play();
+         },
+         nullptr});
+    registry.addEntityTarget("composition",
+        {"pause", TargetKind::Trigger, 0.0f, 1.0f, true,
+         [host](const std::string& id, float) {
+             if (CompositionSource* c = findComposition(host.sources, id)) c->playhead().pause();
+         },
+         nullptr});
+    registry.addEntityTarget("composition",
+        {"restart", TargetKind::Trigger, 0.0f, 1.0f, true,
+         [host](const std::string& id, float) {
+             if (CompositionSource* c = findComposition(host.sources, id)) c->restart();
+         },
+         nullptr});
+    // The crossfade time in seconds (0 = cut).
+    registry.addEntityTarget("composition",
+        {"fade", TargetKind::Float, 0.0f, 30.0f, true,
+         [host](const std::string& id, float v) {
+             if (CompositionSource* c = findComposition(host.sources, id)) {
+                 c->editSettings().fadeSeconds = std::clamp(static_cast<double>(v), 0.0, 30.0);
+             }
+         },
+         [host](const std::string& id) -> std::optional<float> {
+             const CompositionSource* c = findComposition(host.sources, id);
+             return c ? std::optional<float>(static_cast<float>(c->settings().fadeSeconds)) : std::nullopt;
+         }});
 }
 
 // Refresh the entities paths can name from the live project. Scenes and quads in
@@ -350,6 +414,17 @@ inline void refreshControlEntities(control::ControlRegistry& registry,
     registry.setEntities("scene", std::move(sceneEntities));
     registry.setEntities("quad", std::move(quadEntities));
     registry.setEntities("source", std::move(sourceEntities));
+
+    // Compositions in their order (a name two share resolves to the first made).
+    std::vector<control::ControlEntity> compositionEntities;
+    if (sources) {
+        for (const UUID& id : sources->getCompositionIds()) {
+            if (const auto* c = sources->getSourceAs<CompositionSource>(id)) {
+                compositionEntities.push_back({id.toString(), c->getName()});
+            }
+        }
+    }
+    registry.setEntities("composition", std::move(compositionEntities));
 }
 
 // ---- Mapping persistence ------------------------------------------------------

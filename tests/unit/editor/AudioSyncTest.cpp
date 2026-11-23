@@ -1783,3 +1783,33 @@ TEST(AudioCpuBench, DISABLED_EightSources) { measureCpu(8); }
 
 }  // namespace test
 }  // namespace quadmapper
+
+// A composition's sound (ADR-061): the cue showing at the composition's gain, a
+// crossfade sharing it between the cue coming on and the one going out.
+TEST(AudioSyncTest, CompositionCuesAreHeardThroughTheirComposition) {
+    quadmapper::SourceManager sources;
+    const quadmapper::UUID a = quadmapper::UUID::generate(), b = quadmapper::UUID::generate();
+    quadmapper::CompositionSettings settings;
+    settings.mode = quadmapper::CompositionMode::Switch;
+    settings.fadeSeconds = 1.0;
+    settings.cues = {{a, 1.0}, {b, 1.0}};
+    const quadmapper::UUID id = sources.createCompositionSource(settings);
+    auto* comp = sources.getSourceAs<quadmapper::CompositionSource>(id);
+    ASSERT_NE(comp, nullptr);
+
+    std::unordered_map<quadmapper::UUID, float> unheard;
+    quadmapper::addCompositionCueGains(sources, unheard);
+    EXPECT_TRUE(unheard.empty()) << "a composition no scene shows is silent, and so are its cues";
+
+    std::unordered_map<quadmapper::UUID, float> gains{{id, 0.8f}};
+    quadmapper::addCompositionCueGains(sources, gains);
+    EXPECT_FLOAT_EQ(gains[a], 0.8f);
+    EXPECT_EQ(gains.count(b), 0u);
+
+    comp->playhead().cue(1, comp->settings());
+    comp->playhead().step(0.25, comp->settings());
+    std::unordered_map<quadmapper::UUID, float> fading{{id, 0.8f}};
+    quadmapper::addCompositionCueGains(sources, fading);
+    EXPECT_FLOAT_EQ(fading[b], 0.2f);
+    EXPECT_FLOAT_EQ(fading[a], 0.6f);
+}

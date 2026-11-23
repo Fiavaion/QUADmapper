@@ -71,10 +71,15 @@ namespace quadmapper {
 //         - "contentMode": "crop" when the bent outline cuts the image instead of
 //           warping it, written only for Crop. Missing = Warp.
 //         A 3.5 reader ignores both and draws the quad as Spline + Warp.
+//   3.7 = additive source kind "composition" (ADR-061): "name", "mode" ("timeline" |
+//         "switch"), "fadeSeconds", "loop", "restartOnCue", "width", "height" and
+//         "cues": [{"source": <sources id>, "hold": seconds}]. Every composition is
+//         written, used by a quad or not. A 3.6 reader skips the entry (unknown kind)
+//         and its quads fall back to their texturePath (none: no media).
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
-static constexpr const char* kSceneFormatVersion = "3.6.0";
+static constexpr const char* kSceneFormatVersion = "3.7.0";
 
 // Load-time clamps for untrusted values (ADR-046 §3).
 static constexpr int kMaxMonitorIndex = 63;
@@ -971,7 +976,7 @@ static bool isFileSourceKind(const std::string& kind) {
 }
 
 static bool isKnownSourceKind(const std::string& kind) {
-    return isFileSourceKind(kind) || kind == "procedural" || kind == "camera";
+    return isFileSourceKind(kind) || kind == "procedural" || kind == "camera" || kind == "composition";
 }
 
 static const char* loopModeName(LoopMode mode) {
@@ -1020,6 +1025,20 @@ static nlohmann::json serializeSource(const Project::SourceData& s, const fs::pa
         j["height"] = s.height;
     } else if (s.kind == "camera") {
         j["deviceName"] = s.deviceName;
+    } else if (s.kind == "composition") {
+        j["name"] = s.name;
+        j["mode"] = s.compositionMode;
+        j["fadeSeconds"] = s.fadeSeconds;
+        j["loop"] = s.loop;
+        j["restartOnCue"] = s.restartOnCue;
+        j["width"] = s.width;
+        j["height"] = s.height;
+        nlohmann::json cues = nlohmann::json::array();
+        for (const auto& cue : s.cues) {
+            cues.push_back({{"source", cue.source.isNull() ? std::string() : cue.source.toString()},
+                            {"hold", cue.holdSeconds}});
+        }
+        j["cues"] = std::move(cues);
     }
     return j;
 }
@@ -1069,6 +1088,36 @@ static std::optional<Project::SourceData> deserializeSource(const nlohmann::json
         s.proceduralType = j["proceduralType"].get<std::string>();
         if (j.contains("width"))  s.width  = std::clamp(j["width"].get<int>(), 1, kMaxOutputDimension);
         if (j.contains("height")) s.height = std::clamp(j["height"].get<int>(), 1, kMaxOutputDimension);
+    } else if (s.kind == "composition") {
+        if (j.contains("name") && j["name"].is_string()) s.name = j["name"].get<std::string>();
+        if (j.contains("mode") && j["mode"].is_string()) {
+            s.compositionMode = j["mode"].get<std::string>() == "switch" ? "switch" : "timeline";
+        }
+        if (j.contains("fadeSeconds") && j["fadeSeconds"].is_number()) {
+            s.fadeSeconds = std::clamp(static_cast<double>(readFiniteFloat(j["fadeSeconds"])), 0.0, 30.0);
+        }
+        if (j.contains("loop") && j["loop"].is_boolean()) s.loop = j["loop"].get<bool>();
+        if (j.contains("restartOnCue") && j["restartOnCue"].is_boolean()) {
+            s.restartOnCue = j["restartOnCue"].get<bool>();
+        }
+        if (j.contains("width") && j["width"].is_number_integer()) {
+            s.width = std::clamp(j["width"].get<int>(), 16, kMaxOutputDimension);
+        }
+        if (j.contains("height") && j["height"].is_number_integer()) {
+            s.height = std::clamp(j["height"].get<int>(), 16, kMaxOutputDimension);
+        }
+        if (j.contains("cues") && j["cues"].is_array()) {
+            for (const auto& c : j["cues"]) {
+                if (!c.is_object()) continue;
+                Project::SourceData::CueData cue;
+                if (c.contains("source")) cue.source = parseUuidOrNull(c["source"]);
+                if (c.contains("hold") && c["hold"].is_number()) {
+                    cue.holdSeconds = std::clamp(static_cast<double>(readFiniteFloat(c["hold"])), 0.0, 86400.0);
+                }
+                s.cues.push_back(cue);
+                if (s.cues.size() >= 1000) break;  // untrusted input
+            }
+        }
     } else if (j.contains("deviceName") && j["deviceName"].is_string()) {  // camera
         s.deviceName = j["deviceName"].get<std::string>();
     }

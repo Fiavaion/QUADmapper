@@ -31,6 +31,7 @@
 #include "ui/panels/QuadListPanel.hpp"
 #include "ui/panels/ResourcesPanel.hpp"
 #include "ui/panels/ScenePanel.hpp"
+#include "ui/panels/CompositionPanel.hpp"
 #include "ui/panels/VideoPlayerPanel.hpp"
 #include "ui/panels/ViewportEditor.hpp"
 
@@ -133,6 +134,7 @@ private:
     ProjectTab projectTab_;
     MediaBinPanel mediaBin_;
     ScenePanel scenes_;
+    CompositionPanel compositions_;
     OutputPreviewPanel preview_;
     OutputPanel outputs_;
     VideoPlayerPanel videoPlayer_;

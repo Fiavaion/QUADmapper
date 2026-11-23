@@ -17,6 +17,7 @@
 #include "../media/MediaItem.hpp"
 #include "../source/SourceManager.hpp"
 #include "../source/CameraSource.hpp"
+#include "../source/CompositionSource.hpp"
 #include "../source/HapFileSource.hpp"
 #include "../source/StaticImageSource.hpp"
 #include "../source/VideoFileSource.hpp"
@@ -26,6 +27,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -65,6 +67,17 @@ static std::optional<Project::SourceData> describeSource(SourceManager& sm, cons
     } else if (auto* camera = dynamic_cast<CameraSource*>(src)) {
         d.kind = "camera";
         d.deviceName = camera->getDeviceName();
+    } else if (auto* composition = dynamic_cast<CompositionSource*>(src)) {
+        const CompositionSettings& s = composition->settings();
+        d.kind = "composition";
+        d.name = s.name;
+        d.compositionMode = s.mode == CompositionMode::Switch ? "switch" : "timeline";
+        d.fadeSeconds = s.fadeSeconds;
+        d.loop = s.loop;
+        d.restartOnCue = s.restartOnCue;
+        d.width = s.width;
+        d.height = s.height;
+        for (const CompositionCue& cue : s.cues) d.cues.push_back({cue.sourceId, cue.holdSeconds});
     } else if (auto type = proceduralTypeOf(src->getType())) {
         d.kind = "procedural";
         d.proceduralType = ProceduralFactory::getTypeName(*type);
@@ -74,6 +87,21 @@ static std::optional<Project::SourceData> describeSource(SourceManager& sm, cons
         return std::nullopt;
     }
     return d;
+}
+
+// Recreate a "composition" entry (ADR-061); liveCue maps a saved cue source to its live id.
+static UUID createCompositionFrom(SourceManager& sm, const Project::SourceData& d,
+                                  const std::function<UUID(const UUID&)>& liveCue) {
+    CompositionSettings s;
+    s.name = d.name.empty() ? std::string("Composition") : d.name;
+    s.mode = d.compositionMode == "switch" ? CompositionMode::Switch : CompositionMode::Timeline;
+    s.fadeSeconds = d.fadeSeconds;
+    s.loop = d.loop;
+    s.restartOnCue = d.restartOnCue;
+    s.width = d.width;
+    s.height = d.height;
+    for (const auto& cue : d.cues) s.cues.push_back({liveCue(cue.source), cue.holdSeconds});
+    return sm.createCompositionSource(std::move(s));
 }
 
 // Recreate a "sources" entry in the SourceManager; returns the live id (null on failure).
@@ -114,6 +142,16 @@ void syncEditorToProject(EditorState& es, OutputManager* om, SourceManager* sm,
             }
         }
     };
+    // Every composition (ADR-061), on a quad or not, first and in order (the panel's
+    // list). Then the sources of their cues.
+    if (sm) {
+        for (const UUID& id : sm->getCompositionIds()) describeOnce(id);
+        for (size_t i = 0; i < project.getSources().size(); ++i) {
+            if (project.getSources()[i].kind != "composition") continue;
+            const auto cues = project.getSources()[i].cues;  // the table grows below
+            for (const auto& cue : cues) describeOnce(cue.source);
+        }
+    }
 
     for (const auto& scenePtr : es.scenes) {
         if (!scenePtr) continue;
@@ -220,14 +258,6 @@ void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& proj
     std::unordered_map<UUID, const Project::SourceData*> savedSources;
     for (const auto& s : project.getSources()) savedSources[s.id] = &s;
     std::unordered_map<UUID, UUID> sourceRemap;
-    auto liveSourceFor = [&](const Project::SourceData& src) {
-        auto remapIt = sourceRemap.find(src.id);
-        if (remapIt == sourceRemap.end()) {
-            const UUID live = src.missing ? UUID() : createSourceFrom(*sm, src);
-            remapIt = sourceRemap.emplace(src.id, live).first;
-        }
-        return remapIt->second;
-    };
 
     // A file that could not be opened stays referenced under one missing-source id per
     // path: the saved id, unless a live source (the media bin's) already has it.
@@ -249,6 +279,35 @@ void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& proj
         if (!savedId.isNull()) missingRemap.emplace(savedId, id);
         return id;
     };
+
+    std::function<UUID(const Project::SourceData&)> liveSourceFor = [&](const Project::SourceData& src) -> UUID {
+        auto remapIt = sourceRemap.find(src.id);
+        if (remapIt != sourceRemap.end()) return remapIt->second;
+        if (src.kind != "composition") {
+            const UUID live = src.missing ? UUID() : createSourceFrom(*sm, src);
+            sourceRemap.emplace(src.id, live);
+            return live;
+        }
+        // A composition (ADR-061): its cues' sources first. A missing file keeps its
+        // missing-source id (black, written back on save); a composition as a cue is
+        // dropped (no nesting).
+        sourceRemap.emplace(src.id, UUID());  // a cue naming its own composition finds null
+        const UUID live = createCompositionFrom(*sm, src, [&](const UUID& savedCue) -> UUID {
+            auto cue = savedSources.find(savedCue);
+            if (savedCue.isNull() || cue == savedSources.end() || cue->second->kind == "composition") return UUID();
+            const UUID cueLive = liveSourceFor(*cue->second);
+            if (cueLive.isNull() && isFileSource(*cue->second)) return missingIdFor(*cue->second);
+            return cueLive;
+        });
+        sourceRemap[src.id] = live;
+        return live;
+    };
+    // Every saved composition, in the saved order, on a quad or not.
+    if (sm) {
+        for (const auto& s : project.getSources()) {
+            if (s.kind == "composition") liveSourceFor(s);
+        }
+    }
 
     std::unordered_map<UUID, UUID> quadRemapAllScenes;  // for the MIDI mapping targets
     for (const auto& sd : project.getScenes()) {
@@ -428,6 +487,7 @@ void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& proj
         control::MidiMapping mapping = fromProjectMapping(data);
         mapping.target = remapTargetPath(mapping.target, "quad", quadRemapAllScenes);
         mapping.target = remapTargetPath(mapping.target, "source", sourceIds);
+        mapping.target = remapTargetPath(mapping.target, "composition", sourceIds);  // ADR-061
         es.midiMappings.push_back(std::move(mapping));
     }
 

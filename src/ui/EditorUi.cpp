@@ -31,6 +31,7 @@ EditorUi::EditorUi(PreferencesDialog& preferences) {
     host_.add(projectTab_);
     host_.add(mediaBin_);
     host_.add(scenes_);
+    host_.add(compositions_);
     host_.add(preview_);
     host_.add(outputs_);
     host_.add(videoPlayer_);

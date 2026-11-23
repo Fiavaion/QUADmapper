@@ -626,3 +626,108 @@ TEST(ControlBindingsTest, MappingConvertsToAndFromTheProjectDto) {
     EXPECT_TRUE(back.is14Bit());
     EXPECT_TRUE(sameBinding(back, m));
 }
+
+
+// Compositions (ADR-061): /qm/composition/<n>/next, prev, cue i k, play, pause,
+// restart and fade, by name or id; the cue's clip is restarted.
+TEST(ControlBindingsTest, CompositionCuesByOscAndTheirClips) {
+    AppFixture app;
+    auto other = std::make_unique<FakePlayable>("other.mp4");
+    FakePlayable* otherClip = other.get();
+    const UUID otherId = app.sources.registerSource(std::move(other));
+    CompositionSettings settings;
+    settings.name = "Show";
+    settings.mode = CompositionMode::Switch;
+    settings.fadeSeconds = 0.0;
+    settings.cues = {{app.clipId, 2.0}, {otherId, 2.0}, {UUID(), 2.0}};
+    const UUID id = app.sources.createCompositionSource(settings);
+    auto* comp = app.sources.getSourceAs<CompositionSource>(id);
+    ASSERT_NE(comp, nullptr);
+    app.refresh();
+    auto sourceOf = [&](const UUID& s) { return app.sources.getSource(s); };
+
+    comp->advance(0.0, sourceOf);  // cue 1 on: its clip from the start; the others paused
+    EXPECT_EQ(app.clip->state, PlaybackState::PLAYING);
+    EXPECT_GE(app.clip->seeks, 1);
+    EXPECT_EQ(otherClip->state, PlaybackState::PAUSED);
+
+    app.osc("/qm/composition/show/next");  // names ignore case
+    EXPECT_EQ(comp->playhead().current(), 1);
+    comp->advance(0.0, sourceOf);
+    EXPECT_EQ(otherClip->state, PlaybackState::PLAYING);
+    EXPECT_EQ(app.clip->state, PlaybackState::PAUSED);  // cut: faded out at once
+
+    app.oscArgs("/qm/composition/Show/cue", {intArg(3)});
+    EXPECT_EQ(comp->playhead().current(), 2);
+    app.osc("/qm/composition/" + id.toString() + "/prev");
+    EXPECT_EQ(comp->playhead().current(), 1);
+    app.osc("/qm/composition/Show/pause");
+    EXPECT_FALSE(comp->playhead().running());
+    app.osc("/qm/composition/Show/play");
+    EXPECT_TRUE(comp->playhead().running());
+    app.osc("/qm/composition/Show/fade", 2.5f);
+    EXPECT_NEAR(comp->settings().fadeSeconds, 2.5, 1e-6);
+    app.osc("/qm/composition/Show/restart");
+    EXPECT_EQ(comp->playhead().current(), 0);
+    // No such composition: nothing happens, nothing crashes.
+    app.osc("/qm/composition/Nothing/next");
+}
+
+TEST(ControlBindingsTest, CompositionsNeverNestAndKeepTheirOrder) {
+    AppFixture app;
+    CompositionSettings first;
+    first.name = "First";
+    const UUID a = app.sources.createCompositionSource(first);
+    CompositionSettings second;
+    second.name = "Second";
+    second.cues = {{a, 1.0}, {app.clipId, 1.0}};  // a composition as a cue is dropped
+    const UUID b = app.sources.createCompositionSource(second);
+    const auto* comp = app.sources.getSourceAs<CompositionSource>(b);
+    ASSERT_NE(comp, nullptr);
+    ASSERT_EQ(comp->settings().cues.size(), 1u);
+    EXPECT_EQ(comp->settings().cues[0].sourceId, app.clipId);
+    EXPECT_EQ(app.sources.getCompositionIds(), (std::vector<UUID>{a, b}));
+    app.sources.removeSource(a);
+    EXPECT_EQ(app.sources.getCompositionIds(), (std::vector<UUID>{b}));
+}
+
+
+// Review fixes (ADR-061): a cue removed under the playhead starts the one now there;
+// Restart clips on cue turned off lets the paused clips run; a clip's length fills a
+// hold that waited for it.
+TEST(ControlBindingsTest, CompositionFollowsItsCueListAndTransportSetting) {
+    AppFixture app;
+    auto other = std::make_unique<FakePlayable>("other.mp4");
+    FakePlayable* otherClip = other.get();
+    const UUID otherId = app.sources.registerSource(std::move(other));
+    CompositionSettings settings;
+    settings.mode = CompositionMode::Timeline;
+    settings.fadeSeconds = 0.0;
+    settings.cues = {{app.clipId, 4.0}, {otherId, 0.0}};
+    settings.cues[1].holdFromClip = true;
+    const UUID id = app.sources.createCompositionSource(settings);
+    auto* comp = app.sources.getSourceAs<CompositionSource>(id);
+    ASSERT_NE(comp, nullptr);
+    auto sourceOf = [&](const UUID& s) { return app.sources.getSource(s); };
+
+    comp->advance(1.0, sourceOf);
+    EXPECT_DOUBLE_EQ(comp->settings().cues[1].holdSeconds, 10.0) << "the clip's length";
+    EXPECT_FALSE(comp->settings().cues[1].holdFromClip);
+    EXPECT_EQ(otherClip->state, PlaybackState::PAUSED);
+
+    comp->editSettings().cues.erase(comp->editSettings().cues.begin());  // the cue showing
+    const int seeks = otherClip->seeks;
+    comp->advance(0.0, sourceOf);
+    EXPECT_EQ(comp->playhead().current(), 0);
+    EXPECT_EQ(otherClip->state, PlaybackState::PLAYING) << "the cue now on starts";
+    EXPECT_GT(otherClip->seeks, seeks);
+    EXPECT_NEAR(comp->playhead().timeInCue(), 0.0, 1e-9);
+
+    comp->editSettings().cues.push_back({app.clipId, 4.0});
+    comp->advance(0.0, sourceOf);
+    app.clip->pause();
+    EXPECT_EQ(app.clip->state, PlaybackState::PAUSED);
+    comp->editSettings().restartOnCue = false;
+    comp->advance(0.0, sourceOf);
+    EXPECT_EQ(app.clip->state, PlaybackState::PLAYING) << "every clip keeps running";
+}

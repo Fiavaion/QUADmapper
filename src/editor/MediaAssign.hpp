@@ -242,7 +242,17 @@ inline void releaseUnusedSources(EditorState& es, SourceManager& sm, const Media
         es.previewSourceId = UUID();
         es.previewSourcePath.clear();
     }
-    const std::unordered_set<UUID> owned = editorOwnedSources(es, library);
+    std::unordered_set<UUID> owned = editorOwnedSources(es, library);
+    // Compositions (ADR-061) stay until deleted in the Compositions tab, and keep their
+    // cues' sources (a missing file's id too, so it is still saved and relocatable).
+    for (const UUID& id : sm.getCompositionIds()) {
+        owned.insert(id);
+        if (const auto* composition = sm.getSourceAs<CompositionSource>(id)) {
+            for (const CompositionCue& cue : composition->settings().cues) {
+                if (!cue.sourceId.isNull()) owned.insert(cue.sourceId);
+            }
+        }
+    }
     inUse.insert(owned.begin(), owned.end());
     // Remember how each clip about to be released was playing, for a binding that
     // comes back to it later (the re-open above).

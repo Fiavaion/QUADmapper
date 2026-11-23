@@ -61,6 +61,7 @@ The first public release. The date is set when the release is made. It covers ev
 - OSC input (off until you turn it on in the Control window, default port 8000) and MIDI input with MIDI learn.
 - OSC feedback to a controller, OSC address patterns with wildcards, and 14-bit MIDI controllers.
 - MIDI mappings are saved in the project.
+- Compositions: a Timeline plays cues (videos, images, generators) one after another with a crossfade; a Switcher changes cue on Next, Previous or Cue n. Put one on any quad from the Compositions tab, and drive it by OSC (`/qm/composition/<name>/next`, `/prev`, `/cue`, `/play`, `/pause`, `/restart`, `/fade`) or MIDI learn. Project files are now format 3.7; an older build opens them with those quads empty.
 
 ### AI assist
 

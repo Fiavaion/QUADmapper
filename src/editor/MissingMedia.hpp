@@ -19,6 +19,7 @@
 #include "project/MediaRelocation.hpp"
 #include "project/Project.hpp"
 #include "scene/MeshObject.hpp"
+#include "source/CompositionSource.hpp"
 #include "source/SourceManager.hpp"
 
 #include <algorithm>
@@ -39,11 +40,12 @@ struct MissingMediaItem {
     std::string path;  // where the file was
     int quadUses = 0;
     int objectUses = 0;
+    int cueUses = 0;   // composition cues (ADR-061)
 };
 
-// Missing files the scenes use, sorted by path. A source only an undo step still
-// holds is left out: nothing on screen needs it.
-inline std::vector<MissingMediaItem> collectMissingMedia(const EditorState& es) {
+// Missing files the scenes (and, given sm, the compositions' cues) use, sorted by
+// path. A source only an undo step still holds is left out: nothing on screen needs it.
+inline std::vector<MissingMediaItem> collectMissingMedia(const EditorState& es, SourceManager* sm = nullptr) {
     std::vector<MissingMediaItem> items;
     std::unordered_map<UUID, size_t> sourceItems;
     std::unordered_map<std::string, size_t> meshItems;
@@ -76,6 +78,15 @@ inline std::vector<MissingMediaItem> collectMissingMedia(const EditorState& es) 
                 items.push_back(std::move(item));
             }
             ++items[it->second].objectUses;
+        }
+    }
+    if (sm) {
+        for (const UUID& compositionId : sm->getCompositionIds()) {
+            const auto* composition = sm->getSourceAs<CompositionSource>(compositionId);
+            if (!composition) continue;
+            for (const CompositionCue& cue : composition->settings().cues) {
+                if (MissingMediaItem* item = sourceItem(cue.sourceId)) ++item->cueUses;
+            }
         }
     }
     std::sort(items.begin(), items.end(), [](const MissingMediaItem& a, const MissingMediaItem& b) {
@@ -144,7 +155,7 @@ inline void adoptFailedOpens(EditorState& es, SourceManager& sm) {
         postStatus(es, "Could not open video: " + utf8FromPath(file.filename()));
         listed = true;
     }
-    if (listed && !collectMissingMedia(es).empty()) es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
+    if (listed && !collectMissingMedia(es, &sm).empty()) es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
 }
 
 // Load newPath in place of a missing source and rebind everything that used it.
@@ -175,6 +186,14 @@ inline std::string relocateMissingSource(EditorState& es, SourceManager& sm, con
     if (!alreadyOpen) applySavedTransport(sm, id, original.transport);
 
     rebindMissingSource(es, missingId, original.path, id, path, isVideo);
+    // Compositions' cues on the missing file show the found one (ADR-061).
+    for (const UUID& compositionId : sm.getCompositionIds()) {
+        if (auto* composition = sm.getSourceAs<CompositionSource>(compositionId)) {
+            for (CompositionCue& cue : composition->editSettings().cues) {
+                if (cue.sourceId == missingId) cue.sourceId = id;
+            }
+        }
+    }
     return {};
 }
 
@@ -210,7 +229,7 @@ inline int locateMissingMedia(EditorState& es, SourceManager* sm,
     if (!noteRelocation(es, item, relocateMissingItem(es, sm, item, newPath))) return 0;
     int resolved = 1;
     const std::filesystem::path folder = newPath.parent_path();
-    for (const MissingMediaItem& other : collectMissingMedia(es)) {
+    for (const MissingMediaItem& other : collectMissingMedia(es, sm)) {
         const std::filesystem::path sibling = relocate::findSibling(folder, pathFromUtf8(other.path));
         if (!sibling.empty() && noteRelocation(es, other, relocateMissingItem(es, sm, other, sibling))) {
             ++resolved;
@@ -223,7 +242,7 @@ inline int locateMissingMedia(EditorState& es, SourceManager* sm,
 inline int relocateMissingFromIndex(EditorState& es, SourceManager* sm,
                                     const relocate::FolderIndex& index) {
     int resolved = 0;
-    for (const MissingMediaItem& item : collectMissingMedia(es)) {
+    for (const MissingMediaItem& item : collectMissingMedia(es, sm)) {
         const std::filesystem::path found = relocate::findInIndex(index, pathFromUtf8(item.path));
         if (!found.empty() && noteRelocation(es, item, relocateMissingItem(es, sm, item, found))) {
             ++resolved;

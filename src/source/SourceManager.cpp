@@ -17,6 +17,7 @@
 
 #include <glad/glad.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -259,6 +260,18 @@ UUID SourceManager::createCameraSource(const std::string& deviceName) {
     return UUID();
 }
 
+UUID SourceManager::createCompositionSource(CompositionSettings settings) {
+    auto& cues = settings.cues;
+    cues.erase(std::remove_if(cues.begin(), cues.end(),
+                              [this](const CompositionCue& cue) {
+                                  return getSourceAs<CompositionSource>(cue.sourceId) != nullptr;
+                              }),
+               cues.end());
+    const UUID id = addEntry(std::make_unique<CompositionSource>(std::move(settings)));
+    compositionOrder_.push_back(id);
+    return id;
+}
+
 UUID SourceManager::createProceduralSource(ProceduralType type, int width, int height) {
     auto source = ProceduralFactory::create(type, width, height);
     if (!source) {
@@ -319,6 +332,8 @@ void SourceManager::removeSource(const UUID& id) {
     if (it != sources_.end()) {
         retire(it->second);
         sources_.erase(it);
+        compositionOrder_.erase(std::remove(compositionOrder_.begin(), compositionOrder_.end(), id),
+                                compositionOrder_.end());
 
         if (sourceRemovedCallback_) {
             sourceRemovedCallback_(id);
@@ -332,6 +347,7 @@ void SourceManager::clear() {
         retire(entry);
     }
     sources_.clear();
+    compositionOrder_.clear();
     // Kept for the next source of their size: a new project seldom has one, and they hold
     // video memory (TD-35).
     while (std::unique_ptr<DxInteropTarget> spare = dxInterop_->takeSpare(true)) {
@@ -527,7 +543,8 @@ size_t SourceManager::releaseUnreferenced(const std::unordered_set<UUID>& inUse)
         const bool procedural = type >= SourceType::PROCEDURAL_SOLID &&
                                 type <= SourceType::PROCEDURAL_GRID;
         const bool camera = type == SourceType::WEBCAM;
-        if ((fileBacked || procedural || camera) && inUse.count(id) == 0) {
+        const bool composition = type == SourceType::COMPOSITION;  // kept by the editor while it exists
+        if ((fileBacked || procedural || camera || composition) && inUse.count(id) == 0) {
             unused.push_back(id);
         }
     }
@@ -638,6 +655,9 @@ void SourceManager::updateAll(double deltaTime) {
         if (!entry.source->isReady()) {
             continue;
         }
+        if (entry.source->getType() == SourceType::COMPOSITION) {
+            continue;  // drawn below, from the frames its cues take here
+        }
 
         // Update the source; a frame whose upload had to wait (uploadDeferred) is offered again.
         const bool hasNewFrame = entry.source->update(deltaTime) || entry.uploadDeferred;
@@ -673,6 +693,28 @@ void SourceManager::updateAll(double deltaTime) {
     uploadStats_.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     yuvConverter_->end();
 
+    // Compositions (ADR-061), after every other source has its frame for this update.
+    for (const UUID& id : compositionOrder_) {
+        auto it = sources_.find(id);
+        if (it == sources_.end()) continue;
+        SourceEntry& entry = it->second;
+        auto* composition = static_cast<CompositionSource*>(entry.source.get());
+        composition->advance(deltaTime, [this](const UUID& cueId) { return getSource(cueId); });
+        composition->render([this](const UUID& cueId) -> Texture* {
+            const auto cue = sources_.find(cueId);
+            if (cue == sources_.end() || !cue->second.hasFrame) return nullptr;
+            return cue->second.texture.get();
+        });
+        const uint32_t glId = composition->getGLTextureId();
+        if (glId == 0) continue;
+        if (!entry.texture) entry.texture = std::make_unique<Texture>();
+        if (entry.texture->getId() != glId || entry.texture->getWidth() != composition->getWidth() ||
+            entry.texture->getHeight() != composition->getHeight()) {
+            entry.texture->setGLTextureId(glId, composition->getWidth(), composition->getHeight(), 4);
+        }
+        entry.hasFrame = true;
+    }
+
     // Shared planes no source took for DxInterop::SPARE_LIFETIME go, one target a frame.
     if (std::unique_ptr<DxInteropTarget> spare = dxInterop_->takeSpare()) {
         RetiredGl gl;
@@ -687,6 +729,9 @@ void SourceManager::seekAllToStart() {
         if (auto* playable = dynamic_cast<PlayableSource*>(entry.source.get())) {
             playable->seek(0.0);
         }
+    }
+    for (const UUID& id : compositionOrder_) {
+        if (auto* composition = getSourceAs<CompositionSource>(id)) composition->restart();
     }
     restartMasterTimeline();
 }

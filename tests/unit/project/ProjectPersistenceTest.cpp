@@ -89,7 +89,7 @@ TEST_F(ProjectPersistenceTest, WriterEmitsV32WithSourcesTable) {
 
     const auto json = nlohmann::json::parse(serializer.serialize(projectWithBoundQuad(src, "")));
 
-    EXPECT_EQ(json["version"], "3.6.0");
+    EXPECT_EQ(json["version"], "3.7.0");
     ASSERT_TRUE(json["sources"].is_array());
     ASSERT_EQ(json["sources"].size(), 1u);
     EXPECT_EQ(json["sources"][0]["kind"], "procedural");
@@ -632,7 +632,7 @@ TEST_F(ProjectPersistenceTest, MeshOutsideTheShowFolderFallsBackToItsAbsolutePat
     const auto& saved = json["scenes"][0]["objects"][0];
     EXPECT_EQ(saved["path"], "../../library/props/column.obj");
     EXPECT_EQ(saved["absPath"], utf8FromPath(mesh));
-    EXPECT_EQ(json["version"], "3.6.0");
+    EXPECT_EQ(json["version"], "3.7.0");
 
     // Round trip in place: the relative path resolves.
     auto loaded = ProjectSerializer::load(file);

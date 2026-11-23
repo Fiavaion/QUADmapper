@@ -220,7 +220,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             es.pendingFileAction = FileAction::ImportObject;
         }
         if (ImGui::MenuItem("Relocate Missing Media...", nullptr, false,
-                            !locked && !collectMissingMedia(es).empty())) {
+                            !locked && !collectMissingMedia(es, ctx.sourceManager).empty())) {
             es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
         }
         // Render the show to MP4 files for a media player (ADR-060).

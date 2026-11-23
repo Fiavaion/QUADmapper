@@ -360,7 +360,7 @@ bool ProjectSession::performLoadProject(const std::string& path) {
     applyProjectAudio();
     snprintf(es.projectPath, sizeof(es.projectPath), "%s", path.c_str());
     markProjectClean();
-    const size_t missing = collectMissingMedia(es).size();
+    const size_t missing = collectMissingMedia(es, m_services.sources).size();
     if (missing > 0) es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
     postStatus(es, "Project loaded: " + path + missingMediaNote(missing));
     if (m_services.projectUsed) m_services.projectUsed(path);
@@ -433,7 +433,7 @@ void ProjectSession::performRestoreRecovery() {
     // The restored work is not in the project file yet: keep it "unsaved", and say so.
     m_savedSnapshot.clear();
     m_unsavedLabel.invalidate();
-    const size_t missing = collectMissingMedia(es).size();
+    const size_t missing = collectMissingMedia(es, m_services.sources).size();
     if (missing > 0) es.requestPanelOpen(EditorState::MISSING_MEDIA_PANEL_ID);
     postStatus(es, "Restored unsaved work from " + file + missingMediaNote(missing));
     projectReplaced();
@@ -625,7 +625,7 @@ void ProjectSession::pollMissingMediaSearch() {
         return;
     }
     const relocate::FolderIndex index = m_mediaSearch.get();
-    const size_t missing = collectMissingMedia(es).size();
+    const size_t missing = collectMissingMedia(es, m_services.sources).size();
     const int resolved = relocateMissingFromIndex(es, m_services.sources, index);
     std::string status = "Found " + std::to_string(resolved) + " of " + std::to_string(missing) +
                          " missing file" + (missing == 1 ? "" : "s") + " in " + m_mediaSearchFolder;

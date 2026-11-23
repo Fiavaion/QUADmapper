@@ -588,24 +588,24 @@ int Application::runStress(const StressConfig& cfg) {
     }
 
     // --export-check (ADR-060): export 2 s of the first output, with sound, the way the
-    // app's frame loop steps it, and check the file.
+    // app's frame loop steps it, and check the file ("stress-export"). Then the same
+    // with the quad showing a composition (ADR-061): the clip for 1 s, crossfading over
+    // 0.5 s into a test pattern ("stress-composition").
     bool exportFailed = false;
-    if (!cfg.exportCheck.empty() && !m_outputManager->getOutputs().empty()) {
+    auto runExport = [&](const std::string& baseName) {
         VideoExportRequest request;
         request.folder = pathFromUtf8(cfg.exportCheck);
-        request.baseName = "stress-export";
+        request.baseName = baseName;
         request.outputIds = {m_outputManager->getOutputs().front()->getId()};
         request.fps = 30;
         request.seconds = 2.0;
         request.audio = true;
         std::string error;
         VideoExportStatus status;
-        // Paused first: the export plays the show from its start whatever its state.
-        if (playable) playable->pause();
-        const double exportStart = glfwGetTime();
+        const double start = glfwGetTime();
         if (startVideoExport(request, error)) {
             while (m_videoExport && m_videoExport->active()) {
-                if (glfwGetTime() - exportStart > 120.0) m_videoExport->cancel();
+                if (glfwGetTime() - start > 120.0) m_videoExport->cancel();
                 glfwPollEvents();
                 m_sourceManager->updateAll(0.0);
                 m_videoExport->step(es, *m_outputManager, *m_renderer);
@@ -619,13 +619,30 @@ int Application::runStress(const StressConfig& cfg) {
         }
         std::error_code ec;
         const bool written = status.written.size() == 1 && std::filesystem::file_size(status.written.front(), ec) > 0;
-        exportFailed = status.failed || status.cancelled || !written;
-        if (exportFailed) {
-            Logger::error("[STRESS] STRESS FAIL (export) — {}", status.message);
-        } else {
-            Logger::info("[STRESS] Export: {} ({} bytes) in {} s", utf8FromPath(status.written.front()),
-                         std::filesystem::file_size(status.written.front(), ec), static_cast<int>(glfwGetTime() - exportStart));
+        if (status.failed || status.cancelled || !written) {
+            Logger::error("[STRESS] STRESS FAIL (export {}) — {}", baseName, status.message);
+            return false;
         }
+        Logger::info("[STRESS] Export: {} ({} bytes) in {} s", utf8FromPath(status.written.front()),
+                     std::filesystem::file_size(status.written.front(), ec), static_cast<int>(glfwGetTime() - start));
+        return true;
+    };
+    if (!cfg.exportCheck.empty() && !m_outputManager->getOutputs().empty()) {
+        // Paused first: the export plays the show from its start whatever its state.
+        if (playable) playable->pause();
+        if (!runExport("stress-export")) exportFailed = true;
+
+        const UUID pattern = m_sourceManager->createProceduralSource(ProceduralType::TEST_PATTERN, 320, 180);
+        CompositionSettings settings;
+        settings.name = "Stress";
+        settings.fadeSeconds = 0.5;
+        settings.cues = {{sourceId, 1.0}, {pattern, 1.0}};
+        const UUID composition = m_sourceManager->createCompositionSource(settings);
+        quad->getTexture().mediaId = composition;
+        if (!runExport("stress-composition")) exportFailed = true;
+        quad->getTexture().mediaId = sourceId;
+        m_sourceManager->removeSource(composition);
+        m_sourceManager->removeSource(pattern);
     }
 
     // ADR-056: once the video source is gone, nothing D3D11 is held for it: no interop

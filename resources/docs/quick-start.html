@@ -167,6 +167,16 @@
     <li>Press <kbd>1</kbd> to <kbd>9</kbd> to put that scene on air. The keys work in the editor and on a focused projector window, whatever your keyboard layout.</li>
     <li>For a crossfade, set <span class="menu">Crossfade (seconds)</span> in <span class="menu">Edit &gt; Preferences...</span> (General tab). 0 is a cut.</li>
   </ol>
+  <h3>Compositions: a timeline or a switcher on one quad</h3>
+  <p>A composition plays several clips, images or generators on a quad, one after another, with a crossfade between them. A <strong>Timeline</strong> moves on by itself after each cue's hold time. A <strong>Switcher</strong> moves on only when told to: from the panel, by OSC or by MIDI.</p>
+  <ol class="steps">
+    <li>Open the <span class="menu">Compositions</span> tab in the Resources window and click <span class="menu">New Timeline</span> or <span class="menu">New Switcher</span>.</li>
+    <li>Add cues with <span class="menu">Add cue from the media bin...</span>, or drag media from the bin onto it. A video holds for its own length to begin with; change the <span class="menu">Hold</span> time per cue (0 waits for Next).</li>
+    <li>Set the <span class="menu">Crossfade</span> time (0 is a cut). With <span class="menu">Restart clips on cue</span> on, each video starts from its beginning when its cue comes on.</li>
+    <li>Select quads on the canvas and click <span class="menu">Put on N selected quads</span>.</li>
+    <li>Use <span class="menu">Previous</span>, <span class="menu">Next</span> and the numbered cue buttons during the show. They work while the show is locked.</li>
+  </ol>
+  <p>A composition's sound is the sound of the cue showing. Video export renders compositions but does not yet include their sound.</p>
 </section>
 
 <section id="outputs">
@@ -256,7 +266,7 @@
     <li>For OSC, tick <span class="menu">Enable OSC input</span>. QUADmapper listens on the <span class="menu">UDP port</span> shown there (8000 to begin with). Change the port, then click <span class="menu">Apply</span>. OSC is off until you turn it on.</li>
     <li>For MIDI, tick your device in the MIDI list, then use <span class="menu">MIDI Learn</span> to bind a control to a target.</li>
   </ol>
-  <p>For example, <span class="menu">/qm/blackout</span> toggles blackout, and <span class="menu">/qm/scene/take</span> takes a scene.</p>
+  <p>For example, <span class="menu">/qm/blackout</span> toggles blackout, and <span class="menu">/qm/scene/take</span> takes a scene. A composition is addressed by its name: <span class="menu">/qm/composition/Timeline 1/next</span>, <span class="menu">/prev</span>, <span class="menu">/cue</span> with the cue number, <span class="menu">/play</span>, <span class="menu">/pause</span>, <span class="menu">/restart</span> and <span class="menu">/fade</span> with the crossfade in seconds (up to 30). A short name without spaces is easiest to type on a controller.</p>
 </section>
 
 <section id="help">

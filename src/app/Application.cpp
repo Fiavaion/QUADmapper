@@ -913,8 +913,9 @@ void Application::syncAudio() {
     ScopedMainThreadTiming timing("syncAudio");
     if (!m_audioEngine || !m_sourceManager || !m_editorState || !m_outputManager) return;
     const EditorState& es = *m_editorState;
-    syncSourceAudio(*m_audioEngine, *m_sourceManager,
-                    heardSourceGains(es.scenes, es.activeSceneId, *m_outputManager));
+    auto gains = heardSourceGains(es.scenes, es.activeSceneId, *m_outputManager);
+    addCompositionCueGains(*m_sourceManager, gains);  // a composition's clips (ADR-061)
+    syncSourceAudio(*m_audioEngine, *m_sourceManager, gains);
 }
 
 void Application::emergencySave() noexcept {
