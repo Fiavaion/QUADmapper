@@ -2,6 +2,8 @@
 #include "core/Logger.hpp"
 #include <glad/glad.h>
 
+#include <algorithm>
+
 namespace quadmapper {
 
 ProceduralSource::ProceduralSource(const std::string& name, int width, int height)
@@ -84,21 +86,6 @@ SourceCapabilities ProceduralSource::getCapabilities() const {
     return caps;
 }
 
-void ProceduralSource::setResolution(int width, int height) {
-    if (width == width_ && height == height_) {
-        return;
-    }
-
-    width_ = width;
-    height_ = height;
-
-    if (ready_) {
-        destroyOutputTexture();
-        createOutputTexture();
-        dirty_ = true;
-    }
-}
-
 void ProceduralSource::regenerate() {
     if (!ready_ || !shader_ || outputTexture_ == 0) {
         return;
@@ -138,11 +125,21 @@ void ProceduralSource::createOutputTexture() {
         return;
     }
 
+    constexpr int MAX_SIDE = 8192;
+    width_ = std::clamp(width_, 1, MAX_SIDE);
+    height_ = std::clamp(height_, 1, MAX_SIDE);
+
     glGenTextures(1, &outputTexture_);
     glBindTexture(GL_TEXTURE_2D, outputTexture_);
 
     // Allocate storage (RGBA8 for compute shader output)
+    while (glGetError() != GL_NO_ERROR) {}
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (glGetError() != GL_NO_ERROR) {
+        glBindTexture(GL_TEXTURE_2D, 0);
+        destroyOutputTexture();
+        return;
+    }
 
     // Set texture parameters
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
