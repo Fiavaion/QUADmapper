@@ -540,6 +540,27 @@ TEST(SidecarClientTest, SegmentReplyWithABadOutlineOrVersionIsRefused) {
     EXPECT_FALSE(parseSegmentResponse("not json", 1));
 }
 
+TEST(SidecarClientTest, AReplyWithANumberAFloatCannotHoldIsRefused) {
+    for (const char* reply : {
+             R"({"api_version": 1, "corners": [[0,0],[1e300,0],[1,1],[0,1]]})",
+             R"({"api_version": 1, "corners": [[0,0],[1,0],[1,1],[0,"1"]]})",
+             R"({"api_version": 1, "corners": [[0,0],[1,0],[1,1],[0,1]], "confidence": 1e300})",
+             R"({"api_version": 1, "corners": [[0,0],[1,0],[1,1],[0,1]], "outline": [[1e300, 0]]})"}) {
+        EXPECT_FALSE(parseSegmentResponse(reply, 1)) << reply;
+    }
+
+    auto r = parseSegmentResponse(R"({"api_version": 1, "corners": [[0,0],[1,0],[1,1],[0,1]],
+        "confidence": 7.5, "planarity": 1e300})", 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FLOAT_EQ(r->confidence, 1.0f);
+    EXPECT_FALSE(r->planarity.has_value());
+
+    EXPECT_FALSE(quadmapper::ai::parseGrayMapResponse(
+        R"({"api_version": 1, "points": [[1e300, 0]], "valid": [true]})", 1, 1));
+    EXPECT_FALSE(quadmapper::ai::parseGrayCodeResponse(
+        R"({"api_version": 1, "map_path": "C:/m.npz", "coverage": 1e300})", 1));
+}
+
 TEST(SidecarClientTest, CapabilitiesDefaultForAnOldSidecar) {
     EXPECT_EQ(parseCapabilities(R"({"status": "ok", "api_version": 1})"),
               (std::vector<std::string>{"surface", "oneflash"}));

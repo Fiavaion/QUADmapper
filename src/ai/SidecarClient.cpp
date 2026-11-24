@@ -8,8 +8,10 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -259,6 +261,14 @@ bool listenersInJob(int port, HANDLE job) {
     return found;
 }
 
+// A number from a reply as a float: nullopt unless it is finite and a float can hold it.
+std::optional<float> finiteFloat(const json& value) {
+    if (!value.is_number()) return std::nullopt;
+    const double d = value.get<double>();
+    if (!std::isfinite(d) || std::abs(d) > std::numeric_limits<float>::max()) return std::nullopt;
+    return static_cast<float>(d);
+}
+
 // Parse a corners response (shared by /surface and /oneflash): validates the
 // api_version, reads corners[4], and the optional plane/confidence/stub. The
 // homography in a /oneflash reply is ignored on the C++ side — only the corners
@@ -274,18 +284,31 @@ std::optional<SurfaceResult> parseCornersResponse(const std::string& body,
         const auto& corners = j.at("corners");
         if (!corners.is_array() || corners.size() != 4) return std::nullopt;
         for (size_t i = 0; i < 4; ++i) {
-            out.corners[i][0] = corners[i].at(0).get<float>();
-            out.corners[i][1] = corners[i].at(1).get<float>();
+            for (size_t axis = 0; axis < 2; ++axis) {
+                const std::optional<float> value = finiteFloat(corners[i].at(axis));
+                if (!value) return std::nullopt;
+                out.corners[i][axis] = *value;
+            }
         }
         if (j.contains("plane") && j["plane"].is_object()) {
             const auto& plane = j.at("plane");
             const auto& n = plane.value("normal", json::array({0, 0, 1}));
             for (size_t i = 0; i < 3 && i < n.size(); ++i) {
-                out.planeNormal[i] = n[i].get<float>();
+                const std::optional<float> value = finiteFloat(n[i]);
+                if (!value) return std::nullopt;
+                out.planeNormal[i] = *value;
             }
-            out.planeD = plane.value("d", 0.0f);
+            if (plane.contains("d")) {
+                const std::optional<float> d = finiteFloat(plane["d"]);
+                if (!d) return std::nullopt;
+                out.planeD = *d;
+            }
         }
-        out.confidence = j.value("confidence", 0.0f);
+        if (j.contains("confidence")) {
+            const std::optional<float> confidence = finiteFloat(j["confidence"]);
+            if (!confidence) return std::nullopt;
+            out.confidence = std::clamp(*confidence, 0.0f, 1.0f);
+        }
         out.stub = j.value("stub", false);
         return out;
     } catch (const json::exception&) {
@@ -313,16 +336,14 @@ std::optional<SegmentResult> parseSegmentResponse(const std::string& body,
             }
             out.outline.reserve(outline.size());
             for (const json& point : outline) {
-                if (!point.is_array() || point.size() != 2 || !point[0].is_number() ||
-                    !point[1].is_number()) {
-                    return std::nullopt;
-                }
-                out.outline.push_back({point[0].get<float>(), point[1].get<float>()});
+                if (!point.is_array() || point.size() != 2) return std::nullopt;
+                const std::optional<float> x = finiteFloat(point[0]);
+                const std::optional<float> y = finiteFloat(point[1]);
+                if (!x || !y) return std::nullopt;
+                out.outline.push_back({*x, *y});
             }
         }
-        if (j.contains("planarity") && j.at("planarity").is_number()) {
-            out.planarity = j.at("planarity").get<float>();
-        }
+        if (j.contains("planarity")) out.planarity = finiteFloat(j.at("planarity"));
         return out;
     } catch (const json::exception&) {
         return std::nullopt;
@@ -359,13 +380,16 @@ std::optional<GrayCodeResult> parseGrayCodeResponse(const std::string& body,
         if (out.stub) return out;
         const json& path = j.at("map_path");
         const json& coverage = j.at("coverage");
-        if (!path.is_string() || path.get<std::string>().empty() || !coverage.is_number()) {
+        const std::optional<float> covered = finiteFloat(coverage);
+        if (!path.is_string() || path.get<std::string>().empty() || !covered) {
             return std::nullopt;
         }
         out.mapPath = path.get<std::string>();
-        out.coverage = std::clamp(coverage.get<float>(), 0.0f, 1.0f);
-        if (j.contains("decode_error_px") && j.at("decode_error_px").is_number()) {
-            out.decodeErrorPx = j.at("decode_error_px").get<float>();
+        out.coverage = std::clamp(*covered, 0.0f, 1.0f);
+        if (j.contains("decode_error_px")) {
+            if (const std::optional<float> error = finiteFloat(j.at("decode_error_px"))) {
+                out.decodeErrorPx = *error;
+            }
         }
         return out;
     } catch (const json::exception&) {
@@ -388,11 +412,11 @@ std::optional<GrayMapResult> parseGrayMapResponse(const std::string& body,
         GrayMapResult out;
         for (size_t i = 0; i < expectedPoints; ++i) {
             const json& p = points[i];
-            if (!p.is_array() || p.size() != 2 || !p[0].is_number() || !p[1].is_number() ||
-                !valid[i].is_boolean()) {
-                return std::nullopt;
-            }
-            out.points.push_back({p[0].get<float>(), p[1].get<float>()});
+            if (!p.is_array() || p.size() != 2 || !valid[i].is_boolean()) return std::nullopt;
+            const std::optional<float> x = finiteFloat(p[0]);
+            const std::optional<float> y = finiteFloat(p[1]);
+            if (!x || !y) return std::nullopt;
+            out.points.push_back({*x, *y});
             out.valid.push_back(valid[i].get<bool>());
         }
         return out;
