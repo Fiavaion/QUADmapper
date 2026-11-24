@@ -288,8 +288,8 @@ void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& proj
             return live;
         }
         // A composition (ADR-061): its cues' sources first. A missing file keeps its
-        // missing-source id (black, written back on save); a composition as a cue is
-        // dropped (no nesting).
+        // missing-source id (black, written back on save); a cue naming a composition
+        // keeps its hold time and shows black (no nesting).
         sourceRemap.emplace(src.id, UUID());  // a cue naming its own composition finds null
         const UUID live = createCompositionFrom(*sm, src, [&](const UUID& savedCue) -> UUID {
             auto cue = savedSources.find(savedCue);
