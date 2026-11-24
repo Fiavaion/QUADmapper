@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <fstream>
 #include <new>
 #include <string>
@@ -302,6 +303,9 @@ void ObjLoadQueue::run() {
                 return loadObj(path, &cancelRunning_);
             } catch (const std::bad_alloc&) {
                 return Err<MeshData>(utf8FromPath(path.filename()) + ": not enough memory to import");
+            } catch (const std::exception& e) {
+                return Err<MeshData>(utf8FromPath(path.filename()) + ": import failed (" + e.what() + ")");
+            }
         }();
 
         lock.lock();
