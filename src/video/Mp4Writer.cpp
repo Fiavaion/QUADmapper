@@ -97,7 +97,9 @@ public:
             source = rgba + static_cast<ptrdiff_t>(sourceHeight_ - 1) * stride;
             sourceStride = -stride;
         }
-        sws_scale(sws_, &source, &sourceStride, 0, height_, frame_->data, frame_->linesize);
+        if (sws_scale(sws_, &source, &sourceStride, 0, height_, frame_->data, frame_->linesize) <= 0) {
+            return fail("A video frame could not be converted.");
+        }
         frame_->pts = frames_;
         if (!encode(video_, videoStream_, frame_)) return false;
         ++frames_;
