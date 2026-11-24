@@ -641,6 +641,7 @@ private:
 
     // Setup key callbacks on output windows for perform mode
     void setupPerformModeKeyCallbacks();
+    void setPerformModeKeyCallback(OutputWindow& output);
 
     // Remove key callbacks from output windows
     void clearPerformModeKeyCallbacks();

@@ -587,6 +587,9 @@ bool OutputManager::showOnResolvedMonitor(OutputWindow& output) {
     }
     LOG_INFO("Output '{}' {} on monitor {}", output.getName(),
              useBorderlessFullscreen_ ? "borderless fullscreen" : "fullscreen", monitorIndex);
+    // An output whose window was made after the show started has no keys yet: Esc,
+    // F11, blackout and the scene takes must work on it too.
+    if (performMode_) setPerformModeKeyCallback(output);
     return true;
 }
 
@@ -1693,10 +1696,14 @@ void OutputManager::setupPerformModeKeyCallbacks() {
         if (!output->isCreated()) {
             continue;
         }
-        output->setKeyCallback([this](int key, int /*scancode*/, int action, int mods) {
-            handleOutputWindowKey(key, action, mods);
-        });
+        setPerformModeKeyCallback(*output);
     }
+}
+
+void OutputManager::setPerformModeKeyCallback(OutputWindow& output) {
+    output.setKeyCallback([this](int key, int /*scancode*/, int action, int mods) {
+        handleOutputWindowKey(key, action, mods);
+    });
 }
 
 int OutputManager::sceneTakeNumber(int key, int action, int mods) {
