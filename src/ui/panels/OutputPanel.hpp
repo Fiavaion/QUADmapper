@@ -65,6 +65,13 @@ private:
     EditorState* es_ = nullptr;
     OutputManager* outputManager_ = nullptr;
 
+    // The custom width/height being typed; applied when the field is left.
+    UUID resEditId_;
+    bool editingWidth_ = false;
+    bool editingHeight_ = false;
+    int pendingWidth_ = 0;
+    int pendingHeight_ = 0;
+
     // State for renaming
     bool isRenaming_ = false;
     int renamingIndex_ = -1;

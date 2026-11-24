@@ -369,9 +369,19 @@ void OutputPanel::renderResolutionControls(OutputWindow* output) {
     // Custom resolution inputs
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60);
-    int width = res.x;
-    if (ImGui::InputInt("##width", &width, 0, 0)) {
-        if (width > 0 && width <= 7680) {  // Max 8K
+    if (resEditId_ != output->getId()) {
+        resEditId_ = output->getId();
+        editingWidth_ = false;
+        editingHeight_ = false;
+    }
+    int width = editingWidth_ ? pendingWidth_ : res.x;
+    ImGui::InputInt("##width", &width, 0, 0);
+    if (ImGui::IsItemActive()) {
+        pendingWidth_ = width;
+        editingWidth_ = true;
+    } else {
+        editingWidth_ = false;
+        if (ImGui::IsItemDeactivatedAfterEdit() && width >= 64 && width <= 7680) {  // Max 8K
             output->setResolution(IVec2(width, res.y));
         }
     }
@@ -381,9 +391,14 @@ void OutputPanel::renderResolutionControls(OutputWindow* output) {
     ImGui::SameLine();
 
     ImGui::SetNextItemWidth(60);
-    int height = res.y;
-    if (ImGui::InputInt("##height", &height, 0, 0)) {
-        if (height > 0 && height <= 4320) {  // Max 8K
+    int height = editingHeight_ ? pendingHeight_ : res.y;
+    ImGui::InputInt("##height", &height, 0, 0);
+    if (ImGui::IsItemActive()) {
+        pendingHeight_ = height;
+        editingHeight_ = true;
+    } else {
+        editingHeight_ = false;
+        if (ImGui::IsItemDeactivatedAfterEdit() && height >= 64 && height <= 4320) {  // Max 8K
             output->setResolution(IVec2(res.x, height));
         }
     }
