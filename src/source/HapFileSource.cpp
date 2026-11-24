@@ -7,6 +7,7 @@
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 #include "core/MediaLimits.hpp"
+#include "renderer/Texture.hpp"  // compressedByteSize
 
 #include <algorithm>
 #include <atomic>
@@ -104,6 +105,10 @@ struct HapFileSource::OpenedFile::Data {
             return nullptr;
         }
         d->timeBase = av_q2d(stream->time_base);
+        if (!(d->timeBase > 0.0)) {
+            Logger::error("HapFileSource: '{}': the video stream has no valid time base", pathStr);
+            return nullptr;
+        }
         // Frame times are relative to the stream start, so pts 0 is the first frame.
         d->startPts = stream->start_time != AV_NOPTS_VALUE ? stream->start_time : 0;
 
@@ -462,6 +467,12 @@ private:
         GpuCompressedFormat cf = toCompressedFormat(decoded.format);
         if (cf == GpuCompressedFormat::None) {
             Logger::warning("HapFileSource: unsupported HAP texture format; skipping");
+            return false;
+        }
+        if (buffer->size() != Texture::compressedByteSize(cf, width_, height_)) {
+            Logger::warning("HapFileSource: a HAP frame of {} bytes does not fit {}x{}; skipping",
+                            buffer->size(), width_, height_);
+            failure = "HAP frame size does not match the clip's dimensions";
             return false;
         }
         if (!decoded.alphaPlane.empty() && !loggedAlphaPlane_) {

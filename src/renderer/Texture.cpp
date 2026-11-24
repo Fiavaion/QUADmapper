@@ -214,11 +214,30 @@ bool Texture::createEmpty(int width, int height, int channels) {
     return create(width, height, channels, nullptr);
 }
 
+size_t Texture::compressedByteSize(GpuCompressedFormat fmt, int width, int height) {
+    if (width <= 0 || height <= 0) return 0;
+    size_t bytesPerBlock = 0;
+    switch (fmt) {
+        case GpuCompressedFormat::BC1_RGB:   bytesPerBlock = 8; break;
+        case GpuCompressedFormat::BC3_RGBA:
+        case GpuCompressedFormat::BC3_YCoCg:
+        case GpuCompressedFormat::BC7_RGBA:  bytesPerBlock = 16; break;
+        case GpuCompressedFormat::None:
+        default:                             return 0;
+    }
+    const size_t blocks = ((static_cast<size_t>(width) + 3) / 4) * ((static_cast<size_t>(height) + 3) / 4);
+    return blocks * bytesPerBlock;
+}
+
 bool Texture::createCompressed(int width, int height, GpuCompressedFormat fmt,
                                const unsigned char* data, size_t size) {
     GLenum internalFormat = glCompressedInternalFormat(fmt);
     if (internalFormat == 0 || width <= 0 || height <= 0) {
         Logger::error("Texture::createCompressed: invalid format/dimensions ({}x{})", width, height);
+        return false;
+    }
+    if (size != 0 && size != compressedByteSize(fmt, width, height)) {
+        Logger::error("Texture::createCompressed: {} bytes is not the size of a {}x{} level", size, width, height);
         return false;
     }
 
@@ -264,6 +283,10 @@ bool Texture::updateCompressed(const unsigned char* data, size_t size) {
 
     GLenum internalFormat = glCompressedInternalFormat(compressedFormat_);
     if (internalFormat == 0) {
+        return false;
+    }
+    if (size != compressedByteSize(compressedFormat_, width_, height_)) {
+        Logger::error("Texture::updateCompressed: {} bytes is not the size of a {}x{} level", size, width_, height_);
         return false;
     }
 

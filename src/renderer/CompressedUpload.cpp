@@ -177,10 +177,10 @@ bool CompressedUploader::upload(const std::shared_ptr<const std::vector<uint8_t>
         staged.mapped = nullptr;
         staged.mappedBytes = 0;
         if (intact) {
-            target.updateCompressed(nullptr, size);  // from offset 0 of the bound buffer
+            const bool uploaded = target.updateCompressed(nullptr, size);  // from offset 0 of the bound buffer
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
             staged.bytes.reset();
-            return true;
+            return uploaded;
         }
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
         staging = false;  // contents lost (a display mode change): copy again

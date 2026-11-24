@@ -857,8 +857,11 @@ void SourceManager::uploadFrameToTexture(SourceEntry& entry) {
             entry.texture->compressedFormat() != frame->compressedFormat ||
             entry.texture->getWidth() != frame->width ||
             entry.texture->getHeight() != frame->height) {
-            entry.texture->createCompressed(frame->width, frame->height, frame->compressedFormat,
-                                            nullptr, frame->compressed->size());
+            if (!entry.texture->createCompressed(frame->width, frame->height, frame->compressedFormat,
+                                                 nullptr, frame->compressed->size())) {
+                entry.source->markFrameConsumed();
+                return;
+            }
         }
         // Through the source's pixel buffers, the bytes copied off the main thread (TD-31).
         if (!entry.compressedUpload) entry.compressedUpload = std::make_unique<CompressedUploadState>();

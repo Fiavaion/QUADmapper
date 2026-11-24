@@ -122,6 +122,32 @@ TEST(HapUploadTest, SyntheticCompressedUploadNoGlError) {
     }
 }
 
+// A level of the wrong size is refused with nothing uploaded; the right size still works.
+TEST(HapUploadTest, CompressedUploadOfTheWrongSizeIsRefused) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    auto& caps = GpuCapabilities::get();
+    caps.queryOnce();
+    if (!caps.s3tc) GTEST_SKIP() << "GPU lacks GL_EXT_texture_compression_s3tc";
+    while (glGetError() != GL_NO_ERROR) {}
+
+    const int W = 64, H = 32;
+    const size_t bytes = blockBytes(W, H, /*dxt1=*/false);
+    EXPECT_EQ(Texture::compressedByteSize(GpuCompressedFormat::BC3_YCoCg, W, H), bytes);
+    EXPECT_EQ(Texture::compressedByteSize(GpuCompressedFormat::BC1_RGB, W, H), blockBytes(W, H, /*dxt1=*/true));
+    EXPECT_EQ(Texture::compressedByteSize(GpuCompressedFormat::BC1_RGB, 5, 5), 4u * 8u);
+
+    std::vector<unsigned char> blob(bytes, 0x11);
+    Texture tex;
+    EXPECT_FALSE(tex.createCompressed(W, H, GpuCompressedFormat::BC3_RGBA, blob.data(), bytes - 16));
+    EXPECT_FALSE(tex.isValid());
+    ASSERT_TRUE(tex.createCompressed(W, H, GpuCompressedFormat::BC3_RGBA, blob.data(), bytes));
+    EXPECT_FALSE(tex.updateCompressed(blob.data(), bytes - 16));
+    EXPECT_FALSE(tex.updateCompressed(blob.data(), bytes + 16));
+    EXPECT_TRUE(tex.updateCompressed(blob.data(), bytes));
+    EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+}
+
 // TD-31: frames go up through the source's pixel buffers, copied there off the main
 // thread. Each texture holds exactly the frame uploaded, whether prefetch() staged it
 // (the next frame, as in steady playback) or not (a seek or a dropped frame), and no

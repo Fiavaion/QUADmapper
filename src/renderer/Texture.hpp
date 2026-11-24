@@ -41,7 +41,8 @@ public:
 
     // Create a GPU-compressed (BCn) texture from raw block bytes (ADR-044, HAP).
     // `data`/`size` may be the full BCn blob (uploaded immediately) or nullptr/0
-    // to allocate storage only. Sets colorSpace() to YCoCg for BC3_YCoCg.
+    // to allocate storage only. A non-zero `size` that is not compressedByteSize()
+    // fails (false) and leaves the texture as it was. Sets colorSpace() to YCoCg for BC3_YCoCg.
     // Caller must capability-gate (GpuCapabilities) before calling — the format
     // is a GL extension above the 3.3 floor.
     bool createCompressed(int width, int height, GpuCompressedFormat fmt,
@@ -49,7 +50,12 @@ public:
 
     // Re-upload the full compressed level for an existing compressed texture. While a
     // GL_PIXEL_UNPACK_BUFFER is bound, `data` is an offset into that buffer (as in GL).
+    // False, with nothing uploaded, when `size` is not compressedByteSize() of the texture.
     bool updateCompressed(const unsigned char* data, size_t size);
+
+    // Bytes one compressed level of width x height needs in `fmt`: 4x4 blocks of 8 bytes
+    // (BC1) or 16 (BC3, BC7). 0 for None or a non-positive size.
+    static size_t compressedByteSize(GpuCompressedFormat fmt, int width, int height);
 
     // Update texture data
     void update(const unsigned char* data);
