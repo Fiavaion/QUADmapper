@@ -81,8 +81,9 @@ public:
 
     // Once per interactive frame, after the frame is presented: posts a one-shot
     // status when an async connect resolves (TD-10), applies a finished request's
-    // outcome, and runs the QM_AI_SELFTEST hook on the third frame.
-    void tick(OutputManager* outputs);
+    // outcome, and runs the QM_AI_SELFTEST hook on the third frame. The hook starts the
+    // AI engine, so it runs only with the AI Assist beta on (`aiBetaOn`).
+    void tick(OutputManager* outputs, bool aiBetaOn);
 
     // A Gray-code map of one output (ADR-053 §3), held for the session only: never in
     // the .qmap. Made at `output`'s resolution and display; a change to either makes it

@@ -409,7 +409,7 @@ void AiAssist::run(EditorServices::AiAction action, OutputManager* outputs) {
     }
 }
 
-void AiAssist::tick(OutputManager* outputs) {
+void AiAssist::tick(OutputManager* outputs, bool aiBetaOn) {
     // TD-10: when the cached state leaves Starting, post a one-shot status so the
     // user sees connected/failed without a freeze.
     if (sidecar_) {
@@ -476,10 +476,15 @@ void AiAssist::tick(OutputManager* outputs) {
     // QM-058 verification hook (off unless QM_AI_SELFTEST is set): once the
     // first frames have built the default scene, enable the sidecar, select a
     // quad, and run one AI action headlessly so the full chain can be asserted
-    // from the log without driving ImGui menus. No-op in production.
+    // from the log without driving ImGui menus. No-op in production. It starts the
+    // engine, which the user has not agreed to while the beta is off.
     if (selfTestPending_ && ++frameCount_ >= 3) {
         selfTestPending_ = false;
-        runSelfTest(outputs);
+        if (aiBetaOn) {
+            runSelfTest(outputs);
+        } else {
+            Logger::warning("AI: QM_AI_SELFTEST ignored: AI Assist (beta) is off in Preferences");
+        }
     }
     editor_.aiScan.running = scan_ != nullptr;
 }

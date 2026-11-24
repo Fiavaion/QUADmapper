@@ -138,7 +138,7 @@ struct HeldWork {
 bool tickUntilIdle(AiAssist& ai) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (ai.isBusy() && std::chrono::steady_clock::now() < deadline) {
-        ai.tick(nullptr);
+        ai.tick(nullptr, false);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return !ai.isBusy();
@@ -162,7 +162,7 @@ TEST(AiAssistTest, ARequestRunsOffTheMainThreadAndLandsOnTheQuadPickedAtTheClick
     EXPECT_FALSE(ai.startRequest("AI: detecting surface...", "AI", a->getId(),
                                  work.returning({"never", 5.0f, kWarp})));
     EXPECT_STREQ(es.statusMessage, "AI: wait for the running request to finish");
-    ai.tick(nullptr);
+    ai.tick(nullptr, false);
     EXPECT_TRUE(ai.isBusy());
 
     es.quadManager().selectQuad(b->getId());  // the selection moves on meanwhile
@@ -285,9 +285,9 @@ TEST(AiAssistTest, ShutdownWithARequestStuckInFlightIsBounded) {
 TEST(AiAssistTest, TickWithAnIdleSidecarPostsNothing) {
     EditorState es;
     AiAssist ai(es, stoppedSidecar());
-    ai.tick(nullptr);
+    ai.tick(nullptr, false);
     ai.stopSidecar();
-    ai.tick(nullptr);
+    ai.tick(nullptr, false);
     EXPECT_STREQ(es.statusMessage, "");
     EXPECT_FALSE(ai.isActive());
 }
@@ -450,7 +450,7 @@ TEST(AiAssistLocateTest, EnableWithoutTheAiFeaturesSaysTheyAreNotInstalled) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (std::string(es.statusMessage) == "AI: starting the AI engine..." &&
            std::chrono::steady_clock::now() < deadline) {
-        ai.tick(nullptr);
+        ai.tick(nullptr, false);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     EXPECT_STREQ(es.statusMessage, "AI: the AI features are not installed");
@@ -922,7 +922,7 @@ void landWith(AiAssist& ai, OutputManager& outputs, const AiAssist::Outcome& out
     ASSERT_TRUE(ai.startRequest("working...", "Calibration", UUID::null(), [outcome] { return outcome; }));
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (ai.isBusy() && std::chrono::steady_clock::now() < deadline) {
-        ai.tick(&outputs);
+        ai.tick(&outputs, false);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     ASSERT_FALSE(ai.isBusy());
@@ -1000,7 +1000,7 @@ TEST(AiAssistScanTest, AMappedClickIsDroppedUnderTheLockOrWhenThePointOrCalibrat
     lockPerform(es);  // ends calibration too; the lock is what drops it first
     work.release();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (ai.isBusy() && std::chrono::steady_clock::now() < deadline) ai.tick(&outputs);
+    while (ai.isBusy() && std::chrono::steady_clock::now() < deadline) ai.tick(&outputs, false);
     EXPECT_EQ(points[0].pixel, Vec2(1.0f, 1.0f));
     EXPECT_STREQ(es.statusMessage,
                  "Calibration: result dropped - the show is locked (Output > Perform Lock)");

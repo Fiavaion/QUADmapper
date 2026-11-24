@@ -639,7 +639,7 @@ int Application::run() {
         m_aiBetaWasOn = aiBeta;
 
         // AI assist: report an async sidecar connect; the QM_AI_SELFTEST hook.
-        m_aiAssist->tick(m_outputManager.get());
+        m_aiAssist->tick(m_outputManager.get(), aiBeta);
     }
 
     Logger::info("Main loop ended");

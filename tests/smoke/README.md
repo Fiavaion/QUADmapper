@@ -18,7 +18,8 @@ and never assigns media):
   (avoids fragile ImGui menu-driving), then asserts via the app log + screenshots. `-TestImage`
   picks the scene: `test_screen.png` → status begins "AI: surface found (confidence X) - " + F11 (AC1/AC3); `test_wall.png` →
   "low confidence … tap the surface", no apply (AC2). Output in `out_ai/`. The `QM_AI_SELFTEST` /
-  `QM_AI_TEST_IMAGE` env vars are off in normal runs (verification seams).
+  `QM_AI_TEST_IMAGE` env vars are off in normal runs (verification seams). The hook runs only
+  with **AI Assist (beta)** ticked in Edit > Preferences; without it the app logs that it was ignored.
 
 - **`qa_lib.ps1`** — helpers for step-by-step agent/manual QA: dot-source it in each shell call
   (`. tests/smoke/qa_lib.ps1`), then `Start-Qa`, `Click`, `Drag`, `Tap`, `Chord`, `Paste`, `Cap`
