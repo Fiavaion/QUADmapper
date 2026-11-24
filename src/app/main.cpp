@@ -2,6 +2,7 @@
 #include "../core/FileSystem.hpp"
 #include "../core/Logger.hpp"
 
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -13,6 +14,13 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <dbghelp.h>
+
+#ifndef GLFW_INCLUDE_NONE
+#define GLFW_INCLUDE_NONE
+#endif
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
 
 // A Windows system library (minidumps); nothing to install or ship.
 #pragma comment(lib, "dbghelp.lib")
@@ -116,6 +124,44 @@ std::vector<std::string> utf8Arguments() {
     return args;
 }
 
+// Marks the editor window, so a second start can find it whatever its title is.
+const wchar_t* const MAIN_WINDOW_PROPERTY = L"QUADmapper.MainWindow";
+
+HWND editorWindow(const quadmapper::Application& app) {
+    GLFWwindow* window = app.getWindow();
+    return window ? glfwGetWin32Window(window) : nullptr;
+}
+
+BOOL CALLBACK findEditorWindow(HWND window, LPARAM found) {
+    if (!IsWindowVisible(window) || !GetPropW(window, MAIN_WINDOW_PROPERTY)) return TRUE;
+    *reinterpret_cast<HWND*>(found) = window;
+    return FALSE;
+}
+
+// One QUADmapper per session: two would share the recovery files, the preferences, the
+// OSC port and the projectors. A second start shows the running one and returns true.
+bool anotherInstanceRuns(bool wantedToOpenAShow) {
+    // Never closed: the mutex lasts as long as this process.
+    const HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\QUADmapper.SingleInstance");
+    const DWORD error = GetLastError();
+    const bool exists = mutex ? error == ERROR_ALREADY_EXISTS : error == ERROR_ACCESS_DENIED;
+    if (!exists) return false;
+
+    HWND running = nullptr;
+    EnumWindows(findEditorWindow, reinterpret_cast<LPARAM>(&running));
+    if (running) {
+        if (IsIconic(running)) ShowWindow(running, SW_RESTORE);
+        SetForegroundWindow(running);
+    }
+    if (!running || wantedToOpenAShow) {
+        MessageBoxW(nullptr, wantedToOpenAShow
+                        ? L"QUADmapper is already running.\n\nOpen the show there with File > Open."
+                        : L"QUADmapper is already running.",
+                    L"QUADmapper", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
+    }
+    return true;
+}
+
 }  // namespace
 
 int main(int /*argc*/, char* /*argv*/[]) {
@@ -127,11 +173,16 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     std::vector<std::string> args = utf8Arguments();
     std::vector<char*> argv;
+    bool opensAShow = false;
     for (std::string& arg : args) {
         argv.push_back(arg.data());
         // The headless harnesses (StressHarness, Bench) run unattended: no message boxes.
         if (arg.rfind("--stress", 0) == 0 || arg.rfind("--bench", 0) == 0) g_showMessages = false;
+        if (arg.size() > 5 && _stricmp(arg.c_str() + arg.size() - 5, ".qmap") == 0) opensAShow = true;
     }
+
+    // The harnesses run beside each other and beside the app.
+    if (g_showMessages && anotherInstanceRuns(opensAShow)) return 0;
 
     installCrashFilter();
 
@@ -151,7 +202,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
             return 1;
         }
 
+        if (!app.isHarnessRun()) {
+            SetPropW(editorWindow(app), MAIN_WINDOW_PROPERTY, reinterpret_cast<HANDLE>(1));
+        }
+
         int result = app.run();
+
+        RemovePropW(editorWindow(app), MAIN_WINDOW_PROPERTY);
 
         quadmapper::Logger::info("QUADmapper exiting with code {}", result);
         g_app = nullptr;
