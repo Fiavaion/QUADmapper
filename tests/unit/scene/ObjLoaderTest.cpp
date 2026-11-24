@@ -185,6 +185,14 @@ TEST_F(ObjLoaderTest, ALineTooLongToBeRealFailsTheImport) {
     EXPECT_TRUE(unterminated.isSuccess());
 }
 
+TEST_F(ObjLoaderTest, ACoordinateTooLargeForAFloatToPlaceFailsTheImport) {
+    auto result = loadObj(write("v 0 0 0\nv 1e10 0 0\nv 0 1 0\nf 1 2 3\n"));
+    ASSERT_TRUE(result.isError());
+    EXPECT_NE(result.error().message.find("line 2"), std::string::npos) << result.error().message;
+
+    EXPECT_TRUE(loadObj(write("v 0 0 0\nv -9e8 0 0\nv 0 1 0\nf 1 2 3\n")).isSuccess());
+}
+
 TEST_F(ObjLoaderTest, EmptyOrFacelessFileReturnsErr) {
     EXPECT_TRUE(loadObj(write("")).isError());
     EXPECT_TRUE(loadObj(write("# only a comment\nv 0 0 0\n")).isError());

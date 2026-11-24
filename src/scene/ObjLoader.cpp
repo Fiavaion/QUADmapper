@@ -24,6 +24,9 @@ constexpr size_t kMaxElements = size_t(1) << 24;  // per v/vt/vn list, and per t
 // A line is read into a buffer of this size, so one endless line cannot be read whole.
 // A face of tens of thousands of vertices still fits.
 constexpr size_t kMaxLineBytes = size_t(1) << 20;
+// A float cannot tell neighbouring points apart beyond this, and the normals and bounds
+// computed from larger values overflow.
+constexpr float kMaxCoordinate = 1e9f;
 
 // One face corner as resolved 0-based indices; -1 = not given.
 struct Corner {
@@ -125,6 +128,10 @@ Result<MeshData, Error> loadObj(const fs::path& path, const std::atomic<bool>* c
             if (tokens.size() < 4 || !parseFloat(tokens[1], p.x) || !parseFloat(tokens[2], p.y) ||
                 !parseFloat(tokens[3], p.z)) {
                 return fail("expected three numbers after '" + std::string(kw) + "'");
+            }
+            if (kw == "v" && (std::abs(p.x) > kMaxCoordinate || std::abs(p.y) > kMaxCoordinate ||
+                              std::abs(p.z) > kMaxCoordinate)) {
+                return fail("a coordinate is too large");
             }
             auto& list = (kw == "v") ? positions : normals;
             if (list.size() >= kMaxElements) return fail("too many elements");
