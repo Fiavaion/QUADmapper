@@ -2,6 +2,7 @@
 #include "AudioFrame.hpp"
 #include "core/Logger.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 
@@ -67,6 +68,11 @@ public:
         }
 
         AVStream* stream = formatCtx_->streams[audioStreamIndex_];
+        if (stream->time_base.num <= 0 || stream->time_base.den <= 0) {
+            LOG_WARNING("Audio: the stream in {} has no valid time base", pathStr);
+            close();
+            return false;
+        }
         const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
         if (!codec) {
             LOG_WARNING("Audio: unsupported codec in {}", pathStr);
@@ -96,6 +102,8 @@ public:
         } else if (stream->duration != AV_NOPTS_VALUE) {
             info_.duration = static_cast<double>(stream->duration) * av_q2d(stream->time_base);
         }
+        // A header can claim any length: keep it where the sample count below fits.
+        info_.duration = std::clamp(info_.duration, 0.0, MAX_DURATION_SECONDS);
         if (info_.duration > 0 && info_.sampleRate > 0) {
             info_.totalSamples = static_cast<int64_t>(info_.duration * info_.sampleRate);
         }
@@ -215,6 +223,7 @@ public:
 private:
     static constexpr int MAX_READ_ATTEMPTS = 4096;
     static constexpr double SEEK_PREROLL_SECONDS = 0.1;
+    static constexpr double MAX_DURATION_SECONDS = 1e7;  // 115 days
 
     // FFmpeg's interrupt callback: non-zero ends a read.
     static int interruptRequested(void* interrupted) {

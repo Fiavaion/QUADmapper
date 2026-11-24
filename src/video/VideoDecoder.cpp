@@ -535,6 +535,13 @@ public:
             return false;
         }
 
+        if (const AVRational base = formatCtx_->streams[videoStreamIndex_]->time_base;
+            base.num <= 0 || base.den <= 0) {
+            LOG_ERROR("The video stream has no valid time base");
+            close();
+            return false;
+        }
+
         const AVCodecID codecId = formatCtx_->streams[videoStreamIndex_]->codecpar->codec_id;
         bool hardware = options_.hardware && !isLive_ && hardwareCodec(codecId);
         if (options_.hardware && !hardware) setDecodeNote("the GPU decoder does not handle this codec");
@@ -585,6 +592,9 @@ public:
         } else if (formatCtx_->duration != AV_NOPTS_VALUE) {
             info_.duration = static_cast<double>(formatCtx_->duration) / AV_TIME_BASE;
         }
+
+        // A header can claim any length: keep it where the frame count below fits.
+        info_.duration = std::clamp(info_.duration, 0.0, MAX_DURATION_SECONDS);
 
         // Calculate frame rate
         AVRational frameRate = av_guess_frame_rate(formatCtx_, videoStream, nullptr);
@@ -2387,6 +2397,7 @@ private:
     bool threadExited_ = false;  // the decode thread's function has returned; bufferMutex_
     // How long stopBackgroundDecoding() lets the thread finish what it is reading.
     static constexpr std::chrono::milliseconds STOP_GRACE{250};
+    static constexpr double MAX_DURATION_SECONDS = 1e7;  // 115 days
     std::atomic<bool> cutReads_{false};  // stopBackgroundDecoding(): the thread's reads fail at once
     DecodePlan pendingPlan_;            // guarded by bufferMutex_
     size_t maxBufferSize_ = 8;          // guarded by bufferMutex_ while the thread runs
