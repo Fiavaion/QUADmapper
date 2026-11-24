@@ -521,7 +521,12 @@ void ProjectSession::autosaveIfDue() {
 
 void ProjectSession::finishAutosaveWrite() {
     if (!m_autosaveWrite.valid()) return;
-    auto result = m_autosaveWrite.get();
+    Result<void, Error> result = Err("the autosave could not run");
+    try {
+        result = m_autosaveWrite.get();
+    } catch (const std::exception& e) {  // thrown on the worker, rethrown by get()
+        result = Err(e.what());
+    }
     if (!result) {
         reportAutosaveFailure(result.error().message);
         m_autosavedSnapshot.clear();  // retry on the next tick
@@ -627,7 +632,14 @@ void ProjectSession::pollMissingMediaSearch() {
         }
         return;
     }
-    const relocate::FolderIndex index = m_mediaSearch.get();
+    relocate::FolderIndex index;
+    try {
+        index = m_mediaSearch.get();
+    } catch (const std::exception& e) {  // thrown on the worker, rethrown by get()
+        Logger::error("Missing media search failed: {}", e.what());
+        postStatus(es, "The search for missing media could not finish: " + std::string(e.what()));
+        return;
+    }
     const size_t missing = collectMissingMedia(es, m_services.sources).size();
     const int resolved = relocateMissingFromIndex(es, m_services.sources, index);
     std::string status = "Found " + std::to_string(resolved) + " of " + std::to_string(missing) +
