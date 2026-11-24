@@ -21,6 +21,9 @@ namespace fs = std::filesystem;
 // list is far past any projection model and a quarter of the earlier 2^26 limit.
 constexpr std::uintmax_t kMaxFileBytes = 512ull * 1024 * 1024;
 constexpr size_t kMaxElements = size_t(1) << 24;  // per v/vt/vn list, and per triangle list
+// A line is read into a buffer of this size, so one endless line cannot be read whole.
+// A face of tens of thousands of vertices still fits.
+constexpr size_t kMaxLineBytes = size_t(1) << 20;
 
 // One face corner as resolved 0-based indices; -1 = not given.
 struct Corner {
@@ -94,7 +97,7 @@ Result<MeshData, Error> loadObj(const fs::path& path, const std::atomic<bool>* c
     bool anyUv = false;
     bool allNormals = true;
 
-    std::string line;
+    std::string line(kMaxLineBytes + 1, '\0');
     std::vector<std::string_view> tokens;
     std::vector<uint32_t> face;
     size_t lineNo = 0;
@@ -102,12 +105,13 @@ Result<MeshData, Error> loadObj(const fs::path& path, const std::atomic<bool>* c
         return Err<MeshData>(name + " line " + std::to_string(lineNo) + ": " + what);
     };
 
-    while (std::getline(in, line)) {
+    // getline stops with failbit, and without eofbit, at a line that does not fit.
+    while (in.getline(line.data(), static_cast<std::streamsize>(line.size()))) {
         ++lineNo;
         if (cancel && (lineNo & 0xFFF) == 0 && cancel->load(std::memory_order_relaxed)) {
             return Err<MeshData>(name + ": loading cancelled");
         }
-        std::string_view view(line);
+        std::string_view view(line.c_str());
         if (const size_t hash = view.find('#'); hash != std::string_view::npos) {
             view = view.substr(0, hash);
         }
@@ -184,6 +188,10 @@ Result<MeshData, Error> loadObj(const fs::path& path, const std::atomic<bool>* c
         // Anything else (o, g, s, usemtl, mtllib, l, p, ...) carries no geometry we use.
     }
     if (in.bad()) return Err<MeshData>(name + ": read error");
+    if (!in.eof()) {
+        ++lineNo;
+        return fail("the line is too long");
+    }
     if (mesh.indices.empty()) return Err<MeshData>(name + ": no faces found");
 
     if (!anyUv) mesh.uvs.clear();
@@ -287,7 +295,6 @@ void ObjLoadQueue::run() {
                 return loadObj(path, &cancelRunning_);
             } catch (const std::bad_alloc&) {
                 return Err<MeshData>(utf8FromPath(path.filename()) + ": not enough memory to import");
-            }
         }();
 
         lock.lock();
