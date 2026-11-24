@@ -34,7 +34,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read the version
         id: version
@@ -58,7 +58,7 @@ jobs:
 
       - name: Restore the vcpkg binary cache
         id: vcpkg-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -71,7 +71,7 @@ jobs:
       # Saved here, not at the end, so a later failure does not lose a long FFmpeg build.
       - name: Save the vcpkg binary cache
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -89,7 +89,7 @@ jobs:
       - name: Upload the unsigned app exe
         if: env.SIGNPATH == 'true'
         id: upload-app
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unsigned-app
           path: .scratch/installer/stage/QUADmapper.exe
@@ -123,7 +123,7 @@ jobs:
       - name: Upload the unsigned installer
         if: env.SIGNPATH == 'true'
         id: upload-setup
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unsigned-setup
           path: packaging/out/QUADmapper-Setup-${{ steps.version.outputs.version }}.exe
@@ -146,7 +146,7 @@ jobs:
             version: "${{ steps.version.outputs.version }}"
 
       - name: Upload the installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: QUADmapper-Setup
           path: ${{ env.SIGNPATH == 'true' && 'packaging/signed' || 'packaging/out' }}/QUADmapper-Setup-${{ steps.version.outputs.version }}.exe
