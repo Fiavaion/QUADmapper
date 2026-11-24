@@ -123,6 +123,7 @@ void VideoExport::step(EditorState& live, OutputManager& outputs, Renderer& rend
     const auto until = std::chrono::steady_clock::now() + FRAME_BUDGET;
     std::string error;
     while (nextFrame_ < frameCount_) {
+        if (!framesDue(until)) break;  // a video is late: the editor draws a frame first
         if (!renderFrame(live, outputs, renderer, error)) {
             fail(error);
             return;
@@ -236,29 +237,40 @@ bool VideoExport::openTargets(OutputManager& outputs, std::string& error) {
     return true;
 }
 
-bool VideoExport::renderFrame(EditorState& live, OutputManager& outputs, Renderer& renderer,
-                              std::string& error) {
-    const int n = nextFrame_;
-    const double step = 1.0 / request_.fps;
-    setClock(n * step);
-
-    // Every video takes the frame due at this time before anything is drawn.
-    sources_->updateAll(n == 0 ? 0.0 : step);
-    using Duration = std::chrono::steady_clock::duration;
-    const Duration timeout = lateFrames_ >= LATE_FRAMES_BEFORE_SHORT_WAIT
-                                 ? std::chrono::duration_cast<Duration>(LATE_DECODE_TIMEOUT)
-                                 : std::chrono::duration_cast<Duration>(DECODE_TIMEOUT);
-    const auto waitUntil = std::chrono::steady_clock::now() + timeout;
+bool VideoExport::framesDue(std::chrono::steady_clock::time_point until) {
+    using Clock = std::chrono::steady_clock;
+    if (!waitingSince_) {
+        // The first try for this frame: the clock moves to its time and every video
+        // takes the frame due then.
+        const double step = 1.0 / request_.fps;
+        setClock(nextFrame_ * step);
+        sources_->updateAll(nextFrame_ == 0 ? 0.0 : step);
+        waitingSince_ = Clock::now();
+    } else {
+        sources_->updateAll(0.0);
+    }
+    const Clock::duration timeout = lateFrames_ >= LATE_FRAMES_BEFORE_SHORT_WAIT
+                                        ? std::chrono::duration_cast<Clock::duration>(LATE_DECODE_TIMEOUT)
+                                        : std::chrono::duration_cast<Clock::duration>(DECODE_TIMEOUT);
     while (!sources_->framesCoverClock()) {
-        if (std::chrono::steady_clock::now() >= waitUntil) {
+        const Clock::time_point now = Clock::now();
+        if (now - *waitingSince_ >= timeout) {
             if (lateFrames_++ < LATE_FRAMES_BEFORE_SHORT_WAIT) {
-                Logger::warning("Video export: a video was late at frame " + std::to_string(n));
+                Logger::warning("Video export: a video was late at frame " + std::to_string(nextFrame_));
             }
-            break;
+            break;  // drawn with the frame it has
         }
+        if (now >= until) return false;  // the wait goes on in the next app frame
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         sources_->updateAll(0.0);
     }
+    waitingSince_.reset();
+    return true;
+}
+
+bool VideoExport::renderFrame(EditorState& live, OutputManager& outputs, Renderer& renderer,
+                              std::string& error) {
+    const int n = nextFrame_;
     adoptFailedOpens(*es_, *sources_);
 
     // The snapshot's textures, plus the live test grids of quads without media (they

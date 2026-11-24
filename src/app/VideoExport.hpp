@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,11 @@ private:
 
     void stepOpening(OutputManager& outputs);
     bool openTargets(OutputManager& outputs, std::string& error);
+    // Moves the clock to the next frame's time and says whether every video has taken
+    // the frame due then. False: one is late and `until` has passed; call again in the
+    // next app frame. True also once a video has been late for the whole decode wait:
+    // the frame is then drawn with the picture that video has.
+    bool framesDue(std::chrono::steady_clock::time_point until);
     bool renderFrame(EditorState& live, OutputManager& outputs, Renderer& renderer, std::string& error);
     void finish();
     void fail(const std::string& message);
@@ -95,6 +101,8 @@ private:
     int frameCount_ = 0;
     int nextFrame_ = 0;
     int lateFrames_ = 0;  // frames on which a video missed its decode wait
+    // Since when the frame about to be drawn has waited for a late video.
+    std::optional<std::chrono::steady_clock::time_point> waitingSince_;
     std::vector<uint8_t> pixels_;
     std::vector<float> samples_;
 };
