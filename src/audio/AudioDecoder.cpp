@@ -107,7 +107,7 @@ public:
 
         outSampleRate_ = outSampleRate > 0 ? outSampleRate : info_.sampleRate;
         outChannels_ = (outChannels == 1 || outChannels == 2) ? outChannels : info_.channels;
-        if (!setupResampler()) {
+        if (!setupResampler(codecCtx_->ch_layout, codecCtx_->sample_fmt, codecCtx_->sample_rate)) {
             close();
             return false;
         }
@@ -130,6 +130,7 @@ public:
 
     void close() {
         if (swrCtx_) swr_free(&swrCtx_);
+        av_channel_layout_uninit(&inLayout_);
         if (frame_) av_frame_free(&frame_);
         if (packet_) av_packet_free(&packet_);
         if (codecCtx_) avcodec_free_context(&codecCtx_);
@@ -168,7 +169,7 @@ public:
         }
         avcodec_flush_buffers(codecCtx_);
         // Drop samples still buffered in the resampler from before the seek.
-        if (swr_init(swrCtx_) < 0) return false;
+        if (swrCtx_ && swr_init(swrCtx_) < 0) return false;
         demuxEnded_ = false;
         atEnd_ = false;
         currentTime_ = timeSeconds;
@@ -220,27 +221,47 @@ private:
         return static_cast<const std::atomic<bool>*>(interrupted)->load(std::memory_order_relaxed) ? 1 : 0;
     }
 
-    bool setupResampler() {
+    // (Re)build the resampler for input in this layout, sample format and rate.
+    bool setupResampler(const AVChannelLayout& layout, AVSampleFormat format, int rate) {
+        if (swrCtx_) swr_free(&swrCtx_);
+        if (layout.nb_channels <= 0 || rate <= 0) return false;
         AVChannelLayout outLayout;
-        if (outChannels_ == info_.channels) {
-            av_channel_layout_copy(&outLayout, &codecCtx_->ch_layout);
+        if (outChannels_ == layout.nb_channels) {
+            av_channel_layout_copy(&outLayout, &layout);
         } else {
             av_channel_layout_default(&outLayout, outChannels_);
         }
         const int rc = swr_alloc_set_opts2(&swrCtx_, &outLayout, AV_SAMPLE_FMT_FLT, outSampleRate_,
-                                           &codecCtx_->ch_layout, codecCtx_->sample_fmt,
-                                           codecCtx_->sample_rate, 0, nullptr);
+                                           &layout, format, rate, 0, nullptr);
         av_channel_layout_uninit(&outLayout);
-        if (rc < 0 || swr_init(swrCtx_) < 0) {
-            LOG_WARNING("Audio: cannot set up the resampler");
+        if (rc < 0 || swr_init(swrCtx_) < 0 || av_channel_layout_copy(&inLayout_, &layout) < 0) {
+            // Once: convertFrame() tries again for every frame.
+            if (!resamplerFailed_) LOG_WARNING("Audio: cannot set up the resampler");
+            resamplerFailed_ = true;
             if (swrCtx_) swr_free(&swrCtx_);
             return false;
         }
+        resamplerFailed_ = false;
+        inFormat_ = format;
+        inRate_ = rate;
         return true;
+    }
+
+    bool resamplerFits(const AVFrame& frame) const {
+        return swrCtx_ && frame.format == inFormat_ && frame.sample_rate == inRate_ &&
+               av_channel_layout_compare(&frame.ch_layout, &inLayout_) == 0;
     }
 
     AudioFrame convertFrame() {
         AudioFrame result;
+        // A stream can change its layout, sample format or rate part-way (and a damaged
+        // file can claim to). The resampler reads the frame's buffers by the format it
+        // was built for, so it is rebuilt for a frame that differs.
+        if (!resamplerFits(*frame_) &&
+            !setupResampler(frame_->ch_layout, static_cast<AVSampleFormat>(frame_->format),
+                            frame_->sample_rate)) {
+            return result;
+        }
         const int capacity = swr_get_out_samples(swrCtx_, frame_->nb_samples);
         if (capacity <= 0) return result;
         result.samples.resize(static_cast<size_t>(capacity) * outChannels_);
@@ -268,6 +289,11 @@ private:
     AVFormatContext* formatCtx_ = nullptr;
     AVCodecContext* codecCtx_ = nullptr;
     SwrContext* swrCtx_ = nullptr;
+    // The input swrCtx_ was built for (setupResampler).
+    AVChannelLayout inLayout_{};
+    int inFormat_ = AV_SAMPLE_FMT_NONE;
+    int inRate_ = 0;
+    bool resamplerFailed_ = false;
     AVFrame* frame_ = nullptr;
     AVPacket* packet_ = nullptr;
 
