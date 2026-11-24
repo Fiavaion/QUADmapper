@@ -22,7 +22,9 @@ It is made for live-event technicians, VJs, installation artists and projection 
 - A graphics card with OpenGL 3.3 or later.
 - For the AI features: an NVIDIA graphics card for speed. Without one, the AI features run on the CPU and are much slower.
 
-An installer is in preparation.
+## Download
+
+The Windows installer, `QUADmapper-Setup-<version>.exe`, is on the [Releases](https://github.com/Fiavaion/QUADmapper/releases) page. See the [code signing policy](docs/code-signing-policy.md).
 
 ## Getting started
 

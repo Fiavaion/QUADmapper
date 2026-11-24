@@ -1,0 +1,153 @@
+name: Release installer
+
+# Builds the Release app and QUADmapper-Setup-<version>.exe on a GitHub-hosted runner
+# (packaging/build-installer.ps1). When SignPath is set up (repository variable
+# SIGNPATH_ORGANIZATION_ID and secret SIGNPATH_API_TOKEN), it signs QUADmapper.exe before
+# Inno Setup packs it, then signs the setup exe. Policy: docs/code-signing-policy.md.
+# Run it from the Actions tab to sign; the result is the "QUADmapper-Setup" workflow artifact.
+# A push to dev that touches the packaging builds the installer without signing it.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths:
+      - '.github/workflows/release.yml'
+      - 'packaging/**'
+      - 'vcpkg.json'
+      - 'CMakeLists.txt'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  installer:
+    runs-on: windows-2022
+    timeout-minutes: 240
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.vcpkg-cache
+      SIGNPATH: ${{ github.event_name == 'workflow_dispatch' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+      SIGNPATH_PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG || 'QUADmapper' }}
+      SIGNPATH_POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        id: version
+        run: |
+          if ((Get-Content -Raw CMakeLists.txt) -notmatch 'project\s*\(\s*QUADmapper[^)]*VERSION\s+(\d+\.\d+\.\d+)') {
+            throw 'No project(QUADmapper VERSION x.y.z) in CMakeLists.txt'
+          }
+          "version=$($Matches[1])" >> $env:GITHUB_OUTPUT
+
+      # CMakePresets.json expects vcpkg at C:\vcpkg, where the runner has it. Its clone may
+      # be older than vcpkg.json's builtin-baseline, so fetch the history first.
+      - name: Update vcpkg
+        run: |
+          if ((git -C C:/vcpkg rev-parse --is-shallow-repository) -eq 'true') {
+            git -C C:/vcpkg fetch --unshallow origin
+          } else {
+            git -C C:/vcpkg fetch origin
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'git fetch of C:\vcpkg failed' }
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+
+      - name: Restore the vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Configure (builds the vcpkg dependencies)
+        run: |
+          cmake --preset release
+          if ($LASTEXITCODE -ne 0) { throw 'cmake configure failed' }
+
+      # Saved here, not at the end, so a later failure does not lose a long FFmpeg build.
+      - name: Save the vcpkg binary cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Install Inno Setup if missing
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+          }
+
+      - name: Build and stage the app
+        run: ./packaging/build-installer.ps1 -Step Stage
+
+      - name: Upload the unsigned app exe
+        if: env.SIGNPATH == 'true'
+        id: upload-app
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-app
+          path: .scratch/installer/stage/QUADmapper.exe
+          include-hidden-files: true
+          if-no-files-found: error
+
+      # Each signing request waits for a manual approval in SignPath, hence the long timeout.
+      - name: Sign the app exe
+        if: env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT }}
+          signing-policy-slug: ${{ env.SIGNPATH_POLICY }}
+          artifact-configuration-slug: app
+          github-artifact-id: ${{ steps.upload-app.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: .scratch/signed-app
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+
+      - name: Put the signed exe into the staged folder
+        if: env.SIGNPATH == 'true'
+        run: Copy-Item -Force .scratch/signed-app/QUADmapper.exe .scratch/installer/stage/QUADmapper.exe
+
+      - name: Build the installer
+        run: ./packaging/build-installer.ps1 -Step Package
+
+      - name: Upload the unsigned installer
+        if: env.SIGNPATH == 'true'
+        id: upload-setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-setup
+          path: packaging/out/QUADmapper-Setup-${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
+
+      - name: Sign the installer
+        if: env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT }}
+          signing-policy-slug: ${{ env.SIGNPATH_POLICY }}
+          artifact-configuration-slug: setup
+          github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: packaging/signed
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: QUADmapper-Setup
+          path: ${{ env.SIGNPATH == 'true' && 'packaging/signed' || 'packaging/out' }}/QUADmapper-Setup-${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
