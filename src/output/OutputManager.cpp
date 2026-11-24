@@ -77,6 +77,21 @@ void OutputManager::shutdown() {
     }
     outputs_.clear();
 
+    // What was kept per output or per session goes with them: a second initialize()
+    // starts clean.
+    sceneFades_.clear();
+    knownSizes_.clear();
+    endIdentify();
+    placedByHotplug_.clear();
+    lastPresents_.clear();
+    presentedRefresh_.clear();
+    mixedRefreshNotice_.clear();
+    failedFrameSizes_.clear();
+    canvasScenes_.clear();
+    maxTextureSize_ = 0;  // the next main window's context is asked again
+    blackout_ = false;
+    performExitPending_ = false;
+
     mainWindow_ = nullptr;
     outputCounter_ = 0;
 
@@ -1288,14 +1303,6 @@ IVec2 OutputManager::frameSize(const OutputWindow& output) const {
     return output.getResolution();  // no window yet, or it is minimised (0 x 0)
 }
 
-namespace {
-// The size each output's frame last failed to allocate at, so it is reported once per size.
-std::unordered_map<UUID, IVec2>& failedFrameSizes() {
-    static std::unordered_map<UUID, IVec2> sizes;
-    return sizes;
-}
-}  // namespace
-
 void OutputManager::renderFrames(
         Renderer& renderer, const std::function<void(const OutputWindow&, IVec2)>& draw) {
     if (!mainWindow_) {
@@ -1321,7 +1328,7 @@ void OutputManager::renderFrames(
     // Drop the frames of outputs that no longer exist.
     for (auto it = frames_.begin(); it != frames_.end();) {
         if (!getOutput(it->first)) {
-            failedFrameSizes().erase(it->first);
+            failedFrameSizes_.erase(it->first);
             it = frames_.erase(it);
         } else {
             ++it;
@@ -1336,7 +1343,7 @@ void OutputManager::renderFrames(
         }
         const IVec2 size = frameSize(*output);
         if (!frame->resize(size.x, size.y)) {
-            auto& failed = failedFrameSizes()[output->getId()];
+            auto& failed = failedFrameSizes_[output->getId()];
             if (failed != size) {
                 failed = size;
                 LOG_ERROR("Output '{}': cannot allocate its {}x{} frame; its projector shows black",
@@ -1347,7 +1354,7 @@ void OutputManager::renderFrames(
             }
             continue;
         }
-        failedFrameSizes().erase(output->getId());
+        failedFrameSizes_.erase(output->getId());
 
         frame->bind();  // also sets the viewport to the frame size
         glDisable(GL_DEPTH_TEST);

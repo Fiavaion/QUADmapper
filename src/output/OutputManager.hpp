@@ -707,6 +707,9 @@ private:
     // in the MAIN GL context and are destroyed in shutdown()/deleteOutput() with it
     // current; their colour textures are shared with the output contexts.
     std::unordered_map<UUID, std::unique_ptr<Framebuffer>> frames_;
+    // The size each output's frame last failed to allocate at, so it is reported once
+    // per size.
+    std::unordered_map<UUID, IVec2> failedFrameSizes_;
 
     // Each shown scene's canvas (ADR-047), keyed by scene UUID; main context, like
     // frames_. It is drawn turned by the rotation every output showing the scene
