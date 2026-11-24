@@ -4,6 +4,7 @@
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/MediaAssign.hpp"
+#include "editor/PerformLock.hpp"
 #include "media/MediaItem.hpp"
 #include "media/MediaLibrary.hpp"
 #include "scene/QuadManager.hpp"
@@ -80,27 +81,52 @@ void CompositionPanel::drawList(EditorContext& ctx) {
     ImGui::SameLine();
     ImGui::BeginDisabled(selected_.isNull());
     if (ImGui::Button("Delete")) {
+        size_t quadCount = 0, objectCount = 0;
+        for (const auto& scene : es.scenes) {
+            if (!scene) continue;
+            for (const auto& quad : scene->getQuadManager().getQuads()) {
+                if (quad->getTexture().mediaId == selected_) ++quadCount;
+            }
+            for (const auto& object : scene->getObjects()) {
+                if (object && object->getTexture().mediaId == selected_) ++objectCount;
+            }
+        }
+        const auto* target = sm.getSourceAs<CompositionSource>(selected_);
+        std::string message = "Delete composition '" + (target ? target->getName() : std::string()) + "'?";
+        if (quadCount + objectCount > 0) {
+            message += " " + std::to_string(quadCount) + (quadCount == 1 ? " quad" : " quads") + " and " +
+                       std::to_string(objectCount) + (objectCount == 1 ? " 3D object" : " 3D objects") +
+                       " showing it will show nothing.";
+        }
+        pendingDeleteId_ = selected_;
+        deleteConfirm_.request("Delete Composition?", message + " This cannot be undone.", "Delete");
+    }
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+
+    // The confirmation may be answered after the show was locked.
+    if (deleteConfirm_.draw() && !refusedByPerformLock(es, "Delete Composition")) {
+        const UUID gone = pendingDeleteId_;
+        pendingDeleteId_ = UUID::null();
         // Quads and objects showing it show nothing (black) until given other media.
         for (const auto& scene : es.scenes) {
             if (!scene) continue;
             for (const auto& quad : scene->getQuadManager().getQuads()) {
-                if (quad->getTexture().mediaId == selected_) quad->getTexture().mediaId = UUID();
+                if (quad->getTexture().mediaId == gone) quad->getTexture().mediaId = UUID();
             }
             for (const auto& object : scene->getObjects()) {
-                if (object && object->getTexture().mediaId == selected_) object->getTexture().mediaId = UUID();
+                if (object && object->getTexture().mediaId == gone) object->getTexture().mediaId = UUID();
             }
         }
         // The clips it paused run again, for anything else showing them.
-        if (const auto* gone = sm.getSourceAs<CompositionSource>(selected_); gone && gone->settings().restartOnCue) {
-            for (const CompositionCue& cue : gone->settings().cues) {
+        if (const auto* comp = sm.getSourceAs<CompositionSource>(gone); comp && comp->settings().restartOnCue) {
+            for (const CompositionCue& cue : comp->settings().cues) {
                 if (auto* clip = sm.getSourceAs<PlayableSource>(cue.sourceId)) clip->play();
             }
         }
-        sm.removeSource(selected_);
-        selected_ = UUID();
+        sm.removeSource(gone);
+        if (selected_ == gone) selected_ = UUID();
     }
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();
 
     const std::vector<UUID>& list = sm.getCompositionIds();
     if (list.empty()) {
@@ -157,7 +183,7 @@ void CompositionPanel::drawTransport(EditorContext& ctx, CompositionSource& comp
         if (on) ImGui::PopStyleColor();
         ImGui::SetItemTooltip("Cue %d: %s", i + 1, cueLabel(*ctx.sourceManager, s.cues[static_cast<size_t>(i)]).c_str());
     }
-    const double hold = s.cues[static_cast<size_t>(p.current())].holdSeconds;
+    const double hold = s.cues[static_cast<size_t>(std::clamp(p.current(), 0, n - 1))].holdSeconds;
     if (s.mode == CompositionMode::Timeline && hold > 0.0) {
         char overlay[64];
         std::snprintf(overlay, sizeof(overlay), "Cue %d  %.1f / %.1f s", p.current() + 1, p.timeInCue(), hold);

@@ -2,6 +2,7 @@
 
 #include "Panel.hpp"
 #include "core/UUID.hpp"
+#include "ui/ConfirmPopup.hpp"
 
 namespace quadmapper {
 
@@ -29,6 +30,8 @@ private:
     void drawCues(EditorContext& ctx, CompositionSource& comp, bool locked);
 
     UUID selected_;
+    ConfirmPopup deleteConfirm_{"compositiondelete"};
+    UUID pendingDeleteId_;  // the composition the open confirmation is about
     char nameEdit_[64] = "";
     UUID nameFor_;
 };
