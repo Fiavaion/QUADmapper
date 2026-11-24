@@ -791,6 +791,9 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                     }
                 }
 
+                // An undo or delete during a drag can shrink the mesh under it.
+                if (meshDraggedVertex >= static_cast<int>(basePositions.size())) meshDraggedVertex = -1;
+
                 if (es.meshDraggedHandle >= 0 || es.gridLineDragIndex >= 0) {
                     meshHoveredVertex = -1;  // a handle or line drag owns the mouse
                     es.gridLineHovered = -1;
