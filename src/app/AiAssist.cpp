@@ -581,6 +581,14 @@ void AiAssist::detectSurface(const OutputManager* outputs) {
             return Outcome{"AI: detection failed (AI engine error)", 5.0f, std::nullopt};
         }
 
+        // The engine's fallback reply: no surface in the photo, a photo it could not
+        // read, or no model files. Its corners are a placeholder, not a low-confidence find.
+        if (surface->stub) {
+            return Outcome{"AI: no surface was found in the photo; if this repeats, the AI "
+                           "model files may be missing",
+                           6.0f, std::nullopt};
+        }
+
         // Low confidence: do NOT auto-warp onto a possibly-wrong surface — ask the
         // user to disambiguate instead (the spike's load-bearing human-confirm step).
         if (surface->confidence < AI_MIN_CONFIDENCE) {
