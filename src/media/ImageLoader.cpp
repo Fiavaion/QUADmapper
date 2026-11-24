@@ -38,9 +38,8 @@ bool isTiff(const std::filesystem::path& path) {
 // `why` says what went wrong.
 unsigned char* stbiLoadPath(const std::filesystem::path& path, int* width, int* height,
                             int* channels, int desiredChannels, std::string& why) {
-    auto bytes = FileSystem::readBinaryFile(path);
-    if (!bytes || bytes.value().empty() ||
-        bytes.value().size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    auto bytes = FileSystem::readBinaryFile(path, static_cast<size_t>(std::numeric_limits<int>::max()));
+    if (!bytes || bytes.value().empty()) {
         why = "cannot read the file";
         return nullptr;
     }

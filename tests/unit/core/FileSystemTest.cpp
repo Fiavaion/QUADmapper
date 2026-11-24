@@ -192,5 +192,15 @@ TEST_F(FileSystemAtomicTest, ReadBinaryFileReturnsExactBytesAndErrOnMissingFile)
     EXPECT_TRUE(FileSystem::readBinaryFile(dir_ / "absent.bin").isError());
 }
 
+TEST_F(FileSystemAtomicTest, AFileOverTheLimitIsNotRead) {
+    const fs::path file = dir_ / "five.bin";
+    spit(file, "12345");
+
+    EXPECT_TRUE(FileSystem::readFile(file, 5).isSuccess());
+    EXPECT_TRUE(FileSystem::readFile(file, 4).isError());
+    EXPECT_TRUE(FileSystem::readBinaryFile(file, 5).isSuccess());
+    EXPECT_TRUE(FileSystem::readBinaryFile(file, 4).isError());
+}
+
 }  // namespace test
 }  // namespace quadmapper

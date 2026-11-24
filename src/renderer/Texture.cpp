@@ -109,9 +109,8 @@ bool Texture::loadFromFile(const std::filesystem::path& path) {
 
     // Read through the wide path: stbi_load() opens its filename in the ANSI code page,
     // so an install folder with non-ASCII characters would fail.
-    auto bytes = FileSystem::readBinaryFile(path);
-    if (!bytes || bytes.value().empty() ||
-        bytes.value().size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    auto bytes = FileSystem::readBinaryFile(path, static_cast<size_t>(std::numeric_limits<int>::max()));
+    if (!bytes || bytes.value().empty()) {
         Logger::error("Failed to load texture: {} - cannot read file", utf8FromPath(path));
         return false;
     }

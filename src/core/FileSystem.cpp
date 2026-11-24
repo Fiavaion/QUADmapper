@@ -1,5 +1,6 @@
 #include "FileSystem.hpp"
 #include <fstream>
+#include <new>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -79,15 +80,24 @@ std::string utf8FromPath(const std::filesystem::path& path) {
     return path.u8string();
 }
 
-Result<std::string, Error> FileSystem::readFile(const std::filesystem::path& path) {
+Result<std::string, Error> FileSystem::readFile(const std::filesystem::path& path, size_t maxBytes) {
     std::ifstream file(path, std::ios::in);
     if (!file) {
         return Err<std::string>("Failed to open file: " + path.u8string());
     }
+    std::error_code ec;
+    const std::uintmax_t size = std::filesystem::file_size(path, ec);
+    if (!ec && size > maxBytes) {
+        return Err<std::string>("File is too large: " + path.u8string());
+    }
 
-    std::string content((std::istreambuf_iterator<char>(file)),
-                        std::istreambuf_iterator<char>());
-    return Ok(std::move(content));
+    try {
+        std::string content((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+        return Ok(std::move(content));
+    } catch (const std::bad_alloc&) {
+        return Err<std::string>("Not enough memory to read file: " + path.u8string());
+    }
 }
 
 Result<void, Error> FileSystem::writeFile(const std::filesystem::path& path, const std::string& content) {
@@ -171,7 +181,8 @@ Result<void, Error> FileSystem::writeFileAtomic(const std::filesystem::path& pat
     return Ok();
 }
 
-Result<std::vector<uint8_t>, Error> FileSystem::readBinaryFile(const std::filesystem::path& path) {
+Result<std::vector<uint8_t>, Error> FileSystem::readBinaryFile(const std::filesystem::path& path,
+                                                               size_t maxBytes) {
     std::ifstream file(path, std::ios::in | std::ios::binary);
     if (!file) {
         return Err<std::vector<uint8_t>>("Failed to open file: " + path.u8string());
@@ -183,8 +194,16 @@ Result<std::vector<uint8_t>, Error> FileSystem::readBinaryFile(const std::filesy
     if (size < 0) {
         return Err<std::vector<uint8_t>>("Failed to read file: " + path.u8string());
     }
+    if (static_cast<std::uintmax_t>(size) > maxBytes) {
+        return Err<std::vector<uint8_t>>("File is too large: " + path.u8string());
+    }
 
-    std::vector<uint8_t> data(static_cast<size_t>(size));
+    std::vector<uint8_t> data;
+    try {
+        data.resize(static_cast<size_t>(size));
+    } catch (const std::bad_alloc&) {
+        return Err<std::vector<uint8_t>>("Not enough memory to read file: " + path.u8string());
+    }
     file.read(reinterpret_cast<char*>(data.data()), size);
     // A file cut short while it is read (a copy or a cloud sync still running) is an
     // error, not a zero-padded success.

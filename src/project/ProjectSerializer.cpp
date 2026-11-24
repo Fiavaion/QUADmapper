@@ -88,6 +88,9 @@ static constexpr size_t kMaxCalibrationPoints = 4096;
 static constexpr size_t kMaxSlicesPerOutput = 256;
 static constexpr float kMinPlaybackSpeed = 0.1f;  // VideoPlayer::setSpeed range
 static constexpr float kMaxPlaybackSpeed = 4.0f;
+// Far beyond a show the app can run: about 2,300 quads, each warped on the largest
+// grid (0.45 MB a quad). Saving has no limit, so this must stay out of a show's reach.
+static constexpr size_t kMaxProjectBytes = 1024u * 1024u * 1024u;
 
 namespace fs = std::filesystem;
 
@@ -1579,7 +1582,7 @@ Result<void, Error> ProjectSerializer::save(const Project& project, const std::f
 Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path) {
     Logger::info("Loading project from: {}", utf8FromPath(path));
 
-    auto result = FileSystem::readFile(path);
+    auto result = FileSystem::readFile(path, kMaxProjectBytes);
     if (!result) {
         return Err<Project>(result.error().message);
     }

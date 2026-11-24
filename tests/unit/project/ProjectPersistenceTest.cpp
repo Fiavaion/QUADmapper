@@ -546,6 +546,19 @@ TEST_F(ProjectPersistenceTest, OutOfRangeMeshModeFallsBackToCorners) {
     }
 }
 
+TEST_F(ProjectPersistenceTest, AFileTooLargeToBeAShowIsRefusedUnread) {
+    const fs::path file = dir_ / "huge.qmap";
+    touch(file);
+    std::error_code ec;
+    fs::resize_file(file, 1024ull * 1024 * 1024 + 1, ec);
+    if (ec) GTEST_SKIP() << "no room for the test file: " << ec.message();
+
+    auto loaded = ProjectSerializer::load(file);
+
+    ASSERT_TRUE(loaded.isError());
+    EXPECT_NE(loaded.error().message.find("too large"), std::string::npos) << loaded.error().message;
+}
+
 TEST_F(ProjectPersistenceTest, OutputMonitorResolutionRotationAreClamped) {
     ProjectSerializer serializer;
     Project project;

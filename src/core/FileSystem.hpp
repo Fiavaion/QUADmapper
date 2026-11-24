@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Result.hpp"
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -24,8 +25,10 @@ std::filesystem::path userLocalDir();    // %LOCALAPPDATA%\QUADmapper: logs, cra
 
 class FileSystem {
 public:
-    // Read entire file to string
-    static Result<std::string, Error> readFile(const std::filesystem::path& path);
+    // Read entire file to string. A file over maxBytes, or one there is no memory
+    // for, is an error and is not read.
+    static Result<std::string, Error> readFile(const std::filesystem::path& path,
+                                               size_t maxBytes = SIZE_MAX);
 
     // Write string to file
     static Result<void, Error> writeFile(const std::filesystem::path& path, const std::string& content);
@@ -36,8 +39,9 @@ public:
     static Result<void, Error> writeFileAtomic(const std::filesystem::path& path,
                                                const std::string& content);
 
-    // Read binary file
-    static Result<std::vector<uint8_t>, Error> readBinaryFile(const std::filesystem::path& path);
+    // Read binary file, with the same limit as readFile
+    static Result<std::vector<uint8_t>, Error> readBinaryFile(const std::filesystem::path& path,
+                                                              size_t maxBytes = SIZE_MAX);
 
     // Write binary file
     static Result<void, Error> writeBinaryFile(const std::filesystem::path& path,
