@@ -565,7 +565,13 @@ void Application::requestLocateMissingMedia(const MissingMediaItem& item) {
     m_session->requestLocateMissingMedia(item);
 }
 void Application::requestMissingMediaSearch() { m_session->requestMissingMediaSearch(); }
-void Application::savePreferences() { m_preferences->savePreferences(); }
+void Application::savePreferences() {
+    auto result = m_preferences->savePreferences();
+    if (!result) {
+        Logger::error("Preferences were not saved: {}", result.error().message);
+        postStatus(*m_editorState, "Preferences were not saved: " + result.error().message);
+    }
+}
 bool Application::aiActive() const { return m_aiAssist->isActive(); }
 bool Application::aiBusy() const { return m_aiAssist->isBusy(); }
 
