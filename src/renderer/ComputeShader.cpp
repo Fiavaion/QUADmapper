@@ -56,13 +56,10 @@ static bool loadComputeFunctions() {
     glMemoryBarrierPtr = (PFNGLPRIVATEMEMORYBARRIERPROC)getGLProcAddress("glMemoryBarrier");
     glBindImageTexturePtr = (PFNGLPRIVATEBINDIMAGETEXTUREPROC)getGLProcAddress("glBindImageTexture");
 
-    computeFunctionsLoaded = true;
-
-    if (!glDispatchComputePtr || !glMemoryBarrierPtr || !glBindImageTexturePtr) {
-        Logger::warning("ComputeShader: Some compute shader functions not available. OpenGL 4.3+ required.");
-        return false;
-    }
-    return true;
+    // Loaded only when all three are there: a failed load is tried again, not reported
+    // as a success on the next call.
+    computeFunctionsLoaded = glDispatchComputePtr && glMemoryBarrierPtr && glBindImageTexturePtr;
+    return computeFunctionsLoaded;
 }
 
 ComputeShader::ComputeShader() = default;
@@ -96,9 +93,6 @@ ComputeShader& ComputeShader::operator=(ComputeShader&& other) noexcept {
 }
 
 bool ComputeShader::loadFromSource(const std::string& source) {
-    // Load compute shader functions if not already done
-    loadComputeFunctions();
-
     // Clean up existing program
     if (programId_ != 0) {
         glDeleteProgram(programId_);
@@ -106,6 +100,12 @@ bool ComputeShader::loadFromSource(const std::string& source) {
     }
     uniformLocationCache_.clear();
     errorMessage_.clear();
+
+    if (!loadComputeFunctions()) {
+        errorMessage_ = "this graphics driver has no compute shaders (OpenGL 4.3 is needed)";
+        Logger::error("ComputeShader: {}", errorMessage_);
+        return false;
+    }
 
     // Create and compile shader
     GLuint shaderId = glCreateShader(GL_COMPUTE_SHADER);
