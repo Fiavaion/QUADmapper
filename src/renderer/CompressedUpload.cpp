@@ -186,7 +186,12 @@ bool CompressedUploader::upload(const std::shared_ptr<const std::vector<uint8_t>
         staging = false;  // contents lost (a display mode change): copy again
     }
     staged.bytes.reset();
-    Logger::warning("CompressedUploader: could not map a pixel buffer; this video frame was not uploaded");
+    // Once: a failure that lasts would otherwise write a line for every frame of the show.
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        Logger::warning("CompressedUploader: could not map a pixel buffer; video frames are not uploaded while this lasts");
+    }
     return false;
 }
 
