@@ -135,10 +135,21 @@ uniform sampler2D uA;
 uniform sampler2D uB;
 uniform bool uHasA;
 uniform bool uHasB;
+uniform bool uAYcocg;
+uniform bool uBYcocg;
 uniform float uMix;
+// A Hap Q cue is scaled YCoCg in a BC3 texture (r=Co, g=Cg, b=scale, a=Y), as in quad.frag.
+vec3 cueColor(vec4 c, bool ycocg) {
+    if (!ycocg) return c.rgb;
+    float scale = (c.b * (255.0 / 8.0)) + 1.0;
+    float Co = (c.r - (0.5 * 256.0 / 255.0)) / scale;
+    float Cg = (c.g - (0.5 * 256.0 / 255.0)) / scale;
+    float Y  = c.a;
+    return vec3(Y + Co - Cg, Y + Cg, Y - Co - Cg);
+}
 void main() {
-    vec3 a = uHasA ? texture(uA, vUv).rgb : vec3(0.0);
-    vec3 b = uHasB ? texture(uB, vUv).rgb : vec3(0.0);
+    vec3 a = uHasA ? cueColor(texture(uA, vUv), uAYcocg) : vec3(0.0);
+    vec3 b = uHasB ? cueColor(texture(uB, vUv), uBYcocg) : vec3(0.0);
     fragColor = vec4(mix(a, b, uMix), 1.0);
 }
 )GLSL";
@@ -277,15 +288,19 @@ bool CompositionSource::ensureGl() {
 void CompositionSource::render(const std::function<Texture*(const UUID&)>& textureOf) {
     if (!ensureGl()) return;
 
-    const auto textureFor = [&](int index) -> GLuint {
-        if (index < 0 || index >= static_cast<int>(settings_.cues.size())) return 0;
+    const auto textureFor = [&](int index) -> const Texture* {
+        if (index < 0 || index >= static_cast<int>(settings_.cues.size())) return nullptr;
         const UUID& id = settings_.cues[static_cast<size_t>(index)].sourceId;
-        if (id.isNull()) return 0;
-        Texture* texture = textureOf(id);
-        return texture && texture->isValid() ? static_cast<GLuint>(texture->getId()) : 0;
+        if (id.isNull()) return nullptr;
+        const Texture* texture = textureOf(id);
+        return texture && texture->isValid() ? texture : nullptr;
     };
-    const GLuint b = settings_.cues.empty() ? 0 : textureFor(playhead_.current());
-    const GLuint a = textureFor(playhead_.previous());
+    const Texture* textureB = settings_.cues.empty() ? nullptr : textureFor(playhead_.current());
+    const Texture* textureA = textureFor(playhead_.previous());
+    const GLuint b = textureB ? static_cast<GLuint>(textureB->getId()) : 0;
+    const GLuint a = textureA ? static_cast<GLuint>(textureA->getId()) : 0;
+    const bool aYcocg = textureA && textureA->colorSpace() == TextureColorSpace::YCoCg;
+    const bool bYcocg = textureB && textureB->colorSpace() == TextureColorSpace::YCoCg;
     const float mix = playhead_.previous() >= 0 ? static_cast<float>(playhead_.fadeMix(settings_)) : 1.0f;
 
     GLint drawFbo = 0, readFbo = 0, program = 0, vao = 0, activeTexture = 0;
@@ -316,6 +331,8 @@ void CompositionSource::render(const std::function<Texture*(const UUID&)>& textu
     program_->setInt("uB", 1);
     program_->setInt("uHasA", a != 0 ? 1 : 0);
     program_->setInt("uHasB", b != 0 ? 1 : 0);
+    program_->setInt("uAYcocg", aYcocg ? 1 : 0);
+    program_->setInt("uBYcocg", bYcocg ? 1 : 0);
     program_->setFloat("uMix", mix);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, a);
