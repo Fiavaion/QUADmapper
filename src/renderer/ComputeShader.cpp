@@ -1,4 +1,5 @@
 #include "ComputeShader.hpp"
+#include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
 #include <glad/glad.h>
 #include <glm/gtc/type_ptr.hpp>
@@ -63,13 +64,19 @@ static bool loadComputeFunctions() {
     return computeFunctionsLoaded;
 }
 
+// Deletes a program and takes it off the live-object count.
+static void deleteProgram(uint32_t& programId) {
+    if (programId != 0) {
+        glDeleteProgram(programId);
+        GlObjectStats::onShaderProgramDestroyed();
+        programId = 0;
+    }
+}
+
 ComputeShader::ComputeShader() = default;
 
 ComputeShader::~ComputeShader() {
-    if (programId_ != 0) {
-        glDeleteProgram(programId_);
-        programId_ = 0;
-    }
+    deleteProgram(programId_);
 }
 
 ComputeShader::ComputeShader(ComputeShader&& other) noexcept
@@ -82,9 +89,7 @@ ComputeShader::ComputeShader(ComputeShader&& other) noexcept
 
 ComputeShader& ComputeShader::operator=(ComputeShader&& other) noexcept {
     if (this != &other) {
-        if (programId_ != 0) {
-            glDeleteProgram(programId_);
-        }
+        deleteProgram(programId_);
         programId_ = other.programId_;
         errorMessage_ = std::move(other.errorMessage_);
         uniformLocationCache_ = std::move(other.uniformLocationCache_);
@@ -95,10 +100,7 @@ ComputeShader& ComputeShader::operator=(ComputeShader&& other) noexcept {
 
 bool ComputeShader::loadFromSource(const std::string& source) {
     // Clean up existing program
-    if (programId_ != 0) {
-        glDeleteProgram(programId_);
-        programId_ = 0;
-    }
+    deleteProgram(programId_);
     uniformLocationCache_.clear();
     errorMessage_.clear();
 
@@ -136,6 +138,7 @@ bool ComputeShader::loadFromSource(const std::string& source) {
 
     // Create program and link
     programId_ = glCreateProgram();
+    GlObjectStats::onShaderProgramCreated();
     glAttachShader(programId_, shaderId);
     glLinkProgram(programId_);
 
@@ -149,8 +152,7 @@ bool ComputeShader::loadFromSource(const std::string& source) {
         errorMessage_ = "Compute shader linking failed: " + log;
         Logger::error("{}", errorMessage_);
         glDeleteShader(shaderId);
-        glDeleteProgram(programId_);
-        programId_ = 0;
+        deleteProgram(programId_);
         return false;
     }
 
