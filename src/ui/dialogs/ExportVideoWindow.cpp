@@ -204,8 +204,9 @@ void ExportVideoWindow::drawSettings(EditorContext& ctx) {
     // ---- Export ----
     ImGui::Separator();
     const bool locked = es.performLock.isOn();
+    const bool performing = om && om->isInPerformMode();
     const bool ready = !outputIds.empty() && !folder_.empty() && seconds > 0.0 && ctx.services;
-    ImGui::BeginDisabled(!ready || locked);
+    ImGui::BeginDisabled(!ready || locked || performing);
     if (ImGui::Button("Export")) {
         VideoExportRequest request;
         request.folder = pathFromUtf8(folder_);
@@ -221,6 +222,9 @@ void ExportVideoWindow::drawSettings(EditorContext& ctx) {
     if (locked) {
         ImGui::SameLine();
         ImGui::TextDisabled("Turn the perform lock off to export: the projectors show the export while it runs.");
+    } else if (performing) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Leave perform mode (F11) to export: the projectors show the export while it runs.");
     }
     ImGui::SameLine();
     if (ImGui::Button("Close")) visible = false;

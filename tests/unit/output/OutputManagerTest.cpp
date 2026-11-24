@@ -161,6 +161,24 @@ TEST(OutputManagerTest, EnterPerformModeFailsWithNoOutputs) {
     EXPECT_FALSE(manager.isInPerformMode());
 }
 
+// An export running refuses perform mode for every caller, and says why.
+TEST(OutputManagerTest, APerformRefusalKeepsPerformModeOffAndIsShown) {
+    OutputManager manager;
+    std::string notice;
+    manager.setNoticeCallback([&notice](const std::string& message) { notice = message; });
+    manager.setPerformRefusal([] { return std::string("an export is running"); });
+
+    auto result = manager.enterPerformMode();
+
+    EXPECT_FALSE(result.isSuccess());
+    EXPECT_EQ(result.error().message, "an export is running");
+    EXPECT_EQ(notice, "an export is running");
+    EXPECT_FALSE(manager.isInPerformMode());
+
+    manager.setPerformRefusal([] { return std::string(); });  // nothing to refuse for
+    EXPECT_NE(manager.enterPerformMode().error().message, "an export is running");
+}
+
 TEST(OutputManagerTest, ExitPerformModeSucceedsWhenNotInPerformMode) {
     OutputManager manager;
 

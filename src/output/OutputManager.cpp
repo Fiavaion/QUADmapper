@@ -601,6 +601,14 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
         return Ok();
     }
 
+    if (performRefusal_) {
+        const std::string reason = performRefusal_();
+        if (!reason.empty()) {
+            notify(reason);
+            return Err(reason);
+        }
+    }
+
     if (outputs_.empty()) {
         return Err("No outputs to display in perform mode");
     }

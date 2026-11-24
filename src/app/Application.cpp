@@ -472,6 +472,12 @@ bool Application::initializeComponents() {
                  message.c_str());
         m_editorState->statusTimer = 4.0f;
     });
+    // A running export draws the projector frames (ADR-060): F11, Identify, the Outputs
+    // panel and the AI scans all wait for it.
+    m_outputManager->setPerformRefusal([this]() -> std::string {
+        if (!m_videoExport || !m_videoExport->active()) return {};
+        return "A video export is running: cancel it or let it finish before sending to the projectors";
+    });
     m_outputManager->setSceneKeyCallback([this](int sceneNumber) { queueSceneTake(sceneNumber); });
     Logger::info("Output manager initialized with {} monitors", m_outputManager->getMonitorCount());
 
@@ -582,6 +588,11 @@ bool Application::startVideoExport(const VideoExportRequest& request, std::strin
     }
     if (!m_outputManager || !m_sourceManager || !m_editorState) {
         error = "Video export is not available.";
+        return false;
+    }
+    // The projectors show the export's frames while it runs (ADR-060).
+    if (m_outputManager->isInPerformMode()) {
+        error = "Leave perform mode (F11) first: the projectors would show the export while it runs.";
         return false;
     }
     const float master =
@@ -855,6 +866,14 @@ void Application::updateWindowTitle() {
 
 void Application::runFrameBoundaryTasks() {
     importWatchedFiles();
+    // Closing would throw a running export away without a word: it is cancelled first,
+    // in its own window.
+    if (m_videoExport && m_videoExport->active() &&
+        m_editorState->pendingFileAction == EditorState::FileAction::Exit) {
+        m_editorState->pendingFileAction = EditorState::FileAction::None;
+        m_editorState->requestPanelOpen(EditorState::EXPORT_VIDEO_PANEL_ID);
+        postStatus(*m_editorState, "A video export is running: cancel it before closing QUADmapper");
+    }
     if (!m_session->ensureCleanBaseline()) return;
     m_session->processPendingFileAction();
     adoptObjectMeshes(*m_editorState, m_outputManager.get());

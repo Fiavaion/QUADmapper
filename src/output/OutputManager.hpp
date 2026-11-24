@@ -323,6 +323,11 @@ public:
     using NoticeCallback = std::function<void(const std::string&)>;
     void setNoticeCallback(NoticeCallback callback);
 
+    // Asked each time perform mode is to be entered: a non-empty answer refuses it and
+    // is passed on as a notice. A video export draws the projector frames while it runs.
+    using PerformRefusal = std::function<std::string()>;
+    void setPerformRefusal(PerformRefusal refusal) { performRefusal_ = std::move(refusal); }
+
     // Scene take keys (US-008): in perform mode an output window can hold the OS
     // focus, so its scene-take presses (see sceneTakeNumber) are handed to this
     // callback with the scene number.
@@ -806,6 +811,7 @@ private:
     // Monitor change detection
     MonitorChangeCallback monitorChangeCallback_;
     NoticeCallback noticeCallback_;
+    PerformRefusal performRefusal_;
     SceneKeyCallback sceneKeyCallback_;
     OutputRemovedCallback outputRemovedCallback_;
     bool monitorChangeDetectionEnabled_ = false;
