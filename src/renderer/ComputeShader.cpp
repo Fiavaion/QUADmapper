@@ -34,8 +34,9 @@ static void* getGLProcAddress(const char* name) {
 #ifdef _WIN32
     void* p = (void*)wglGetProcAddress(name);
     if (p == nullptr || (p == (void*)0x1) || (p == (void*)0x2) || (p == (void*)0x3) || (p == (void*)-1)) {
-        HMODULE module = LoadLibraryA("opengl32.dll");
-        p = (void*)GetProcAddress(module, name);
+        // Already loaded with the context: asked for by handle, never searched for.
+        HMODULE module = GetModuleHandleW(L"opengl32.dll");
+        p = module ? (void*)GetProcAddress(module, name) : nullptr;
     }
     return p;
 #else

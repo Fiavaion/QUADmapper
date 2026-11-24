@@ -165,6 +165,10 @@ bool anotherInstanceRuns(bool wantedToOpenAShow) {
 }  // namespace
 
 int main(int /*argc*/, char* /*argv*/[]) {
+    // A library loaded by name alone comes from the program's folder or System32,
+    // never from the current folder (a show's folder, on a double-click) or PATH.
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+
 #ifdef NDEBUG
     quadmapper::Logger::setLevel(quadmapper::LogLevel::Info);
 #else
