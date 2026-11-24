@@ -1004,10 +1004,13 @@ void Application::shutdown() {
                         alive.diff(GlObjectStats::Snapshot{}));
     }
 
-    // Shutdown ImGui
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
+    // Shutdown ImGui: only what a start that failed part-way got as far as creating
+    // (each backend's shutdown faults without its data, or without a context).
+    if (ImGui::GetCurrentContext()) {
+        if (ImGui::GetIO().BackendRendererUserData) ImGui_ImplOpenGL3_Shutdown();
+        if (ImGui::GetIO().BackendPlatformUserData) ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+    }
 
     // Destroy window and terminate GLFW
     glfwDestroyWindow(m_window);
