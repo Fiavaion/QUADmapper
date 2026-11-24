@@ -614,9 +614,12 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
         if (item->getType() != MediaType::PROCEDURAL) {
             if (ImGui::MenuItem("Reveal in Explorer")) {
                 std::wstring path = item->getPath().wstring();
-                // Use ShellExecute to open explorer and select the file
-                std::wstring param = L"/select,\"" + path + L"\"";
-                ShellExecuteW(NULL, L"open", L"explorer.exe", param.c_str(), NULL, SW_SHOWNORMAL);
+                // No file name holds a quote; one from a project file would end the
+                // quoted path and add an Explorer switch.
+                if (path.find(L'"') == std::wstring::npos) {
+                    std::wstring param = L"/select,\"" + path + L"\"";
+                    ShellExecuteW(NULL, L"open", L"explorer.exe", param.c_str(), NULL, SW_SHOWNORMAL);
+                }
             }
 
             if (ImGui::MenuItem("Copy Path")) {
