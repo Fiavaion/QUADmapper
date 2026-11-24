@@ -440,6 +440,31 @@ TEST(SidecarClientTest, StartAsyncResolvesToFailedWithoutBlocking) {
     EXPECT_FALSE(client.requestSurface("x.png").has_value());
 }
 
+// stop() runs on the UI thread: a start still waiting for the engine to answer must end
+// with it, not when its start-up budget runs out.
+TEST(SidecarClientTest, StopEndsAStartThatIsStillWaiting) {
+    ScopedEnv noToken(quadmapper::ai::SIDECAR_TOKEN_ENV, "");
+    // An engine that starts and never answers: cmd.exe, waiting on its hidden console.
+    char systemDir[MAX_PATH] = "";
+    ASSERT_GT(GetSystemDirectoryA(systemDir, MAX_PATH), 0u);
+    SidecarConfig cfg;
+    cfg.pythonExe = (std::filesystem::path(systemDir) / "cmd.exe").string();
+    cfg.scriptPath = (std::filesystem::temp_directory_path() / "qm-no-engine.cmd").string();
+    cfg.port = 8797;
+    cfg.startupTimeoutMs = 60000;
+    SidecarClient client(cfg);
+
+    client.startAsync();
+    std::this_thread::sleep_for(std::chrono::seconds(3));  // past the first probe: launched
+    ASSERT_EQ(client.state(), SidecarState::Starting) << "the stand-in engine did not stay up";
+
+    const auto before = std::chrono::steady_clock::now();
+    client.stop();
+    const auto took = std::chrono::steady_clock::now() - before;
+    EXPECT_LT(took, std::chrono::seconds(2));  // one short probe and one sleep, not the budget
+    EXPECT_EQ(client.state(), SidecarState::Stopped);
+}
+
 // --- Live round-trip (skipped when Python/script unavailable) ---------------
 
 TEST(SidecarClientTest, LaunchHealthSurfaceTeardown) {

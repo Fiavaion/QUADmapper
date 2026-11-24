@@ -454,6 +454,9 @@ struct SidecarClient::Impl {
     // Background worker for startAsync(); joined before teardown so the process
     // handles below are only touched after it has finished.
     std::thread worker;
+    // Set by stop() and the destructor: a start() still waiting for the engine to
+    // answer gives up at its next check instead of using up the start-up budget.
+    std::atomic<bool> cancelStart{false};
 
     // From the last successful health check, which may run on the startAsync worker
     // while the UI thread reads them.
@@ -476,6 +479,7 @@ struct SidecarClient::Impl {
     explicit Impl(SidecarConfig c) : config(std::move(c)) {}
 
     ~Impl() {
+        cancelStart = true;
         if (worker.joinable()) worker.join();
         killLaunched();
     }
@@ -757,7 +761,7 @@ bool SidecarClient::start() {
     // 3) Poll for readiness within the startup budget.
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(im.config.startupTimeoutMs);
-    while (std::chrono::steady_clock::now() < deadline) {
+    while (std::chrono::steady_clock::now() < deadline && !im.cancelStart) {
         if (im.probe(token, 500) == Impl::Probe::Healthy) {
             if (!im.listenerIsOurs()) {
                 Logger::warning("AI sidecar: " + where + " is answered by a process the app "
@@ -774,8 +778,12 @@ bool SidecarClient::start() {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
 
-    Logger::warning("AI sidecar: launched process did not become healthy; "
-                          "AI disabled");
+    if (im.cancelStart) {
+        Logger::info("AI sidecar: start cancelled");
+    } else {
+        Logger::warning("AI sidecar: launched process did not become healthy; "
+                        "AI disabled");
+    }
     im.killLaunched();
     return im.fail(SidecarFailure::NoResponse);
 }
@@ -795,7 +803,10 @@ void SidecarClient::startAsync() {
 
 void SidecarClient::stop() {
     auto& im = *impl_;
-    if (im.worker.joinable()) im.worker.join();  // finish any in-flight startAsync
+    // An in-flight startAsync ends at its next check, then is joined.
+    im.cancelStart = true;
+    if (im.worker.joinable()) im.worker.join();
+    im.cancelStart = false;
     if (im.state.load() == SidecarState::Launched) {
         im.killLaunched();
     }
