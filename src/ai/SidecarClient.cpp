@@ -66,11 +66,14 @@ struct HttpResponse {
     bool tooLarge = false;  // the body passed MAX_RESPONSE_BYTES (it is dropped)
 };
 
+constexpr int CONNECT_TIMEOUT_MS = 5000;
+
 // Synchronous loopback HTTP request via WinHTTP, carrying the token header. method/path
 // are ASCII; body is sent as application/json when non-empty. Never throws.
 HttpResponse httpRequest(const std::string& host, int port,
                          const std::string& method, const std::string& path,
-                         const std::string& body, const std::string& token, int timeoutMs) {
+                         const std::string& body, const std::string& token, int timeoutMs,
+                         int connectTimeoutMs = CONNECT_TIMEOUT_MS) {
     HttpResponse result;
     const auto failed = [&result] {
         result.error = GetLastError();
@@ -83,8 +86,13 @@ HttpResponse httpRequest(const std::string& host, int port,
                                       WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session) return failed();
 
-    // resolve / connect / send / receive all share the same ceiling.
-    WinHttpSetTimeouts(session.h, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
+    // resolve / send / receive share the caller's ceiling. Connect is given at least
+    // connectTimeoutMs: Windows takes about two seconds to refuse a connection to a
+    // loopback port nobody listens on, and a shorter limit turned that refusal into a
+    // timeout about every other time, which reads as "something is there but not
+    // answering".
+    WinHttpSetTimeouts(session.h, timeoutMs, std::max(timeoutMs, connectTimeoutMs), timeoutMs,
+                       timeoutMs);
     // The token goes to this host:port only, never on to wherever a reply points.
     DWORD redirects = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
     WinHttpSetOption(session.h, WINHTTP_OPTION_REDIRECT_POLICY, &redirects, sizeof(redirects));
@@ -506,9 +514,10 @@ struct SidecarClient::Impl {
         Foreign,  // something listens, but not that
         Free      // nothing listens
     };
-    Probe probe(const std::string& probeToken, int timeoutMs) const {
+    Probe probe(const std::string& probeToken, int timeoutMs,
+                int connectTimeoutMs = CONNECT_TIMEOUT_MS) const {
         const HttpResponse r = httpRequest(config.host, config.port, "GET", "/health", {},
-                                           probeToken, timeoutMs);
+                                           probeToken, timeoutMs, connectTimeoutMs);
         if (!r.ok) {
             return !r.tooLarge && r.error == ERROR_WINHTTP_CANNOT_CONNECT ? Probe::Free
                                                                           : Probe::Foreign;
@@ -762,7 +771,9 @@ bool SidecarClient::start() {
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(im.config.startupTimeoutMs);
     while (std::chrono::steady_clock::now() < deadline && !im.cancelStart) {
-        if (im.probe(token, 500) == Impl::Probe::Healthy) {
+        // Until the engine listens, a refusal and a timed-out connect both mean "not
+        // up yet": the short connect limit keeps stop(), which joins this, quick.
+        if (im.probe(token, 500, 500) == Impl::Probe::Healthy) {
             if (!im.listenerIsOurs()) {
                 Logger::warning("AI sidecar: " + where + " is answered by a process the app "
                                 "did not launch; AI disabled");
