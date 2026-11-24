@@ -67,3 +67,9 @@ CMakeUserPresets.json
 # Scratch output and agent worktrees
 .scratch/
 .claude/worktrees/
+
+# Local notes that are not for the public repo: session-memory copies, model routing
+# notes and code review reports
+notes/claude-memory/
+/000_SwitchMA.md
+/REVIEW/

@@ -6,7 +6,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ExePath   = "C:\Users\jones\AIprojects\QUADmapper\build\debug\src\app\Debug\QUADmapper.exe",
+    [string]$ExePath   = "$PSScriptRoot/../../build/debug/src/app/Debug/QUADmapper.exe",
     [string]$OutDir    = "$PSScriptRoot/out_image",
     [string]$ImagePath = "D:\testing Videos\knowledge-graph.png",
     [int]$FrameMs      = 50,
