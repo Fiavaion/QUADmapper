@@ -10,9 +10,13 @@
 #include "TestClips.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
+#include <new>
 #include <ostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace quadmapper;
@@ -216,6 +220,85 @@ TEST_P(VideoDecoderSeek, SeekRetryGivesUpBeforeTheStreamStartInsteadOfLooping) {
     EXPECT_TRUE(f.isValid());
     // No claim on exactly which frame: the point is that giving up is safe and
     // terminates, not that it is still frame-exact once every attempt is forced wrong.
+}
+
+// A file that has stopped answering (media on a network share that went away): the
+// decode thread sits in a read. Stopping it must not wait for that read; the read is
+// cut, which leaves the file marked "error, at its end". After that the decoder must
+// still play the clip again: every frame, and the real end. (It resumes with a plan,
+// as the app does after every stop.)
+TEST_P(VideoDecoderSeek, AStopCutsAReadThatDoesNotReturnAndTheDecoderRecovers) {
+    using namespace std::chrono;
+    decoder_.close();
+    // Longer than FFmpeg's read buffer, so the thread has to read from the file.
+    constexpr int LONG_FRAME_COUNT = 600;
+    ASSERT_TRUE(testclips::writeMpeg2Clip(path_, GetParam().gopSize, LONG_FRAME_COUNT, FPS, START_OFFSET_FRAMES));
+    std::atomic<bool> armed{false};
+    std::atomic<bool> parked{false};
+    DecodeOptions options;
+    options.testBeforeFileRead = [&](const std::atomic<bool>& cutReads) {
+        if (!armed.exchange(false)) return;
+        parked = true;
+        const auto giveUp = steady_clock::now() + seconds(10);
+        while (!cutReads && steady_clock::now() < giveUp) std::this_thread::sleep_for(milliseconds(1));
+    };
+    ASSERT_TRUE(decoder_.open(path_, options));
+
+    armed = true;
+    decoder_.startBackgroundDecoding(LONG_FRAME_COUNT * 2);  // room for the clip: it reads to the end
+    const auto parkBy = steady_clock::now() + seconds(10);
+    while (!parked && steady_clock::now() < parkBy) std::this_thread::sleep_for(milliseconds(1));
+    ASSERT_TRUE(parked) << "the decode thread never read from the file";
+
+    const auto stopStarted = steady_clock::now();
+    decoder_.stopBackgroundDecoding();
+    EXPECT_LT(steady_clock::now() - stopStarted, seconds(5)) << "the stop waited for the read";
+
+    decoder_.startPlayback(DecodePlan{}, LONG_FRAME_COUNT * 2);
+    std::vector<double> pts;
+    const auto playBy = steady_clock::now() + seconds(30);
+    while (steady_clock::now() < playBy) {
+        if (VideoFrame frame = decoder_.getBufferedFrame(); frame.isValid()) {
+            pts.push_back(frame.pts);
+        } else if (decoder_.isAtEnd() && decoder_.getBufferedFrameCount() == 0) {
+            break;
+        } else {
+            std::this_thread::sleep_for(milliseconds(1));
+        }
+    }
+    ASSERT_EQ(pts.size(), static_cast<size_t>(LONG_FRAME_COUNT)) << decoder_.getLastError();
+    EXPECT_NEAR(pts.front(), 0.0, PTS_TOLERANCE);
+    EXPECT_NEAR(pts.back(), static_cast<double>(LONG_FRAME_COUNT - 1) / FPS, PTS_TOLERANCE);
+    EXPECT_TRUE(decoder_.isAtEnd());
+}
+
+// An exception on the decode thread (no memory for a frame) stops that clip with an
+// error instead of ending the process, and the next playback plan decodes again.
+TEST_P(VideoDecoderSeek, AnExceptionOnTheDecodeThreadStopsTheClipNotTheProcess) {
+    using namespace std::chrono;
+    decoder_.close();
+    std::atomic<bool> thrown{false};
+    DecodeOptions options;
+    options.testBeforeQueueFrame = [&] {
+        if (!thrown.exchange(true)) throw std::bad_alloc();
+    };
+    ASSERT_TRUE(decoder_.open(path_, options));
+
+    decoder_.startBackgroundDecoding(4);
+    auto waitBy = steady_clock::now() + seconds(10);
+    while (decoder_.getLastError().empty() && steady_clock::now() < waitBy) {
+        std::this_thread::sleep_for(milliseconds(1));
+    }
+    EXPECT_FALSE(decoder_.getLastError().empty());
+    EXPECT_EQ(decoder_.getBufferedFrameCount(), 0u);
+
+    decoder_.startPlayback(DecodePlan{}, 4);
+    waitBy = steady_clock::now() + seconds(10);
+    while (decoder_.getBufferedFrameCount() == 0 && steady_clock::now() < waitBy) {
+        std::this_thread::sleep_for(milliseconds(1));
+    }
+    EXPECT_GT(decoder_.getBufferedFrameCount(), 0u);
+    EXPECT_TRUE(decoder_.getLastError().empty());
 }
 
 INSTANTIATE_TEST_SUITE_P(Containers, VideoDecoderSeek,

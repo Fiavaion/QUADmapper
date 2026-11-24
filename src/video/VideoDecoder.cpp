@@ -449,7 +449,8 @@ public:
         const std::string pathStr = utf8FromPath(path);
 
         // Open input file
-        if (openLocalMediaInput(&formatCtx_, pathStr.c_str()) < 0) {
+        const AVIOInterruptCB interrupt{&Impl::readCutRequested, this};
+        if (openLocalMediaInput(&formatCtx_, pathStr.c_str(), &interrupt) < 0) {
             LOG_ERROR("Failed to open video file: {}", pathStr);
             return false;
         }
@@ -1287,11 +1288,24 @@ public:
         // the notify can land between the thread's predicate check and its wait,
         // and join() then hangs on a thread that never wakes.
         {
-            std::lock_guard<std::mutex> lock(bufferMutex_);
+            std::unique_lock<std::mutex> lock(bufferMutex_);
             stopDecoding_ = true;
+            bufferCondition_.notify_all();
+            // The thread ends within a few milliseconds unless it is reading a file
+            // that has stopped answering (media on a network share that went away).
+            // Only then are its reads cut short, so that this thread is not held for
+            // every one of them. A read already inside Windows still has to return.
+            cutReads_ = !bufferCondition_.wait_for(lock, STOP_GRACE, [this] { return threadExited_; });
         }
-        bufferCondition_.notify_all();
         backgroundThread_.join();
+        if (cutReads_.exchange(false) && formatCtx_ && formatCtx_->pb) {
+            // A cut read leaves the file marked "error, at its end", and the demuxer
+            // possibly mid-packet. The seek that follows every stop of a file's thread
+            // repositions the demuxer; it must find the file readable.
+            formatCtx_->pb->error = 0;
+            formatCtx_->pb->eof_reached = 0;
+            lastReadError_ = 0;  // the cut is not the reason for a later failure
+        }
 
         // Clear buffer
         std::lock_guard<std::mutex> lock(bufferMutex_);
@@ -2155,6 +2169,13 @@ private:
         reverseError_ = reason;
     }
 
+    // FFmpeg's interrupt callback (the file's AVFormatContext): non-zero ends a read.
+    static int readCutRequested(void* impl) {
+        const Impl* self = static_cast<const Impl*>(impl);
+        if (self->options_.testBeforeFileRead) self->options_.testBeforeFileRead(self->cutReads_);
+        return self->cutReads_.load(std::memory_order_relaxed) ? 1 : 0;
+    }
+
     // Asked to stop, or to start over at a new plan: decoding toward the old one is moot.
     bool interrupted() const { return stopDecoding_ || replan_; }
 
@@ -2364,6 +2385,9 @@ private:
     std::atomic<bool> replan_{false};  // pendingPlan_ waits for the decode thread
     bool awaitPlan_ = false;  // the thread idles until a plan (startIdleThread); bufferMutex_
     bool threadExited_ = false;  // the decode thread's function has returned; bufferMutex_
+    // How long stopBackgroundDecoding() lets the thread finish what it is reading.
+    static constexpr std::chrono::milliseconds STOP_GRACE{250};
+    std::atomic<bool> cutReads_{false};  // stopBackgroundDecoding(): the thread's reads fail at once
     DecodePlan pendingPlan_;            // guarded by bufferMutex_
     size_t maxBufferSize_ = 8;          // guarded by bufferMutex_ while the thread runs
 };

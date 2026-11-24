@@ -2,6 +2,7 @@
 #include "AudioFrame.hpp"
 #include "core/Logger.hpp"
 
+#include <atomic>
 #include <cmath>
 
 #ifdef QUADMAPPER_HAS_FFMPEG
@@ -29,6 +30,12 @@ public:
         // video): a crafted file cannot make FFmpeg fetch from the network.
         AVDictionary* options = nullptr;
         av_dict_set(&options, "protocol_whitelist", "file,crypto,data", 0);
+        formatCtx_ = avformat_alloc_context();  // freed by avformat_open_input() if it fails
+        if (!formatCtx_) {
+            av_dict_free(&options);
+            return false;
+        }
+        formatCtx_->interrupt_callback = {&Impl::interruptRequested, &interrupted_};
         const int opened = avformat_open_input(&formatCtx_, pathStr.c_str(), nullptr, &options);
         av_dict_free(&options);
         if (opened < 0) {
@@ -135,6 +142,8 @@ public:
         atEnd_ = false;
     }
 
+    void interrupt() { interrupted_ = true; }
+
     bool isOpen() const { return isOpen_; }
     const AudioInfo& getInfo() const { return info_; }
     int getOutputSampleRate() const { return isOpen_ ? outSampleRate_ : 0; }
@@ -206,6 +215,11 @@ private:
     static constexpr int MAX_READ_ATTEMPTS = 4096;
     static constexpr double SEEK_PREROLL_SECONDS = 0.1;
 
+    // FFmpeg's interrupt callback: non-zero ends a read.
+    static int interruptRequested(void* interrupted) {
+        return static_cast<const std::atomic<bool>*>(interrupted)->load(std::memory_order_relaxed) ? 1 : 0;
+    }
+
     bool setupResampler() {
         AVChannelLayout outLayout;
         if (outChannels_ == info_.channels) {
@@ -268,6 +282,7 @@ private:
     double currentTime_ = 0.0;
     bool demuxEnded_ = false;
     bool atEnd_ = false;
+    std::atomic<bool> interrupted_{false};  // interrupt(): never reset
 };
 
 #else // !QUADMAPPER_HAS_FFMPEG
@@ -278,6 +293,7 @@ class AudioDecoder::Impl {
 public:
     bool open(const std::filesystem::path&, int, int) { return false; }
     void close() {}
+    void interrupt() {}
     bool isOpen() const { return false; }
     const AudioInfo& getInfo() const { return info_; }
     int getOutputSampleRate() const { return 0; }
@@ -301,6 +317,7 @@ bool AudioDecoder::open(const std::filesystem::path& path, int outSampleRate, in
     return impl_->open(path, outSampleRate, outChannels);
 }
 void AudioDecoder::close() { impl_->close(); }
+void AudioDecoder::interrupt() { impl_->interrupt(); }
 bool AudioDecoder::isOpen() const { return impl_->isOpen(); }
 const AudioInfo& AudioDecoder::getInfo() const { return impl_->getInfo(); }
 int AudioDecoder::getOutputSampleRate() const { return impl_->getOutputSampleRate(); }

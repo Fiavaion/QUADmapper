@@ -106,6 +106,7 @@ AudioAttachment::~AudioAttachment() {
         stop_ = true;
     }
     wake_.notify_one();
+    decode_->decoder.interrupt();  // do not wait out the reads of a file that stopped answering
     if (thread_.joinable()) thread_.join();
     // 3. The members (source, buffer, decoder) are freed here, on this thread.
 }

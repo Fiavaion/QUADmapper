@@ -43,6 +43,15 @@ public:
     void close();
     bool isOpen() const;
 
+    /**
+     * @brief Give up on the file: the read or seek in progress and every later one fail
+     *
+     * The one call another thread may make while the decoder is in use. It is for
+     * stopping a decode thread whose file has stopped answering (a network share that
+     * went away). The decoder cannot be used again afterwards.
+     */
+    void interrupt();
+
     /** The stream as stored (channels, rate, codec, duration). */
     const AudioInfo& getInfo() const;
 

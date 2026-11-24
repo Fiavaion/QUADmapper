@@ -88,6 +88,10 @@ struct DecodeOptions {
     // is queued. A hook may call startPlayback() itself to land a reposition right there.
     std::function<void()> testDuringLeaveGpu;
     std::function<void()> testBeforeQueueFrame;
+    // Test hook: runs before each read of the file, on the thread that reads, with the
+    // flag stopBackgroundDecoding() raises to cut the reads of a file that has stopped
+    // answering. A hook that waits for the flag stands in for such a file.
+    std::function<void(const std::atomic<bool>& cutReads)> testBeforeFileRead;
 };
 
 // Memory the backward GOP decoder may hold for Ping-Pong's reverse leg (ADR-050 §4).
