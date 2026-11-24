@@ -610,6 +610,7 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
     }
 
     if (outputs_.empty()) {
+        notify("Perform mode needs an output: add one in the Outputs tab");
         return Err("No outputs to display in perform mode");
     }
 
@@ -624,6 +625,7 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
     bool anySucceeded = false;
 
     const OutputWindow* preview = onlyScreenPreview(monitors_, outputs_);
+    bool reasonShown = false;
     for (auto& output : outputs_) {
         if (!output->isEnabled()) {
             continue;
@@ -640,6 +642,7 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
         if (output->getMonitor() < 0) {
             notify("Projector '" + output->getName() + "' has no display; its output is not shown."
                    " Choose one for it in the Outputs tab.");
+            reasonShown = true;
             continue;
         }
         if (showOnResolvedMonitor(*output)) {
@@ -648,6 +651,8 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
     }
 
     if (!anySucceeded) {
+        // The status line holds one message: the one naming the projector stays.
+        if (!reasonShown) notify("Perform mode did not start: no output could be shown on a display");
         return Err("Failed to put any outputs in fullscreen mode");
     }
 
