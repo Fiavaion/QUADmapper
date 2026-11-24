@@ -195,7 +195,8 @@ void expandGreyToRgba(ImageData& image) {
 } // namespace
 
 Result<ImageData, Error> ImageLoader::load(const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) {
+    std::error_code ec;  // a path that cannot be examined is not found, not an exception
+    if (!std::filesystem::exists(path, ec)) {
         return Err<ImageData>("File not found: " + utf8FromPath(path));
     }
 
@@ -242,7 +243,8 @@ Result<ImageData, Error> ImageLoader::loadWithChannels(
     const std::filesystem::path& path,
     int desiredChannels)
 {
-    if (!std::filesystem::exists(path)) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
         return Err<ImageData>("File not found: " + utf8FromPath(path));
     }
 

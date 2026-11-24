@@ -230,11 +230,13 @@ Result<void, Error> FileSystem::writeBinaryFile(const std::filesystem::path& pat
 }
 
 bool FileSystem::exists(const std::filesystem::path& path) {
-    return std::filesystem::exists(path);
+    std::error_code ec;  // a path that cannot be examined does not exist
+    return std::filesystem::exists(path, ec);
 }
 
 bool FileSystem::isDirectory(const std::filesystem::path& path) {
-    return std::filesystem::is_directory(path);
+    std::error_code ec;
+    return std::filesystem::is_directory(path, ec);
 }
 
 Result<void, Error> FileSystem::createDirectory(const std::filesystem::path& path) {
@@ -248,12 +250,14 @@ Result<void, Error> FileSystem::createDirectory(const std::filesystem::path& pat
 
 std::filesystem::path FileSystem::makeRelative(const std::filesystem::path& path,
                                                const std::filesystem::path& base) {
-    return std::filesystem::relative(path, base);
+    std::error_code ec;  // empty on failure
+    return std::filesystem::relative(path, base, ec);
 }
 
 std::filesystem::path FileSystem::resolveRelative(const std::filesystem::path& relativePath,
                                                   const std::filesystem::path& base) {
-    return std::filesystem::absolute(base / relativePath);
+    std::error_code ec;  // empty on failure
+    return std::filesystem::absolute(base / relativePath, ec);
 }
 
 } // namespace quadmapper

@@ -192,6 +192,16 @@ TEST_F(FileSystemAtomicTest, ReadBinaryFileReturnsExactBytesAndErrOnMissingFile)
     EXPECT_TRUE(FileSystem::readBinaryFile(dir_ / "absent.bin").isError());
 }
 
+// Windows reports a name this long as an error, not as "not found".
+TEST(FileSystemPathTest, APathThatCannotBeExaminedDoesNotExist) {
+    const fs::path tooLong = fs::path("C:\\") / std::wstring(40000, L'a');
+
+    EXPECT_FALSE(FileSystem::exists(tooLong));
+    EXPECT_FALSE(FileSystem::isDirectory(tooLong));
+    EXPECT_NO_THROW(FileSystem::makeRelative(tooLong, "C:\\"));
+    EXPECT_NO_THROW(FileSystem::resolveRelative(tooLong, "C:\\"));
+}
+
 TEST_F(FileSystemAtomicTest, AFileOverTheLimitIsNotRead) {
     const fs::path file = dir_ / "five.bin";
     spit(file, "12345");
