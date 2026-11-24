@@ -42,11 +42,17 @@ uniform float u_EdgeGamma;
 // Reference: ofxHapPlayer (Vidvox / bangnoise) — identical formula.
 uniform int u_ColorSpace;
 
+// The projective term, kept away from zero (its sign kept): a degenerate quad must
+// not divide by zero.
+float projectiveTerm(float q) {
+    return abs(q) < 1e-6 ? (q < 0.0 ? -1e-6 : 1e-6) : q;
+}
+
 void main() {
     // Quad-local (u,v): undo the projective weighting from quad.vert. The soft edge
     // follows the surface; the image is sampled at its own coordinate.
-    vec2 texCoord = v_TexCoordQ.xy / v_TexCoordQ.z;
-    vec2 imageCoord = v_ImageCoordQ.xy / v_ImageCoordQ.z;
+    vec2 texCoord = v_TexCoordQ.xy / projectiveTerm(v_TexCoordQ.z);
+    vec2 imageCoord = v_ImageCoordQ.xy / projectiveTerm(v_ImageCoordQ.z);
     if (u_ImageCut == 1 && (any(lessThan(imageCoord, vec2(0.0))) ||
                             any(greaterThan(imageCoord, vec2(1.0))))) {
         discard;
