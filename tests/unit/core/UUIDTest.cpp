@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "core/UUID.hpp"
 
+#include <stdexcept>
+
 namespace quadmapper {
 namespace test {
 
@@ -54,6 +56,20 @@ TEST(UUIDTest, FromStringRoundTrip) {
     UUID id2 = UUID::fromString(str);
 
     EXPECT_EQ(id1, id2);
+}
+
+TEST(UUIDTest, FromStringTakesOnlyTheCanonicalShape) {
+    EXPECT_EQ(UUID::fromString("0A1B2C3D-0000-4000-8000-00000000000F").toString(),
+              "0a1b2c3d-0000-4000-8000-00000000000f");
+    for (const char* text : {
+             "0a1b2c3d0-000-4000-8000-000000000001",    // a dash in the wrong place
+             "0a1b2c3g-0000-4000-8000-000000000001",    // not a hex digit
+             " a1b2c3d-0000-4000-8000-000000000001",    // leading space
+             "+a1b2c3d-0000-4000-8000-000000000001",    // sign
+             "0xa1b2c3-0000-4000-8000-000000000001",    // hex prefix
+             "0a1b2c3d-0000-4000-8000-00000000001"}) {  // too short
+        EXPECT_THROW(UUID::fromString(text), std::invalid_argument) << text;
+    }
 }
 
 TEST(UUIDTest, HashingWorks) {
