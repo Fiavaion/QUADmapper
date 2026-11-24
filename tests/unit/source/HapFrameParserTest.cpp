@@ -368,6 +368,15 @@ TEST(SnappyDecoderTest, EmptyPayload) {
     EXPECT_TRUE(out.empty());
 }
 
+// A header declaring 1,000,000 bytes for a 5-byte input is refused before any output is
+// allocated.
+TEST(SnappyDecoderTest, ImplausibleDeclaredLengthRejectedBeforeAllocating) {
+    const uint8_t buf[] = {0xC0, 0x84, 0x3D, 0x00, 'x'};  // varint 1000000, one literal byte
+    std::vector<uint8_t> out;
+    EXPECT_FALSE(decompressSnappy(buf, sizeof(buf), out));
+    EXPECT_TRUE(out.empty());
+}
+
 // A chunk-offset table may point every chunk at the same bytes: the decoded size must be
 // capped, not grow without bound (a hostile file would otherwise exhaust memory).
 TEST(HapFrameParserTest, Malformed_OverlappingChunksExceedingTheDecodedLimitAreRejected) {
