@@ -131,6 +131,7 @@ private:
 
     // Decode thread.
     void decodeLoop();
+    void decodeUntilStopped();
     void startSegment(const Request& request);
     // Push queued samples, decoding more as the queue empties; returns when the buffer
     // is full, the pass ended or a request arrived.

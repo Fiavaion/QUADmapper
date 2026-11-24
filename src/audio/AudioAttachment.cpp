@@ -257,6 +257,19 @@ void AudioAttachment::update(const AudioTransport& transport) {
 // ---- Decode thread ------------------------------------------------------------
 
 void AudioAttachment::decodeLoop() {
+    try {
+        decodeUntilStopped();
+    } catch (const std::exception& e) {
+        // No memory for the sample queue, most likely: this clip's sound stops and the
+        // app runs on.
+        LOG_ERROR("Audio decode thread stopped for {}: {}", path_.filename().u8string(), e.what());
+        streamDone_ = true;
+        waiting_ = true;
+        state_ = AudioAttachmentState::NoAudio;
+    }
+}
+
+void AudioAttachment::decodeUntilStopped() {
     DecodeState& d = *decode_;
     if (!d.decoder.open(path_, sampleRate_, CHANNELS)) {
         streamDone_ = true;

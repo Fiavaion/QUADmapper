@@ -1257,10 +1257,17 @@ public:
 
     // Background decoding
     void startBackgroundDecoding(size_t bufferSize) {
-        if (backgroundThread_.joinable()) return;
+        if (backgroundThread_.joinable()) {
+            {
+                std::lock_guard<std::mutex> lock(bufferMutex_);
+                if (!threadExited_) return;
+            }
+            backgroundThread_.join();  // it stopped on an exception: start again
+        }
 
         maxBufferSize_ = bufferSize;
         stopDecoding_ = false;
+        threadExited_ = false;
         backgroundThread_ = std::thread(&Impl::backgroundDecodingLoop, this);
     }
 
@@ -2152,6 +2159,26 @@ private:
     bool interrupted() const { return stopDecoding_ || replan_; }
 
     void backgroundDecodingLoop() {
+        const char* failure = nullptr;
+        try {
+            decodeUntilStopped();
+        } catch (const std::exception& e) {
+            // No memory for a frame, most likely. The clip stops with an error and the
+            // app runs on; the next startPlayback() starts a new thread.
+            LOG_ERROR("Video decode thread stopped: {}", e.what());
+            failure = "Video decoding stopped (out of memory?)";
+        }
+        {
+            // The error and the exit in one step: a startPlayback() in between would
+            // clear the error and still find the thread running.
+            std::lock_guard<std::mutex> lock(bufferMutex_);
+            if (failure) lastError_ = failure;
+            threadExited_ = true;
+        }
+        bufferCondition_.notify_all();
+    }
+
+    void decodeUntilStopped() {
         {
             // Started by startIdleThread(): nothing to decode until the first plan.
             std::unique_lock<std::mutex> lock(bufferMutex_);
@@ -2336,6 +2363,7 @@ private:
     std::atomic<bool> stopDecoding_{false};
     std::atomic<bool> replan_{false};  // pendingPlan_ waits for the decode thread
     bool awaitPlan_ = false;  // the thread idles until a plan (startIdleThread); bufferMutex_
+    bool threadExited_ = false;  // the decode thread's function has returned; bufferMutex_
     DecodePlan pendingPlan_;            // guarded by bufferMutex_
     size_t maxBufferSize_ = 8;          // guarded by bufferMutex_ while the thread runs
 };
