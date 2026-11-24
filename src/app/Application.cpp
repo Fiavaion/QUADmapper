@@ -398,7 +398,9 @@ bool Application::initializeComponents() {
         AudioEngine::Options audioOptions;
         audioOptions.nullBackend = m_stressConfig.has_value() || m_benchConfig.has_value();
         m_audioEngine = std::make_unique<AudioEngine>(audioOptions);
-        m_audioEngine->open(m_preferences->getPreferences().performance.audioDevice);
+        if (!m_audioEngine->open(m_preferences->getPreferences().performance.audioDevice)) {
+            postStatus(*m_editorState, "No sound: no audio output device could be opened");
+        }
     }
 
     // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed here but not
