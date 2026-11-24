@@ -87,6 +87,12 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
     ImGui::Text("Quads: %zu  Groups: %zu (top = front)", quadManager.getQuadCount(), scene.getGroupCount());
     ImGui::Separator();
 
+    // A group-membership change from the context menu waits until the loops are done,
+    // because the loops walk the member list it would edit.
+    UUID toggleGroupId;
+    UUID toggleQuadId;
+    bool toggleRemove = false;
+
     // Helper lambda to render a single quad item
     auto renderQuadItem = [&](const Quad* quad, bool indented = false) {
         bool isSelected = quadManager.isSelected(quad->getId());
@@ -263,11 +269,9 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
                         QuadGroup* grp = groupPtr.get();
                         bool inGroup = grp->hasMember(quad->getId());
                         if (ImGui::MenuItem(grp->getName().c_str(), nullptr, inGroup)) {
-                            if (inGroup) {
-                                scene.removeQuadFromGroup(grp->getId(), quad->getId());
-                            } else {
-                                scene.addQuadToGroup(grp->getId(), quad->getId());
-                            }
+                            toggleGroupId = grp->getId();
+                            toggleQuadId = quad->getId();
+                            toggleRemove = inGroup;
                         }
                     }
                     ImGui::EndMenu();
@@ -402,6 +406,14 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
             if (quadsShownInGroups.find(quad->getId()) == quadsShownInGroups.end()) {
                 renderQuadItem(quad, false);
             }
+        }
+    }
+
+    if (!toggleGroupId.isNull()) {
+        if (toggleRemove) {
+            scene.removeQuadFromGroup(toggleGroupId, toggleQuadId);
+        } else {
+            scene.addQuadToGroup(toggleGroupId, toggleQuadId);
         }
     }
 
