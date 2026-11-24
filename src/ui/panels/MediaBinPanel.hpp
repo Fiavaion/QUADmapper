@@ -64,19 +64,14 @@ public:
 private:
     void renderContent();
 
-    // Render the import button and controls
     void renderControls();
 
-    // Render the procedural creation menu
     void renderProceduralMenu();
 
-    // Render the thumbnail grid
     void renderThumbnailGrid();
 
-    // Render a single media item thumbnail
     void renderMediaItem(MediaItem* item, int index);
 
-    // Render the context menu for a media item
     void renderItemContextMenu(MediaItem* item);
 
     // Handle import button click
@@ -94,7 +89,6 @@ private:
     // Build the file filter string for native file dialog
     std::string buildFileFilter() const;
 
-    // Get display icon for media type
     const char* getMediaTypeIcon(MediaType type) const;
 
     // Lazily extract + cache a video's first frame as a standalone thumbnail texture

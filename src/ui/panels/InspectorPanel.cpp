@@ -1345,7 +1345,6 @@ void InspectorPanel::renderMediaProperties(EditorContext& ctx) {
                     ImGui::PopID();
                 }
 
-                // Reset button
                 if (ImGui::Button("Reset to Defaults")) {
                     procSource->resetParameters();
                 }

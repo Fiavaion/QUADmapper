@@ -189,7 +189,6 @@ bool Texture::create(int width, int height, int channels, const unsigned char* d
             break;
     }
 
-    // Create texture
     glGenTextures(1, &textureId_);
     GlObjectStats::onTextureCreated();
     glBindTexture(GL_TEXTURE_2D, textureId_);
@@ -200,10 +199,8 @@ bool Texture::create(int width, int height, int channels, const unsigned char* d
         glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, data);
     }
 
-    // Generate mipmaps
     glGenerateMipmap(GL_TEXTURE_2D);
 
-    // Set default parameters
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);

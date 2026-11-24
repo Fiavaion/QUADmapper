@@ -23,7 +23,6 @@ public:
             return true;
         }
 
-        // Initialize miniaudio context for device enumeration
         ma_context_config contextConfig = ma_context_config_init();
         const ma_backend nullOnly[] = {ma_backend_null};
         ma_result result = nullBackend
@@ -101,7 +100,6 @@ public:
             info.isDefault = playbackDevices[i].isDefault != 0;
             info.isPlayback = true;
 
-            // Store native ID for later use
             deviceIds_.push_back(playbackDevices[i].id);
 
             // Default capabilities

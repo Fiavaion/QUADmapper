@@ -114,7 +114,6 @@ OutputWindow* OutputManager::createOutput(const std::string& name) {
     }
     output->setName(outputName);
 
-    // Create the GLFW window if manager is initialized
     if (mainWindow_ != nullptr) {
         auto result = output->create(mainWindow_);
         if (!result) {
@@ -685,7 +684,6 @@ Result<void, Error> OutputManager::exitPerformMode() {
             continue;
         }
 
-        // Return to windowed mode
         auto result = output->goWindowed();
         if (!result) {
             LOG_WARNING("Failed to return output '{}' to windowed mode: {}",

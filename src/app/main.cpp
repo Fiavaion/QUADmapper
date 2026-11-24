@@ -213,7 +213,6 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     installCrashFilter();
 
-    // Create and run application
     quadmapper::Application app;
     g_app = &app;
 

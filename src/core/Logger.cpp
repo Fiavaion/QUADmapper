@@ -120,7 +120,6 @@ void Logger::error(const std::string& message) {
 void Logger::log(LogLevel level, const std::string& message) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Get timestamp
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(

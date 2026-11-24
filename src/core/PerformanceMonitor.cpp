@@ -39,7 +39,6 @@ void PerformanceMonitor::beginFrame() {
 
     frameStartTime_ = now_();
 
-    // Reset per-frame stats
     currentStats_.drawCalls = 0;
     currentStats_.triangles = 0;
 }
@@ -52,7 +51,6 @@ void PerformanceMonitor::endFrame() {
 
     currentStats_.frameTimeMs = frameTime;
 
-    // Add to history
     frameTimeHistory_.push_back(frameTime);
     if (frameTimeHistory_.size() > HISTORY_SIZE) {
         frameTimeHistory_.pop_front();
@@ -77,7 +75,6 @@ void PerformanceMonitor::endSection(const std::string& name) {
     double elapsed = std::chrono::duration<double, std::milli>(now - it->second).count();
     sectionStartTimes_.erase(it);
 
-    // Update the appropriate stat based on section name
     if (name == "render") {
         currentStats_.renderTimeMs = elapsed;
     } else if (name == "update") {

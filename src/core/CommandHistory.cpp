@@ -95,11 +95,9 @@ void CommandHistory::execute(std::unique_ptr<Command> command) {
     }
     LOG_TRACE("Executed command: {}", command->getDescription());
 
-    // Add to history
     commands_.push_back(std::move(command));
     undoIndex_ = commands_.size();
 
-    // Trim if we exceed max history
     trimHistory();
 
     notifyHistoryChanged();

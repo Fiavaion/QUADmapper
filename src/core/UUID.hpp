@@ -13,7 +13,6 @@ public:
     UUID();
     explicit UUID(uint64_t high, uint64_t low);
 
-    // Generate a new random UUID
     static UUID generate();
 
     // Parse from string
@@ -22,10 +21,8 @@ public:
     // Null UUID
     static UUID null();
 
-    // Check if null
     bool isNull() const;
 
-    // Get raw values
     uint64_t high() const { return high_; }
     uint64_t low() const { return low_; }
 

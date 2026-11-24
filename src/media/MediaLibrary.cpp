@@ -118,7 +118,6 @@ const std::vector<std::string>& MediaLibrary::getSupportedVideoExtensions() {
 
 bool MediaLibrary::isExtensionSupported(const std::string& extension) {
     std::string ext = extension;
-    // Add dot if not present
     if (!ext.empty() && ext[0] != '.') {
         ext = "." + ext;
     }
@@ -126,11 +125,9 @@ bool MediaLibrary::isExtensionSupported(const std::string& extension) {
     std::transform(ext.begin(), ext.end(), ext.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-    // Check image extensions
     for (const auto& imgExt : IMAGE_EXTENSIONS) {
         if (ext == imgExt) return true;
     }
-    // Check video extensions
     for (const auto& vidExt : VIDEO_EXTENSIONS) {
         if (ext == vidExt) return true;
     }
@@ -139,7 +136,6 @@ bool MediaLibrary::isExtensionSupported(const std::string& extension) {
 
 std::optional<MediaType> MediaLibrary::getTypeFromExtension(const std::string& extension) {
     std::string ext = extension;
-    // Add dot if not present
     if (!ext.empty() && ext[0] != '.') {
         ext = "." + ext;
     }

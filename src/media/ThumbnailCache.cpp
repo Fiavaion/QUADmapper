@@ -88,7 +88,6 @@ GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int m
 
     std::string pathKey = utf8FromPath(filePath);
 
-    // Check memory cache first
     auto it = textureCache_.find(pathKey);
     if (it != textureCache_.end()) {
         return it->second;
@@ -97,7 +96,6 @@ GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int m
     // A file that failed and has not changed since is not read or decoded again.
     if (failedUnchanged(filePath, pathKey)) return 0;
 
-    // Check disk cache
     std::filesystem::path cachePath = getCachePath(filePath);
     if (isCacheValid(filePath, cachePath)) {
         GLuint texId = loadCachedThumbnail(cachePath);
@@ -107,7 +105,6 @@ GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int m
         }
     }
 
-    // Generate new thumbnail
     GLuint texId = generateThumbnail(filePath, maxSize);
     if (texId != 0) {
         textureCache_[pathKey] = texId;
@@ -232,7 +229,6 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
         }
     }
 
-    // Create OpenGL texture
     GLuint texId = 0;
     glGenTextures(1, &texId);
     glBindTexture(GL_TEXTURE_2D, texId);
@@ -244,7 +240,6 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Save to disk cache
     saveThumbnailToCache(getCachePath(filePath), thumbData.data(), thumbWidth, thumbHeight);
 
     Logger::debug("ThumbnailCache: Generated thumbnail for: {} ({}x{})",
@@ -278,7 +273,6 @@ GLuint ThumbnailCache::loadCachedThumbnail(const std::filesystem::path& cachePat
         return 0;
     }
 
-    // Create OpenGL texture
     GLuint texId = 0;
     glGenTextures(1, &texId);
     glBindTexture(GL_TEXTURE_2D, texId);

@@ -53,14 +53,12 @@ bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource)
         return false;
     }
 
-    // Create and link program
     programId_ = glCreateProgram();
     GlObjectStats::onShaderProgramCreated();
     glAttachShader(programId_, vertexShader);
     glAttachShader(programId_, fragmentShader);
     glLinkProgram(programId_);
 
-    // Check for link errors
     if (!checkProgramLinkError(programId_)) {
         glDeleteProgram(programId_);
         GlObjectStats::onShaderProgramDestroyed();

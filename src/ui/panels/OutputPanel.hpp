@@ -34,32 +34,24 @@ private:
 
     bool hasSelection() const;
 
-    // Render the perform mode section
     void renderPerformModeSection();
 
-    // Render the output list
     void renderOutputList();
 
-    // Render a single output window row
     void renderOutputRow(OutputWindow* output, int index);
 
-    // Render the add/remove buttons
     void renderActionButtons();
 
-    // Render the properties section for selected output
     void renderOutputProperties();
 
     // Ask before removing an output; the removal runs when the modal is confirmed.
     void requestDelete(const UUID& id);
     void renderDeleteConfirm();
 
-    // Render monitor dropdown
     void renderMonitorDropdown(OutputWindow* output);
 
-    // Render resolution controls
     void renderResolutionControls(OutputWindow* output);
 
-    // Render rotation controls
     void renderRotationControls(OutputWindow* output);
 
     EditorState* es_ = nullptr;

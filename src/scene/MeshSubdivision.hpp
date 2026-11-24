@@ -42,7 +42,6 @@ public:
     // Validate resolution is within allowed range
     static int clampResolution(int resolution);
 
-    // Check if a resolution is valid
     static bool isValidResolution(int resolution);
 
     // The triangles of a resolution x resolution grid, in generateMesh's order.

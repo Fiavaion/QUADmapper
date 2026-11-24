@@ -47,10 +47,8 @@ public:
     static Result<void, Error> writeBinaryFile(const std::filesystem::path& path,
                                                const std::vector<uint8_t>& data);
 
-    // Check if file exists
     static bool exists(const std::filesystem::path& path);
 
-    // Check if path is directory
     static bool isDirectory(const std::filesystem::path& path);
 
     // Create directory (and parents)

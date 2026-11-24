@@ -24,7 +24,6 @@ public:
         return r;
     }
 
-    // Check if result is success or error
     bool isSuccess() const { return std::holds_alternative<T>(data_); }
     bool isError() const { return std::holds_alternative<E>(data_); }
 
@@ -36,7 +35,6 @@ public:
     E& error() { return std::get<E>(data_); }
     const E& error() const { return std::get<E>(data_); }
 
-    // Get value or default
     T valueOr(const T& defaultValue) const {
         if (isSuccess()) {
             return std::get<T>(data_);
@@ -101,7 +99,7 @@ private:
     std::optional<E> error_;
 };
 
-// Legacy Error struct for backwards compatibility
+// The error type of Result<T, Error>.
 struct Error {
     std::string message;
     int code = 0;
@@ -110,7 +108,7 @@ struct Error {
     explicit Error(std::string msg, int c = 0) : message(std::move(msg)), code(c) {}
 };
 
-// Helper functions for legacy Result<T, Error> usage
+// Shorthand for building a Result<T, Error>.
 template<typename T>
 Result<T, Error> Ok(T value) {
     return Result<T, Error>::success(std::move(value));

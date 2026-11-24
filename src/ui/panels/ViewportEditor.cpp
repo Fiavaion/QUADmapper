@@ -545,7 +545,6 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                 return keys;
             };
 
-            // Reset snap state at start of each frame
             snapActive = false;
 
             // Helper lambda to find snap target from other quads
@@ -554,7 +553,6 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                 Vec2 snappedPos = pos;
                 float closestSnapDist = SNAP_RADIUS;
 
-                // Check all other quads for snap targets
                 const auto& allQuads = quadManager.getQuads();
                 for (const auto& otherQuad : allQuads) {
                     if (otherQuad->getId() == excludeQuadId) continue;  // Skip same quad
@@ -592,7 +590,6 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                     }
                 }
 
-                // Set snap indicator state if snapping occurred
                 if (snappedPos != pos) {
                     snapActive = true;
                     snapTargetPos = snappedPos;
@@ -679,7 +676,6 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
                         cornerDraggedVertex = -1;
                     }
                 } else {
-                    // Check for hover over corners
                     cornerHoveredVertex = -1;
                     float closestDist = HIT_RADIUS;
 
@@ -966,7 +962,6 @@ void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
         glEnable(GL_DEPTH_TEST);
     };
 
-    // Render all quads
     if (m_renderer) {
         m_renderer->setViewTransform(glm::vec2(viewScaleX, viewScaleY),
                                      glm::vec2(viewOffsetX, viewOffsetY), canvasAspect);

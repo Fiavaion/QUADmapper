@@ -23,7 +23,6 @@ bool Renderer::initialize() {
 
     Logger::debug("Initializing renderer...");
 
-    // Create quad shader
     if (!quadShader_.create(shaders::QUAD_VERT, shaders::QUAD_FRAG)) {
         Logger::error("Failed to create quad shader");
         return false;
@@ -35,13 +34,11 @@ bool Renderer::initialize() {
         return false;
     }
 
-    // Create outline shader
     if (!outlineShader_.create(shaders::OUTLINE_VERT, shaders::OUTLINE_FRAG)) {
         Logger::error("Failed to create outline shader");
         return false;
     }
 
-    // Create handle shader
     if (!handleShader_.create(shaders::HANDLE_VERT, shaders::HANDLE_FRAG)) {
         Logger::error("Failed to create handle shader");
         return false;
@@ -57,7 +54,6 @@ bool Renderer::initialize() {
     createOutlineBuffers();
     createHandleBuffers();
 
-    // Create default texture
     createDefaultTexture();
 
     // Blend state is per GL context. Every Renderer lives in its own context (the
@@ -350,7 +346,6 @@ void Renderer::updateOutlineBuffers(const Quad& quad) {
 }
 
 void Renderer::createDefaultTexture() {
-    // Create a 2x2 white texture
     unsigned char whitePixels[16] = {
         255, 255, 255, 255,
         255, 255, 255, 255,
@@ -451,7 +446,6 @@ void Renderer::renderQuad(const Quad& quad, const Texture* texture, bool selecte
     glBindVertexArray(gpu.vao);
     glDrawElements(GL_TRIANGLES, gpu.indexCount, GL_UNSIGNED_INT, nullptr);
 
-    // Draw selection outline if selected
     if (selected) {
         renderQuadOutline(quad, glm::vec4(0.0f, 0.7f, 1.0f, 1.0f), 2.0f);
     }
@@ -707,7 +701,6 @@ void Renderer::renderQuads(const QuadManager& quadManager,
         return;
     }
 
-    // Get quads sorted by z-order
     auto sortedQuads = quadManager.getQuadsByZOrder();
 
     for (const Quad* quad : sortedQuads) {
@@ -891,10 +884,8 @@ void Renderer::renderCornerHandles(const Quad& quad, int hoveredIndex, int dragg
     setHandleAspect(handleShader_, canvasAspect_);
     applyViewUniforms(handleShader_);
 
-    // Draw each corner handle
     constexpr int SEGMENTS = 16;
     for (int i = 0; i < 4; ++i) {
-        // Set handle center
         handleShader_.setVec2("u_HandleCenter", corners[i]);
 
         // Choose color and size based on state (priority: dragged > hovered > selected > normal)
@@ -920,7 +911,6 @@ void Renderer::renderCornerHandles(const Quad& quad, int hoveredIndex, int dragg
         handleShader_.setFloat("u_HandleSize", size);
         handleShader_.setVec4("u_HandleColor", color);
 
-        // Draw the circle (triangle fan)
         glBindVertexArray(handleVAO_);
         glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
     }
@@ -954,12 +944,10 @@ void Renderer::renderMeshHandles(const Quad& quad, int hoveredIndex, int dragged
     setHandleAspect(handleShader_, canvasAspect_);
     applyViewUniforms(handleShader_);
 
-    // Draw each handle
     constexpr int SEGMENTS = 16;
     for (size_t i = 0; i < positions.size(); ++i) {
         int idx = static_cast<int>(i);
 
-        // Set handle center
         handleShader_.setVec2("u_HandleCenter", positions[i]);
 
         // Choose color and size based on state (priority: dragged > hovered > selected > normal)
@@ -985,7 +973,6 @@ void Renderer::renderMeshHandles(const Quad& quad, int hoveredIndex, int dragged
         handleShader_.setFloat("u_HandleSize", size);
         handleShader_.setVec4("u_HandleColor", color);
 
-        // Draw the circle (triangle fan)
         glBindVertexArray(handleVAO_);
         glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
     }
@@ -1008,7 +995,6 @@ void Renderer::renderSnapIndicator(const Vec2& position) {
     setHandleAspect(handleShader_, canvasAspect_);
     applyViewUniforms(handleShader_);
 
-    // Set handle center
     handleShader_.setVec2("u_HandleCenter", position);
 
     // Magenta color for snap indicator (distinct from all other handle colors)
@@ -1016,7 +1002,6 @@ void Renderer::renderSnapIndicator(const Vec2& position) {
     handleShader_.setVec4("u_HandleColor", color);
     handleShader_.setFloat("u_HandleSize", SNAP_INDICATOR_SIZE);
 
-    // Draw the circle (triangle fan)
     glBindVertexArray(handleVAO_);
     glDrawArrays(GL_TRIANGLE_FAN, 0, SEGMENTS + 2);
 

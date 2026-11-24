@@ -206,7 +206,6 @@ void MediaBinPanel::renderControls() {
 
     ImGui::SameLine();
 
-    // Create procedural button with dropdown
     if (ImGui::Button("+ Create")) {
         ImGui::OpenPopup("ProceduralMenu");
     }
@@ -214,7 +213,6 @@ void MediaBinPanel::renderControls() {
         ImGui::SetTooltip("Create procedural texture source");
     }
 
-    // Render the procedural creation menu
     renderProceduralMenu();
 
     // Second row: search and filter
@@ -356,7 +354,6 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
     bool isSelected = (item->getId() == es_->selectedMediaId);
     ImVec2 size(thumbnailSize_, thumbnailSize_);
 
-    // Create a button-like area for the thumbnail
     ImVec2 cursorPos = ImGui::GetCursorScreenPos();
 
     // Background color based on selection
@@ -388,7 +385,6 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
 
     // Drag source for drag-drop to quads
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-        // Store the UUID as payload
         UUID id = item->getId();
         ImGui::SetDragDropPayload(DRAG_DROP_MEDIA_ID, &id, sizeof(UUID));
 
@@ -409,7 +405,6 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
         );
     }
 
-    // Draw thumbnail image or placeholder icon
     bool thumbnailDrawn = false;
 
     // A cell scrolled out of view asks for nothing.
@@ -756,20 +751,17 @@ void MediaBinPanel::createProcedural(ProceduralType type) {
         return;
     }
 
-    // Create the procedural source in SourceManager
     UUID sourceId = sourceManager_->createProceduralSource(type);
     if (sourceId.isNull()) {
         return;
     }
 
-    // Create a MediaItem linked to this source
     auto item = std::make_unique<MediaItem>();
     item->setName(getProceduralTypeName(type));
     item->setType(MediaType::PROCEDURAL);
     item->setProceduralType(type);
     item->setSourceId(sourceId);
 
-    // Add to media library
     UUID itemId = item->getId();
     mediaLibrary_->addItem(std::move(item));
 

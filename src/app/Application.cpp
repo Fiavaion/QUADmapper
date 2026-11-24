@@ -245,7 +245,6 @@ bool Application::initializeGLFW() {
     // Maximised for a person; the harnesses keep the fixed size their numbers assume.
     glfwWindowHint(GLFW_MAXIMIZED, isHarnessRun() ? GLFW_FALSE : GLFW_TRUE);
 
-    // Create window
     m_window = glfwCreateWindow(m_windowWidth, m_windowHeight,
                                  m_windowTitle.c_str(), nullptr, nullptr);
     if (!m_window) {
@@ -260,7 +259,6 @@ bool Application::initializeGLFW() {
     // Enable vsync
     glfwSwapInterval(1);
 
-    // Set callbacks
     glfwSetFramebufferSizeCallback(m_window, framebufferSizeCallback);
     glfwSetDropCallback(m_window, dropCallback);
     glfwSetKeyCallback(m_window, editorKeyCallback);  // before ImGui, which chains to it
@@ -277,7 +275,6 @@ bool Application::initializeGLFW() {
 bool Application::initializeOpenGL() {
     Logger::debug("Initializing OpenGL with GLAD...");
 
-    // Load OpenGL function pointers with GLAD
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         Logger::error("Failed to initialize GLAD");
         return false;
@@ -298,7 +295,6 @@ bool Application::initializeOpenGL() {
     // (ADR-044); the HAP upload path gates on this and degrades gracefully.
     GpuCapabilities::get().queryOnce();
 
-    // Set initial viewport
     int fbWidth, fbHeight;
     glfwGetFramebufferSize(m_window, &fbWidth, &fbHeight);
     glViewport(0, 0, fbWidth, fbHeight);
@@ -306,7 +302,6 @@ bool Application::initializeOpenGL() {
     // Enable depth testing (will be useful later)
     glEnable(GL_DEPTH_TEST);
 
-    // Set clear color (dark gray)
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
 
     return true;
@@ -315,10 +310,8 @@ bool Application::initializeOpenGL() {
 bool Application::initializeImGui() {
     Logger::debug("Initializing Dear ImGui...");
 
-    // Check ImGui version
     IMGUI_CHECKVERSION();
 
-    // Create ImGui context
     ImGui::CreateContext();
 
     // Configure ImGui
@@ -355,7 +348,6 @@ bool Application::initializeImGui() {
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
     }
 
-    // Initialize platform/renderer backends
     const char* glslVersion = "#version 330 core";
     if (!ImGui_ImplGlfw_InitForOpenGL(m_window, true)) {
         Logger::error("Failed to initialize ImGui GLFW backend");
@@ -381,10 +373,8 @@ bool Application::initializeComponents() {
     // Per-session editor/scene state (replaces render()'s function-statics; see ADR-031 TD-02)
     m_editorState = std::make_unique<EditorState>();
 
-    // Create media library
     m_mediaLibrary = std::make_unique<MediaLibrary>();
 
-    // Create thumbnail cache for media bin
     m_thumbnailCache = std::make_unique<ThumbnailCache>();
 
     // Create source manager for texture sources (procedural, video, image)
@@ -437,7 +427,6 @@ bool Application::initializeComponents() {
             }
         }
 
-        // Set up folder watcher for live file monitoring
         if (!prefs.general.defaultMediaFolder.empty()) {
             m_folderWatcher = std::make_unique<FolderWatcher>();
             // On the watcher's thread: the library belongs to the main thread, which
@@ -454,14 +443,12 @@ bool Application::initializeComponents() {
         }
     }
 
-    // Create renderer and initialize it
     m_renderer = std::make_unique<Renderer>();
     if (!m_renderer->initialize()) {
         Logger::error("Failed to initialize renderer");
         return false;
     }
 
-    // Create output manager and initialize it
     m_outputManager = std::make_unique<OutputManager>();
     m_editorState->outputResolver.setOutputManager(m_outputManager.get());  // calibration undo
     auto outputResult = m_outputManager->initialize(m_window);
@@ -685,7 +672,6 @@ void Application::presentFrame(FrameMarks* marks) {
         m_outputManager->retireIdentify();
     }
 
-    // Render
     render();
     if (marks) marks->rendered = Clock::now();
 
@@ -980,7 +966,7 @@ void Application::shutdown() {
     }
     m_session.reset();  // it references the components below
 
-    // Cleanup components in reverse order of creation
+    // The order matters: each line says what it waits for.
     m_externalControl.reset(); // joins the OSC thread, closes MIDI devices
     m_audioEngine.reset();     // stops every video's audio, then closes the device
     if (m_aiAssist) m_aiAssist->stopSidecar();  // kills any launched sidecar (no orphan)

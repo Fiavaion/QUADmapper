@@ -30,13 +30,10 @@ public:
     Texture(Texture&& other) noexcept;
     Texture& operator=(Texture&& other) noexcept;
 
-    // Load from file
     bool loadFromFile(const std::filesystem::path& path);
 
-    // Create from raw data
     bool create(int width, int height, int channels, const unsigned char* data);
 
-    // Create an empty texture
     bool createEmpty(int width, int height, int channels = 4);
 
     // Create a GPU-compressed (BCn) texture from raw block bytes (ADR-044, HAP).
@@ -57,14 +54,11 @@ public:
     // (BC1) or 16 (BC3, BC7). 0 for None or a non-positive size.
     static size_t compressedByteSize(GpuCompressedFormat fmt, int width, int height);
 
-    // Update texture data
     void update(const unsigned char* data);
     void update(int x, int y, int width, int height, const unsigned char* data);
 
-    // Cleanup
     void destroy();
 
-    // Bind/unbind
     void bind(uint32_t slot = 0) const;
     static void unbind();
 
@@ -81,7 +75,6 @@ public:
     GpuCompressedFormat compressedFormat() const { return compressedFormat_; }
     TextureColorSpace colorSpace() const { return colorSpace_; }
 
-    // Set texture parameters
     void setWrapMode(bool repeat);
     void setFilterMode(bool linear);
 

@@ -89,7 +89,6 @@ void OutputPanel::renderPerformModeSection() {
 }
 
 void OutputPanel::renderActionButtons() {
-    // Add output button
     if (ImGui::Button("Add Output")) {
         OutputWindow* newOutput = outputManager_->createOutput();
         if (newOutput) {

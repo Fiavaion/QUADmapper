@@ -47,7 +47,6 @@ public:
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
 
-    // Initialize application
     bool initialize(int argc, char* argv[]);
 
     // Run main loop

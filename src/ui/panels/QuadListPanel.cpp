@@ -37,7 +37,6 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
     auto& quadTexturePaths    = es.quadTexturePaths;
     auto& dragDropQuadId      = es.dragDropQuadId;
 
-    // Add Quad button
     if (ImGui::Button("+ Add Quad")) {
         Quad* newQuad = quadManager.createQuad();
         quadManager.selectQuad(newQuad->getId());
@@ -48,7 +47,6 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
 
     ImGui::SameLine();
 
-    // Delete button
     if (ImGui::Button("Delete") && quadManager.hasSelection()) {
         es.deleteSelectedQuads();
     }
@@ -328,7 +326,6 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
         std::string groupLabel = group->getName() + " (" + std::to_string(group->getMemberCount()) + ")";
         bool nodeOpen = ImGui::TreeNodeEx(groupLabel.c_str(), groupFlags);
 
-        // Update collapsed state based on tree node state
         group->setCollapsed(!nodeOpen);
 
         // Context menu for group
@@ -363,7 +360,6 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
             ImGui::EndDragDropTarget();
         }
 
-        // Render member quads if node is open
         if (nodeOpen) {
             for (const UUID& quadId : group->getMemberQuadIds()) {
                 const Quad* quad = quadManager.getQuad(quadId);
@@ -385,7 +381,6 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
 
     if (!deleteGroupId.isNull()) scene.deleteGroup(deleteGroupId);
 
-    // Render ungrouped quads
     bool hasUngroupedQuads = false;
     for (const auto& quadPtr : quadManager.getQuads()) {
         if (quadsShownInGroups.find(quadPtr->getId()) == quadsShownInGroups.end()) {

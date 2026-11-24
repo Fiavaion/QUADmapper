@@ -99,7 +99,6 @@ ComputeShader& ComputeShader::operator=(ComputeShader&& other) noexcept {
 }
 
 bool ComputeShader::loadFromSource(const std::string& source) {
-    // Clean up existing program
     deleteProgram(programId_);
     uniformLocationCache_.clear();
     errorMessage_.clear();
@@ -110,7 +109,6 @@ bool ComputeShader::loadFromSource(const std::string& source) {
         return false;
     }
 
-    // Create and compile shader
     GLuint shaderId = glCreateShader(GL_COMPUTE_SHADER);
     if (shaderId == 0) {
         errorMessage_ = "Failed to create compute shader - GL_COMPUTE_SHADER may not be supported";
@@ -122,7 +120,6 @@ bool ComputeShader::loadFromSource(const std::string& source) {
     glShaderSource(shaderId, 1, &src, nullptr);
     glCompileShader(shaderId);
 
-    // Check compilation
     GLint success;
     glGetShaderiv(shaderId, GL_COMPILE_STATUS, &success);
     if (!success) {
@@ -136,13 +133,11 @@ bool ComputeShader::loadFromSource(const std::string& source) {
         return false;
     }
 
-    // Create program and link
     programId_ = glCreateProgram();
     GlObjectStats::onShaderProgramCreated();
     glAttachShader(programId_, shaderId);
     glLinkProgram(programId_);
 
-    // Check linking
     glGetProgramiv(programId_, GL_LINK_STATUS, &success);
     if (!success) {
         GLint logLength;

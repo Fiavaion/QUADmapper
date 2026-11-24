@@ -116,7 +116,6 @@ QuadGroup* Scene::createGroupFromSelection(const std::string& name) {
     std::string groupName = name.empty() ? generateUniqueGroupName() : name;
     QuadGroup* group = createGroup(groupName);
 
-    // Add all selected quads to the group
     for (const UUID& quadId : quadManager_.getSelectedIds()) {
         group->addMember(quadId);
     }
@@ -175,7 +174,6 @@ std::string Scene::generateUniqueGroupName() const {
         }
 
         if (!found) {
-            // Update the next number for next time
             const_cast<Scene*>(this)->nextGroupNumber_ = number + 1;
             return candidateName;
         }

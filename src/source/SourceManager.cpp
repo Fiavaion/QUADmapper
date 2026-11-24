@@ -314,7 +314,6 @@ UUID SourceManager::addEntry(std::unique_ptr<TextureSource> source) {
     entry.source = std::move(source);
     entry.needsTextureUpdate = true;
 
-    // Create GPU texture
     createGPUTexture(entry);
 
     sources_[id] = std::move(entry);

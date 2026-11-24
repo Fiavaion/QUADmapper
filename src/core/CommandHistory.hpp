@@ -25,7 +25,6 @@ public:
     // Undo the command. Same failure contract as execute().
     virtual bool undo() = 0;
 
-    // Get a description of this command (for UI display)
     virtual std::string getDescription() const = 0;
 
     // Whether this command can be merged with another
@@ -73,11 +72,9 @@ public:
     bool undo();
     bool redo();
 
-    // Check if undo/redo is available
     bool canUndo() const { return undoIndex_ > 0; }
     bool canRedo() const { return undoIndex_ < commands_.size(); }
 
-    // Get descriptions for UI
     std::string getUndoDescription() const;
     std::string getRedoDescription() const;
 
@@ -95,7 +92,6 @@ public:
     // Clear all history
     void clear();
 
-    // Get/set max history size
     size_t getMaxHistory() const { return maxHistory_; }
     void setMaxHistory(size_t max);
 
@@ -106,7 +102,6 @@ public:
     // Command::remapMediaId on every step, including an open compound group.
     void remapMediaId(const UUID& from, const UUID& to);
 
-    // Get current stack sizes
     size_t getUndoCount() const { return undoIndex_; }
     size_t getRedoCount() const { return commands_.size() - undoIndex_; }
 

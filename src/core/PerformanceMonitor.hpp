@@ -17,7 +17,6 @@ public:
     explicit ScopedTimer(const std::string& name);
     ~ScopedTimer();
 
-    // Get elapsed time in milliseconds
     double getElapsedMs() const;
 
     // Disable copy
@@ -97,10 +96,8 @@ public:
     PerformanceOverlaySettings& getOverlaySettings() { return overlaySettings_; }
     const PerformanceOverlaySettings& getOverlaySettings() const { return overlaySettings_; }
 
-    // Get singleton instance
     static PerformanceMonitor& getInstance();
 
-    // Reset statistics
     void reset();
 
 private:

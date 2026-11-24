@@ -88,14 +88,12 @@ public:
     std::vector<const QuadGroup*> getGroupsForQuad(const UUID& quadId) const;
     bool isQuadInGroup(const UUID& groupId, const UUID& quadId) const;
 
-    // Create group from current selection in QuadManager
     QuadGroup* createGroupFromSelection(const std::string& name = "New Group");
 
     // Apply group visibility/lock to all member quads
     void applyGroupVisibility(const UUID& groupId, bool visible);
     void applyGroupLock(const UUID& groupId, bool locked);
 
-    // Generate unique group name
     std::string generateUniqueGroupName() const;
 
     // 3D objects (ADR-052): imported meshes, drawn by each output from its projector.

@@ -101,7 +101,6 @@ void EditorUi::frame(EditorContext& ctx, const std::function<void(EditorContext&
 void EditorUi::drawDockSpace(EditorContext& ctx) {
     EditorState& es = ctx.es;
 
-    // Create dockspace over the entire viewport
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);

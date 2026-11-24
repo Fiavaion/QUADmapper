@@ -22,7 +22,6 @@ bool ProceduralSource::initialize() {
         return true;
     }
 
-    // Create output texture
     createOutputTexture();
     if (outputTexture_ == 0) {
         Logger::error("ProceduralSource '{}': Failed to create output texture", name_);
@@ -91,17 +90,14 @@ void ProceduralSource::regenerate() {
         return;
     }
 
-    // Bind shader
     shader_->bind();
 
-    // Set common uniforms
     shader_->setUniform("u_Resolution", Vec2(static_cast<float>(width_), static_cast<float>(height_)));
     shader_->setUniform("u_Time", static_cast<float>(time_));
 
     // Let subclass set its uniforms
     setShaderUniforms();
 
-    // Bind output texture for writing
     shader_->bindImageTexture(0, outputTexture_, GL_WRITE_ONLY, GL_RGBA8);
 
     // Calculate work groups (16x16 local size is common)
@@ -141,7 +137,6 @@ void ProceduralSource::createOutputTexture() {
         return;
     }
 
-    // Set texture parameters
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
