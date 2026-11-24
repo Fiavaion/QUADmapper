@@ -2,6 +2,8 @@
 #include "../core/FileSystem.hpp"
 #include "../core/Logger.hpp"
 
+#include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -56,22 +58,26 @@ void emergencySaveAfterCrash() {
     }
 }
 
+LONG g_crashEntered = 0;  // one crash report per process, whichever path gets there first
+
+// info is null when there is no fault record (abort).
+void writeCrashDump(EXCEPTION_POINTERS* info) {
+    if (g_dumpPath[0] == L'\0') return;
+    HANDLE file = CreateFileW(g_dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    MINIDUMP_EXCEPTION_INFORMATION exception{GetCurrentThreadId(), info, FALSE};
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, MiniDumpNormal,
+                      info ? &exception : nullptr, nullptr, nullptr);
+    CloseHandle(file);
+}
+
 // A crash that is not a C++ exception (access violation, stack overflow, ...): write a
 // minidump for the bug report, try the emergency save, tell the user, end the process.
 LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
-    static LONG entered = 0;
-    if (InterlockedExchange(&entered, 1) != 0) return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedExchange(&g_crashEntered, 1) != 0) return EXCEPTION_CONTINUE_SEARCH;
 
-    if (g_dumpPath[0] != L'\0') {
-        HANDLE file = CreateFileW(g_dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                                  FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file != INVALID_HANDLE_VALUE) {
-            MINIDUMP_EXCEPTION_INFORMATION exception{GetCurrentThreadId(), info, FALSE};
-            MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, MiniDumpNormal,
-                              &exception, nullptr, nullptr);
-            CloseHandle(file);
-        }
-    }
+    writeCrashDump(info);
     // Only from the main thread: on any other thread the editor is still being changed
     // under the save. Not after a stack overflow either: the save needs stack that is
     // not there. The autosave covers both cases.
@@ -85,6 +91,19 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
                     MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
     }
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// std::terminate (a C++ exception that escaped a worker thread or a noexcept function)
+// ends in abort(), which the filter above never sees. Same report; abort() then ends
+// the process. The emergency save follows the filter's rule: main thread only.
+void onAbort(int) {
+    if (InterlockedExchange(&g_crashEntered, 1) != 0) return;
+    writeCrashDump(nullptr);
+    if (g_app && GetCurrentThreadId() == g_mainThreadId) emergencySaveAfterCrash();
+    if (g_showMessages) {
+        MessageBoxW(nullptr, g_crashMessage, L"QUADmapper",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+    }
 }
 
 void installCrashFilter() {
@@ -108,6 +127,10 @@ void installCrashFilter() {
 
     g_mainThreadId = GetCurrentThreadId();
     SetUnhandledExceptionFilter(crashFilter);
+    // SIGABRT is handled process-wide (a terminate handler is per thread). The CRT's
+    // own abort message box and error report are off: onAbort does both jobs.
+    signal(SIGABRT, onAbort);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 }
 
 // The command line as UTF-8: the narrow argv loses any character outside the ANSI code
