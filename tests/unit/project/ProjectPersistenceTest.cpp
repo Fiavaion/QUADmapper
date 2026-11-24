@@ -589,6 +589,21 @@ TEST_F(ProjectPersistenceTest, NumbersBeyondTheirTypeAreRefusedOrClamped) {
     EXPECT_EQ(project.getSources()[0].height, 1);
 }
 
+// Two grid lines closer than the editor can place them are one line; lines it could
+// have written stay apart, so a real show keeps its vertices.
+TEST_F(ProjectPersistenceTest, GridLinesTooCloseToTellApartAreMerged) {
+    ProjectSerializer serializer;
+    Project merged;
+    ASSERT_TRUE(serializer.deserialize(v31WithQuad(
+        R"({"geometry": {"uCoords": [0, 0.5, 0.50001, 1], "vCoords": [0, 1]}})"), merged).isSuccess());
+    EXPECT_EQ(merged.getScenes()[0].quads[0].getGeometry().getUCoords().size(), 3u);
+
+    Project kept;
+    ASSERT_TRUE(serializer.deserialize(v31WithQuad(
+        R"({"geometry": {"uCoords": [0, 0.5, 0.5002, 1], "vCoords": [0, 1]}})"), kept).isSuccess());
+    EXPECT_EQ(kept.getScenes()[0].quads[0].getGeometry().getUCoords().size(), 4u);
+}
+
 TEST_F(ProjectPersistenceTest, AFileTooLargeToBeAShowIsRefusedUnread) {
     const fs::path file = dir_ / "huge.qmap";
     touch(file);

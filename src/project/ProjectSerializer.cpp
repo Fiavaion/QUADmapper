@@ -94,6 +94,9 @@ static constexpr float kMaxViewZoom = 12.0f;
 // Far beyond a show the app can run: about 2,300 quads, each warped on the largest
 // grid (0.45 MB a quad). Saving has no limit, so this must stay out of a show's reach.
 static constexpr size_t kMaxProjectBytes = 1024u * 1024u * 1024u;
+// Grid lines closer than this are one line. Half the closest the editor places them
+// (QuadGeometry::insertUDivision), so no line the editor wrote is merged.
+static constexpr float kMinGridGap = 5e-5f;
 
 namespace fs = std::filesystem;
 
@@ -192,7 +195,7 @@ static std::vector<float> readGridCoords(const nlohmann::json& j) {
     }
     std::sort(coords.begin(), coords.end());
     coords.erase(std::unique(coords.begin(), coords.end(),
-                             [](float a, float b) { return b - a < 1e-6f; }),
+                             [](float a, float b) { return b - a < kMinGridGap; }),
                  coords.end());
     coords.back() = 1.0f;  // a near-1 survivor of the dedupe snaps to the endpoint
     if (coords.size() > static_cast<size_t>(MAX_MESH_RESOLUTION) + 1) {
