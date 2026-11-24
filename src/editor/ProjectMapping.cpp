@@ -311,7 +311,10 @@ void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& proj
 
     std::unordered_map<UUID, UUID> quadRemapAllScenes;  // for the MIDI mapping targets
     for (const auto& sd : project.getScenes()) {
-        auto scene = std::make_unique<Scene>(sd.id);
+        // A scene keeps its saved id; the second of two with one id (a merged or
+        // damaged file) gets a new one, and outputs naming that id show the first.
+        const bool idTaken = sd.id.isNull() || findSceneIndex(es.scenes, sd.id) >= 0;
+        auto scene = std::make_unique<Scene>(idTaken ? UUID::generate() : sd.id);
         scene->setName(sd.name);
         scene->setCanvasSize(sd.canvas);
         scene->setCanvasLocked(sd.canvasLocked);

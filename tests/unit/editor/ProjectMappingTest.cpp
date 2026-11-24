@@ -82,6 +82,26 @@ TEST(ProjectMappingTest, ScenesKeepTheirIdsNamesCanvasAndView) {
     EXPECT_EQ(to.activeSceneId, first->getId()) << "the first scene is active after a load";
 }
 
+TEST(ProjectMappingTest, TwoScenesWithOneIdAreToldApart) {
+    Project project;
+    const UUID shared = UUID::generate();
+    for (const char* name : {"First", "Second"}) {
+        Project::SceneData scene;
+        scene.id = shared;
+        scene.name = name;
+        project.getScenes().push_back(std::move(scene));
+    }
+
+    EditorState to;
+    syncProjectToEditor(to, nullptr, project, nullptr, nullptr);
+
+    ASSERT_EQ(to.scenes.size(), 2u);
+    EXPECT_EQ(to.scenes[0]->getName(), "First");
+    EXPECT_EQ(to.scenes[0]->getId(), shared) << "the first keeps the id an output names";
+    EXPECT_FALSE(to.scenes[1]->getId().isNull());
+    EXPECT_NE(to.scenes[1]->getId(), shared);
+}
+
 TEST(ProjectMappingTest, QuadsKeepGeometryMeshBezierCropAndColour) {
     EditorState from;
     Scene* scene = from.addScene("Stage");
