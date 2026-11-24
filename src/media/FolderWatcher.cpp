@@ -6,6 +6,27 @@
 
 namespace quadmapper {
 
+namespace {
+
+// Visits every entry of a folder without throwing. The range-for form advances with the
+// throwing operator++, so a folder on a drive unplugged mid-scan ended the app from the
+// watcher thread; here an entry that cannot be read ends the walk.
+template <typename Iterator, typename Visit>
+void walkFolder(const std::filesystem::path& folder, const std::atomic<bool>* stop, Visit&& visit) {
+    std::error_code ec;
+    for (Iterator it(folder, ec); !ec && it != Iterator(); it.increment(ec)) {
+        if (stop && stop->load()) break;
+        try {
+            visit(*it);
+        } catch (const std::exception& e) {
+            // A name that is not valid UTF-16 has no UTF-8 form; the file is skipped.
+            Logger::debug("FolderWatcher: skipped an entry ({})", e.what());
+        }
+    }
+}
+
+}  // namespace
+
 FolderWatcher::FolderWatcher() = default;
 
 FolderWatcher::~FolderWatcher() {
@@ -83,15 +104,9 @@ void FolderWatcher::buildInitialCache() {
     };
 
     if (recursive_) {
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(folder_, ec)) {
-            if (ec) break;
-            cacheEntry(entry);
-        }
+        walkFolder<std::filesystem::recursive_directory_iterator>(folder_, nullptr, cacheEntry);
     } else {
-        for (const auto& entry : std::filesystem::directory_iterator(folder_, ec)) {
-            if (ec) break;
-            cacheEntry(entry);
-        }
+        walkFolder<std::filesystem::directory_iterator>(folder_, nullptr, cacheEntry);
     }
 
     Logger::debug("FolderWatcher: Cached {} existing files", fileCache_.size());
@@ -151,15 +166,9 @@ void FolderWatcher::watchThread() {
         };
 
         if (recursive_) {
-            for (const auto& entry : std::filesystem::recursive_directory_iterator(folder_, ec)) {
-                if (ec || stopRequested_.load()) break;
-                processEntry(entry);
-            }
+            walkFolder<std::filesystem::recursive_directory_iterator>(folder_, &stopRequested_, processEntry);
         } else {
-            for (const auto& entry : std::filesystem::directory_iterator(folder_, ec)) {
-                if (ec || stopRequested_.load()) break;
-                processEntry(entry);
-            }
+            walkFolder<std::filesystem::directory_iterator>(folder_, &stopRequested_, processEntry);
         }
     }
 }
