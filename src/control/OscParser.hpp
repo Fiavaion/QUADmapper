@@ -21,12 +21,15 @@ namespace quadmapper::control {
 //   - bundles ("#bundle", time tag, then size-prefixed elements) may nest up to
 //     kMaxBundleDepth; their time tags are ignored and everything runs on receipt;
 //   - at most kMaxMessagesPerPacket messages are accepted from one packet, and a
-//     message with more than kMaxArgsPerMessage arguments rejects the packet.
+//     message with more than kMaxArgsPerMessage arguments rejects the packet;
+//   - an address or a string argument longer than kMaxStringBytes rejects the
+//     packet, so a queued event stays small.
 // Address patterns (* ? [] {}) are kept as received; ControlRegistry::resolveAll
 // expands them against the registered targets (OscPattern).
 constexpr int kMaxBundleDepth = 8;
 constexpr size_t kMaxMessagesPerPacket = 1024;
 constexpr size_t kMaxArgsPerMessage = 64;  // T F N I carry no payload, so size alone does not bound them
+constexpr size_t kMaxStringBytes = 256;    // the longest address pattern the registry matches
 
 // Parse one UDP datagram. On success appends every message it holds to `out` and
 // returns true. On any malformation returns false and leaves `out` unchanged.
