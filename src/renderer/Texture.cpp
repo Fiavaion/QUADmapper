@@ -140,6 +140,11 @@ bool Texture::loadFromFile(const std::filesystem::path& path) {
 bool Texture::create(int width, int height, int channels, const unsigned char* data) {
     destroy();
 
+    if (width <= 0 || height <= 0) {
+        Logger::error("Texture::create: {}x{} is not a size", width, height);
+        return false;
+    }
+
     // Past GL_MAX_TEXTURE_SIZE glTexImage2D fails silently and the quad would sample black.
     GLint maxSize = 0;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxSize);
@@ -323,6 +328,13 @@ void Texture::update(const unsigned char* data) {
 
 void Texture::update(int x, int y, int width, int height, const unsigned char* data) {
     if (!isValid()) return;
+    // The rectangle must lie inside the texture: compared without adding, so nothing
+    // overflows.
+    if (x < 0 || y < 0 || width <= 0 || height <= 0 || width > width_ - x || height > height_ - y) {
+        Logger::error("Texture::update: {}x{} at {},{} is outside the {}x{} texture", width, height, x, y,
+                      width_, height_);
+        return;
+    }
 
     GLenum format = GL_RGBA;
     switch (channels_) {
