@@ -147,6 +147,30 @@ TEST(ShortcutRouterTest, BlackoutFiresWithAPopupOpen) {
     EXPECT_EQ(rig.saves, 0);
 }
 
+// A dialog window that has the keyboard keeps Delete; a docked panel does not.
+TEST(ShortcutRouterTest, DeleteWaitsWhileADialogWindowHasFocus) {
+    RouterRig rig;
+    rig.es.quadManager().selectQuad(rig.quad->getId());
+    const auto panel = [] {
+        ImGui::Begin("Quad List");
+        ImGui::End();
+    };
+    for (int i = 0; i < 3; ++i) rig.frame(panel);
+    EXPECT_EQ(rig.press({ImGuiKey_Delete}, panel), std::vector<std::string>{action_id::DELETE_SELECTION})
+        << "an ordinary panel with focus leaves Delete to the show";
+    ASSERT_EQ(rig.es.quadManager().getQuadCount(), 1u);
+
+    rig.es.quadManager().selectAll();
+    const auto dialog = [] {
+        ImGui::Begin("Preferences");
+        ImGui::End();
+    };
+    for (int i = 0; i < 3; ++i) rig.frame(dialog);
+    ASSERT_NE(ImGui::GetCurrentContext()->NavWindow, nullptr);
+    EXPECT_EQ(rig.press({ImGuiKey_Delete}, dialog), NOTHING);
+    EXPECT_EQ(rig.es.quadManager().getQuadCount(), 1u);
+}
+
 // The success metric: with a quad selected, Tab (and the arrows, and H) belong to the
 // canvas. The router neither invokes anything for them nor takes their ownership, so
 // the canvas still reads the press after the router has run.

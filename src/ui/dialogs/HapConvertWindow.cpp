@@ -58,7 +58,7 @@ void HapConvertWindow::render(const AddToBin& addToBin, const ReplaceInShow& rep
     bool open = true;
     // No close button while converting: the rows are the only way to cancel. It does
     // not take focus when it appears, so the canvas keeps the vertex keys.
-    if (ImGui::Begin("Convert to HAP##hapconvert", running ? nullptr : &open,
+    if (ImGui::Begin(WINDOW_ID, running ? nullptr : &open,
                      ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
                          ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing)) {
         size_t dismiss = jobs_.size();

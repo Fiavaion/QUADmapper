@@ -19,6 +19,8 @@ class HapConversion;
 
 class HapConvertWindow {
 public:
+    static constexpr const char* WINDOW_ID = "Convert to HAP##hapconvert";
+
     // A finished file to add to the media bin.
     using AddToBin = std::function<void(const std::filesystem::path&)>;
     // Move the show from original to converted; returns why not, or empty.
