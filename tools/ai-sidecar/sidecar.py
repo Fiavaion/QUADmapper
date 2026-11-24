@@ -63,6 +63,20 @@ MAX_BODY_BYTES = 1 << 20  # 1 MiB
 STUB_CORNERS = [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]
 
 
+def _is_local_path(path) -> bool:
+    """True for an absolute path on a drive of this computer (drive letter first).
+
+    The app sends only files it wrote here. A relative path, a network share and a
+    device path (both start with two slashes) are refused, so a request cannot
+    make the engine reach out to another machine or open a device.
+    """
+    if not isinstance(path, str) or "\x00" in path:
+        return False
+    drive, tail = os.path.splitdrive(path)
+    return (len(drive) == 2 and drive[0].isalpha() and drive[1] == ":"
+            and tail[:1] in ("\\", "/"))
+
+
 def _stub_surface(_request: dict) -> dict:
     """Return a placeholder surface response.
 
@@ -87,7 +101,7 @@ def _real_surface(request: dict) -> Optional[dict]:
     machine, the CV stack is not importable, or no candidate region survives.
     """
     image_path = request.get("image_path")
-    if not isinstance(image_path, str) or not os.path.isfile(image_path):
+    if not _is_local_path(image_path) or not os.path.isfile(image_path):
         return None
 
     try:
@@ -139,7 +153,7 @@ def _real_oneflash(request: dict) -> Optional[dict]:
     are deferred so /health and the contract tests stay light.
     """
     pattern_path = request.get("pattern_image") or request.get("image_path")
-    if not pattern_path or not os.path.isfile(pattern_path):
+    if not _is_local_path(pattern_path) or not os.path.isfile(pattern_path):
         return None
 
     try:
@@ -158,7 +172,8 @@ def _real_oneflash(request: dict) -> Optional[dict]:
         target = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]  # default: full frame
         try:
             import surface
-            if surface.model_available() and os.path.isfile(surface_path):
+            if (surface.model_available() and _is_local_path(surface_path)
+                    and os.path.isfile(surface_path)):
                 sbgr = cv2.imread(surface_path)
                 found = surface.estimate_surface(sbgr) if sbgr is not None else None
                 if found is not None:
@@ -239,7 +254,7 @@ def _segment_response(request: dict) -> dict:
     """Real segmentation when possible, else the stub. Raises only BadRequest."""
     image_path, point, model = _parse_segment(request)
     real = None
-    if image_path and os.path.isfile(image_path):
+    if _is_local_path(image_path) and os.path.isfile(image_path):
         try:
             import segment
             real = segment.segment(image_path, point, model)
@@ -267,8 +282,8 @@ def _graycode_available() -> bool:
 def _parse_scan(request: dict) -> tuple:
     """Validate a /graycode or /graycode/patterns body. Returns (folder, width, height)."""
     folder = request.get("folder")
-    if not isinstance(folder, str) or not folder:
-        raise BadRequest("folder must be a path")
+    if not _is_local_path(folder):
+        raise BadRequest("folder must be an absolute path on a local drive")
     if not os.path.isdir(folder):
         raise BadRequest("folder does not exist")
     projector = request.get("projector")
@@ -321,8 +336,8 @@ def _graycode_response(request: dict) -> dict:
 def _graymap_response(request: dict) -> dict:
     """Map photo points through a map. Raises only BadRequest."""
     map_path = request.get("map_path")
-    if not isinstance(map_path, str) or not map_path.lower().endswith(".npz"):
-        raise BadRequest("map_path must be a .npz path")
+    if not _is_local_path(map_path) or not map_path.lower().endswith(".npz"):
+        raise BadRequest("map_path must be a .npz path on a local drive")
     if not os.path.isfile(map_path):
         raise BadRequest("map_path does not exist")
     points = request.get("points")

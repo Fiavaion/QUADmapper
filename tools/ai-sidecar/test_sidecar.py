@@ -175,6 +175,31 @@ def test_segment_bad_request_is_400(live_server, body):
     assert "error" in reply
 
 
+@pytest.mark.parametrize("path,local", [
+    ("C:\\shots\\a.png", True),
+    ("d:/shots/a.png", True),
+    ("a.png", False),
+    ("C:a.png", False),
+    ("\\shots\\a.png", False),
+    ("\\\\server\\share\\a.png", False),
+    ("//server/share/a.png", False),
+    ("\\\\.\\PhysicalDrive0", False),
+    ("\\\\?\\C:\\shots\\a.png", False),
+    ("C:\\shots\\a\x00.png", False),
+    ("", False),
+    (None, False),
+    (7, False),
+])
+def test_only_a_path_on_a_local_drive_is_used(path, local):
+    assert sidecar._is_local_path(path) is local
+
+
+def test_a_folder_on_a_network_share_is_400(live_server):
+    status, _ = _request(*live_server, "POST", "/graycode/patterns",
+                         {"folder": "\\\\server\\share\\scan", "projector": [64, 32]})
+    assert status == 400
+
+
 def test_segment_invalid_json_is_400(live_server):
     conn = http.client.HTTPConnection(*live_server, timeout=5)
     try:
