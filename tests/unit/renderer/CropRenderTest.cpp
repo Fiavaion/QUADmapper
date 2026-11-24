@@ -85,6 +85,10 @@ RGB renderCropCentre(float cropX, float cropW) {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
                           reinterpret_cast<void*>(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
+    // The image coordinate (ADR-059): the surface's own outside Crop mode.
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                          reinterpret_cast<void*>(2 * sizeof(float)));
+    glEnableVertexAttribArray(2);
 
     ShaderProgram prog;
     EXPECT_TRUE(prog.create(shaders::QUAD_VERT, shaders::QUAD_FRAG));
