@@ -14,6 +14,7 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 
+#include "core/GlObjectStats.hpp"
 #include "renderer/ShaderProgram.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/Framebuffer.hpp"
@@ -164,6 +165,20 @@ TEST(CropRenderTest, RightQuarterStripSamplesGreen) {
     RGB c = renderCropCentre(0.75f, 0.25f);
     EXPECT_GT(c.g, 200);
     EXPECT_LT(c.r, 60);
+}
+
+// A second create() replaces the program: one stays alive and counted, not two.
+TEST(ShaderProgramTest, CreateTwiceKeepsOneProgram) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    const long before = GlObjectStats::shaderPrograms();
+    {
+        ShaderProgram prog;
+        ASSERT_TRUE(prog.create(shaders::QUAD_VERT, shaders::QUAD_FRAG));
+        ASSERT_TRUE(prog.create(shaders::QUAD_VERT, shaders::QUAD_FRAG));
+        EXPECT_EQ(GlObjectStats::shaderPrograms(), before + 1);
+    }
+    EXPECT_EQ(GlObjectStats::shaderPrograms(), before);
 }
 
 // Warp mode (ADR-058) through the real Renderer: switching only the mode of a quad must
