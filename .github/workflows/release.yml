@@ -3,7 +3,7 @@ name: Release installer
 # Builds the Release app and QUADmapper-Setup-<version>.exe on a GitHub-hosted runner
 # (packaging/build-installer.ps1). When SignPath is set up (repository variable
 # SIGNPATH_ORGANIZATION_ID and secret SIGNPATH_API_TOKEN), it signs QUADmapper.exe before
-# Inno Setup packs it, then signs the setup exe. Policy: docs/code-signing-policy.md.
+# Inno Setup packs it, then signs the setup exe. Without them it builds unsigned.
 # Run it from the Actions tab to sign; the result is the "QUADmapper-Setup" workflow artifact.
 # A push to dev that touches the packaging builds the installer without signing it.
 

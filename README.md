@@ -24,7 +24,7 @@ It is made for live-event technicians, VJs, installation artists and projection 
 
 ## Download
 
-The Windows installer, `QUADmapper-Setup-<version>.exe`, is on the [Releases](https://github.com/Fiavaion/QUADmapper/releases) page. See the [code signing policy](docs/code-signing-policy.md).
+The Windows installer, `QUADmapper-Setup-<version>.exe`, is on the [Releases](https://github.com/Fiavaion/QUADmapper/releases) page. The installer is not code-signed yet, so Windows may show "Windows protected your PC" when you run it: click **More info**, then **Run anyway**.
 
 ## Getting started
 
