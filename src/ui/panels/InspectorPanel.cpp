@@ -471,11 +471,13 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::TextDisabled("Ctrl+Click to type value");
             ImGui::SetNextItemWidth(200.0f);
             editUv([&] {
-                ImGui::DragFloat("Offset X", &texBinding.uvOffset.x, 0.01f, -2.0f, 2.0f, "%.3f");
+                ImGui::DragFloat("Offset X", &texBinding.uvOffset.x, 0.01f, -2.0f, 2.0f, "%.3f",
+                                 ImGuiSliderFlags_AlwaysClamp);
             });
             ImGui::SetNextItemWidth(200.0f);
             editUv([&] {
-                ImGui::DragFloat("Offset Y", &texBinding.uvOffset.y, 0.01f, -2.0f, 2.0f, "%.3f");
+                ImGui::DragFloat("Offset Y", &texBinding.uvOffset.y, 0.01f, -2.0f, 2.0f, "%.3f",
+                                 ImGuiSliderFlags_AlwaysClamp);
             });
 
             ImGui::Spacing();
@@ -492,13 +494,15 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
             ImGui::SetNextItemWidth(200.0f);
             editUv([&] {
-                if (ImGui::DragFloat("U Coverage", &coverageU, 1.0f, 10.0f, 400.0f, "%.0f%%")) {
+                if (ImGui::DragFloat("U Coverage", &coverageU, 1.0f, 10.0f, 400.0f, "%.0f%%",
+                                     ImGuiSliderFlags_AlwaysClamp)) {
                     texBinding.uvScale.x = 100.0f / std::max(coverageU, 1.0f);
                 }
             });
             ImGui::SetNextItemWidth(200.0f);
             editUv([&] {
-                if (ImGui::DragFloat("V Coverage", &coverageV, 1.0f, 10.0f, 400.0f, "%.0f%%")) {
+                if (ImGui::DragFloat("V Coverage", &coverageV, 1.0f, 10.0f, 400.0f, "%.0f%%",
+                                     ImGuiSliderFlags_AlwaysClamp)) {
                     texBinding.uvScale.y = 100.0f / std::max(coverageV, 1.0f);
                 }
             });
@@ -509,11 +513,13 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::Text("Scale (Zoom):");
             ImGui::SetNextItemWidth(200.0f);
             editUv([&] {
-                ImGui::DragFloat("Scale X", &texBinding.uvScale.x, 0.01f, 0.1f, 10.0f, "%.3f");
+                ImGui::DragFloat("Scale X", &texBinding.uvScale.x, 0.01f, 0.1f, 10.0f, "%.3f",
+                                 ImGuiSliderFlags_AlwaysClamp);
             });
             ImGui::SetNextItemWidth(200.0f);
             editUv([&] {
-                ImGui::DragFloat("Scale Y", &texBinding.uvScale.y, 0.01f, 0.1f, 10.0f, "%.3f");
+                ImGui::DragFloat("Scale Y", &texBinding.uvScale.y, 0.01f, 0.1f, 10.0f, "%.3f",
+                                 ImGuiSliderFlags_AlwaysClamp);
             });
 
             ImGui::Spacing();
@@ -524,7 +530,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             ImGui::SetNextItemWidth(200.0f);
             editUv([&] {
                 if (ImGui::DragFloat("Rotation##uv", &rotationDegrees,
-                                     0.5f, -180.0f, 180.0f, "%.1f deg")) {
+                                     0.5f, -180.0f, 180.0f, "%.1f deg",
+                                     ImGuiSliderFlags_AlwaysClamp)) {
                     texBinding.uvRotation = rotationDegrees * 3.14159265f / 180.0f;
                 }
             });
@@ -569,7 +576,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 editAsStep(es, quad, CORNERS, pendingStep_, [&] {
                     auto corners = geometry.getCorners();
                     if (ImGui::DragFloat2(cornerLabels[i], &corners[static_cast<size_t>(i)].x,
-                                          0.01f, 0.0f, 1.0f)) {
+                                          0.01f, 0.0f, 1.0f, "%.3f",
+                                          ImGuiSliderFlags_AlwaysClamp)) {
                         geometry.setCorners(corners);
                     }
                 });
@@ -609,7 +617,8 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
         if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
             float opacity = selectedQuad->getOpacity();
             editAsStep(es, *selectedQuad, OPACITY, pendingStep_, [&] {
-                if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f)) {
+                if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.3f",
+                                       ImGuiSliderFlags_AlwaysClamp)) {
                     selectedQuad->setOpacity(opacity);
                 }
             });
@@ -658,10 +667,10 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             const auto editColor = [&](auto&& widget) {
                 editAsStep(es, *selectedQuad, COLOR, pendingStep_, widget);
             };
-            editColor([&] { ImGui::SliderFloat("Brightness", &cc.brightness, -1.0f, 1.0f); });
-            editColor([&] { ImGui::SliderFloat("Contrast", &cc.contrast, 0.0f, 2.0f); });
-            editColor([&] { ImGui::SliderFloat("Gamma", &cc.gamma, 0.1f, 4.0f); });
-            editColor([&] { ImGui::SliderFloat3("RGB Gain", &cc.rgbGain.x, 0.0f, 2.0f); });
+            editColor([&] { ImGui::SliderFloat("Brightness", &cc.brightness, -1.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp); });
+            editColor([&] { ImGui::SliderFloat("Contrast", &cc.contrast, 0.0f, 2.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp); });
+            editColor([&] { ImGui::SliderFloat("Gamma", &cc.gamma, 0.1f, 4.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp); });
+            editColor([&] { ImGui::SliderFloat3("RGB Gain", &cc.rgbGain.x, 0.0f, 2.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp); });
             if (ImGui::Button("Reset Color")) {
                 setAsStep(es, *selectedQuad, COLOR, ColorCorrection{});
             }
@@ -675,11 +684,11 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
             const auto editEdge = [&](auto&& widget) {
                 editAsStep(es, *selectedQuad, SOFT_EDGE, pendingStep_, widget);
             };
-            editEdge([&] { ImGui::SliderFloat("Left", &se.left, 0.0f, 0.5f); });
-            editEdge([&] { ImGui::SliderFloat("Right", &se.right, 0.0f, 0.5f); });
-            editEdge([&] { ImGui::SliderFloat("Top", &se.top, 0.0f, 0.5f); });
-            editEdge([&] { ImGui::SliderFloat("Bottom", &se.bottom, 0.0f, 0.5f); });
-            editEdge([&] { ImGui::SliderFloat("Edge Gamma", &se.gamma, 0.1f, 4.0f); });
+            editEdge([&] { ImGui::SliderFloat("Left", &se.left, 0.0f, 0.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp); });
+            editEdge([&] { ImGui::SliderFloat("Right", &se.right, 0.0f, 0.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp); });
+            editEdge([&] { ImGui::SliderFloat("Top", &se.top, 0.0f, 0.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp); });
+            editEdge([&] { ImGui::SliderFloat("Bottom", &se.bottom, 0.0f, 0.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp); });
+            editEdge([&] { ImGui::SliderFloat("Edge Gamma", &se.gamma, 0.1f, 4.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp); });
             if (ImGui::Button("Reset Edges")) {
                 setAsStep(es, *selectedQuad, SOFT_EDGE, SoftEdge{});
             }
@@ -759,7 +768,8 @@ void InspectorPanel::renderCropControls(EditorContext& ctx, Quad& quad) {
             float pct = static_cast<float>(cropInset(crop, c.edge) * 100.0);
             ImGui::SetNextItemWidth(200.0f);
             editAsStep(es, quad, CROP, pendingStep_, [&] {
-                if (ImGui::DragFloat(c.label, &pct, 0.5f, 0.0f, 100.0f, "%.1f%%")) {
+                if (ImGui::DragFloat(c.label, &pct, 0.5f, 0.0f, 100.0f, "%.1f%%",
+                                     ImGuiSliderFlags_AlwaysClamp)) {
                     crop = withCropInset(crop, c.edge, pct / 100.0, 0.01);
                 }
             });
@@ -851,7 +861,7 @@ void InspectorPanel::renderGridWarpControls(EditorContext& ctx, Quad& quad) {
     int meshRes = geometry.getMeshResolution();
     ImGui::SetNextItemWidth(160.0f);
     editAsStep(es, quad, EVEN_GRID, pendingStep_, [&] {
-        if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64)) {
+        if (ImGui::SliderInt("Even Grid (N x N)", &meshRes, 1, 64, "%d", ImGuiSliderFlags_AlwaysClamp)) {
             geometry.setUniformGrid(meshRes);
             if (linearNew) geometry.setAllVerticesLinear(true);
         }
@@ -973,7 +983,8 @@ void InspectorPanel::renderSimpleQuadProperties(EditorContext& ctx, Quad& quad) 
     float deg = texBinding.uvRotation * 180.0f / kPi;
     ImGui::SetNextItemWidth(200.0f);
     editAsStep(es, quad, UV, pendingStep_, [&] {
-        if (ImGui::DragFloat("Rotation", &deg, 1.0f, -360.0f, 360.0f, "%.0f deg")) {
+        if (ImGui::DragFloat("Rotation", &deg, 1.0f, -360.0f, 360.0f, "%.0f deg",
+                             ImGuiSliderFlags_AlwaysClamp)) {
             texBinding.uvRotation = deg * kPi / 180.0f;
         }
     });
@@ -1424,7 +1435,7 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
         es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(*object), objectVisible));
     }
     float opacity = object->getOpacity();
-    if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f")) {
+    if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
         es.commandHistory.execute(makeSetObjectOpacityCommand(es.objectRef(*object), opacity));
     }
 
@@ -1441,9 +1452,15 @@ void InspectorPanel::renderObjectProperties(EditorContext& ctx) {
     }
     bool changed = false;
     changed |= ImGui::DragFloat3("Position", &objectPosition_.x, 0.01f, 0.0f, 0.0f, "%.3f");
-    changed |= ImGui::DragFloat3("Rotation (deg)", &objectRotationDeg_.x, 0.5f, -360.0f, 360.0f, "%.1f");
+    changed |= ImGui::DragFloat3("Rotation (deg)", &objectRotationDeg_.x, 0.5f, -360.0f, 360.0f,
+                                 "%.1f", ImGuiSliderFlags_AlwaysClamp);
     changed |= ImGui::DragFloat("Scale", &objectScale_, 0.01f, 0.001f, 1000.0f, "%.3f",
                                 ImGuiSliderFlags_AlwaysClamp);
+    if (changed && !(std::isfinite(objectPosition_.x) && std::isfinite(objectPosition_.y) &&
+                     std::isfinite(objectPosition_.z))) {
+        changed = false;
+        transformObjectId_ = UUID();  // show the object's own transform again
+    }
     bool reset = false;
     if (ImGui::Button("Reset Transform")) {
         objectPosition_ = Vec3(0.0f);
