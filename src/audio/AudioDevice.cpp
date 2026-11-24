@@ -234,7 +234,7 @@ public:
                 return &deviceIds_[index];
             }
         } catch (...) {
-            // Invalid device ID
+            Logger::warning("AudioDevice: '{}' is not a device id; using the default device", deviceId);
         }
 
         return nullptr;
