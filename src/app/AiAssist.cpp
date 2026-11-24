@@ -72,12 +72,17 @@ bool cornersInRange(const std::array<std::array<float, 2>, 4>& corners) {
     return true;
 }
 
-// The temp folder; the working directory if Windows has none (the throwing overload
-// would reach the crash guard). Absolute either way: the sidecar runs in its own folder.
-std::filesystem::path tempFolder() {
+// Where every run's photos and scan frames go: the app's own folder, not the shared
+// temp folder, because they show the venue. Absolute: the sidecar runs in its own folder.
+std::filesystem::path workRoot() {
+    return userLocalDir() / "ai-temp";
+}
+
+// `name` in this run's work folder, which is made on first use.
+std::string workFile(const std::filesystem::path& folder, const char* name) {
     std::error_code ec;
-    const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
-    return ec ? std::filesystem::current_path(ec) : temp;
+    std::filesystem::create_directories(folder, ec);
+    return utf8FromPath(folder / name);
 }
 
 // QM_AI_TEST_IMAGE stands in for the camera (verification, or a photo on disk). `path`
@@ -94,8 +99,8 @@ bool testImageFromEnv(std::string& path) {
 
 // The scan's folder for one output: the sidecar writes the frames there and the camera's
 // captures and the map land beside them.
-std::filesystem::path scanFolder(const UUID& outputId) {
-    return tempFolder() / "quadmapper_scan" / outputId.toString();
+std::filesystem::path scanFolder(const std::filesystem::path& workFolder, const UUID& outputId) {
+    return workFolder / "scan" / outputId.toString();
 }
 
 AiAssist::Outcome scanPatternsOutcome(const ai::GrayReply<ai::GrayPatternsResult>& reply) {
@@ -205,9 +210,26 @@ AiAssist::AiAssist(EditorState& editor, std::unique_ptr<ai::SidecarClient> sidec
     : editor_(editor),
       sidecar_(std::move(sidecar)),
       lastSidecarState_(ai::SidecarState::Stopped),
-      selfTestPending_(std::getenv("QM_AI_SELFTEST") != nullptr) {}
+      selfTestPending_(std::getenv("QM_AI_SELFTEST") != nullptr),
+      workFolder_(workRoot() / UUID::generate().toString()) {}
+
+void AiAssist::removeLeftoverFiles() {
+    std::error_code ec;
+    std::filesystem::remove_all(workRoot(), ec);
+}
+
+void AiAssist::removeWorkFolder() {
+    std::error_code ec;
+    std::filesystem::remove_all(workFolder_, ec);
+    std::filesystem::remove(workRoot(), ec);  // when no other run has files there
+}
 
 AiAssist::~AiAssist() {
+    finishRequest();
+    removeWorkFolder();
+}
+
+void AiAssist::finishRequest() {
     if (!requestThread_.joinable()) return;
     // A launched sidecar dies here (no orphan), which also ends a running HTTP call
     // at once instead of after the wait below. Idempotent after stopSidecar().
@@ -544,10 +566,10 @@ void AiAssist::detectSurface(const OutputManager* outputs) {
     photoMappings(outputs, grayMap, oneFlash);
     std::shared_ptr<ai::SidecarClient> sidecar = sidecar_;
     startRequest("AI: detecting surface...", "AI", quad->getId(),
-                 [sidecar, testImage, grayMap, oneFlash]() -> Outcome {
+                 [sidecar, testImage, grayMap, oneFlash, work = workFolder_]() -> Outcome {
         std::string imgPath = testImage;
         if (imgPath.empty()) {
-            imgPath = utf8FromPath(tempFolder() / "quadmapper_ai_capture.png");
+            imgPath = workFile(work, "capture.png");
             std::string err;
             if (!captureCameraFrameToPng(imgPath, err)) {
                 return Outcome{"AI: " + err, 5.0f, std::nullopt};
@@ -631,7 +653,7 @@ void AiAssist::capturePhoto(const OutputManager* outputs) {
         setStatus("One-Flash: Blackout is on - turn it off to capture", 6.0f);
         return;
     }
-    const std::string out = utf8FromPath(tempFolder() / "quadmapper_oneflash_capture.png");
+    const std::string out = workFile(workFolder_, "oneflash.png");
     startRequest("One-Flash: capturing photo...", "One-Flash", UUID::null(),
                  [out]() -> Outcome {
         std::string err;
@@ -693,10 +715,10 @@ void AiAssist::runOneFlash(const OutputManager* outputs,
     if (audienceTarget) target = *audienceTarget;
     std::shared_ptr<ai::SidecarClient> sidecar = sidecar_;
     startRequest("One-Flash: solving...", "One-Flash", quad->getId(),
-                 [sidecar, testImage, target, label = std::string(label)]() -> Outcome {
+                 [sidecar, testImage, target, label = std::string(label), work = workFolder_]() -> Outcome {
         std::string patternPath = testImage;
         if (patternPath.empty()) {
-            patternPath = utf8FromPath(tempFolder() / "quadmapper_oneflash_capture.png");
+            patternPath = workFile(work, "oneflash.png");
             std::string err;
             if (!captureCameraFrameToPng(patternPath, err)) {
                 return Outcome{"One-Flash: " + err, 6.0f, std::nullopt};
@@ -733,10 +755,11 @@ void AiAssist::takePhoto() {
         setStatus("AI Photo: QM_AI_TEST_IMAGE not found", 5.0f);
         return;
     }
-    startRequest("AI Photo: taking a photo...", "AI Photo", UUID::null(), [testImage]() -> Outcome {
+    startRequest("AI Photo: taking a photo...", "AI Photo", UUID::null(),
+                 [testImage, work = workFolder_]() -> Outcome {
         std::string path = testImage;
         if (path.empty()) {
-            path = utf8FromPath(tempFolder() / "quadmapper_ai_photo.png");
+            path = workFile(work, "photo.png");
             std::string err;
             if (!captureCameraFrameToPng(path, err)) {
                 return Outcome{"AI Photo: " + err, 5.0f, std::nullopt};
@@ -1007,7 +1030,7 @@ void AiAssist::scanOutput(OutputManager* outputs) {
     // A fresh folder: the last scan's frames and captures go, and so does the map made
     // from them.
     const UUID outputId = target->getId();
-    const std::filesystem::path folder = scanFolder(outputId);
+    const std::filesystem::path folder = scanFolder(workFolder_, outputId);
     std::error_code ec;
     std::filesystem::remove_all(folder, ec);
     std::filesystem::create_directories(folder, ec);
@@ -1169,6 +1192,9 @@ void AiAssist::disable() {
 void AiAssist::stopSidecar() {
     disable();
     sidecar_.reset();
+    // The photos and scan frames go with the engine; the destructor takes what a
+    // request still running holds open.
+    removeWorkFolder();
 }
 
 } // namespace quadmapper

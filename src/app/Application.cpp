@@ -403,6 +403,7 @@ bool Application::initializeComponents() {
 
     // Optional AI pre-show sidecar (ADR-035 / QM-056). Constructed here but not
     // started: the user enables it on demand from the AI menu.
+    if (!isHarnessRun()) AiAssist::removeLeftoverFiles();  // photos a crashed run left
     m_aiAssist = std::make_unique<AiAssist>(
         *m_editorState, std::make_unique<ai::SidecarClient>(AiAssist::locateSidecar()));
 

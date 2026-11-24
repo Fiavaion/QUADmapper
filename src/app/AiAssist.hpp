@@ -61,6 +61,11 @@ public:
     // The same from `exeDir` (absolute; a relative one finds nothing).
     static ai::SidecarConfig locateSidecarFrom(const std::filesystem::path& exeDir);
 
+    // Camera photos and scan frames are kept in the app's own folder for the run and
+    // deleted when it ends. This deletes what a run that crashed left there: for the
+    // app's start, when no other QUADmapper is running.
+    static void removeLeftoverFiles();
+
     // AI menu: the sidecar is connected (reads cached state, no per-frame I/O).
     bool isActive() const;
     // AI menu: a camera capture or sidecar request is running; the items that start
@@ -266,6 +271,12 @@ private:
     // QM-058 self-test hook (QM_AI_SELFTEST). Off in normal runs.
     bool selfTestPending_ = false;
     int frameCount_ = 0;
+
+    // This run's photos and scan frames (see removeLeftoverFiles): made on first use,
+    // deleted by stopSidecar() and the destructor.
+    std::filesystem::path workFolder_;
+    void removeWorkFolder();
+    void finishRequest();  // waits for a running request, or lets it go
 
     // One-Flash pattern (QM-059): while armed, the outputs show calibQuad_
     // (identity, fullscreen) instead of the scene. Built on the first emit.
