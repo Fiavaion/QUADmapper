@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 
 namespace quadmapper {
@@ -544,6 +545,48 @@ TEST_F(ProjectPersistenceTest, OutOfRangeMeshModeFallsBackToCorners) {
         EXPECT_EQ(project.getScenes()[0].quads[0].getGeometry().getMeshMode(),
                   MeshMode::CORNERS_ONLY) << mode;
     }
+}
+
+// A number its field cannot hold: beyond the float range it fails the load, as in a
+// vector; a whole number is held to its range without being cast first.
+TEST_F(ProjectPersistenceTest, NumbersBeyondTheirTypeAreRefusedOrClamped) {
+    ProjectSerializer serializer;
+    for (const char* quad : {
+             R"({"opacity": 1e300})",
+             R"({"textureBinding": {"uvRotation": 1e300}})",
+             R"({"textureBinding": {"crop": {"width": -1e300}}})",
+             R"({"colorCorrection": {"gamma": 1e300}})",
+             R"({"softEdge": {"left": 1e300}})"}) {
+        Project project;
+        EXPECT_TRUE(serializer.deserialize(v31WithQuad(quad), project).isError()) << quad;
+    }
+    Project zoomed;
+    EXPECT_TRUE(serializer.deserialize(
+        R"({"version": "3.4.0", "scenes": [{"view": {"zoom": 1e300}}]})", zoomed).isError());
+
+    Project project;
+    const std::string json = R"({"version": "3.4.0", "name": "T",
+        "scenes": [{"name": "S", "canvas": [1e300, -1e300], "view": {"zoom": 1e9},
+                    "quads": [{"zOrder": 1e300, "geometry": {"meshResolution": 1e300}}]}],
+        "outputs": [{"monitor": 1e300, "resolution": [1e300, 2.9], "rotation": 1e300}],
+        "sources": [{"id": "0a1b2c3d-0000-4000-8000-000000000001", "kind": "procedural",
+                     "proceduralType": "Noise", "width": 1e300, "height": -1e300}]})";
+
+    auto result = serializer.deserialize(json, project);
+
+    ASSERT_TRUE(result.isSuccess()) << result.error();
+    const auto& scene = project.getScenes()[0];
+    EXPECT_EQ(scene.canvas, IVec2(MAX_CANVAS_DIMENSION, 1));
+    EXPECT_FLOAT_EQ(scene.view.zoom, 12.0f);
+    EXPECT_EQ(scene.quads[0].getZOrder(), std::numeric_limits<int>::max());
+    EXPECT_EQ(scene.quads[0].getGeometry().getMeshResolution(), MAX_MESH_RESOLUTION);
+    const auto& output = project.getOutputs()[0];
+    EXPECT_EQ(output.monitor, 63);
+    EXPECT_EQ(output.resolution, IVec2(16384, 2));
+    EXPECT_EQ(output.rotationDegrees, 0);
+    ASSERT_EQ(project.getSources().size(), 1u);
+    EXPECT_EQ(project.getSources()[0].width, 16384);
+    EXPECT_EQ(project.getSources()[0].height, 1);
 }
 
 TEST_F(ProjectPersistenceTest, AFileTooLargeToBeAShowIsRefusedUnread) {
