@@ -1,31 +1,11 @@
 #include "FolderWatcher.hpp"
+#include "FolderWalk.hpp"
 #include "MediaLibrary.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 #include <chrono>
 
 namespace quadmapper {
-
-namespace {
-
-// Visits every entry of a folder without throwing. The range-for form advances with the
-// throwing operator++, so a folder on a drive unplugged mid-scan ended the app from the
-// watcher thread; here an entry that cannot be read ends the walk.
-template <typename Iterator, typename Visit>
-void walkFolder(const std::filesystem::path& folder, const std::atomic<bool>* stop, Visit&& visit) {
-    std::error_code ec;
-    for (Iterator it(folder, ec); !ec && it != Iterator(); it.increment(ec)) {
-        if (stop && stop->load()) break;
-        try {
-            visit(*it);
-        } catch (const std::exception& e) {
-            // A name that is not valid UTF-16 has no UTF-8 form; the file is skipped.
-            Logger::debug("FolderWatcher: skipped an entry ({})", e.what());
-        }
-    }
-}
-
-}  // namespace
 
 FolderWatcher::FolderWatcher() = default;
 

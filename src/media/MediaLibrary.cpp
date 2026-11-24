@@ -1,4 +1,5 @@
 #include "MediaLibrary.hpp"
+#include "FolderWalk.hpp"
 #include "core/Logger.hpp"
 #include <algorithm>
 #include <cctype>
@@ -92,17 +93,10 @@ int MediaLibrary::scanFolder(const std::filesystem::path& folder, bool recursive
         }
     };
 
-    // Scan directory
     if (recursive) {
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(folder, ec)) {
-            if (ec) break;
-            processEntry(entry);
-        }
+        walkFolder<std::filesystem::recursive_directory_iterator>(folder, nullptr, processEntry);
     } else {
-        for (const auto& entry : std::filesystem::directory_iterator(folder, ec)) {
-            if (ec) break;
-            processEntry(entry);
-        }
+        walkFolder<std::filesystem::directory_iterator>(folder, nullptr, processEntry);
     }
 
     return count;
