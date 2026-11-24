@@ -184,19 +184,22 @@ std::string developerToken() {
     return token;
 }
 
-// The app's environment with `set` added or replacing variables of the same name, as a
-// sorted CREATE_UNICODE_ENVIRONMENT block.
-std::wstring childEnvironment(const std::vector<std::pair<std::wstring, std::wstring>>& set) {
+// The app's environment without the variables named in `drop`, and with `set` added or
+// replacing variables of the same name, as a sorted CREATE_UNICODE_ENVIRONMENT block.
+std::wstring childEnvironment(const std::vector<std::pair<std::wstring, std::wstring>>& set,
+                              const std::vector<std::wstring>& drop) {
     std::vector<std::wstring> vars;
     if (LPWCH block = GetEnvironmentStringsW()) {
         for (LPWCH p = block; *p != L'\0'; p += wcslen(p) + 1) {
             const std::wstring entry(p);
-            const bool replaced = std::any_of(set.begin(), set.end(), [&entry](const auto& var) {
-                const std::wstring& name = var.first;
+            const auto isNamed = [&entry](const std::wstring& name) {
                 return entry.size() > name.size() && entry[name.size()] == L'=' &&
                        _wcsnicmp(entry.c_str(), name.c_str(), name.size()) == 0;
-            });
-            if (!replaced) vars.push_back(entry);
+            };
+            const bool replaced = std::any_of(set.begin(), set.end(),
+                                              [&](const auto& var) { return isNamed(var.first); });
+            const bool dropped = std::any_of(drop.begin(), drop.end(), isNamed);
+            if (!replaced && !dropped) vars.push_back(entry);
         }
         FreeEnvironmentStringsW(block);
     }
@@ -586,7 +589,11 @@ struct SidecarClient::Impl {
         if (!config.modelsDir.empty() && environmentVariable("QM_MODELS_DIR").empty()) {
             vars.emplace_back(L"QM_MODELS_DIR", toWide(config.modelsDir));
         }
-        std::wstring environment = childEnvironment(vars);
+        // The engine runs on its own packages only: the user's Python settings could
+        // put other code on its import path or run a start-up script.
+        vars.emplace_back(L"PYTHONNOUSERSITE", L"1");
+        std::wstring environment = childEnvironment(
+            vars, {L"PYTHONPATH", L"PYTHONHOME", L"PYTHONSTARTUP", L"PYTHONUSERBASE"});
         // It starts in its own folder, not wherever the app was started from.
         const std::wstring workDir = std::filesystem::path(script).parent_path().wstring();
 
