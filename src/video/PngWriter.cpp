@@ -107,7 +107,11 @@ bool writeRgbPng(const uint8_t* rgb, int width, int height, const std::filesyste
     } while (pos < raw.size());
     putBE32(z, adler32Bytes(raw.data(), raw.size()));
 
-    std::ofstream out(path, std::ios::binary);
+    // Written under another name and renamed once complete, so a failed write (a full
+    // disk) never leaves a cut-off picture under the real name.
+    std::filesystem::path part = path;
+    part += ".part";
+    std::ofstream out(part, std::ios::binary);
     if (!out) {
         return false;
     }
@@ -126,7 +130,14 @@ bool writeRgbPng(const uint8_t* rgb, int width, int height, const std::filesyste
     writeChunk(out, "IDAT", z);
     writeChunk(out, "IEND", {});
 
-    return out.good();
+    out.close();
+    std::error_code ec;
+    if (!out.fail()) std::filesystem::rename(part, path, ec);
+    if (out.fail() || ec) {
+        std::filesystem::remove(part, ec);
+        return false;
+    }
+    return true;
 }
 
 } // namespace quadmapper
