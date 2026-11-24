@@ -246,6 +246,11 @@ bool waitForGpu(Done done, const std::atomic<bool>* stop) {
     }
 }
 
+// The longest a decoder waits for a shared texture's keyed mutex. The wait is made with
+// the decoders' device lock held, so one that never ended would stop every stream; past
+// this the frame takes the caller's fallback (copied to memory, or skipped).
+constexpr DWORD KEYED_MUTEX_WAIT_MS = 1000;
+
 // Copy `texture` (array slice `index`) into `copy`, whose format, size and buffers are
 // set, through `staging` (re-created when it does not fit). av_hwframe_transfer_data
 // for D3D11 holds the shared device's lock while it waits for the GPU copy and while it
@@ -281,7 +286,7 @@ int readBackTexture(AVD3D11VADeviceContext* d3d, ID3D11Texture2D* texture, UINT 
     }
 
     d3d->lock(d3d->lock_ctx);
-    if (mutex && mutex->AcquireSync(0, INFINITE) != S_OK) {
+    if (mutex && mutex->AcquireSync(0, KEYED_MUTEX_WAIT_MS) != S_OK) {
         d3d->unlock(d3d->lock_ctx);
         return AVERROR_EXTERNAL;
     }
@@ -956,7 +961,7 @@ public:
             g_liveD3dObjects.fetch_add(1, std::memory_order_relaxed);
         }
         d3d->lock(d3d->lock_ctx);
-        if (entry->mutex->AcquireSync(0, INFINITE) != S_OK) {
+        if (entry->mutex->AcquireSync(0, KEYED_MUTEX_WAIT_MS) != S_OK) {
             d3d->unlock(d3d->lock_ctx);
             return AVERROR_EXTERNAL;
         }
