@@ -469,7 +469,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
             request = json.loads(raw or b"{}")
             if not isinstance(request, dict):
                 raise ValueError("body must be a JSON object")
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, RecursionError) as exc:  # JSONDecodeError is a ValueError
             self._send_json(400, {"error": "invalid JSON", "detail": str(exc)})
             return
 

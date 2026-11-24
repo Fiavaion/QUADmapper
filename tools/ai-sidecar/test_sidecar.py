@@ -175,6 +175,16 @@ def test_segment_bad_request_is_400(live_server, body):
     assert "error" in reply
 
 
+def test_json_nested_too_deeply_is_400(live_server):
+    conn = http.client.HTTPConnection(*live_server, timeout=5)
+    try:
+        conn.request("POST", "/segment", body=b"[" * 100000,
+                     headers={"Content-Type": "application/json", **AUTH})
+        assert conn.getresponse().status == 400
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("path,local", [
     ("C:\\shots\\a.png", True),
     ("d:/shots/a.png", True),
