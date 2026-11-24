@@ -267,8 +267,9 @@ void ProjectSession::processPendingFileAction() {
             const std::string path = es.pendingLoadPath;
             es.pendingLoadPath.clear();
             if (path.empty()) break;
-            discardRecoveryFiles(es, leaving);
-            performLoadProject(path);
+            // Only once the file has parsed: a failed load leaves the open show, and its
+            // recovery files with it.
+            performLoadProject(path, [&] { discardRecoveryFiles(es, leaving); });
             break;
         }
         case FileAction::Save:
@@ -344,7 +345,8 @@ void ProjectSession::performNewProject() {
     projectReplaced();
 }
 
-bool ProjectSession::performLoadProject(const std::string& path) {
+bool ProjectSession::performLoadProject(const std::string& path,
+                                        const std::function<void()>& beforeReplace) {
     EditorState& es = m_editor;
     auto result = ProjectSerializer::load(pathFromUtf8(path));
     if (!result) {
@@ -352,6 +354,7 @@ bool ProjectSession::performLoadProject(const std::string& path) {
         postStatus(es, "Load failed: " + result.error().message);
         return false;
     }
+    if (beforeReplace) beforeReplace();
 
     m_project = std::move(result.value());
     dropQueuedSceneTakes();

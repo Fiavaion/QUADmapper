@@ -195,6 +195,38 @@ TEST_F(ProjectSessionTest, ADirtyExitKeepsTheAutosaveWhileItAsks) {
     EXPECT_TRUE(fs::exists(dir_ / "show.autosave.qmap"));
 }
 
+// A Load that fails leaves the open show open, so its autosave must stay: autosave
+// does not write an unchanged show again.
+TEST_F(ProjectSessionTest, AFailedLoadKeepsTheOpenShowsRecoveryFiles) {
+    openAs(file("show.qmap"));
+    { std::FILE* f = std::fopen(file("show.autosave.qmap").c_str(), "wb"); ASSERT_TRUE(f); std::fclose(f); }
+    { std::FILE* f = std::fopen(file("broken.qmap").c_str(), "wb"); ASSERT_TRUE(f); std::fputs("not a show", f); std::fclose(f); }
+    es_.pendingLoadPath = file("broken.qmap");
+    es_.pendingFileAction = FileAction::Load;
+
+    session_->processPendingFileAction();
+
+    EXPECT_EQ(project_.getFilePath(), file("show.qmap"));
+    EXPECT_EQ(replaced_, 0);
+    EXPECT_TRUE(fs::exists(dir_ / "show.autosave.qmap"));
+}
+
+TEST_F(ProjectSessionTest, ALoadThatSucceedsDiscardsTheLeftShowsRecoveryFiles) {
+    openAs(file("show.qmap"));
+    es_.pendingFileAction = FileAction::Save;
+    session_->processPendingFileAction();
+    ASSERT_TRUE(fs::exists(dir_ / "show.qmap"));
+    fs::copy_file(dir_ / "show.qmap", dir_ / "other.qmap");
+    { std::FILE* f = std::fopen(file("show.autosave.qmap").c_str(), "wb"); ASSERT_TRUE(f); std::fclose(f); }
+    es_.pendingLoadPath = file("other.qmap");
+    es_.pendingFileAction = FileAction::Load;
+
+    session_->processPendingFileAction();
+
+    EXPECT_EQ(project_.getFilePath(), file("other.qmap"));
+    EXPECT_FALSE(fs::exists(dir_ / "show.autosave.qmap"));
+}
+
 // While the recovery prompt is unanswered, saving must not delete the file it offers.
 TEST_F(ProjectSessionTest, SavingKeepsTheRecoveryFileTheOpenPromptOffers) {
     openAs(file("show.qmap"));

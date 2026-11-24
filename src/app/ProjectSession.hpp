@@ -109,7 +109,9 @@ public:
 
 private:
     void performNewProject();
-    bool performLoadProject(const std::string& path);
+    // beforeReplace runs once the file has parsed, before the open show is replaced.
+    bool performLoadProject(const std::string& path,
+                            const std::function<void()>& beforeReplace = {});
     // Save to the project's path, or via the Save dialog when untitled / chooseNewPath.
     // onSaved runs once the file is written (after the dialog closes, if one was shown).
     void performSaveProject(bool chooseNewPath, std::function<void()> onSaved = {});
