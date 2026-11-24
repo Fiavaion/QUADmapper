@@ -277,13 +277,16 @@ void CompositionPanel::drawCues(EditorContext& ctx, CompositionSource& comp, boo
             ImGui::TableNextColumn();
             ImGui::BeginDisabled(i == 0);
             if (ImGui::ArrowButton("##up", ImGuiDir_Up)) moveUp = static_cast<int>(i);
+            ImGui::SetItemTooltip("Move this cue up");
             ImGui::EndDisabled();
             ImGui::SameLine();
             ImGui::BeginDisabled(i + 1 == s.cues.size());
             if (ImGui::ArrowButton("##down", ImGuiDir_Down)) moveDown = static_cast<int>(i);
+            ImGui::SetItemTooltip("Move this cue down");
             ImGui::EndDisabled();
             ImGui::SameLine();
             if (ImGui::SmallButton("x")) removeAt = static_cast<int>(i);
+            ImGui::SetItemTooltip("Remove this cue");
             ImGui::PopID();
         }
         ImGui::EndTable();

@@ -316,10 +316,12 @@ void EditorUi::drawCanvasOverlay(EditorContext& ctx) {
         if (ImGui::SmallButton("Fit")) { es.canvasZoom = 1.0f; es.canvasPan = Vec2(0.0f, 0.0f); }
         ImGui::SameLine();
         if (ImGui::SmallButton("-")) es.canvasZoom = std::max(0.1f, es.canvasZoom / 1.12f);
+        ImGui::SetItemTooltip("Zoom out");
         ImGui::SameLine();
         ImGui::Text("%3.0f%%", es.canvasZoom * 100.0f);
         ImGui::SameLine();
         if (ImGui::SmallButton("+")) es.canvasZoom = std::min(12.0f, es.canvasZoom * 1.12f);
+        ImGui::SetItemTooltip("Zoom in");
         ImGui::SameLine();
         const bool snapping = es.vertexSnapping;
         if (snapping) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
