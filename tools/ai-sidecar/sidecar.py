@@ -348,7 +348,8 @@ def _graymap_response(request: dict) -> dict:
         import graycode
         mapped, valid = graycode.map_points(graycode.load_map(map_path), parsed)
     except Exception as exc:  # noqa: BLE001 - not a map we wrote, or no numpy
-        raise BadRequest(f"map_path is not a Gray-code map: {exc}") from None
+        sys.stderr.write(f"[sidecar] graymap failed: {exc!r}\n")
+        raise BadRequest("map_path is not a Gray-code map") from None
     return {"api_version": SIDECAR_API_VERSION, "points": mapped, "valid": valid}
 
 
