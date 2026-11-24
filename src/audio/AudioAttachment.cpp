@@ -22,6 +22,11 @@ constexpr int CHANNELS = 2;
 // silence. Earlier by more than a frame is an overlap (a seek pre-roll): trimmed.
 constexpr double GAP_TOLERANCE_SECONDS = 0.002;
 constexpr int MAX_DECODE_FAILURES = 64;
+// In a clip of unknown length, a frame whose timestamp lies further ahead than this is
+// not padded up to: nothing would bound the silence. After this many such frames in a
+// row the timestamps have jumped for good.
+constexpr double MAX_UNBOUNDED_GAP_SECONDS = 30.0;
+constexpr int FAR_AHEAD_FRAMES = 8;
 constexpr double MIN_CLIP_DURATION = 1e-3;  // shorter counts as unknown
 constexpr double LEG_MATCH_TOLERANCE = 1e-3;
 // After a clock discontinuity, drift beyond this is a seek (a loop wrap measures ~0),
@@ -64,6 +69,8 @@ struct AudioAttachment::DecodeState {
     bool haveSegment = false;
     bool passEnded = false;
     int failures = 0;
+    int farAhead = 0;             // frames in a row past MAX_UNBOUNDED_GAP_SECONDS
+    int64_t timestampShift = 0;   // taken off every timestamp since such a jump
     // Loop wrap: the outgoing sound past the clip's end (from the frame the pass was
     // cut in) and the last frame queued, for the crossfade into the next pass.
     LoopCrossfade crossfade;
@@ -326,6 +333,8 @@ void AudioAttachment::startSegment(const Request& request) {
     d.haveSegment = true;
     d.passEnded = false;
     d.failures = 0;
+    d.farAhead = 0;
+    d.timestampShift = 0;
     d.crossfade.disarm();
     d.seamTailFrames = 0;
     d.lastQueued[0] = d.lastQueued[1] = 0.0f;
@@ -387,10 +396,20 @@ void AudioAttachment::produce() {
         d.failures = 0;
 
         // Place the frame at its own timestamp: pad a gap, trim an overlap.
-        const int64_t framePos = std::llround(frame.pts * sampleRate_);
+        int64_t framePos = std::llround(frame.pts * sampleRate_) - d.timestampShift;
         const int64_t tolerance = std::llround(GAP_TOLERANCE_SECONDS * sampleRate_);
         const float* samples = frame.samples.data();
         int64_t frames = frame.sampleCount;
+        // With no clip end to stop at, a timestamp far ahead would queue hours of
+        // silence. One such frame is damage and is left out. When they keep coming, the
+        // file's timestamps have jumped, and the sound carries on from here.
+        if (d.legEndFrame == std::numeric_limits<int64_t>::max() &&
+            framePos - d.clipFrame > std::llround(MAX_UNBOUNDED_GAP_SECONDS * sampleRate_)) {
+            if (++d.farAhead < FAR_AHEAD_FRAMES) continue;
+            d.timestampShift += framePos - d.clipFrame;
+            framePos = d.clipFrame;
+        }
+        d.farAhead = 0;
         if (framePos > d.clipFrame + tolerance) {
             queueSilence(framePos - d.clipFrame);
         } else if (framePos < d.clipFrame - 1) {
