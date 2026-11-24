@@ -617,6 +617,28 @@ TEST_F(ProjectPersistenceTest, AFileTooLargeToBeAShowIsRefusedUnread) {
     EXPECT_NE(loaded.error().message.find("too large"), std::string::npos) << loaded.error().message;
 }
 
+// The times are doubles in the model and in the file; a hold taken from a clip's
+// length must not change on the first reload.
+TEST_F(ProjectPersistenceTest, CompositionTimesKeepTheirFullPrecision) {
+    Project::SourceData composition;
+    composition.id = UUID::generate();
+    composition.kind = "composition";
+    composition.fadeSeconds = 0.3;
+    Project::SourceData::CueData cue;
+    cue.holdSeconds = 12.345678901234;
+    composition.cues.push_back(cue);
+    ProjectSerializer serializer;
+    Project loaded;
+
+    ASSERT_TRUE(serializer.deserialize(serializer.serialize(projectWithBoundQuad(composition, "")),
+                                       loaded).isSuccess());
+
+    ASSERT_EQ(loaded.getSources().size(), 1u);
+    EXPECT_EQ(loaded.getSources()[0].fadeSeconds, 0.3);
+    ASSERT_EQ(loaded.getSources()[0].cues.size(), 1u);
+    EXPECT_EQ(loaded.getSources()[0].cues[0].holdSeconds, 12.345678901234);
+}
+
 TEST_F(ProjectPersistenceTest, OutputMonitorResolutionRotationAreClamped) {
     ProjectSerializer serializer;
     Project project;

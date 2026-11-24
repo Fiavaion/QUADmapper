@@ -1120,7 +1120,7 @@ static std::optional<Project::SourceData> deserializeSource(const nlohmann::json
             s.compositionMode = j["mode"].get<std::string>() == "switch" ? "switch" : "timeline";
         }
         if (j.contains("fadeSeconds") && j["fadeSeconds"].is_number()) {
-            s.fadeSeconds = std::clamp(static_cast<double>(readFiniteFloat(j["fadeSeconds"])), 0.0, 30.0);
+            s.fadeSeconds = std::clamp(j["fadeSeconds"].get<double>(), 0.0, 30.0);
         }
         if (j.contains("loop") && j["loop"].is_boolean()) s.loop = j["loop"].get<bool>();
         if (j.contains("restartOnCue") && j["restartOnCue"].is_boolean()) {
@@ -1138,7 +1138,7 @@ static std::optional<Project::SourceData> deserializeSource(const nlohmann::json
                 Project::SourceData::CueData cue;
                 if (c.contains("source")) cue.source = parseUuidOrNull(c["source"]);
                 if (c.contains("hold") && c["hold"].is_number()) {
-                    cue.holdSeconds = std::clamp(static_cast<double>(readFiniteFloat(c["hold"])), 0.0, 86400.0);
+                    cue.holdSeconds = std::clamp(c["hold"].get<double>(), 0.0, 86400.0);
                 }
                 s.cues.push_back(cue);
                 if (s.cues.size() >= 1000) break;  // untrusted input
