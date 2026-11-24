@@ -10,6 +10,8 @@
 #include "output/OutputWindow.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
+#include "scene/Scene.hpp"
+#include "scene/MeshObject.hpp"
 #include "source/SourceManager.hpp"
 #include "source/VideoFileSource.hpp"
 #include "core/FileSystem.hpp"
@@ -192,6 +194,9 @@ void VideoPlayerPanel::unloadVideo(EditorContext& ctx, const UUID& unloaded) {
                 quad->getTexture().mediaId = UUID();
                 es.quadTexturePaths.erase(quad->getId());
             }
+        }
+        for (const auto& object : scene->getObjects()) {
+            if (object && object->getTexture().mediaId == unloaded) object->getTexture().mediaId = UUID();
         }
     }
     ctx.sourceManager->removeSource(unloaded);
