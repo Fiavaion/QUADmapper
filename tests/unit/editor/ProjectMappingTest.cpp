@@ -102,6 +102,35 @@ TEST(ProjectMappingTest, TwoScenesWithOneIdAreToldApart) {
     EXPECT_NE(to.scenes[1]->getId(), shared);
 }
 
+// The list order is the drawing order; a saved z-order that disagrees is not used,
+// for the last quad as for the others.
+TEST(ProjectMappingTest, QuadsDrawInListOrderWhateverZOrderWasSaved) {
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    scene.name = "Stage";
+    const int saved[] = {5, 0, 5, -2};
+    const char* const names[] = {"A", "B", "C", "D"};
+    for (int i = 0; i < 4; ++i) {
+        Quad quad;
+        quad.setName(names[i]);
+        quad.setZOrder(saved[i]);
+        scene.quads.push_back(quad);
+        scene.texturePaths.emplace_back();
+    }
+    project.getScenes().push_back(std::move(scene));
+
+    EditorState to;
+    syncProjectToEditor(to, nullptr, project, nullptr, nullptr);
+
+    const auto& quads = to.scenes[0]->getQuadManager().getQuads();
+    ASSERT_EQ(quads.size(), 4u);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(quads[static_cast<size_t>(i)]->getName(), std::string(1, static_cast<char>('A' + i)));
+        EXPECT_EQ(quads[static_cast<size_t>(i)]->getZOrder(), i);
+    }
+}
+
 TEST(ProjectMappingTest, QuadsKeepGeometryMeshBezierCropAndColour) {
     EditorState from;
     Scene* scene = from.addScene("Stage");
@@ -109,7 +138,6 @@ TEST(ProjectMappingTest, QuadsKeepGeometryMeshBezierCropAndColour) {
     quad->setVisible(false);
     quad->setLocked(true);
     quad->setOpacity(0.25f);
-    quad->setZOrder(7);
 
     QuadGeometry& geometry = quad->getGeometry();
     geometry.setCorners({Vec2(10.0f, 20.0f), Vec2(900.0f, 15.0f), Vec2(880.0f, 700.0f), Vec2(30.0f, 650.0f)});
@@ -151,7 +179,6 @@ TEST(ProjectMappingTest, QuadsKeepGeometryMeshBezierCropAndColour) {
     EXPECT_FALSE(back.isVisible());
     EXPECT_TRUE(back.isLocked());
     EXPECT_FLOAT_EQ(back.getOpacity(), 0.25f);
-    EXPECT_EQ(back.getZOrder(), 7);
 
     const QuadGeometry& g = back.getGeometry();
     EXPECT_EQ(g.getCorners(), geometry.getCorners());

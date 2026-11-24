@@ -212,7 +212,6 @@ static void applyQuadData(const Quad& src, Quad* dst) {
     dst->setVisible(src.isVisible());
     dst->setLocked(src.isLocked());
     dst->setOpacity(src.getOpacity());
-    dst->setZOrder(src.getZOrder());
     dst->getGeometry() = src.getGeometry();  // corners + grid + mode + mesh offsets
     dst->getTexture() = src.getTexture();    // UV transform + flip flags
     dst->setColorCorrection(src.getColorCorrection());  // ADR-036
@@ -326,6 +325,8 @@ void syncProjectToEditor(EditorState& es, OutputManager* om, const Project& proj
 
         QuadManager& qm = scene->getQuadManager();
         std::unordered_map<UUID, UUID> quadRemap;  // saved quad id -> live id (new only on a clash)
+        // The list order is the drawing order: the QuadManager numbers each quad by
+        // its place, so a saved z-order that disagrees (a hand-edited file) is not used.
         for (size_t i = 0; i < sd.quads.size(); ++i) {
             // Keep the saved id so anything addressing a quad by id (OSC, MIDI mappings)
             // still finds it after a reload; mint a fresh one only for a missing or
