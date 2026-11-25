@@ -55,6 +55,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <sys/resource.h>
 #endif
 
 namespace quadmapper {
@@ -194,7 +196,10 @@ double processCpuSeconds() {
     };
     return toSeconds(kernel) + toSeconds(user);
 #else
-    return 0.0;
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) return 0.0;
+    auto toSeconds = [](const timeval& t) { return static_cast<double>(t.tv_sec) + t.tv_usec * 1e-6; };
+    return toSeconds(usage.ru_stime) + toSeconds(usage.ru_utime);
 #endif
 }
 

@@ -62,6 +62,9 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY AND SWRESAMPLE_LIBRAR
             ${AVUTIL_LIBRARY}
             ${SWRESAMPLE_LIBRARY}
     )
+    if(TARGET quadmapper_ffmpeg_frameworks)
+        target_link_libraries(quadmapper_audio PUBLIC quadmapper_ffmpeg_frameworks)
+    endif()
     target_compile_definitions(quadmapper_audio PRIVATE QUADMAPPER_HAS_FFMPEG=1)
     message(STATUS "FFmpeg found for audio library")
 else()

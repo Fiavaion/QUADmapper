@@ -35,6 +35,7 @@
 #include <filesystem>
 #include <thread>
 
+#ifdef _WIN32
 // psapi is a Windows system library (no vcpkg dependency). NOMINMAX keeps
 // windows.h from defining min/max macros that clash with std::max.
 #ifndef NOMINMAX
@@ -42,6 +43,9 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
+#else
+#include <mach/mach.h>
+#endif
 
 namespace quadmapper {
 
@@ -131,6 +135,7 @@ bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
     return true;
 }
 
+#ifdef _WIN32
 std::size_t processWorkingSetBytes() {
     PROCESS_MEMORY_COUNTERS pmc{};
     pmc.cb = sizeof(pmc);
@@ -149,6 +154,29 @@ std::size_t processPrivateBytes() {
     }
     return pmc.PrivateUsage;
 }
+#else
+// macOS: the resident size, and the "physical footprint" that Activity Monitor shows as
+// Memory (the process's own pages, compressed ones included).
+std::size_t processWorkingSetBytes() {
+    mach_task_basic_info_data_t info{};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info),
+                  &count) != KERN_SUCCESS) {
+        return 0;
+    }
+    return static_cast<std::size_t>(info.resident_size);
+}
+
+std::size_t processPrivateBytes() {
+    task_vm_info_data_t info{};
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) !=
+        KERN_SUCCESS) {
+        return 0;
+    }
+    return static_cast<std::size_t>(info.phys_footprint);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // runStress — QM-081 H2/H3 headless perform-mode stress / leak harness.
