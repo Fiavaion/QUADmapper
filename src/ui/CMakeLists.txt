@@ -79,6 +79,14 @@ target_link_libraries(quadmapper_ui
         imgui
 )
 
+# macOS: the Open and Save panels are AppKit, so this one file is Objective-C++
+# (ADR-062). System frameworks, not a dependency.
+if(APPLE)
+    target_sources(quadmapper_ui PRIVATE AsyncFileDialogMac.hpp AsyncFileDialog_mac.mm)
+    set_source_files_properties(AsyncFileDialog_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(quadmapper_ui PUBLIC "-framework AppKit" "-framework UniformTypeIdentifiers")
+endif()
+
 set_target_properties(quadmapper_ui PROPERTIES
     FOLDER "Libraries"
 )

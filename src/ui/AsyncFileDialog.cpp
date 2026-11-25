@@ -1,5 +1,6 @@
 #include "AsyncFileDialog.hpp"
 
+#include "AsyncFileDialogMac.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
 
@@ -51,12 +52,15 @@ AsyncFileDialog::~AsyncFileDialog() {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+#elif defined(__APPLE__)
+    // The panel belongs to the main thread, which is the one destroying this object.
+    while (!done_.load(std::memory_order_acquire)) macCancelFileDialog();
 #endif
     worker_.join();
 }
 
 bool AsyncFileDialog::open(Request request) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     if (worker_.joinable()) return false;
     done_.store(false);
     result_.clear();
@@ -147,6 +151,9 @@ void AsyncFileDialog::run(const Request& request) {
 
     if (SUCCEEDED(com)) CoUninitialize();
     result_ = std::move(chosen);
+    done_.store(true, std::memory_order_release);
+#elif defined(__APPLE__)
+    result_ = macRunFileDialog(request);
     done_.store(true, std::memory_order_release);
 #else
     (void)request;

@@ -7,7 +7,10 @@
 
 namespace quadmapper {
 
-// A native Windows file or folder dialog that does not block rendering (QM-088).
+// A native file or folder dialog that does not block rendering (QM-088).
+//
+// macOS: the worker thread only waits; the panel itself is shown by the main thread
+// without a modal loop (AsyncFileDialogMac.hpp). The rest of this comment is Windows.
 //
 // The Win32 dialogs run their own modal message loop; called on the render thread
 // they freeze every projector for as long as they are open. Here the dialog runs on
