@@ -1,9 +1,14 @@
 #include "ObjLoader.hpp"
 #include "core/FileSystem.hpp"
 
+#ifdef __APPLE__
+#include <xlocale.h>  // strtof_l
+#endif
+
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <fstream>
 #include <new>
@@ -58,8 +63,20 @@ void splitWhitespace(std::string_view line, std::vector<std::string_view>& out) 
 }
 
 bool parseFloat(std::string_view s, float& out) {
+#ifdef __APPLE__
+    // The system's C++ library has std::from_chars for float only from macOS 26.
+    // strtof_l in the C locale reads the same numbers; it would also take a leading
+    // '+', "inf" and hex, which from_chars refuses, so those are turned away first.
+    if (s.empty() || !(s[0] == '-' || s[0] == '.' || (s[0] >= '0' && s[0] <= '9'))) return false;
+    if (s.find_first_of("xX") != std::string_view::npos) return false;
+    const std::string text(s);
+    char* end = nullptr;
+    out = strtof_l(text.c_str(), &end, LC_C_LOCALE);
+    return end == text.c_str() + text.size() && std::isfinite(out);
+#else
     const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), out);
     return ec == std::errc() && end == s.data() + s.size() && std::isfinite(out);
+#endif
 }
 
 bool parseInt(std::string_view s, int& out) {
