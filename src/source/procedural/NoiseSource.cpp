@@ -99,9 +99,8 @@ bool NoiseSource::onUpdate(double /*deltaTime*/) {
 
 std::string NoiseSource::getShaderSource() const {
     return R"(
-#version 430 core
-layout(local_size_x = 16, local_size_y = 16) in;
-layout(rgba8, binding = 0) uniform image2D outputImage;
+#version 330 core
+out vec4 fragColor;
 
 uniform vec2 u_Resolution;
 uniform float u_Time;
@@ -192,12 +191,7 @@ float fbm(vec3 p, int octaves) {
 }
 
 void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(outputImage);
-
-    if (pixel.x >= size.x || pixel.y >= size.y) {
-        return;
-    }
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
 
     vec2 uv = vec2(pixel) / u_Resolution;
     vec3 p = vec3(uv * u_Scale, u_Time * u_Speed);
@@ -207,17 +201,17 @@ void main() {
 
     vec4 color = mix(u_Color1, u_Color2, n);
 
-    imageStore(outputImage, pixel, color);
+    fragColor = color;
 }
 )";
 }
 
 void NoiseSource::setShaderUniforms() {
-    shader_->setUniform("u_Scale", scale_);
-    shader_->setUniform("u_Octaves", octaves_);
-    shader_->setUniform("u_Speed", speed_);
-    shader_->setUniform("u_Color1", color1_);
-    shader_->setUniform("u_Color2", color2_);
+    shader_->setFloat("u_Scale", scale_);
+    shader_->setInt("u_Octaves", octaves_);
+    shader_->setFloat("u_Speed", speed_);
+    shader_->setVec4("u_Color1", color1_);
+    shader_->setVec4("u_Color2", color2_);
 }
 
 } // namespace quadmapper

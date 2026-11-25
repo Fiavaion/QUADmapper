@@ -1,7 +1,7 @@
 #pragma once
 
 #include "source/TextureSource.hpp"
-#include "renderer/ComputeShader.hpp"
+#include "renderer/ShaderProgram.hpp"
 #include "core/Types.hpp"
 #include <variant>
 #include <vector>
@@ -37,11 +37,12 @@ struct SourceParameter {
 /**
  * @brief Abstract base class for GPU-based procedural texture sources
  *
- * Procedural sources generate textures using compute shaders.
+ * Procedural sources generate textures with an OpenGL 3.3 fragment shader drawn as one
+ * fullscreen triangle into a framebuffer whose colour attachment is the output texture.
  * They render directly to a GPU texture (isGPUNative() == true).
  *
  * Subclasses implement:
- * - getShaderSource() - Return the GLSL compute shader source
+ * - getShaderSource() - Return the GLSL fragment shader source
  * - getParameters() - Return adjustable parameters
  * - setParameter() - Handle parameter changes
  * - onUpdate() - Called each frame for animated sources
@@ -117,15 +118,16 @@ public:
 
 protected:
     /**
-     * @brief Get the GLSL compute shader source
+     * @brief Get the GLSL fragment shader source (#version 330 core)
      *
      * Subclasses must implement this to provide their shader code.
-     * The shader should write to imageStore(outputImage, ...).
+     * The shader writes its colour to `out vec4 fragColor`, with the texel
+     * given by ivec2(gl_FragCoord.xy). u_Resolution and u_Time are set by the base.
      */
     virtual std::string getShaderSource() const = 0;
 
     /**
-     * @brief Called before dispatch to set shader uniforms
+     * @brief Called before the draw to set shader uniforms
      *
      * Subclasses should set their parameter uniforms here.
      */
@@ -158,7 +160,9 @@ protected:
     int width_ = 1920;
     int height_ = 1080;
     uint32_t outputTexture_ = 0;
-    std::unique_ptr<ComputeShader> shader_;
+    std::unique_ptr<ShaderProgram> shader_;
+    uint32_t fbo_ = 0;  // draws into outputTexture_
+    uint32_t vao_ = 0;  // empty; core profile needs one bound for the fullscreen triangle
     bool ready_ = false;
     bool dirty_ = true;
     double time_ = 0.0;  // Accumulated time for animations

@@ -61,9 +61,8 @@ void CheckerboardSource::setSize(float size) {
 
 std::string CheckerboardSource::getShaderSource() const {
     return R"(
-#version 430 core
-layout(local_size_x = 16, local_size_y = 16) in;
-layout(rgba8, binding = 0) uniform image2D outputImage;
+#version 330 core
+out vec4 fragColor;
 
 uniform vec2 u_Resolution;
 uniform vec4 u_Color1;
@@ -71,12 +70,7 @@ uniform vec4 u_Color2;
 uniform float u_Size;
 
 void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(outputImage);
-
-    if (pixel.x >= size.x || pixel.y >= size.y) {
-        return;
-    }
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
 
     vec2 uv = vec2(pixel) / u_Resolution;
 
@@ -86,15 +80,15 @@ void main() {
 
     vec4 color = isEven ? u_Color1 : u_Color2;
 
-    imageStore(outputImage, pixel, color);
+    fragColor = color;
 }
 )";
 }
 
 void CheckerboardSource::setShaderUniforms() {
-    shader_->setUniform("u_Color1", color1_);
-    shader_->setUniform("u_Color2", color2_);
-    shader_->setUniform("u_Size", size_);
+    shader_->setVec4("u_Color1", color1_);
+    shader_->setVec4("u_Color2", color2_);
+    shader_->setFloat("u_Size", size_);
 }
 
 } // namespace quadmapper

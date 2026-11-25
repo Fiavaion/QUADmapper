@@ -35,9 +35,8 @@ void TestPatternSource::setPatternType(PatternType type) {
 
 std::string TestPatternSource::getShaderSource() const {
     return R"(
-#version 430 core
-layout(local_size_x = 16, local_size_y = 16) in;
-layout(rgba8, binding = 0) uniform image2D outputImage;
+#version 330 core
+out vec4 fragColor;
 
 uniform vec2 u_Resolution;
 uniform int u_PatternType;
@@ -135,12 +134,7 @@ vec4 circle(vec2 uv) {
 }
 
 void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(outputImage);
-
-    if (pixel.x >= size.x || pixel.y >= size.y) {
-        return;
-    }
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
 
     vec2 uv = vec2(pixel) / u_Resolution;
 
@@ -155,13 +149,13 @@ void main() {
         color = circle(uv);
     }
 
-    imageStore(outputImage, pixel, color);
+    fragColor = color;
 }
 )";
 }
 
 void TestPatternSource::setShaderUniforms() {
-    shader_->setUniform("u_PatternType", static_cast<int>(patternType_));
+    shader_->setInt("u_PatternType", static_cast<int>(patternType_));
 }
 
 } // namespace quadmapper

@@ -19,7 +19,7 @@ It is made for live-event technicians, VJs, installation artists and projection 
 ## System requirements
 
 - Windows 10 or 11, 64-bit.
-- A graphics card with OpenGL 3.3 or later. Every built-in pattern (solid colour, gradient, checkerboard, grid, noise, plasma and the test patterns) needs OpenGL 4.3; images and video do not.
+- A graphics card with OpenGL 3.3 or later.
 - For the AI features: an NVIDIA graphics card for speed. Without one, the AI features run on the CPU and are much slower.
 
 ## Download

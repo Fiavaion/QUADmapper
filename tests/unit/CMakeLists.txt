@@ -131,6 +131,7 @@ target_link_libraries(test_hap PRIVATE quadmapper_source quadmapper_video quadma
 # context-free test_source stays light. Links glfw for the hidden-window context.
 add_quadmapper_test(test_source_gl
     source/VideoSourcePipelineTest.cpp
+    source/ProceduralPatternRenderTest.cpp
 )
 target_link_libraries(test_source_gl PRIVATE quadmapper_source quadmapper_core glfw glad)
 

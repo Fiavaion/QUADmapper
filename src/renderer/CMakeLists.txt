@@ -5,8 +5,6 @@ add_library(quadmapper_renderer STATIC
     Renderer.cpp
     ShaderProgram.hpp
     ShaderProgram.cpp
-    ComputeShader.hpp
-    ComputeShader.cpp
     Texture.hpp
     Texture.cpp
     YuvConverter.hpp

@@ -89,9 +89,8 @@ bool PlasmaSource::onUpdate(double /*deltaTime*/) {
 
 std::string PlasmaSource::getShaderSource() const {
     return R"(
-#version 430 core
-layout(local_size_x = 16, local_size_y = 16) in;
-layout(rgba8, binding = 0) uniform image2D outputImage;
+#version 330 core
+out vec4 fragColor;
 
 uniform vec2 u_Resolution;
 uniform float u_Time;
@@ -104,12 +103,7 @@ uniform vec4 u_Color3;
 const float PI = 3.14159265359;
 
 void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(outputImage);
-
-    if (pixel.x >= size.x || pixel.y >= size.y) {
-        return;
-    }
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
 
     vec2 uv = vec2(pixel) / u_Resolution;
     float time = u_Time * u_Speed;
@@ -135,17 +129,17 @@ void main() {
         color = mix(u_Color2, u_Color3, (v - 0.5) * 2.0);
     }
 
-    imageStore(outputImage, pixel, color);
+    fragColor = color;
 }
 )";
 }
 
 void PlasmaSource::setShaderUniforms() {
-    shader_->setUniform("u_Speed", speed_);
-    shader_->setUniform("u_Complexity", complexity_);
-    shader_->setUniform("u_Color1", color1_);
-    shader_->setUniform("u_Color2", color2_);
-    shader_->setUniform("u_Color3", color3_);
+    shader_->setFloat("u_Speed", speed_);
+    shader_->setFloat("u_Complexity", complexity_);
+    shader_->setVec4("u_Color1", color1_);
+    shader_->setVec4("u_Color2", color2_);
+    shader_->setVec4("u_Color3", color3_);
 }
 
 } // namespace quadmapper

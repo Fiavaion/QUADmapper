@@ -35,27 +35,21 @@ void SolidColorSource::setColor(const Color& color) {
 
 std::string SolidColorSource::getShaderSource() const {
     return R"(
-#version 430 core
-layout(local_size_x = 16, local_size_y = 16) in;
-layout(rgba8, binding = 0) uniform image2D outputImage;
+#version 330 core
+out vec4 fragColor;
 
 uniform vec4 u_Color;
 
 void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(outputImage);
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
 
-    if (pixel.x >= size.x || pixel.y >= size.y) {
-        return;
-    }
-
-    imageStore(outputImage, pixel, u_Color);
+    fragColor = u_Color;
 }
 )";
 }
 
 void SolidColorSource::setShaderUniforms() {
-    shader_->setUniform("u_Color", color_);
+    shader_->setVec4("u_Color", color_);
 }
 
 } // namespace quadmapper

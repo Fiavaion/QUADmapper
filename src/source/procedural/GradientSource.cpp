@@ -102,9 +102,8 @@ bool GradientSource::onUpdate(double deltaTime) {
 
 std::string GradientSource::getShaderSource() const {
     return R"(
-#version 430 core
-layout(local_size_x = 16, local_size_y = 16) in;
-layout(rgba8, binding = 0) uniform image2D outputImage;
+#version 330 core
+out vec4 fragColor;
 
 uniform vec2 u_Resolution;
 uniform vec4 u_StartColor;
@@ -115,12 +114,7 @@ uniform int u_GradientType;
 const float PI = 3.14159265359;
 
 void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(outputImage);
-
-    if (pixel.x >= size.x || pixel.y >= size.y) {
-        return;
-    }
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
 
     vec2 uv = vec2(pixel) / u_Resolution;
     vec2 center = uv - 0.5;
@@ -152,16 +146,16 @@ void main() {
     t = clamp(t, 0.0, 1.0);
     vec4 color = mix(u_StartColor, u_EndColor, t);
 
-    imageStore(outputImage, pixel, color);
+    fragColor = color;
 }
 )";
 }
 
 void GradientSource::setShaderUniforms() {
-    shader_->setUniform("u_StartColor", startColor_);
-    shader_->setUniform("u_EndColor", endColor_);
-    shader_->setUniform("u_Angle", angle_);
-    shader_->setUniform("u_GradientType", static_cast<int>(gradientType_));
+    shader_->setVec4("u_StartColor", startColor_);
+    shader_->setVec4("u_EndColor", endColor_);
+    shader_->setFloat("u_Angle", angle_);
+    shader_->setInt("u_GradientType", static_cast<int>(gradientType_));
 }
 
 } // namespace quadmapper

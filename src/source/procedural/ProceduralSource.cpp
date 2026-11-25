@@ -6,6 +6,19 @@
 
 namespace quadmapper {
 
+namespace {
+
+// One triangle that covers the viewport; no vertex buffer.
+const char* const FULLSCREEN_VERTEX_SHADER = R"(
+#version 330 core
+void main() {
+    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+
+}  // namespace
+
 ProceduralSource::ProceduralSource(const std::string& name, int width, int height)
     : name_(name)
     , width_(width)
@@ -28,15 +41,31 @@ bool ProceduralSource::initialize() {
         return false;
     }
 
-    // Compile compute shader
-    shader_ = std::make_unique<ComputeShader>();
+    // Compile the fragment shader
+    shader_ = std::make_unique<ShaderProgram>();
     std::string source = getShaderSource();
-    if (!shader_->loadFromSource(source)) {
-        Logger::error("ProceduralSource '{}': Failed to compile shader: {}",
-                      name_, shader_->getErrorMessage());
+    if (!shader_->create(FULLSCREEN_VERTEX_SHADER, source.c_str())) {
+        Logger::error("ProceduralSource '{}': Failed to compile shader", name_);
+        shader_.reset();
         destroyOutputTexture();
         return false;
     }
+
+    // The output texture is the framebuffer's only attachment. Leave the caller's
+    // framebuffer binding as it was.
+    GLint previousFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFbo);
+    glGenFramebuffers(1, &fbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outputTexture_, 0);
+    const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFbo));
+    if (!complete) {
+        Logger::error("ProceduralSource '{}': Output framebuffer is incomplete", name_);
+        shutdown();
+        return false;
+    }
+    glGenVertexArrays(1, &vao_);
 
     ready_ = true;
     dirty_ = true;
@@ -47,6 +76,14 @@ bool ProceduralSource::initialize() {
 
 void ProceduralSource::shutdown() {
     shader_.reset();
+    if (vao_ != 0) {
+        glDeleteVertexArrays(1, &vao_);
+        vao_ = 0;
+    }
+    if (fbo_ != 0) {
+        glDeleteFramebuffers(1, &fbo_);
+        fbo_ = 0;
+    }
     destroyOutputTexture();
     ready_ = false;
     dirty_ = true;
@@ -86,32 +123,52 @@ SourceCapabilities ProceduralSource::getCapabilities() const {
 }
 
 void ProceduralSource::regenerate() {
-    if (!ready_ || !shader_ || outputTexture_ == 0) {
+    if (!ready_ || !shader_ || fbo_ == 0 || outputTexture_ == 0) {
         return;
     }
 
-    shader_->bind();
+    // Patterns render in the middle of the source update pass, so everything touched
+    // here is put back afterwards (as CompositionSource does).
+    GLint drawFbo = 0, program = 0, vao = 0;
+    GLint viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    const GLboolean blend = glIsEnabled(GL_BLEND);
+    const GLboolean depth = glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+    const GLboolean cull = glIsEnabled(GL_CULL_FACE);
+    GLboolean colorMask[4];
+    glGetBooleanv(GL_COLOR_WRITEMASK, colorMask);
 
-    shader_->setUniform("u_Resolution", Vec2(static_cast<float>(width_), static_cast<float>(height_)));
-    shader_->setUniform("u_Time", static_cast<float>(time_));
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo_);
+    glViewport(0, 0, width_, height_);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_CULL_FACE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    shader_->bind();
+    shader_->setVec2("u_Resolution", Vec2(static_cast<float>(width_), static_cast<float>(height_)));
+    shader_->setFloat("u_Time", static_cast<float>(time_));
 
     // Let subclass set its uniforms
     setShaderUniforms();
 
-    shader_->bindImageTexture(0, outputTexture_, GL_WRITE_ONLY, GL_RGBA8);
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
 
-    // Calculate work groups (16x16 local size is common)
-    uint32_t groupsX = (width_ + 15) / 16;
-    uint32_t groupsY = (height_ + 15) / 16;
-
-    // Dispatch compute shader
-    shader_->dispatch(groupsX, groupsY, 1);
-
-    // Wait for completion
-    shader_->waitForCompletion();
-
-    // Unbind
-    ComputeShader::unbind();
+    glBindVertexArray(static_cast<GLuint>(vao));
+    glUseProgram(static_cast<GLuint>(program));
+    glColorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
+    if (cull) glEnable(GL_CULL_FACE);
+    if (scissor) glEnable(GL_SCISSOR_TEST);
+    if (depth) glEnable(GL_DEPTH_TEST);
+    if (blend) glEnable(GL_BLEND);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(drawFbo));
+    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
 
     dirty_ = false;
 }
@@ -128,7 +185,7 @@ void ProceduralSource::createOutputTexture() {
     glGenTextures(1, &outputTexture_);
     glBindTexture(GL_TEXTURE_2D, outputTexture_);
 
-    // Allocate storage (RGBA8 for compute shader output)
+    // Allocate storage (RGBA8, the framebuffer's colour attachment)
     while (glGetError() != GL_NO_ERROR) {}
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     if (glGetError() != GL_NO_ERROR) {

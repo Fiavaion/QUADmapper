@@ -119,7 +119,7 @@ The headings work as website sections. Each bullet is one short line.
 
 **Minimum**
 - Windows 10 or 11, 64-bit
-- A graphics card with OpenGL 3.3 or later (OpenGL 4.3 for the built-in patterns)
+- A graphics card with OpenGL 3.3 or later
 - 4 GB RAM
 - 100 MB of disk space
 
