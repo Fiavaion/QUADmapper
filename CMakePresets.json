@@ -46,6 +46,42 @@
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
                 "QUADMAPPER_BUILD_TESTS": "ON"
             }
+        },
+        {
+            "name": "mac-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+            "cacheVariables": {
+                "VCPKG_TARGET_TRIPLET": "arm64-osx"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "mac-debug",
+            "displayName": "macOS Debug",
+            "description": "Debug build with tests enabled (Apple Silicon)",
+            "inherits": "mac-base",
+            "binaryDir": "${sourceDir}/build/mac-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "QUADMAPPER_BUILD_TESTS": "ON"
+            }
+        },
+        {
+            "name": "mac-release",
+            "displayName": "macOS Release",
+            "description": "Release build (Apple Silicon)",
+            "inherits": "mac-base",
+            "binaryDir": "${sourceDir}/build/mac-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "QUADMAPPER_BUILD_TESTS": "OFF"
+            }
         }
     ],
     "buildPresets": [
@@ -63,6 +99,14 @@
             "name": "relwithdebinfo",
             "configurePreset": "relwithdebinfo",
             "configuration": "RelWithDebInfo"
+        },
+        {
+            "name": "mac-debug",
+            "configurePreset": "mac-debug"
+        },
+        {
+            "name": "mac-release",
+            "configurePreset": "mac-release"
         }
     ],
     "testPresets": [
@@ -78,6 +122,13 @@
             "name": "relwithdebinfo",
             "configurePreset": "relwithdebinfo",
             "configuration": "RelWithDebInfo",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "mac-debug",
+            "configurePreset": "mac-debug",
             "output": {
                 "outputOnFailure": true
             }

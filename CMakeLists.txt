@@ -15,6 +15,24 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# macOS: the file dialogs are one Objective-C++ file (ADR-062), and Apple's OpenGL
+# headers warn on every call unless told not to.
+if(APPLE)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 17)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    add_compile_definitions(GL_SILENCE_DEPRECATION)
+    # vcpkg builds FFmpeg as static libraries on macOS, so whatever links FFmpeg also
+    # links the system frameworks it calls (VideoToolbox codecs, AudioToolbox AAC,
+    # AVFoundation capture). On Windows FFmpeg is DLLs and needs nothing of the kind.
+    add_library(quadmapper_ffmpeg_frameworks INTERFACE)
+    target_link_libraries(quadmapper_ffmpeg_frameworks INTERFACE
+        "-framework VideoToolbox" "-framework AudioToolbox" "-framework AVFoundation"
+        "-framework CoreMedia" "-framework CoreVideo" "-framework CoreAudio"
+        "-framework CoreGraphics" "-framework CoreServices" "-framework CoreFoundation"
+        "-framework Foundation")
+endif()
+
 # Export compile commands for tooling (clangd, etc.)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -125,12 +143,14 @@ set(CMAKE_INSTALL_UCRT_LIBRARIES OFF)  # the Universal CRT is part of Windows 10
 include(InstallRequiredSystemLibraries)
 # The PDB stays with the developer, not in the package:
 # `cmake --install build/release --component symbols --prefix <folder>`.
-install(FILES $<TARGET_PDB_FILE:QUADmapper>
-    DESTINATION symbols
-    COMPONENT symbols
-    EXCLUDE_FROM_ALL
-    OPTIONAL
-)
+if(MSVC)
+    install(FILES $<TARGET_PDB_FILE:QUADmapper>
+        DESTINATION symbols
+        COMPONENT symbols
+        EXCLUDE_FROM_ALL
+        OPTIONAL
+    )
+endif()
 
 # Print configuration summary
 message(STATUS "")
