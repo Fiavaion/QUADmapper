@@ -84,7 +84,8 @@ enum class RebindResult {
     Invalid,        // a chord with no key
     ReservedKey,    // the canvas keys, with any modifiers
     NeedsModifier,  // a bare key other than F1-F24 and Delete
-    ChordClash      // another action has it (clashWith), or it is listed twice
+    ChordClash,     // another action has it (clashWith), or it is listed twice
+    SystemKey       // macOS acts on it before the app does (Cmd+Q, Cmd+M, Ctrl+Cmd+F)
 };
 
 struct RebindCheck {

@@ -329,6 +329,16 @@ TEST(ActionRegistryTest, RebindingRefusesReservedClashingBareAndFixed) {
         EXPECT_NE(rebindRefusal(check).find("canvas"), std::string::npos) << rebindRefusal(check);
     }
 
+#ifdef __APPLE__
+    // The chords the macOS application menu takes first: Cmd+Q, Cmd+M, Ctrl+Cmd+F.
+    for (const Chord& chord : {Chord{ImGuiKey_Q, MOD_CTRL}, Chord{ImGuiKey_M, MOD_CTRL},
+                               Chord{ImGuiKey_F, MOD_CTRL | MOD_SUPER}}) {
+        const RebindCheck systemCheck = refusal(action_id::SELECT_ALL, {chord});
+        EXPECT_EQ(systemCheck.result, RebindResult::SystemKey) << chordLabel(chord);
+        EXPECT_NE(rebindRefusal(systemCheck).find("macOS"), std::string::npos) << rebindRefusal(systemCheck);
+    }
+#endif
+
     // Another action's chord, named; also on a second chord.
     RebindCheck check = refusal(action_id::PERFORM_LOCK, {Chord{ImGuiKey_S, MOD_CTRL}});
     EXPECT_EQ(check.result, RebindResult::ChordClash);

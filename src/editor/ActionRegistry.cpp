@@ -99,6 +99,19 @@ bool isReservedCanvasKey(int key) {
     }
 }
 
+// Chords the macOS application menu takes first: Quit, Minimize and Enter Full Screen
+// (Cmd+H, Hide, is already a canvas key). Typed with Cmd, which reaches the registry as
+// MOD_CTRL (KeyLabels.hpp). No chord is the system's on Windows.
+static bool isSystemChord(const Chord& chord) {
+#ifdef __APPLE__
+    if (chord.mods == MOD_CTRL && (chord.key == ImGuiKey_Q || chord.key == ImGuiKey_M)) return true;
+    if (chord.mods == (MOD_CTRL | MOD_SUPER) && chord.key == ImGuiKey_F) return true;
+#else
+    (void)chord;
+#endif
+    return false;
+}
+
 bool bareKeyAllowed(int key) {
     return (key >= ImGuiKey_F1 && key <= ImGuiKey_F24) || key == ImGuiKey_Delete;
 }
@@ -180,6 +193,8 @@ std::string rebindRefusal(const RebindCheck& check) {
         case RebindResult::ChordClash:
             return check.clashWith.empty() ? chord + " is listed twice."
                                            : chord + " is already used by " + check.clashWith + ".";
+        case RebindResult::SystemKey:
+            return chord + " belongs to macOS: it never reaches QUADmapper.";
     }
     return {};
 }
@@ -256,6 +271,10 @@ RebindCheck ActionRegistry::setChords(const std::string& id, std::vector<Chord> 
         }
         if (chord.mods == MOD_NONE && !bareKeyAllowed(chord.key)) {
             check.result = RebindResult::NeedsModifier;
+            return check;
+        }
+        if (isSystemChord(chord)) {
+            check.result = RebindResult::SystemKey;
             return check;
         }
         const Action* other = findByChord(chord);
