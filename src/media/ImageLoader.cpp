@@ -4,12 +4,14 @@
 #include "core/MediaLimits.hpp"
 #include <stb_image.h>
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -62,6 +64,7 @@ unsigned char* stbiLoadPath(const std::filesystem::path& path, int* width, int* 
     return data;
 }
 
+#ifdef _WIN32
 std::string hresultText(HRESULT hr) {
     char buf[16];
     std::snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
@@ -173,6 +176,13 @@ Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desired
                   name, width, height, result.channels);
     return Ok(std::move(result));
 }
+#else
+// stb_image has no TIFF reader, and the Windows reader above is WIC (ADR-062: deferred).
+Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int /*desiredChannels*/) {
+    return Err<ImageData>("Cannot open '" + utf8FromPath(path.filename()) +
+                          "': TIFF images are not supported on macOS yet");
+}
+#endif
 
 // Grey (1) and grey+alpha (2) images become RGBA: a GL_R8 / GL_RG8 texture would sample
 // as red / red-green in the quad shader. Grey goes to R, G and B; alpha is kept or 255.
