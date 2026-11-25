@@ -42,6 +42,11 @@ if(MSVC)
     # /OPT:REF and /OPT:ICF unless they are asked for again.
     add_compile_options($<$<CONFIG:Release>:/Z7>)
     add_link_options($<$<CONFIG:Release>:/DEBUG> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
+    # Release hardening on top of the defaults (DEP, ASLR, /GS): control-flow guard, the
+    # /sdl checks and shadow-stack compatibility. /sdl would also make the CRT's
+    # deprecation warning (C4996) an error, so Release turns it off; Debug still shows it.
+    add_compile_options($<$<CONFIG:Release>:/guard:cf> $<$<CONFIG:Release>:/sdl> $<$<CONFIG:Release>:/wd4996>)
+    add_link_options($<$<CONFIG:Release>:/guard:cf> $<$<CONFIG:Release>:/CETCOMPAT>)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
     if(QUADMAPPER_WARNINGS_AS_ERRORS)

@@ -56,6 +56,10 @@ if(WIN32)
     # ".tmp" and ".bak" suffixes can take a show's path past 260 characters.
     target_sources(QUADmapper PRIVATE QUADmapper.manifest)
 
+    # The shipped exe names its PDB by file name only, not by the build machine's folder.
+    target_link_options(QUADmapper PRIVATE
+        $<$<CONFIG:Release>:/PDBALTPATH:$<TARGET_PDB_FILE_NAME:QUADmapper>>)
+
     # H3 stress harness: working-set query via GetProcessMemoryInfo (psapi).
     # Psapi is a Windows system library — no vcpkg dependency.
     target_link_libraries(QUADmapper PRIVATE Psapi)
