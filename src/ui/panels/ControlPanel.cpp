@@ -195,8 +195,13 @@ bool ControlSettingsEditor::renderOsc(control::ExternalControl& control, Control
         ImGui::TextDisabled("Off");
     }
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+#ifdef __APPLE__
+    ImGui::TextWrapped("Enabling OSC opens a UDP port. If the macOS firewall is on, it asks the first "
+                       "time: allow incoming connections for a controller on your network.");
+#else
     ImGui::TextWrapped("Enabling OSC opens a UDP port. Windows Firewall asks the first time: allow "
                        "private networks for a controller on your network.");
+#endif
     ImGui::PopStyleColor();
     return changed;
 }
