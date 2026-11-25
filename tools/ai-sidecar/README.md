@@ -21,7 +21,8 @@ powershell -ExecutionPolicy Bypass -File tools\ai-sidecar\setup.ps1
    `opencv-contrib-python` (not `opencv-python`: both provide `cv2`, and only
    contrib has `aruco` and `structured_light`) and numpy; then `sam2` from
    `requirements-sam2.lock` (source-only: pinned by its sdist hash and built
-   against the installed torch). The global Python is never touched;
+   against the installed torch). The global Python is never touched. With `-Dev`
+   it also installs `requirements-dev.lock` (pytest, for the tests below);
 3. downloads the models from their official sources into
    `%LOCALAPPDATA%\QUADmapper\models\` (override with `QM_MODELS_DIR`), checking
    each file against a pinned SHA-256. A mismatch deletes the file and stops.
@@ -48,6 +49,16 @@ py -3.11 -m venv $env:TEMP\qm-lock; & $env:TEMP\qm-lock\Scripts\python.exe -m pi
 for torch and torchvision) for the Windows cp311 wheels, and writes the lock.
 The `--extra-index-url` line at the top of the lock is how pip finds torch.
 `requirements-sam2.lock` holds sam2's sdist hash from PyPI; update it with the pin.
+`requirements-dev.lock` is made by the same script from a pins file that holds pytest
+and the packages only it needs (iniconfig, pluggy, Pygments); leave those four out of
+`PINS.txt`, and put the file's own header comment back afterwards.
+
+Before a release, check the lock for known vulnerabilities, in a throwaway venv:
+
+```powershell
+& $env:TEMP\qm-lock\Scripts\python.exe -m pip install pip-audit
+& $env:TEMP\qm-lock\Scripts\python.exe -m pip_audit --require-hashes --disable-pip -r tools\ai-sidecar\requirements.lock
+```
 
 Re-running `setup.ps1` is safe: it reuses the venv and skips files that are
 already present with the right hash. A developer build of the app runs the
@@ -195,6 +206,8 @@ On CPU, `/surface` can exceed the app's 30 s request timeout; a CUDA GPU is
 recommended for Detect Surface.
 
 ## Test
+
+pytest comes with `setup.ps1 -Dev`.
 
 ```powershell
 tools\ai-sidecar\.venv\Scripts\python.exe -m pytest -q tools\ai-sidecar

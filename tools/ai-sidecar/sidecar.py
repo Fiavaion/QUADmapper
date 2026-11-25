@@ -55,6 +55,10 @@ SERVICE_NAME = "quadmapper-ai-sidecar"
 TOKEN_ENV = "QM_SIDECAR_TOKEN"
 TOKEN_HEADER = "X-QM-Token"
 
+# The models are local files (setup.ps1 puts them there). The Hugging Face libraries
+# must never reach the network from a show machine, for a download or for telemetry.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 # Max request body we will read for /surface. A path-only request is tiny; this
 # is a sanity bound, not a real image-upload limit (images go by path for now).
 MAX_BODY_BYTES = 1 << 20  # 1 MiB

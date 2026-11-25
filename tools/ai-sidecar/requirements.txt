@@ -4,7 +4,8 @@
 # (these plus every transitive package, hash-pinned; regenerate it as README.md says)
 # and sam2 from requirements-sam2.lock (source-only on PyPI; its build needs the torch
 # installed first; SAM2_BUILD_CUDA=0 skips the optional CUDA op). Never install into
-# the global Python.
+# the global Python. pytest, for the tests only, is in requirements-dev.lock
+# (setup.ps1 -Dev).
 #
 # /health and the stub endpoints need only the standard library, so the contract
 # tests still run on a bare interpreter.
@@ -23,6 +24,5 @@ iopath==0.1.10
 pillow==11.3.0
 setuptools==80.9.0
 wheel==0.45.1
-pytest==8.4.2
 
 sam2==1.1.0

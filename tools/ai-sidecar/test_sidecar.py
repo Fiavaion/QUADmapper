@@ -65,6 +65,10 @@ def _request(host, port, method, path, body=None, headers=None):
         conn.close()
 
 
+def test_the_hugging_face_libraries_are_offline():
+    assert sidecar.os.environ["HF_HUB_OFFLINE"] == "1"
+
+
 def test_health_reports_version(live_server):
     status, body = _request(*live_server, "GET", "/health")
     assert status == 200

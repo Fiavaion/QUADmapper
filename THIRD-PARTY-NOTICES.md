@@ -1064,7 +1064,8 @@ Licence: SIL Open Font License, Version 1.1 (https://openfontlicense.org).
 
 The AI features run in a separate Python process (the "sidecar") that uses its own
 Python environment, built by `tools/ai-sidecar/setup.ps1` from the pinned lists in
-`tools/ai-sidecar/requirements.txt`, `requirements.lock` and `requirements-sam2.lock`.
+`tools/ai-sidecar/requirements.txt`, `requirements.lock` and `requirements-sam2.lock`
+(and `requirements-dev.lock`, the test tools, on a developer's machine only).
 Each package keeps its own licence files in its `*.dist-info` folder when installed;
 those files are the complete licence record for that package. The licence texts below
 are the main licence of each large package, copied from that metadata. Where a

@@ -12,9 +12,12 @@
 
   Safe to re-run: an existing venv is reused, pip skips satisfied pins, and a model
   file already present with the right hash is not downloaded again.
+
+.PARAMETER Dev
+  Also installs requirements-dev.lock (pytest), for running the sidecar's tests.
 #>
 [CmdletBinding()]
-param()
+param([switch]$Dev)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -24,6 +27,7 @@ $Venv = Join-Path $Here '.venv'
 $VenvPython = Join-Path $Venv 'Scripts\python.exe'
 $Lock = Join-Path $Here 'requirements.lock'
 $Sam2Lock = Join-Path $Here 'requirements-sam2.lock'
+$DevLock = Join-Path $Here 'requirements-dev.lock'
 
 if ($env:QM_MODELS_DIR) {
     $ModelsDir = $env:QM_MODELS_DIR
@@ -90,6 +94,11 @@ Invoke-Checked 'pip install requirements.lock' {
 $env:SAM2_BUILD_CUDA = '0'
 Invoke-Checked 'pip install sam2' {
     & $VenvPython -m pip install --disable-pip-version-check -q --require-hashes --no-deps --no-build-isolation -r $Sam2Lock
+}
+if ($Dev) {
+    Invoke-Checked 'pip install requirements-dev.lock' {
+        & $VenvPython -m pip install --disable-pip-version-check -q --require-hashes --no-deps -r $DevLock
+    }
 }
 Invoke-Checked 'import check' {
     & $VenvPython -c "import torch, torchvision, sam2, transformers, cv2; cv2.structured_light; cv2.aruco; print('packages: torch', torch.__version__, 'cuda', torch.cuda.is_available(), '| cv2', cv2.__version__, '| transformers', transformers.__version__)"
