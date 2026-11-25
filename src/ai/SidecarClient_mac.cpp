@@ -5,6 +5,8 @@
 
 #include "SidecarClient.hpp"
 
+#include <chrono>
+
 namespace quadmapper::ai {
 
 std::optional<SegmentResult> parseSegmentResponse(const std::string&, int) {
@@ -31,7 +33,15 @@ struct SidecarClient::Impl {
     SidecarConfig config;
     SidecarState state = SidecarState::Stopped;
     SidecarFailure failure = SidecarFailure::None;
+    std::chrono::steady_clock::time_point startedAt{};
 };
+
+namespace {
+// The real client shows Starting while its worker looks for the engine, and the app
+// reports "not installed" when it sees that state end. The stand-in shows Starting for
+// this long so the app sees the same sequence.
+constexpr auto STARTING_SHOWN_FOR = std::chrono::milliseconds(250);
+}  // namespace
 
 SidecarClient::SidecarClient(SidecarConfig config) : impl_(std::make_unique<Impl>()) {
     impl_->config = std::move(config);
@@ -46,7 +56,9 @@ bool SidecarClient::start() {
 }
 
 void SidecarClient::startAsync() {
-    start();
+    impl_->state = SidecarState::Starting;
+    impl_->failure = SidecarFailure::None;
+    impl_->startedAt = std::chrono::steady_clock::now();
 }
 
 void SidecarClient::stop() {
@@ -59,10 +71,16 @@ bool SidecarClient::isHealthy() const {
 }
 
 SidecarState SidecarClient::state() const {
+    if (impl_->state == SidecarState::Starting &&
+        std::chrono::steady_clock::now() - impl_->startedAt >= STARTING_SHOWN_FOR) {
+        impl_->state = SidecarState::Failed;
+        impl_->failure = SidecarFailure::NotInstalled;
+    }
     return impl_->state;
 }
 
 SidecarFailure SidecarClient::failure() const {
+    state();  // a start that has run its course reports its failure
     return impl_->failure;
 }
 
