@@ -16,6 +16,7 @@ extern "C" {
 #include <libavutil/audio_fifo.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }
 #endif
@@ -53,17 +54,24 @@ std::vector<EncoderAttempt> encoderAttempts() {
         attempts.push_back({mf, true});
         attempts.push_back({mf, false});
     }
+    if (const AVCodec* vt = avcodec_find_encoder_by_name("h264_videotoolbox")) attempts.push_back({vt, true});
     if (const AVCodec* openh264 = avcodec_find_encoder_by_name("libopenh264")) attempts.push_back({openh264, false});
     if (const AVCodec* mpeg4 = avcodec_find_encoder(AV_CODEC_ID_MPEG4)) attempts.push_back({mpeg4, false});
     return attempts;
 }
 
+// The first pixel format the encoder takes from system memory: VideoToolbox lists its
+// GPU surface format first, and the frames here come from sws_scale.
 AVPixelFormat firstPixelFormat(const AVCodec* codec) {
     const void* formats = nullptr;
     int count = 0;
     if (avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, &formats, &count) >= 0 &&
-        formats && count > 0) {
-        return static_cast<const AVPixelFormat*>(formats)[0];
+        formats) {
+        for (int i = 0; i < count; ++i) {
+            const AVPixelFormat format = static_cast<const AVPixelFormat*>(formats)[i];
+            const AVPixFmtDescriptor* description = av_pix_fmt_desc_get(format);
+            if (description && !(description->flags & AV_PIX_FMT_FLAG_HWACCEL)) return format;
+        }
     }
     return AV_PIX_FMT_YUV420P;
 }

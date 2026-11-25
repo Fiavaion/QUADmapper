@@ -4,9 +4,9 @@
 // that a standalone media player can play. GL-free; the caller reads pixels back and
 // hands them over.
 //
-// Encoder: h264_mf (Windows Media Foundation, hardware if it opens, else software),
-// then libopenh264, then MPEG-4 Part 2 as a last resort. Constant frame rate: frame n
-// is shown at n / fps. Colour: BT.709 limited range at 1280x720 and up, BT.601 limited
+// Encoder: h264_mf (Windows Media Foundation, hardware if it opens, else software) or
+// h264_videotoolbox (macOS), then libopenh264, then MPEG-4 Part 2 as a last resort.
+// Constant frame rate: frame n is shown at n / fps. Colour: BT.709 limited range at 1280x720 and up, BT.601 limited
 // range below, tagged on the stream. Sound: AAC, padded with silence to the video's
 // length at finish (so a track with nothing written is still valid).
 //
