@@ -48,7 +48,10 @@ public:
      *
      * The callback is invoked from the watcher thread.
      */
-    void setCallback(FileCallback callback) { callback_ = std::move(callback); }
+    void setCallback(FileCallback callback) {
+        std::lock_guard<std::mutex> lock(cacheMutex_);
+        callback_ = std::move(callback);
+    }
 
 private:
     void watchThread();

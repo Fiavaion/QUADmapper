@@ -127,22 +127,24 @@ void FolderWatcher::watchThread() {
                 return;
             }
 
-            std::lock_guard<std::mutex> lock(cacheMutex_);
-            auto it = fileCache_.find(pathStr);
-
-            if (it == fileCache_.end()) {
-                // New file
-                fileCache_[pathStr] = modTime;
-                if (callback_) {
-                    callback_(entry.path(), true);
+            // The callback is copied under the lock and called without it, so it may
+            // call back into the watcher.
+            FileCallback callback;
+            bool isNew = false;
+            {
+                std::lock_guard<std::mutex> lock(cacheMutex_);
+                auto it = fileCache_.find(pathStr);
+                if (it == fileCache_.end()) {
+                    fileCache_[pathStr] = modTime;
+                    isNew = true;
+                } else if (it->second != modTime) {
+                    it->second = modTime;
+                } else {
+                    return;
                 }
-            } else if (it->second != modTime) {
-                // Modified file
-                it->second = modTime;
-                if (callback_) {
-                    callback_(entry.path(), false);
-                }
+                callback = callback_;
             }
+            if (callback) callback(entry.path(), isNew);
         };
 
         if (recursive_) {
