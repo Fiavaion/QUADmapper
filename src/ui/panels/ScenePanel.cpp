@@ -1,5 +1,6 @@
 #include "ScenePanel.hpp"
 
+#include "editor/KeyLabels.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/SliceEditing.hpp"
@@ -283,7 +284,7 @@ void ScenePanel::renderSceneList(EditorContext& ctx) {
     }
 
     ImGui::TextDisabled("Click to make active. Double-click to rename. Drag to reorder.");
-    ImGui::TextDisabled("Assign each scene to an output to project it (F11).");
+    ImGui::TextDisabled("Assign each scene to an output to project it (" QM_KEY_PERFORM ").");
     ImGui::TextDisabled("Keys 1-9 put that scene on air.");
 }
 

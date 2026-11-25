@@ -1,6 +1,7 @@
 #include "ExportVideoWindow.hpp"
 
 #include "core/FileSystem.hpp"
+#include "editor/KeyLabels.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorServices.hpp"
 #include "editor/SourceAudio.hpp"
@@ -224,7 +225,7 @@ void ExportVideoWindow::drawSettings(EditorContext& ctx) {
         ImGui::TextDisabled("Turn the perform lock off to export: the projectors show the export while it runs.");
     } else if (performing) {
         ImGui::SameLine();
-        ImGui::TextDisabled("Leave perform mode (F11) to export: the projectors show the export while it runs.");
+        ImGui::TextDisabled("Leave perform mode (" QM_KEY_PERFORM ") to export: the projectors show the export while it runs.");
     }
     ImGui::SameLine();
     if (ImGui::Button("Close")) visible = false;

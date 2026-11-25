@@ -1,4 +1,5 @@
 #include "HapConvertWindow.hpp"
+#include "editor/KeyLabels.hpp"
 
 #include "core/FileSystem.hpp"
 #include "video/HapExport.hpp"
@@ -97,7 +98,7 @@ void HapConvertWindow::render(const AddToBin& addToBin, const ReplaceInShow& rep
                                               "replace %s.", utf8FromPath(c.source().filename()).c_str());
                         } else {
                             ImGui::SetTooltip("Every quad and 3D object showing %s shows the HAP file instead,\n"
-                                              "playing on from the same place. Undo (Ctrl+Z) reverts it.",
+                                              "playing on from the same place. Undo (" QM_KEY_CTRL "+Z) reverts it.",
                                               utf8FromPath(c.source().filename()).c_str());
                         }
                     }

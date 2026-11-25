@@ -1,6 +1,7 @@
 #include "EditorUi.hpp"
 
 #include "audio/AudioEngine.hpp"
+#include "editor/KeyLabels.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorServices.hpp"
 #include "editor/EditorState.hpp"
@@ -192,7 +193,7 @@ void EditorUi::drawStatusBar(EditorContext& ctx, CanvasKeyOwner keys) {
         hint = "The show is locked: Output > Perform Lock unlocks it.";
     } else if (keys != CanvasKeyOwner::None) {
         hint = "Tab / Shift+Tab: next or previous point    Arrows: nudge    "
-               "Shift+Arrows: 10x    Alt+Arrows: 0.1x    Space: play/pause (hold: pan)";
+               "Shift+Arrows: 10x    " QM_KEY_ALT "+Arrows: 0.1x    Space: play/pause (hold: pan)";
     }
 
     // A menu-bar window, as ImGui's own status bars are: it gets the menu bar's height

@@ -1681,7 +1681,13 @@ void OutputManager::handleEscapeKey() {
 }
 
 void OutputManager::handleOutputWindowKey(int key, int action, int mods) {
-    if (action == GLFW_PRESS && (key == GLFW_KEY_ESCAPE || key == GLFW_KEY_F11)) {
+    bool leavesPerformMode = key == GLFW_KEY_ESCAPE || key == GLFW_KEY_F11;
+#ifdef __APPLE__
+    // Option+P is the perform-mode chord on macOS (ADR-062).
+    constexpr int chordMods = GLFW_MOD_SHIFT | GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER;
+    if (key == GLFW_KEY_P && (mods & chordMods) == GLFW_MOD_ALT) leavesPerformMode = true;
+#endif
+    if (action == GLFW_PRESS && leavesPerformMode) {
         performExitPending_ = true;
         return;
     }
@@ -1726,9 +1732,17 @@ int OutputManager::sceneTakeNumber(int key, int action, int mods) {
 }
 
 bool OutputManager::isBlackoutKey(int key, int action, int mods) {
+#ifdef __APPLE__
+    // Cmd+B, as in the editor (where Dear ImGui reads Cmd as Ctrl), or Control+B (ADR-062).
+    constexpr int chordMods = GLFW_MOD_SHIFT | GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER;
+    const int held = mods & chordMods;
+    return key == GLFW_KEY_B && action == GLFW_PRESS &&
+           (held == GLFW_MOD_SUPER || held == GLFW_MOD_CONTROL);
+#else
     constexpr int others = GLFW_MOD_SHIFT | GLFW_MOD_ALT | GLFW_MOD_SUPER;
     return key == GLFW_KEY_B && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL) != 0 &&
            (mods & others) == 0;
+#endif
 }
 
 void OutputManager::setBlackout(bool on) {

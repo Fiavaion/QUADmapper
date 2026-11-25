@@ -1,5 +1,6 @@
 #include "MainMenuBar.hpp"
 
+#include "editor/KeyLabels.hpp"
 #include "editor/ActionRegistry.hpp"
 #include "editor/EditActions.hpp"
 #include "editor/EditorContext.hpp"
@@ -129,7 +130,7 @@ void actionMenuItem(EditorContext& ctx, const char* id, bool selected, std::opti
     const Action* action = ctx.actions ? ctx.actions->find(id) : nullptr;
     if (!action) return;
     // The first chord: the menu shows one, the others work as well.
-    const std::string chord = action->chords.empty() ? std::string() : chordText(action->chords.front());
+    const std::string chord = action->chords.empty() ? std::string() : chordLabel(action->chords.front());
     const bool canRun = (enabled ? *enabled : (!action->enabled || action->enabled(ctx))) &&
                         !performLockRefuses(ctx.es, *action);
     if (ImGui::MenuItem(action->label.c_str(), chord.empty() ? nullptr : chord.c_str(), selected,
@@ -175,7 +176,7 @@ void MainMenuBar::renderAudioStrip(AudioEngine& audio) {
     if (ImGui::SliderFloat("##master volume", &percent, 0.0f, 100.0f, "Vol %.0f%%")) {
         audio.setMasterVolume(percent / 100.0f);
     }
-    ImGui::SetItemTooltip("Master volume of every video's sound (Ctrl+click to type a value)");
+    ImGui::SetItemTooltip("Master volume of every video's sound (" QM_KEY_CTRL "+click to type a value)");
 
     const char* problem = outputProblem(audio);
     const std::string active = audio.activeDeviceName();
@@ -233,7 +234,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             es.requestPanelOpen(EditorState::EXPORT_VIDEO_PANEL_ID);
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Exit", "Alt+F4")) {
+        if (ImGui::MenuItem("Exit", QM_KEY_QUIT)) {
             es.pendingFileAction = FileAction::Exit;
         }
         ImGui::EndMenu();
@@ -448,7 +449,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             }
         }
         ImGui::SetItemTooltip("Put a calibration grid on the selected quad, in place of its media");
-        if (ImGui::Button("Send to Projector (F11)") && ctx.actions) {
+        if (ImGui::Button("Send to Projector (" QM_KEY_PERFORM ")") && ctx.actions) {
             ctx.actions->invoke(action_id::PERFORM_TOGGLE, ctx, Source::Menu);
         }
         ImGui::SetItemTooltip("Toggle fullscreen output on the projector");

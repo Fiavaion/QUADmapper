@@ -1,5 +1,6 @@
 #include "InspectorPanel.hpp"
 
+#include "editor/KeyLabels.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/MediaAssign.hpp"
@@ -468,7 +469,7 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
 
             // Offset (Pan) - DragFloat with Ctrl+Click for input
             ImGui::Text("Offset (Pan):");
-            ImGui::TextDisabled("Ctrl+Click to type value");
+            ImGui::TextDisabled(QM_KEY_CTRL "+Click to type value");
             ImGui::SetNextItemWidth(200.0f);
             editUv([&] {
                 ImGui::DragFloat("Offset X", &texBinding.uvOffset.x, 0.01f, -2.0f, 2.0f, "%.3f",
@@ -634,28 +635,28 @@ void InspectorPanel::renderQuadProperties(EditorContext& ctx) {
                 quadManager.moveQuadToBottom(selectedQuad->getId());
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Ctrl+Shift+]");
+                ImGui::SetTooltip(QM_KEY_CTRL "+Shift+]");
             }
             ImGui::SameLine();
             if (ImGui::Button("Send to Back")) {
                 quadManager.moveQuadToTop(selectedQuad->getId());
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Ctrl+Shift+[");
+                ImGui::SetTooltip(QM_KEY_CTRL "+Shift+[");
             }
 
             if (ImGui::Button("Bring Forward")) {
                 quadManager.moveQuadDown(selectedQuad->getId());
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Ctrl+]");
+                ImGui::SetTooltip(QM_KEY_CTRL "+]");
             }
             ImGui::SameLine();
             if (ImGui::Button("Send Backward")) {
                 quadManager.moveQuadUp(selectedQuad->getId());
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Ctrl+[");
+                ImGui::SetTooltip(QM_KEY_CTRL "+[");
             }
         }
 

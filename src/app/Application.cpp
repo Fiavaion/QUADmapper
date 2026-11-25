@@ -1,5 +1,6 @@
 #include "Application.hpp"
 #include "../editor/ActionRegistry.hpp"
+#include "../editor/KeyLabels.hpp"
 #include "../editor/EditActions.hpp"
 #include "../editor/EditorContext.hpp"
 #include "../editor/EditorState.hpp"
@@ -588,7 +589,7 @@ bool Application::startVideoExport(const VideoExportRequest& request, std::strin
     }
     // The projectors show the export's frames while it runs (ADR-060).
     if (m_outputManager->isInPerformMode()) {
-        error = "Leave perform mode (F11) first: the projectors would show the export while it runs.";
+        error = "Leave perform mode (" QM_KEY_PERFORM ") first: the projectors would show the export while it runs.";
         return false;
     }
     const float master =

@@ -108,6 +108,10 @@ bool isChordKey(int key);
 std::string chordText(const Chord& chord);
 // The chords of an action joined for display: "Ctrl+Y, Ctrl+Shift+Z"; empty for none.
 std::string chordsText(const std::vector<Chord>& chords);
+// The same chords for showing to the user, with this system's key names: on macOS
+// "Cmd+Shift+L" and "Option+=" (editor/KeyLabels.hpp). The file form above never changes.
+std::string chordLabel(const Chord& chord);
+std::string chordsLabel(const std::vector<Chord>& chords);
 // The reverse of chordText: modifiers in any order and case, then one key name.
 // nullopt for an unknown key or modifier, or no key.
 std::optional<Chord> parseChord(const std::string& text);

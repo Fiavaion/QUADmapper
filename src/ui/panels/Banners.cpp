@@ -1,5 +1,6 @@
 #include "Banners.hpp"
 
+#include "editor/KeyLabels.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "output/OutputManager.hpp"
@@ -25,7 +26,7 @@ void drawBlackoutBanner(const EditorState& es) {
     ImFont* font = ImGui::GetFont();
     const float size = ImGui::GetFontSize() * 2.2f;
     const char* title = "BLACKOUT";
-    const char* detail = "every projector output is black  -  Ctrl+B or Output > Blackout to restore";
+    const char* detail = "every projector output is black  -  " QM_KEY_CTRL "+B or Output > Blackout to restore";
     const ImVec2 titleSize = font->CalcTextSizeA(size, FLT_MAX, 0.0f, title);
     const ImVec2 detailSize = ImGui::CalcTextSize(detail);
     const float height = titleSize.y + detailSize.y + 16.0f;

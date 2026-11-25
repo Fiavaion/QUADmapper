@@ -1,5 +1,6 @@
 #include "ActionRegistry.hpp"
 
+#include "KeyLabels.hpp"
 #include "core/Logger.hpp"
 #include "input/VertexKeyboard.hpp"  // GRID_HANDLE_KEY; ImGuiKey values only, no ImGui calls
 
@@ -123,6 +124,25 @@ std::string chordsText(const std::vector<Chord>& chords) {
     return text;
 }
 
+std::string chordLabel(const Chord& chord) {
+    std::string text;
+    if (chord.mods & MOD_CTRL) text += QM_KEY_CTRL "+";
+    if (chord.mods & MOD_SHIFT) text += "Shift+";
+    if (chord.mods & MOD_ALT) text += QM_KEY_ALT "+";
+    if (chord.mods & MOD_SUPER) text += QM_KEY_SUPER "+";
+    const std::string name = keyName(chord.key);
+    return text + (name.empty() ? "Key " + std::to_string(chord.key) : name);
+}
+
+std::string chordsLabel(const std::vector<Chord>& chords) {
+    std::string text;
+    for (const Chord& chord : chords) {
+        if (!text.empty()) text += ", ";
+        text += chordLabel(chord);
+    }
+    return text;
+}
+
 std::optional<Chord> parseChord(const std::string& text) {
     // The key is after the last '+': "Ctrl+=" and "Alt+-" have no '+' key to confuse.
     const size_t plus = text.rfind('+');
@@ -146,7 +166,7 @@ std::optional<Chord> parseChord(const std::string& text) {
 }
 
 std::string rebindRefusal(const RebindCheck& check) {
-    const std::string chord = chordText(check.chord);
+    const std::string chord = chordLabel(check.chord);
     switch (check.result) {
         case RebindResult::Changed:       return {};
         case RebindResult::UnknownId:     return "There is no such action.";
@@ -155,7 +175,8 @@ std::string rebindRefusal(const RebindCheck& check) {
         case RebindResult::ReservedKey:
             return chord + " is kept for the canvas: Tab, the arrows and H move and pick vertices.";
         case RebindResult::NeedsModifier:
-            return chord + " needs Ctrl, Shift, Alt or Super: only F1-F24 and Delete work alone.";
+            return chord + " needs " QM_KEY_CTRL ", Shift, " QM_KEY_ALT " or " QM_KEY_SUPER
+                           ": only F1-F24 and Delete work alone.";
         case RebindResult::ChordClash:
             return check.clashWith.empty() ? chord + " is listed twice."
                                            : chord + " is already used by " + check.clashWith + ".";

@@ -1,5 +1,6 @@
 #include "QuadListPanel.hpp"
 
+#include "editor/KeyLabels.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "editor/MediaAssign.hpp"
@@ -118,7 +119,7 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            ImGui::SetTooltip("Bring Forward (Ctrl+])");
+            ImGui::SetTooltip("Bring Forward (" QM_KEY_CTRL "+])");
         }
         ImGui::SameLine();
 
@@ -128,7 +129,7 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            ImGui::SetTooltip("Send Backward (Ctrl+[)");
+            ImGui::SetTooltip("Send Backward (" QM_KEY_CTRL "+[)");
         }
         ImGui::SameLine();
 
@@ -246,16 +247,16 @@ void QuadListPanel::drawContent(EditorContext& ctx) {
                 quadNameBuf_[sizeof(quadNameBuf_) - 1] = '\0';
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Bring to Front", "Ctrl+Shift+]")) {
+            if (ImGui::MenuItem("Bring to Front", QM_KEY_CTRL "+Shift+]")) {
                 quadManager.moveQuadToBottom(quad->getId());
             }
-            if (ImGui::MenuItem("Bring Forward", "Ctrl+]")) {
+            if (ImGui::MenuItem("Bring Forward", QM_KEY_CTRL "+]")) {
                 quadManager.moveQuadDown(quad->getId());
             }
-            if (ImGui::MenuItem("Send Backward", "Ctrl+[")) {
+            if (ImGui::MenuItem("Send Backward", QM_KEY_CTRL "+[")) {
                 quadManager.moveQuadUp(quad->getId());
             }
-            if (ImGui::MenuItem("Send to Back", "Ctrl+Shift+[")) {
+            if (ImGui::MenuItem("Send to Back", QM_KEY_CTRL "+Shift+[")) {
                 quadManager.moveQuadToTop(quad->getId());
             }
 

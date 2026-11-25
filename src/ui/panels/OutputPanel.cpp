@@ -1,5 +1,6 @@
 #include "OutputPanel.hpp"
 #include "ui/ConfirmPopup.hpp"
+#include "editor/KeyLabels.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
 #include "output/OutputManager.hpp"
@@ -57,7 +58,7 @@ void OutputPanel::renderPerformModeSection() {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
 
-        if (ImGui::Button("Exit Perform Mode (F11)", ImVec2(-1, 30))) {
+        if (ImGui::Button("Exit Perform Mode (" QM_KEY_PERFORM ")", ImVec2(-1, 30))) {
             outputManager_->exitPerformMode();
         }
 
@@ -67,7 +68,7 @@ void OutputPanel::renderPerformModeSection() {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.7f, 0.3f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.4f, 0.8f, 0.4f, 1.0f));
 
-        if (ImGui::Button("Enter Perform Mode (F11)", ImVec2(-1, 30))) {
+        if (ImGui::Button("Enter Perform Mode (" QM_KEY_PERFORM ")", ImVec2(-1, 30))) {
             outputManager_->enterPerformMode();
         }
 
@@ -76,7 +77,7 @@ void OutputPanel::renderPerformModeSection() {
 
     if (ImGui::IsItemHovered()) {
         if (inPerformMode) {
-            ImGui::SetTooltip("Exit perform mode and return to edit mode\nPress F11 or Escape to exit");
+            ImGui::SetTooltip("Exit perform mode and return to edit mode\nPress " QM_KEY_PERFORM " or Escape to exit");
         } else {
             ImGui::SetTooltip("Enter perform mode to display outputs fullscreen\nAll enabled outputs will show on their assigned monitors");
         }

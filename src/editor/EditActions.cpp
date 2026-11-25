@@ -245,8 +245,15 @@ void registerEditActions(ActionRegistry& registry, std::function<void()> history
     zOrder(action_id::SEND_TO_BACK, "Send to Back",
            Chord{ImGuiKey_LeftBracket, MOD_CTRL | MOD_SHIFT}, ZMove::ToBack);
 
+    // macOS: Ctrl chords are typed with Cmd there, and Cmd+M minimises the window, so
+    // this one sits with the other mesh keys on Option (owner's decision, ADR-062).
+#ifdef __APPLE__
+    const Chord toggleMeshEditChord{ImGuiKey_M, MOD_ALT};
+#else
+    const Chord toggleMeshEditChord{ImGuiKey_M, MOD_CTRL};
+#endif
     put(editAction(
-        action_id::TOGGLE_MESH_EDIT, "Toggle Mesh Edit", {Chord{ImGuiKey_M, MOD_CTRL}},
+        action_id::TOGGLE_MESH_EDIT, "Toggle Mesh Edit", {toggleMeshEditChord},
         [](const EditorContext& ctx) { return canToggleMeshEdit(ctx.es); },
         [](EditorContext& ctx) { toggleMeshEditAction(ctx.es); }));
     put(editAction(
@@ -308,7 +315,13 @@ std::optional<Action> makeAppAction(std::string_view id, std::function<void(Edit
         action.fixed = true;
     } else if (id == action_id::PERFORM_TOGGLE) {
         action.label = "Perform Mode";
+#ifdef __APPLE__
+        // F11 is a volume key on a Mac keyboard: Option+P (owner's decision, ADR-062).
+        // F11 stays as a second chord for a keyboard that has a plain one.
+        action.chords = {Chord{ImGuiKey_P, MOD_ALT}, Chord{ImGuiKey_F11, MOD_NONE}};
+#else
         action.chords = {Chord{ImGuiKey_F11, MOD_NONE}};
+#endif
         action.cls = ActionClass::Show;
         action.guard = KeyGuard::Show;
         action.fixed = true;

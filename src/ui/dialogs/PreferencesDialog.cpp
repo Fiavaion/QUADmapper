@@ -272,7 +272,7 @@ bool PreferencesDialog::renderKeyboardTab(EditorContext& ctx) {
             } else if (action.chords.empty()) {
                 ImGui::TextDisabled("(none)");
             } else {
-                ImGui::TextUnformatted(chordsText(action.chords).c_str());
+                ImGui::TextUnformatted(chordsLabel(action.chords).c_str());
             }
             if (keyMessageId_ == action.id && !keyMessage_.empty()) {
                 ImGui::PushStyleColor(ImGuiCol_Text, kSaveError);

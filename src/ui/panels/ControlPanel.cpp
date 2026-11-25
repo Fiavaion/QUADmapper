@@ -1,5 +1,6 @@
 #include "ControlPanel.hpp"
 
+#include "editor/KeyLabels.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorServices.hpp"
 #include "editor/EditorState.hpp"
@@ -118,7 +119,7 @@ void ControlPanel::drawContent(EditorContext& ctx) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.1f, 0.1f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.15f, 0.15f, 1.0f));
         }
-        if (ImGui::Button(on ? "BLACKOUT ON - click to restore (Ctrl+B)" : "Blackout (Ctrl+B)")) {
+        if (ImGui::Button(on ? "BLACKOUT ON - click to restore (" QM_KEY_CTRL "+B)" : "Blackout (" QM_KEY_CTRL "+B)")) {
             ctx.outputManager->toggleBlackout();
         }
         if (on) ImGui::PopStyleColor(2);
