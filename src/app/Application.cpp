@@ -338,8 +338,14 @@ bool Application::initializeImGui() {
     Theme::apply();
 
     // Load custom fonts (will fall back to default if not found)
+#ifdef __APPLE__
+    // macOS sizes are in points already, and ImGui draws them at the display's pixel
+    // density itself: scaling the fonts again would double the interface on Retina.
+    m_monitorScale = 1.0f;
+#else
     glfwGetWindowContentScale(m_window, &m_monitorScale, nullptr);
     if (m_monitorScale <= 0.0f) m_monitorScale = 1.0f;
+#endif
     Theme::loadFonts(m_monitorScale);
 
     // When viewports are enabled, ensure consistent appearance
