@@ -1,5 +1,41 @@
 # Release Review
 
+## 2026-11-24: third `/release` for 1.0.0 (interactive, whole codebase, on Fable)
+
+**Verdict: PASS.** No critical or high finding is open. Written up at `/end` on 2026-11-25 from the pass's report.
+
+### Gate record
+- `cmake --build build/debug --config Debug`, then `ctest -C Debug` from `build/debug` | `711cb1b` (tree `f41007b`) | 1867 passed, 0 failed, 8 disabled. 60 of the passes are tests that skip themselves (no test clips on the work PC).
+- Later full runs on the same line of work: `8123a30` 1827 passed (40 fewer because the removed modules' tests went with them), and `ctest --preset debug` at `828e194` 1827 passed, after the dependency update.
+
+### Fixed (`3d2f1f9`..`711cb1b`, 14 commits)
+| Commit | Stage | What |
+|---|---|---|
+| `227e17b` | prod-ready, HIGH | A watched media folder that vanished mid-scan (a USB drive unplugged) ended the app. |
+| `711cb1b` | prod-ready, HIGH | The same fault in Import Folder and the start-up media folder load, on any folder with an unreadable subfolder (found by the reviewer). |
+| `1538cd9` | prod-ready | An exception that escapes a worker thread now leaves a crash dump and the usual message. Checked with a temporary throwing thread: dump written, exit code 3. |
+| `8460a3b` | prod-ready | A failed autosave or media-search worker is reported, not fatal. |
+| `3d2f1f9` | security, LOW | The engine's `/graymap` error reply no longer carries internal exception text. |
+| `2cdde08` | security, LOW | Detect Surface says when the photo was not analysed, not "low confidence (0.00)". |
+| `ea304cd`, `b57f2d9`, `83cf2b8`, `b4a1556`, `f5640a3` | slop | Silent failures now logged or shown: preferences save, no audio device, a bad audio device id, perform mode not starting, a lasting pixel-buffer failure (once, not per frame). |
+| `2496c1e`, `1b3c78e` | prod-ready | Tooltips on the canvas zoom and cue list buttons; the quick start says "File > New Project". |
+| `607787d` | humanize | 142 comment lines that restated the next line removed, 3 stale ones reworded. |
+
+### Left for the owner
+- **Done since:** the dead code (`786b932`..`8123a30`) and the `ctest --preset debug` fix (`e9885c0`).
+- **Still open:**
+  - Esc does not close Export, Missing Media, Preferences or Convert to HAP.
+  - An export to a stalled drive freezes the editor while the MP4 writer waits.
+  - Status messages and the guide say "AI > Enable AI Assist"; the menu is "AI (Beta)".
+  - A bad id in a `.qmap` is read as null without a message (project file format).
+  - Four small helper functions are duplicated across modules.
+  - Comment style: Doxygen `@brief` padding in 13 headers and banner comments.
+
+### Not verified in that pass
+- The engine's Python tests (no pytest on the PC then; 65 passed later, in batch 8).
+- The new status messages in the running app, and the crash message box (the dump was seen in the headless harness).
+- The unreadable-subfolder path with a real folder.
+
 ## 2026-11-20: second `/release` for 1.0.0 (interactive, whole codebase, on Opus)
 
 **Verdict: PASS.** No critical or high findings. Two mediums need the owner (below); every other medium is fixed.

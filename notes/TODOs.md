@@ -6,7 +6,7 @@
 
 ## Backlog (from code comments)
 
-- (none: no `TODO[cl]:` tags in `src/` as of 2026-11-19)
+- (none: no `TODO[cl]:`, `TODO` or `FIXME` comments in `src/` as of 2026-11-25)
 
 ## In Progress
 

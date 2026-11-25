@@ -1,6 +1,6 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-11-19 (QM-125 audit, QM-126 AI beta switch)
+Last Updated: 2026-11-25 (QM-127 code review and fix batches)
 
 ## Quick Status
 - In Progress: 0
@@ -421,6 +421,19 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
   - The user guide, AI guide and release notes say how to turn it on.
 - **Gate:** `test_editor` 220 + 1 flaky (AudioSyncTest real-time, unrelated), `test_ui` 54, `test_app` 28, `layering_check` 1/1 at `31b5e91`.
 - **Not verified by hand:** hands-on item 5 in `notes/CURRENT_STATUS.md`.
+
+#### QM-127: Code-quality and security review, and its fix batches
+- **Status:** DONE (code and tests; owner hands-on test pending) — **Completed:** 2026-11-25. Branch `dev`, `5821039`..`494cc40` (pushed).
+- **Effort:** L · **Depends On:** none · **Why:** the repo went public on 2026-11-23 and 1.0.0 is next.
+- **Delivered:**
+  - A read-only review of the whole codebase: 0 critical, 0 high, 22 medium, 55 low. Findings and plan are in `REVIEW/` (ignored by git).
+  - Fix batches 0 to 9, one fix per commit: privacy, session data, UI, compositions and HAP, media threads, the project loader, other untrusted input, renderer and outputs, build and packaging, core.
+  - The third `/release` pass (PASS at `711cb1b`) and the removal of dead code (`786b932`..`8123a30`).
+  - vcpkg baseline 2026-10-08 (FFmpeg 9.0.2, GLFW 3.5.1), Release hardening flags, the GitHub installer workflow with pinned actions.
+  - Three fresh-context reviews (batches 4, 5 and 8), each fixed in one pass. The review of `.qmap` 3.5 to 3.7 owed since 2026-11-23 was part of batch 5.
+- **Gate:** `ctest --preset debug | 828e194 | 1827 passed, 0 failed, 8 disabled`; then `test_core` 55, `test_scene` 392, `test_media` 53 at `494cc40`.
+- **Not verified by hand:** everything; see the hands-on list in `notes/CURRENT_STATUS.md`. Real-media tests skipped on the work PC.
+- **Open:** the owner decisions listed in `notes/CURRENT_STATUS.md`; review items M22 (patterns need OpenGL 4.3), L41, L42, L43 and L49, and batch 10, are not done.
 
 #### 3D-B2: ChArUco camera calibration, stereo and ICP (FUTURE)
 - **Status:** not planned · Needs its own ADR-053 amendment before any work (ADR-053 §3, "Deferred to 3D-B2").
@@ -1204,6 +1217,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-124 | Owner hands-on test of AI features | TODO | Phase 9 |
 | QM-125 | Release-readiness audit and fixes | DONE | Phase 9 |
 | QM-126 | AI Assist behind a beta switch | DONE | Phase 9 |
+| QM-127 | Code-quality and security review, fix batches 0 to 9 | DONE | Phase 9 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |
