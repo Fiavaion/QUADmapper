@@ -318,10 +318,6 @@ UUID SourceManager::addEntry(std::unique_ptr<TextureSource> source) {
 
     sources_[id] = std::move(entry);
 
-    if (sourceAddedCallback_) {
-        sourceAddedCallback_(id);
-    }
-
     return id;
 }
 
@@ -776,10 +772,6 @@ void SourceManager::setTimelineLocked(const UUID& id, bool locked) {
     if (auto* playable = getSourceAs<PlayableSource>(id)) {
         playable->setTimelineLocked(locked, masterTimeline_);
     }
-}
-
-void SourceManager::setSourceAddedCallback(SourceAddedCallback callback) {
-    sourceAddedCallback_ = std::move(callback);
 }
 
 void SourceManager::setSourceRemovedCallback(SourceRemovedCallback callback) {

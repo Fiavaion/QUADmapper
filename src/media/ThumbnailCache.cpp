@@ -115,11 +115,6 @@ GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int m
     return texId;
 }
 
-bool ThumbnailCache::hasThumbnail(const std::filesystem::path& filePath) const {
-    std::lock_guard<std::mutex> lock(cacheMutex_);
-    return textureCache_.find(utf8FromPath(filePath)) != textureCache_.end();
-}
-
 void ThumbnailCache::invalidate(const std::filesystem::path& filePath) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
 
@@ -144,41 +139,6 @@ void ThumbnailCache::clearMemoryCache() {
     }
     textureCache_.clear();
     failedFiles_.clear();
-}
-
-void ThumbnailCache::clearAllCaches() {
-    clearMemoryCache();
-
-    // Clear disk cache
-    std::error_code ec;
-    std::filesystem::path cacheDir = getCacheDir();
-    if (std::filesystem::exists(cacheDir, ec)) {
-        for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec)) {
-            if (entry.path().extension() == ".thumb") {
-                std::filesystem::remove(entry.path(), ec);
-            }
-        }
-    }
-}
-
-size_t ThumbnailCache::getDiskCacheSize() const {
-    size_t totalSize = 0;
-    std::error_code ec;
-    std::filesystem::path cacheDir = getCacheDir();
-
-    if (std::filesystem::exists(cacheDir, ec)) {
-        for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec)) {
-            if (entry.is_regular_file(ec) && entry.path().extension() == ".thumb") {
-                totalSize += static_cast<size_t>(entry.file_size(ec));
-            }
-        }
-    }
-    return totalSize;
-}
-
-size_t ThumbnailCache::getMemoryCacheCount() const {
-    std::lock_guard<std::mutex> lock(cacheMutex_);
-    return textureCache_.size();
 }
 
 GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, int maxSize) {

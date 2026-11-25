@@ -59,7 +59,6 @@ public:
     // The devices the user chose. Each is opened when present and reopened when it
     // is plugged back in; devices not chosen are closed.
     void setWantedMidiDevices(const std::vector<std::string>& names);
-    const std::vector<std::string>& wantedMidiDevices() const { return wantedMidi_; }
     const std::vector<std::string>& availableMidiDevices() const { return availableMidi_; }
     // Why a wanted device is not open ("not connected", a WinMM error), or empty.
     std::string midiDeviceStatus(const std::string& name) const;

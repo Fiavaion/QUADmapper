@@ -67,11 +67,6 @@ void Logger::disableFileOutput() {
     logFilePath_.clear();
 }
 
-bool Logger::isFileOutputEnabled() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return logFile_ && logFile_->is_open();
-}
-
 std::string Logger::getLogFilePath() {
     std::lock_guard<std::mutex> lock(mutex_);
     return logFilePath_;
@@ -80,11 +75,6 @@ std::string Logger::getLogFilePath() {
 void Logger::setConsoleOutput(bool enabled) {
     std::lock_guard<std::mutex> lock(mutex_);
     consoleEnabled_ = enabled;
-}
-
-bool Logger::isConsoleOutputEnabled() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return consoleEnabled_;
 }
 
 void Logger::trace(const std::string& message) {

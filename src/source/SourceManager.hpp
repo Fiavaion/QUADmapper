@@ -386,10 +386,8 @@ public:
 
     // --- Callbacks ---
 
-    using SourceAddedCallback = std::function<void(const UUID& id)>;
     using SourceRemovedCallback = std::function<void(const UUID& id)>;
 
-    void setSourceAddedCallback(SourceAddedCallback callback);
     void setSourceRemovedCallback(SourceRemovedCallback callback);
 
 private:
@@ -444,7 +442,6 @@ private:
     std::unique_ptr<BackgroundWorker> opener_;
     std::unique_ptr<BackgroundWorker> reaper_;
 
-    SourceAddedCallback sourceAddedCallback_;
     SourceRemovedCallback sourceRemovedCallback_;
 
     // Internal helpers

@@ -139,9 +139,6 @@ public:
     // outputs. Default R0.
     void setOutputRotation(Rotation rotation) { outputRotation_ = rotation; }
 
-    // Create a default white texture for quads without texture
-    Texture* getDefaultTexture() { return &defaultTexture_; }
-
 private:
     void createOutlineBuffers();
     void createHandleBuffers();

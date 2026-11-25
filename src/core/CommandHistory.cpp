@@ -171,11 +171,6 @@ void CommandHistory::clear() {
     notifyHistoryChanged();
 }
 
-void CommandHistory::setMaxHistory(size_t max) {
-    maxHistory_ = max;
-    trimHistory();
-}
-
 void CommandHistory::beginCompoundCommand(const std::string& description) {
     if (compoundCommand_) {
         LOG_WARNING("Already in compound command - nested compound commands not supported");

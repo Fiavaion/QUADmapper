@@ -331,8 +331,6 @@ public:
     void collectMediaIds(std::unordered_set<UUID>& out) const override;
     void remapMediaId(const UUID& from, const UUID& to) override;
 
-    const UUID& getObjectId() const { return target_.objectId; }
-
 private:
     ObjectRef target_;
     std::unique_ptr<MeshObject> held_;  // the object while it is out of the scene

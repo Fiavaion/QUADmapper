@@ -44,11 +44,6 @@ public:
     size_t getMemberCount() const { return memberQuadIds_.size(); }
     bool isEmpty() const { return memberQuadIds_.empty(); }
 
-    // Legacy compatibility (children refers to member quads)
-    const std::vector<UUID>& getChildren() const { return memberQuadIds_; }
-    void addChild(const UUID& id) { addMember(id); }
-    void removeChild(const UUID& id) { removeMember(id); }
-
 private:
     UUID id_;
     std::string name_;

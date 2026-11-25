@@ -62,8 +62,6 @@ public:
     const std::string& encoderName() const;
     /// Why the last write failed (writes return false after the first failure).
     const std::string& lastError() const;
-    int outputWidth() const;   // even
-    int outputHeight() const;  // even
     int64_t framesWritten() const;
 
 private:

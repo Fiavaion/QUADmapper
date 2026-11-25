@@ -43,10 +43,6 @@ public:
     static Result<std::vector<uint8_t>, Error> readBinaryFile(const std::filesystem::path& path,
                                                               size_t maxBytes = SIZE_MAX);
 
-    // Write binary file
-    static Result<void, Error> writeBinaryFile(const std::filesystem::path& path,
-                                               const std::vector<uint8_t>& data);
-
     static bool exists(const std::filesystem::path& path);
 
     static bool isDirectory(const std::filesystem::path& path);

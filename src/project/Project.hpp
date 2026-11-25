@@ -164,7 +164,6 @@ public:
     std::vector<QuadGroup>& getGroups() { return groups_; }
     const std::vector<QuadGroup>& getGroups() const { return groups_; }
 
-    void addGroup(QuadGroup group) { groups_.push_back(std::move(group)); }
     void clearGroups() { groups_.clear(); }
 
     // Multi-scene + output DTOs (.qmap v3). When non-empty the serializer writes

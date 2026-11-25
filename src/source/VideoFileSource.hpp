@@ -112,8 +112,6 @@ public:
     bool isZeroCopy() const;
     void stopZeroCopy(const std::string& reason);
     std::string getZeroCopyNote() const;
-    // The player behind this source (tests inject time and a reverse cache budget).
-    VideoPlayer& getPlayer() { return *player_; }
 
     // --- Opening off the main thread (TD-35) ---
     // initialize() opens the file here and now. SourceManager instead calls beginOpen(),
@@ -127,7 +125,6 @@ public:
     // source stays empty and keeps the transport it was given.
     bool finishOpen(std::unique_ptr<VideoDecoder> decoder);
     bool isOpening() const;
-    const DecodeOptions& getDecodeOptions() const { return options_; }
 
 private:
     void convertVideoFrame(const VideoFrame& videoFrame);

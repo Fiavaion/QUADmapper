@@ -67,7 +67,6 @@ public:
     const std::deque<std::string>& recentOsc() const { return recentOsc_; }            // newest first
     const std::deque<std::string>& recentUnknown() const { return recentUnknown_; }    // newest first
     const std::string& lastMidi() const { return lastMidi_; }
-    double lastOscTime() const { return lastOscTime_; }
     double lastMidiTime() const { return lastMidiTime_; }
     // When a target (by canonical path) was last driven, or < 0.
     double lastActivity(const std::string& canonicalPath) const;
@@ -130,7 +129,6 @@ private:
     std::string lastRefused_;
     std::unordered_set<std::string> warnedRefused_;  // addresses already warned about (capped)
     bool warnedRefusedFull_ = false;
-    double lastOscTime_ = -1.0;
     double lastMidiTime_ = -1.0;
     std::unordered_map<std::string, double> activity_;
 };

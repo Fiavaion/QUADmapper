@@ -37,11 +37,6 @@ public:
     static std::string getTypeName(ProceduralType type);
 
     /**
-     * @brief Get description for a procedural type
-     */
-    static std::string getTypeDescription(ProceduralType type);
-
-    /**
      * @brief Check if a type produces animated output
      */
     static bool isAnimated(ProceduralType type);

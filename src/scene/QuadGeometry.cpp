@@ -691,11 +691,6 @@ void QuadGeometry::setBezierControl(int edge, int which, const Vec2& pos) {
     bezierOffsets_[edge * 2 + which] = pos - glm::mix(a, b, f);
 }
 
-void QuadGeometry::resetBezier() {
-    bezierOffsets_.fill(Vec2(0.0f));
-    bezierEnabled_ = false;
-}
-
 bool QuadGeometry::hasBezierEdges() const {
     if (!bezierEnabled_) return false;
     for (const Vec2& o : bezierOffsets_) {

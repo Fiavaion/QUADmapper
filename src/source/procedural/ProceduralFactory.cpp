@@ -70,27 +70,6 @@ std::string ProceduralFactory::getTypeName(ProceduralType type) {
     }
 }
 
-std::string ProceduralFactory::getTypeDescription(ProceduralType type) {
-    switch (type) {
-        case ProceduralType::SOLID_COLOR:
-            return "Single color fill";
-        case ProceduralType::GRADIENT:
-            return "Linear, radial, or angular gradients";
-        case ProceduralType::CHECKERBOARD:
-            return "Checkerboard pattern with customizable colors";
-        case ProceduralType::TEST_PATTERN:
-            return "SMPTE color bars and other test patterns";
-        case ProceduralType::NOISE:
-            return "Animated Simplex noise with octaves";
-        case ProceduralType::PLASMA:
-            return "Classic animated plasma effect";
-        case ProceduralType::GRID:
-            return "Grid overlay pattern";
-        default:
-            return "";
-    }
-}
-
 bool ProceduralFactory::isAnimated(ProceduralType type) {
     switch (type) {
         case ProceduralType::NOISE:

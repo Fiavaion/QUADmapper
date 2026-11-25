@@ -523,8 +523,6 @@ void Mp4Writer::abort() { impl_->abort(); }
 bool Mp4Writer::isOpen() const { return impl_->isOpen(); }
 const std::string& Mp4Writer::encoderName() const { return impl_->encoderName_; }
 const std::string& Mp4Writer::lastError() const { return impl_->error_; }
-int Mp4Writer::outputWidth() const { return impl_->width_; }
-int Mp4Writer::outputHeight() const { return impl_->height_; }
 int64_t Mp4Writer::framesWritten() const { return impl_->frames_; }
 
 // --- AsyncMp4Writer ---

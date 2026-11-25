@@ -385,16 +385,6 @@ void Texture::unbind() {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-void Texture::setWrapMode(bool repeat) {
-    if (!isValid()) return;
-
-    GLenum mode = repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE;
-    glBindTexture(GL_TEXTURE_2D, textureId_);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, mode);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, mode);
-    glBindTexture(GL_TEXTURE_2D, 0);
-}
-
 void Texture::setFilterMode(bool linear) {
     if (!isValid()) return;
 

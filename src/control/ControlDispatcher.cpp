@@ -187,7 +187,6 @@ void ControlDispatcher::noteActivity(const ControlRegistry::Resolved& r, double 
 void ControlDispatcher::dispatchOsc(const ControlEvent& event, double now) {
     const OscMessage& message = event.osc;
     ++oscMessages_;
-    lastOscTime_ = now;
     pushRecent(recentOsc_, describe(message), kRecentMessages);
 
     // One target for a plain address, every match for a pattern (/qm/quad/*/opacity).

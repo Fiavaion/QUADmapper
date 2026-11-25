@@ -55,7 +55,6 @@ public:
     // View state access
     SceneViewState& getViewState() { return viewState_; }
     const SceneViewState& getViewState() const { return viewState_; }
-    void resetView();
 
     // QuadManager access
     QuadManager& getQuadManager() { return quadManager_; }

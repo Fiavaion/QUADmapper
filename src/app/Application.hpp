@@ -80,11 +80,7 @@ public:
 
     // Accessors
     GLFWwindow* getWindow() const { return m_window; }
-    Renderer* getRenderer() const { return m_renderer.get(); }
     MediaLibrary* getMediaLibrary() const { return m_mediaLibrary.get(); }
-    OutputManager* getOutputManager() const { return m_outputManager.get(); }
-    Project* getProject() const { return m_project.get(); }
-    SourceManager* getSourceManager() const { return m_sourceManager.get(); }
 
     // Singleton access
     static Application& instance();

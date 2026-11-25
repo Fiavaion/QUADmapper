@@ -13,10 +13,6 @@ void Scene::setCanvasSize(IVec2 size) {
                         std::clamp(size.y, 1, MAX_CANVAS_DIMENSION));
 }
 
-void Scene::resetView() {
-    viewState_ = SceneViewState();
-}
-
 Quad* Scene::createQuad() {
     return quadManager_.createQuad();
 }

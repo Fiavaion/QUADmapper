@@ -42,10 +42,6 @@ public:
     // point (a cross, joined to the marker) so the error is visible.
     void drawCanvasOverlay(EditorContext& ctx);
 
-    // Frees the model view's framebuffer. Call while the GL context is still current
-    // (EditorState outlives the context).
-    void releaseGlResources();
-
 private:
     std::unique_ptr<Framebuffer> modelView_;
     UUID shownOutputId_;   // output shown last frame; a new one takes focus

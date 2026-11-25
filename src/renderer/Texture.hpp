@@ -75,7 +75,6 @@ public:
     GpuCompressedFormat compressedFormat() const { return compressedFormat_; }
     TextureColorSpace colorSpace() const { return colorSpace_; }
 
-    void setWrapMode(bool repeat);
     void setFilterMode(bool linear);
 
     // Set external GL texture ID (non-owning - won't be deleted)

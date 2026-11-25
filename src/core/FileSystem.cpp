@@ -214,21 +214,6 @@ Result<std::vector<uint8_t>, Error> FileSystem::readBinaryFile(const std::filesy
     return Ok(std::move(data));
 }
 
-Result<void, Error> FileSystem::writeBinaryFile(const std::filesystem::path& path,
-                                                const std::vector<uint8_t>& data) {
-    std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
-    if (!file) {
-        return Err("Failed to open file for writing: " + path.u8string());
-    }
-
-    file.write(reinterpret_cast<const char*>(data.data()), data.size());
-    if (!file) {
-        return Err("Failed to write to file: " + path.u8string());
-    }
-
-    return Ok();
-}
-
 bool FileSystem::exists(const std::filesystem::path& path) {
     std::error_code ec;  // a path that cannot be examined does not exist
     return std::filesystem::exists(path, ec);

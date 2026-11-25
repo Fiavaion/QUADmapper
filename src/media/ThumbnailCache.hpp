@@ -43,13 +43,6 @@ public:
     bool needsGeneration(const std::filesystem::path& filePath) const;
 
     /**
-     * @brief Check if a thumbnail exists in the cache.
-     * @param filePath Path to the media file
-     * @return true if thumbnail is cached in memory
-     */
-    bool hasThumbnail(const std::filesystem::path& filePath) const;
-
-    /**
      * @brief Invalidate and regenerate a thumbnail.
      * @param filePath Path to the media file
      *
@@ -66,25 +59,10 @@ public:
     void clearMemoryCache();
 
     /**
-     * @brief Clear both memory and disk caches.
-     */
-    void clearAllCaches();
-
-    /**
      * @brief Get the disk cache directory path.
      * @return Path to %APPDATA%\QUADmapper\thumbnails
      */
     static std::filesystem::path getCacheDir();
-
-    /**
-     * @brief Get the total size of the disk cache in bytes.
-     */
-    size_t getDiskCacheSize() const;
-
-    /**
-     * @brief Get the number of thumbnails in memory cache.
-     */
-    size_t getMemoryCacheCount() const;
 
 private:
     /// Generate a new thumbnail from a source image

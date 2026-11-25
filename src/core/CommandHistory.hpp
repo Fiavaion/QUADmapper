@@ -92,9 +92,6 @@ public:
     // Clear all history
     void clear();
 
-    size_t getMaxHistory() const { return maxHistory_; }
-    void setMaxHistory(size_t max);
-
     // Every media source id an undo or redo step could restore (see
     // Command::collectMediaIds), including an open compound group.
     void collectMediaIds(std::unordered_set<UUID>& out) const;
@@ -115,7 +112,6 @@ public:
     // All commands executed between begin and end are treated as one undo step
     void beginCompoundCommand(const std::string& description);
     void endCompoundCommand();
-    bool isInCompoundCommand() const { return compoundCommand_ != nullptr; }
 
 private:
     void notifyHistoryChanged();

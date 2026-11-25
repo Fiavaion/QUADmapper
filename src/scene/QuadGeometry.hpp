@@ -165,7 +165,6 @@ public:
     void setBezierControl(int edge, int which, const Vec2& pos); // stores offset
     const std::array<Vec2, 8>& getBezierOffsets() const { return bezierOffsets_; }
     void setBezierOffsets(const std::array<Vec2, 8>& o) { bezierOffsets_ = o; }
-    void resetBezier();              // zero all offsets (straight) and disable
     bool hasBezierEdges() const;     // enabled AND at least one non-zero offset
 
     // Control-vertex residuals: each vertex's offset from the base B at its grid

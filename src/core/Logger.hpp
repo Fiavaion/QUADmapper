@@ -26,12 +26,10 @@ public:
     // File output. The path is UTF-8, like every path held in a string.
     static bool enableFileOutput(const std::string& filePath);
     static void disableFileOutput();
-    static bool isFileOutputEnabled();
     static std::string getLogFilePath();
 
     // Console output control
     static void setConsoleOutput(bool enabled);
-    static bool isConsoleOutputEnabled();
 
     // Basic logging (no format)
     static void trace(const std::string& message);
