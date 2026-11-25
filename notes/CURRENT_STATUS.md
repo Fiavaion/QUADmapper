@@ -1,13 +1,12 @@
 # Current Status
 
-**Last updated:** 2026-11-25 (code review, fix batches 0 to 9, third `/release` pass, dependency update)
-**Phase / focus:** Release 1.0.0. The code work is done; what stands between here and publishing is the owner's hands-on test.
-**Dev:** `494cc40`, pushed (`origin/dev` = `494cc40`). 94 commits since the last status note (QM-127).
+**Last updated:** 2026-11-25 (the owner's hands-on test passed; release steps under way)
+**Phase / focus:** Release 1.0.0. The owner tested the app on 2026-11-25 and is happy to move forward. Now: merge to `master`, build the installer there, then replace the published 1.0.0 when the owner says publish.
+**Dev:** `494cc40` plus notes commits. 94 code commits since the 2026-11-23 status note (QM-127).
 
 ## Gate records
 
-- **Full suite:** `ctest --preset debug | 828e194 (tree ba8f2c5) | 1827 passed, 0 failed, 8 disabled`. 60 of the passes are tests that skip themselves (their test clips are not on this PC).
-- **After it (batch 9):** `cmake --build build/debug --config Debug`, then `test_core` 55, `test_scene` 392, `test_media` 53 `| 494cc40 | 0 failed`. No full suite since `828e194`; the five commits after it touch `src/core`, `src/scene` and `src/media` only.
+- **Full suite (release gate):** `cmake --build build/debug --config Debug`, then `ctest --preset debug | b4dc6f1 (tree 2bf8d00; code as at 494cc40) | 1831 passed, 0 failed, 8 disabled`. 59 of the passes are tests that skip themselves (their test clips are not on this PC). `master` has no commit that `dev` lacks, so the merge gives this same code.
 - **`/release`:** PASS on 2026-11-24 at `711cb1b` (1867 passed, 0 failed), see [RELEASE_REVIEW.md](RELEASE_REVIEW.md).
 - **Release build and installer** at `828e194`: `dumpbin` shows control-flow guard and CET; a silent per-user install, the harness from the installed copy (procedural, and 1080p H.264 with hardware decoding) and a silent uninstall all passed. The GitHub workflow built the same tree unsigned (run 45629903505, success).
 - On this PC use `cmake --preset debug-local`; `ctest --preset debug` runs the tests since `e9885c0`.
@@ -21,9 +20,9 @@
 - Dead code removed: `ErrorNotification`, `PerformanceMonitor`, `Timer`, `ThumbnailGenerator`, unused `Theme` helpers, 41 uncalled functions.
 - Detail: [docs/sessions/2026-11-25-code-review-and-fix-batches.md](../docs/sessions/2026-11-25-code-review-and-fix-batches.md).
 
-## Owner's hands-on test (about 40 minutes): the release gate
+## Owner's hands-on test: passed 2026-11-25
 
-Nothing since 2026-11-20 has been seen in the running app by the owner.
+The owner tested the application and is happy to move forward. The note does not record which of the items below were tried; the list is kept as the checklist it was.
 
 1. Success metric: add a quad, assign media, Tab and arrows to warp (Shift 10×, Alt 0.1×), F11 to a projector.
 2. **Real shows on the new libraries:** play your usual video clips (H.264, HAP) and send them to the projectors. Real-clip tests could not run on this PC. Reverting the update is one commit (`db0b260`).
@@ -49,7 +48,7 @@ Nothing since 2026-11-20 has been seen in the running app by the owner.
 
 ## Open owner decisions
 
-1. **Old personal notes in git history** (public repo): rewrite history and force-push, or leave it. The files themselves are untracked since `15af12a`.
+1. ~~Old personal notes in git history~~ **Decided 2026-11-25: leave history as it is.** The files themselves are untracked since `15af12a`.
 2. **Procedural patterns need OpenGL 4.3**, the app asks for 3.3 (review item M22). Today a 3.3-only GPU gets a clear error and the README says so. Rewrite the patterns for 3.3, or raise the requirement with an ADR.
 3. **A second `.bak` generation** for shows (ADR-046 describes one as intended).
 4. **Engine lock refresh:** `pip-audit` reports 106 advisories in 7 packages of `tools/ai-sidecar/requirements.lock` (Pillow has 76). The engine is not in the installer. It fits with the cu128 move.
@@ -58,9 +57,13 @@ Nothing since 2026-11-20 has been seen in the running app by the owner.
 
 ## What is left before release
 
-1. The hands-on test above, then its fixes.
-2. The `dev`→`master` merge (PR #3 is a draft; [docs/QM-061-pr-prep.md](../docs/QM-061-pr-prep.md)), then one full suite on `master`.
-3. Build the installer from `master` with the "Release installer" workflow, and replace the setup exe on the draft v1.0.0 GitHub release: the one attached is the 2026-11-23 build. Then tag and publish.
+**v1.0.0 is already published** on GitHub (2026-11-24, tag on `5646e8e`, 6 downloads): it is the 2026-11-23 build, before the 94 fixes and the FFmpeg 9 update. Earlier notes called it a draft; that was wrong.
+
+**Owner decisions 2026-11-25:** the tested build replaces 1.0.0 in place (no 1.0.1); stop before publishing; leave git history.
+
+1. Push `dev`, merge PR #3 into `master`.
+2. Build the installer from `master` with the "Release installer" workflow (unsigned), and check it with a silent install.
+3. **Wait for the owner's "publish".** Then: move the `v1.0.0` tag to `master`, swap the setup exe on the release, and update the SHA-256 in the release text.
 4. The installer is unsigned (SignPath declined on 2026-11-24; the workflow signs only from `master` and only when `SIGNPATH_ORGANIZATION_ID` is set). Windows SmartScreen will warn on first run. The policy page can be restored from `7b674c6` if a later application is accepted.
 5. After 1.0.0: the AI engine in the installer (TD-44), the sidecar on the PyTorch cu128 builds, decisions 2 to 6.
 
