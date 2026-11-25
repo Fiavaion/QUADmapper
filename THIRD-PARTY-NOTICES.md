@@ -16,23 +16,24 @@ release and needs no notice here.
 
 ---
 
-## FFmpeg (libavcodec, libavformat, libavutil, libavdevice, libavfilter, libswscale, libswresample)
+## FFmpeg (libavcodec, libavformat, libavutil, libavdevice, libswscale, libswresample)
 
-**Version:** 7.1.2 (vcpkg port `ffmpeg` 7.1.2#1)
+**Version:** 9.0.2 (vcpkg port `ffmpeg` 9.0.2#1)
 **Used for:** decoding video and audio files and reading webcams.
 **Licence:** GNU Lesser General Public License (LGPL), version 2.1 or later.
 
 QUADmapper uses FFmpeg under the LGPL version 2.1 or later. FFmpeg was built by vcpkg
-with the port's default features only. It was not configured with `--enable-gpl` or
+with these features only: avcodec, avdevice, avformat, swresample and swscale. It was
+not configured with `--enable-gpl` or
 `--enable-nonfree`, and it does not include x264, x265 or fdk-aac.
 
 QUADmapper links FFmpeg dynamically. The libraries are the `av*.dll` and `sw*.dll`
 files that sit beside `QUADmapper.exe`. You may replace them with your own build of
-the same FFmpeg major versions (avcodec-61, avdevice-61, avfilter-10, avformat-61,
-avutil-59, swresample-5, swscale-8).
+the same FFmpeg major versions (avcodec-63, avdevice-63, avformat-63, avutil-61,
+swresample-7, swscale-10).
 
-**Corresponding source:** the FFmpeg 7.1.2 source is at https://ffmpeg.org/releases/
-(`ffmpeg-7.1.2.tar.xz`). The vcpkg port and patches that built it are in the vcpkg
+**Corresponding source:** the FFmpeg 9.0.2 source is at https://ffmpeg.org/releases/
+(`ffmpeg-9.0.2.tar.xz`). The vcpkg port and patches that built it are in the vcpkg
 repository under `ports/ffmpeg`, at the commit named by the `builtin-baseline` in
 QUADmapper's `vcpkg.json` (https://github.com/microsoft/vcpkg).
 
@@ -554,7 +555,7 @@ That's all there is to it!
 
 ## GLFW
 
-**Version:** 3.4
+**Version:** 3.5.1
 **Used for:** windows, the OpenGL context and keyboard and mouse input.
 **Licence:** zlib/libpng licence.
 **Source:** https://www.glfw.org
@@ -589,7 +590,7 @@ freely, subject to the following restrictions:
 
 ## GLM (OpenGL Mathematics)
 
-**Version:** 1.0.2
+**Version:** 1.0.3
 **Used for:** vector and matrix maths.
 **Licence:** The Happy Bunny Licence (a modified MIT licence) or the MIT Licence, at your option.
 **Source:** https://github.com/g-truc/glm
@@ -688,7 +689,7 @@ SOFTWARE.
 
 ## miniaudio
 
-**Version:** 0.11.23
+**Version:** 0.11.25
 **Used for:** audio playback and mixing.
 **Licence:** public domain (Unlicense) or MIT No Attribution, at your option.
 **Source:** https://miniaud.io
