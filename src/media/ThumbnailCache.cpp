@@ -5,15 +5,33 @@
 #include "core/Logger.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 
 namespace quadmapper {
 
+namespace {
+// The largest thumbnail side written to the disk cache and accepted back from it.
+constexpr int MAX_THUMBNAIL_SIZE = 1024;
+constexpr auto THUMBNAIL_MAX_AGE = std::chrono::hours(24 * 90);
+}  // namespace
+
 ThumbnailCache::ThumbnailCache() {
-    // Ensure cache directory exists
     std::error_code ec;
     std::filesystem::create_directories(getCacheDir(), ec);
+    pruneDiskCache(getCacheDir(), THUMBNAIL_MAX_AGE);
+}
+
+void ThumbnailCache::pruneDiskCache(const std::filesystem::path& dir, std::chrono::hours maxAge) {
+    std::error_code ec;
+    const auto oldest = std::filesystem::file_time_type::clock::now() - maxAge;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code fileEc;
+        if (it->path().extension() != ".thumb") continue;
+        const auto written = std::filesystem::last_write_time(it->path(), fileEc);
+        if (!fileEc && written < oldest) std::filesystem::remove(it->path(), fileEc);
+    }
 }
 
 ThumbnailCache::~ThumbnailCache() {
@@ -142,6 +160,9 @@ void ThumbnailCache::clearMemoryCache() {
 }
 
 GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, int maxSize) {
+    // A larger one would be written to the disk cache, refused when read back, and
+    // made again on every start.
+    maxSize = std::clamp(maxSize, 1, MAX_THUMBNAIL_SIZE);
     std::string ext = utf8FromPath(filePath.extension());
     if (!MediaLibrary::isExtensionSupported(ext)) {
         return 0;
@@ -220,7 +241,7 @@ GLuint ThumbnailCache::loadCachedThumbnail(const std::filesystem::path& cachePat
     file.read(reinterpret_cast<char*>(&width), sizeof(int));
     file.read(reinterpret_cast<char*>(&height), sizeof(int));
 
-    if (width <= 0 || height <= 0 || width > 1024 || height > 1024) {
+    if (width <= 0 || height <= 0 || width > MAX_THUMBNAIL_SIZE || height > MAX_THUMBNAIL_SIZE) {
         return 0;
     }
 

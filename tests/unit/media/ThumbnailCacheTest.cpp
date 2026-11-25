@@ -37,6 +37,25 @@ protected:
 
 }  // namespace
 
+TEST_F(ThumbnailCacheTest, PruningRemovesOnlyOldThumbnails) {
+    namespace fs = std::filesystem;
+    const auto touch = [this](const char* name, std::chrono::hours age) {
+        const fs::path file = dir_ / name;
+        std::ofstream(file) << "x";
+        fs::last_write_time(file, fs::file_time_type::clock::now() - age);
+        return file;
+    };
+    const fs::path oldThumb = touch("1.v2.thumb", std::chrono::hours(24 * 100));
+    const fs::path newThumb = touch("2.v2.thumb", std::chrono::hours(1));
+    const fs::path oldOther = touch("notes.txt", std::chrono::hours(24 * 100));
+
+    ThumbnailCache::pruneDiskCache(dir_, std::chrono::hours(24 * 90));
+
+    EXPECT_FALSE(fs::exists(oldThumb));
+    EXPECT_TRUE(fs::exists(newThumb));
+    EXPECT_TRUE(fs::exists(oldOther));
+}
+
 TEST_F(ThumbnailCacheTest, AFileNotSeenYetNeedsGeneration) {
     ThumbnailCache cache;
     EXPECT_TRUE(cache.needsGeneration(broken_));

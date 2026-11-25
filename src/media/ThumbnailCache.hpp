@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -63,6 +64,14 @@ public:
      * @return Path to %APPDATA%\QUADmapper\thumbnails
      */
     static std::filesystem::path getCacheDir();
+
+    /**
+     * @brief Delete the thumbnails in a folder that were written more than maxAge ago.
+     *
+     * Run on the cache folder at start-up: a thumbnail whose file has gone, or whose
+     * key an update changed, would otherwise stay for ever.
+     */
+    static void pruneDiskCache(const std::filesystem::path& dir, std::chrono::hours maxAge);
 
 private:
     /// Generate a new thumbnail from a source image
