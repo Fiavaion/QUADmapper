@@ -726,6 +726,8 @@ TEST(VideoDecoderReposition, AFrameDecodedForAReplacedPlanIsNeverQueued) {
 // the new plan's, where they held its frames back and froze the clip on a wrong frame
 // (TD-35 review: 30 of 30 tries on a 4K clip). Software decoding goes through the same
 // hand-back; the hook lands the reposition while the frames are out.
+// Windows only: zero-copy and leaveGpu() exist only there (VideoDecoder.cpp).
+#ifdef _WIN32
 TEST(VideoDecoderReposition, ARepositionDuringTheZeroCopyFallbackDropsTheOldPlansFrames) {
     const fs::path path = clipPath("clip", ".mp4");
     if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";
@@ -754,6 +756,7 @@ TEST(VideoDecoderReposition, ARepositionDuringTheZeroCopyFallbackDropsTheOldPlan
     std::error_code ec;
     fs::remove(path, ec);
 }
+#endif
 
 // The media bin lists .mp4/.mov files as videos and asks each for a thumbnail; one that
 // holds only sound is not an error (it used to log "[ERROR] No video stream found").

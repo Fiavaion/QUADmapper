@@ -32,6 +32,7 @@ public:
         io.DeltaTime = 1.0f / 60.0f;
         io.IniFilename = nullptr;
         io.ConfigInputTrickleEventQueue = false;
+        io.ConfigMacOSXBehaviors = false;  // inject the chord's own modifiers: ImGui swaps Ctrl and Super on macOS
         unsigned char* pixels = nullptr;
         int w = 0, h = 0;
         io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
