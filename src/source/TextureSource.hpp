@@ -135,7 +135,7 @@ public:
      * @brief Get OpenGL texture ID for GPU-native sources
      * @return OpenGL texture ID, or 0 if not GPU-native
      *
-     * For compute shader procedurals that render directly to texture.
+     * For procedural patterns, which render directly to a texture.
      */
     virtual uint32_t getGLTextureId() const { return 0; }
 

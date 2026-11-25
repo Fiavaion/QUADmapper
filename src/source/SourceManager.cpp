@@ -666,7 +666,7 @@ void SourceManager::updateAll(double deltaTime) {
                         glId,
                         entry.source->getWidth(),
                         entry.source->getHeight(),
-                        4  // RGBA for compute shader outputs
+                        4  // RGBA for pattern outputs
                     );
                 }
             } else {
