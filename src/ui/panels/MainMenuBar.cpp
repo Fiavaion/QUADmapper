@@ -411,7 +411,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Open-Source Licences")) {
-            openPath(es, executableDir() / "THIRD-PARTY-NOTICES.txt");
+            openPath(es, appFilesDir() / "THIRD-PARTY-NOTICES.txt");
         }
         if (ImGui::MenuItem("About QUADmapper")) showAbout_ = true;
         ImGui::EndMenu();

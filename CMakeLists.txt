@@ -70,6 +70,11 @@ else()
     if(QUADMAPPER_WARNINGS_AS_ERRORS)
         add_compile_options(-Werror)
     endif()
+    # macOS Release keeps debug information, as Windows keeps a PDB: packaging splits it
+    # into a .dSYM (packaging/build-mac-app.sh), so a user's crash report can be read.
+    if(APPLE)
+        add_compile_options($<$<CONFIG:Release>:-g>)
+    endif()
 endif()
 
 # vcpkg dependencies (found via toolchain)

@@ -192,6 +192,7 @@ TEST(AppFoldersTest, ExecutableDirHoldsTheRunningProgramWhateverTheCurrentFolder
 #else
     EXPECT_TRUE(fs::exists(before / "test_core"));
 #endif
+    EXPECT_EQ(appFilesDir(), before);  // a test program is not in an .app bundle
     EXPECT_EQ(resourcePath("fonts/a.ttf"), before / "resources" / "fonts" / "a.ttf");
 }
 

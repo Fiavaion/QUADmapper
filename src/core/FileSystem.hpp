@@ -19,7 +19,10 @@ std::string utf8FromPath(const std::filesystem::path& path);
 // app was started from: a shortcut, a double-clicked .qmap and an install under
 // Program Files each start it somewhere else, and Program Files cannot be written to.
 std::filesystem::path executableDir();                              // folder of the .exe
-std::filesystem::path resourcePath(const std::string& relative);    // <exe folder>/resources/<relative>
+// Where the files that ship with the program sit (resources/, the licence notices): the
+// executable's folder, or Contents/Resources when it runs from a macOS .app bundle.
+std::filesystem::path appFilesDir();
+std::filesystem::path resourcePath(const std::string& relative);    // <appFilesDir>/resources/<relative>
 //
 //                     Windows                           macOS
 // userConfigDir()     %APPDATA%\QUADmapper              ~/Library/Application Support/QUADmapper

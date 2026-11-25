@@ -76,8 +76,19 @@ std::filesystem::path executableDir() {
     return std::filesystem::current_path(ec);
 }
 
+std::filesystem::path appFilesDir() {
+    const std::filesystem::path exeDir = executableDir();
+#ifdef __APPLE__
+    // In a bundle, Contents/MacOS holds code only: a data file there breaks the signature.
+    if (exeDir.filename() == "MacOS" && exeDir.parent_path().filename() == "Contents") {
+        return exeDir.parent_path() / "Resources";
+    }
+#endif
+    return exeDir;
+}
+
 std::filesystem::path resourcePath(const std::string& relative) {
-    return executableDir() / "resources" / pathFromUtf8(relative);
+    return appFilesDir() / "resources" / pathFromUtf8(relative);
 }
 
 std::filesystem::path userConfigDir() {

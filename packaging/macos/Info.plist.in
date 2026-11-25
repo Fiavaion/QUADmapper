@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- QUADmapper.app's Info.plist. build-mac-app.sh fills in @VERSION@ and @MIN_MACOS@. -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>QUADmapper</string>
+    <!-- Identifies the app to macOS for its permissions and settings: never change it. -->
+    <key>CFBundleIdentifier</key>
+    <string>com.fiavaion.quadmapper</string>
+    <key>CFBundleName</key>
+    <string>QUADmapper</string>
+    <key>CFBundleDisplayName</key>
+    <string>QUADmapper</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>CFBundleIconFile</key>
+    <string>QUADmapper</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>@MIN_MACOS@</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.video</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Fiavaion. MIT licence.</string>
+    <!-- OSC control and feedback travel over the local network. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>QUADmapper exchanges OSC control messages with other devices on your network.</string>
+</dict>
+</plist>
