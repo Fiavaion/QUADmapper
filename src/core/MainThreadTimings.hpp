@@ -15,12 +15,17 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
-#include <process.h>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace quadmapper {
 
@@ -77,7 +82,12 @@ public:
         if (!dir || !*dir) return;
         State& s = state();
         std::lock_guard<std::mutex> lock(s.mutex);
-        std::ofstream out(std::string(dir) + "/timings-" + std::to_string(_getpid()) + ".txt", std::ios::app);
+#ifdef _WIN32
+        const int pid = _getpid();
+#else
+        const int pid = static_cast<int>(getpid());
+#endif
+        std::ofstream out(std::string(dir) + "/timings-" + std::to_string(pid) + ".txt", std::ios::app);
         for (const auto& [op, recorded] : s.samples) {
             for (double seconds : recorded) out << op << ' ' << seconds * 1000.0 << '\n';
         }

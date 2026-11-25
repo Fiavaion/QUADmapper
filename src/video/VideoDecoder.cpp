@@ -821,7 +821,9 @@ public:
         if (rc == AVERROR(EAGAIN)) {
             // Left on the GPU where it can be (ADR-056); else, or with the pool at its
             // cap, copied to memory.
+#ifdef _WIN32
             if (keepOnGpu()) rc = copyToGpuPool(frame_, copy);
+#endif
             if (rc < 0) {
                 av_frame_unref(copy);
                 rc = transferToMemory(frame_, copy);
