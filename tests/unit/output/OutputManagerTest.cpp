@@ -1390,7 +1390,13 @@ TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
     int worstOnObjects = 0;
     // A pixel the object covers can read the same with and without it, where the
     // object's colour rounds to what lay under it (one such pixel on Apple's driver).
-    // So a pixel is on the object when it, or a pixel next to it, shows the object.
+    // So on macOS a pixel is on the object when it, or a pixel next to it, shows the
+    // object; elsewhere only the pixel itself counts, as before.
+#ifdef __APPLE__
+    constexpr int OBJECT_REACH = 1;
+#else
+    constexpr int OBJECT_REACH = 0;
+#endif
     auto showsObject = [&](int x, int y) {
         if (x < 0 || y < 0 || x >= w || y >= h) return false;
         const size_t at = (static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)) * 4;
@@ -1407,8 +1413,10 @@ TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
         if (!quadsOnly.empty()) {
             const int x = static_cast<int>((i / 4) % static_cast<size_t>(w));
             const int y = static_cast<int>((i / 4) / static_cast<size_t>(w));
-            for (int dy = -1; dy <= 1 && !onObject; ++dy) {
-                for (int dx = -1; dx <= 1 && !onObject; ++dx) onObject = showsObject(x + dx, y + dy);
+            for (int dy = -OBJECT_REACH; dy <= OBJECT_REACH && !onObject; ++dy) {
+                for (int dx = -OBJECT_REACH; dx <= OBJECT_REACH && !onObject; ++dx) {
+                    onObject = showsObject(x + dx, y + dy);
+                }
             }
         }
         if (onObject) {
