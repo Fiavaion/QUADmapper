@@ -44,6 +44,17 @@ WizardStyle=modern
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+; FFmpeg's DLL names carry a version (avcodec-61.dll), so an upgrade to a newer FFmpeg
+; would leave the old ones behind. They are removed first; [Files] installs the current set.
+[InstallDelete]
+Type: files; Name: "{app}\avcodec-*.dll"
+Type: files; Name: "{app}\avdevice-*.dll"
+Type: files; Name: "{app}\avfilter-*.dll"
+Type: files; Name: "{app}\avformat-*.dll"
+Type: files; Name: "{app}\avutil-*.dll"
+Type: files; Name: "{app}\swresample-*.dll"
+Type: files; Name: "{app}\swscale-*.dll"
+
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
