@@ -233,7 +233,7 @@ TEST_P(ColourBarsPlayback, TextureMatchesReferenceBars) {
         for (int i = 0; i < 200 && !uploaded; ++i) {
             sm.updateAll(1.0 / 60.0);
             const FrameData* frame = video->getCurrentFrame();
-            uploaded = frame && frame->isYuv();
+            uploaded = frame && frame->isYuv() && sm.showsCurrentFrame(id);
             if (!uploaded) std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
         ASSERT_TRUE(uploaded) << "no YUV frame reached the texture";

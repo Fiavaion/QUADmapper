@@ -105,15 +105,6 @@ public:
      */
     virtual void resetParameters() = 0;
 
-    // --- ProceduralSource: Resolution ---
-
-    /**
-     * @brief Change the output resolution
-     * @param width New width
-     * @param height New height
-     */
-    void setResolution(int width, int height);
-
     /**
      * @brief Mark the texture as needing regeneration
      */

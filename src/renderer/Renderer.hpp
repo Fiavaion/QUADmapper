@@ -33,10 +33,8 @@ public:
     // before other GL code runs.
     void endFrame();
 
-    // Render a single quad
     void renderQuad(const Quad& quad, const Texture* texture);
 
-    // Render a quad with selection highlight
     void renderQuad(const Quad& quad, const Texture* texture, bool selected);
 
     // Render all quads from a QuadManager with selection highlighting
@@ -92,7 +90,6 @@ public:
     void renderSlice(const Slice& slice, uint32_t canvasTexture, IVec2 canvasSize,
                      Rotation canvasRotation, IVec2 outputSize, const SliceFade* fade = nullptr);
 
-    // Render selection outline for a quad
     void renderQuadOutline(const Quad& quad, const glm::vec4& color, float lineWidth = 2.0f);
 
     // Render the control-grid wireframe for mesh-edit feedback: each division line
@@ -141,9 +138,6 @@ public:
     // renderQuad and renderMeshObject only; editor overlays are never drawn to
     // outputs. Default R0.
     void setOutputRotation(Rotation rotation) { outputRotation_ = rotation; }
-
-    // Create a default white texture for quads without texture
-    Texture* getDefaultTexture() { return &defaultTexture_; }
 
 private:
     void createOutlineBuffers();

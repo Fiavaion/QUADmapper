@@ -20,7 +20,6 @@ bool StaticImageSource::initialize() {
         return true;  // Already initialized
     }
 
-    // Load image from disk
     auto result = ImageLoader::load(path_);
     if (!result.isSuccess()) {
         Logger::error("StaticImageSource: Failed to load '{}': {}",

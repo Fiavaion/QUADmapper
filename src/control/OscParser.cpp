@@ -1,5 +1,6 @@
 #include "OscParser.hpp"
 
+#include <cstdint>
 #include <cstring>
 
 namespace quadmapper::control {
@@ -23,11 +24,14 @@ bool skipBytes(size_t size, size_t& pos, size_t count) {
     return true;
 }
 
-// OSC-string: bytes up to a NUL, then NUL padding to a multiple of 4.
-bool readString(const uint8_t* data, size_t size, size_t& pos, std::string* out) {
+// OSC-string: bytes up to a NUL, then NUL padding to a multiple of 4. One longer than
+// maxLength is refused before it is copied.
+bool readString(const uint8_t* data, size_t size, size_t& pos, std::string* out,
+                size_t maxLength = SIZE_MAX) {
     const void* nul = std::memchr(data + pos, 0, size - pos);
     if (!nul) return false;
     const size_t length = static_cast<size_t>(static_cast<const uint8_t*>(nul) - (data + pos));
+    if (length > maxLength) return false;
     const size_t padded = (length + 4) & ~static_cast<size_t>(3);  // length + NUL, rounded up
     if (size - pos < padded) return false;
     if (out) out->assign(reinterpret_cast<const char*>(data + pos), length);
@@ -49,7 +53,7 @@ bool skipBlob(const uint8_t* data, size_t size, size_t& pos) {
 
 bool parseMessage(const uint8_t* data, size_t size, OscMessage& message) {
     size_t pos = 0;
-    if (!readString(data, size, pos, &message.address)) return false;
+    if (!readString(data, size, pos, &message.address, kMaxStringBytes)) return false;
     if (message.address.empty() || message.address[0] != '/') return false;
     if (pos == size) return true;  // no type-tag string: no arguments (old senders)
 
@@ -73,7 +77,7 @@ bool parseMessage(const uint8_t* data, size_t size, OscMessage& message) {
                 std::memcpy(&arg.f, &raw, sizeof(arg.f));
                 break;
             case 's':
-                if (!readString(data, size, pos, &arg.s)) return false;
+                if (!readString(data, size, pos, &arg.s, kMaxStringBytes)) return false;
                 arg.type = OscArg::Type::String;
                 break;
             case 'T': arg.type = OscArg::Type::True; break;
@@ -98,6 +102,7 @@ bool parseMessage(const uint8_t* data, size_t size, OscMessage& message) {
             default:
                 return false;  // unknown size: the rest cannot be read safely
         }
+        if (message.args.size() >= kMaxArgsPerMessage) return false;
         message.args.push_back(std::move(arg));
     }
     return true;

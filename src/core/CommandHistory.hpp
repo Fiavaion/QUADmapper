@@ -25,7 +25,6 @@ public:
     // Undo the command. Same failure contract as execute().
     virtual bool undo() = 0;
 
-    // Get a description of this command (for UI display)
     virtual std::string getDescription() const = 0;
 
     // Whether this command can be merged with another
@@ -73,11 +72,9 @@ public:
     bool undo();
     bool redo();
 
-    // Check if undo/redo is available
     bool canUndo() const { return undoIndex_ > 0; }
     bool canRedo() const { return undoIndex_ < commands_.size(); }
 
-    // Get descriptions for UI
     std::string getUndoDescription() const;
     std::string getRedoDescription() const;
 
@@ -86,12 +83,14 @@ public:
     const Command* peekUndo() const { return canUndo() ? commands_[undoIndex_ - 1].get() : nullptr; }
     const Command* peekRedo() const { return canRedo() ? commands_[undoIndex_].get() : nullptr; }
 
+    // Read-only (the perform lock's safety net, ADR-051 §4): execute, undo and redo
+    // refuse and log, and the stack stays as it is. clear() still works (a replaced
+    // project), and so do the media-id queries.
+    void setReadOnly(bool readOnly) { readOnly_ = readOnly; }
+    bool isReadOnly() const { return readOnly_; }
+
     // Clear all history
     void clear();
-
-    // Get/set max history size
-    size_t getMaxHistory() const { return maxHistory_; }
-    void setMaxHistory(size_t max);
 
     // Every media source id an undo or redo step could restore (see
     // Command::collectMediaIds), including an open compound group.
@@ -100,7 +99,6 @@ public:
     // Command::remapMediaId on every step, including an open compound group.
     void remapMediaId(const UUID& from, const UUID& to);
 
-    // Get current stack sizes
     size_t getUndoCount() const { return undoIndex_; }
     size_t getRedoCount() const { return commands_.size() - undoIndex_; }
 
@@ -114,7 +112,6 @@ public:
     // All commands executed between begin and end are treated as one undo step
     void beginCompoundCommand(const std::string& description);
     void endCompoundCommand();
-    bool isInCompoundCommand() const { return compoundCommand_ != nullptr; }
 
 private:
     void notifyHistoryChanged();
@@ -123,6 +120,7 @@ private:
     std::vector<std::unique_ptr<Command>> commands_;
     size_t undoIndex_ = 0;  // Points to next command to redo
     size_t maxHistory_;
+    bool readOnly_ = false;
 
     // Compound command support
     class CompoundCommand;

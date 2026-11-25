@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 
 namespace quadmapper {
@@ -89,7 +90,7 @@ TEST_F(ProjectPersistenceTest, WriterEmitsV32WithSourcesTable) {
 
     const auto json = nlohmann::json::parse(serializer.serialize(projectWithBoundQuad(src, "")));
 
-    EXPECT_EQ(json["version"], "3.4.0");
+    EXPECT_EQ(json["version"], "3.7.0");
     ASSERT_TRUE(json["sources"].is_array());
     ASSERT_EQ(json["sources"].size(), 1u);
     EXPECT_EQ(json["sources"][0]["kind"], "procedural");
@@ -546,6 +547,98 @@ TEST_F(ProjectPersistenceTest, OutOfRangeMeshModeFallsBackToCorners) {
     }
 }
 
+// A number its field cannot hold: beyond the float range it fails the load, as in a
+// vector; a whole number is held to its range without being cast first.
+TEST_F(ProjectPersistenceTest, NumbersBeyondTheirTypeAreRefusedOrClamped) {
+    ProjectSerializer serializer;
+    for (const char* quad : {
+             R"({"opacity": 1e300})",
+             R"({"textureBinding": {"uvRotation": 1e300}})",
+             R"({"textureBinding": {"crop": {"width": -1e300}}})",
+             R"({"colorCorrection": {"gamma": 1e300}})",
+             R"({"softEdge": {"left": 1e300}})"}) {
+        Project project;
+        EXPECT_TRUE(serializer.deserialize(v31WithQuad(quad), project).isError()) << quad;
+    }
+    Project zoomed;
+    EXPECT_TRUE(serializer.deserialize(
+        R"({"version": "3.4.0", "scenes": [{"view": {"zoom": 1e300}}]})", zoomed).isError());
+
+    Project project;
+    const std::string json = R"({"version": "3.4.0", "name": "T",
+        "scenes": [{"name": "S", "canvas": [1e300, -1e300], "view": {"zoom": 1e9},
+                    "quads": [{"zOrder": 1e300, "geometry": {"meshResolution": 1e300}}]}],
+        "outputs": [{"monitor": 1e300, "resolution": [1e300, 2.9], "rotation": 1e300}],
+        "sources": [{"id": "0a1b2c3d-0000-4000-8000-000000000001", "kind": "procedural",
+                     "proceduralType": "Noise", "width": 1e300, "height": -1e300}]})";
+
+    auto result = serializer.deserialize(json, project);
+
+    ASSERT_TRUE(result.isSuccess()) << result.error();
+    const auto& scene = project.getScenes()[0];
+    EXPECT_EQ(scene.canvas, IVec2(MAX_CANVAS_DIMENSION, 1));
+    EXPECT_FLOAT_EQ(scene.view.zoom, 12.0f);
+    EXPECT_EQ(scene.quads[0].getZOrder(), std::numeric_limits<int>::max());
+    EXPECT_EQ(scene.quads[0].getGeometry().getMeshResolution(), MAX_MESH_RESOLUTION);
+    const auto& output = project.getOutputs()[0];
+    EXPECT_EQ(output.monitor, 63);
+    EXPECT_EQ(output.resolution, IVec2(16384, 2));
+    EXPECT_EQ(output.rotationDegrees, 0);
+    ASSERT_EQ(project.getSources().size(), 1u);
+    EXPECT_EQ(project.getSources()[0].width, 16384);
+    EXPECT_EQ(project.getSources()[0].height, 1);
+}
+
+// Two grid lines closer than the editor can place them are one line; lines it could
+// have written stay apart, so a real show keeps its vertices.
+TEST_F(ProjectPersistenceTest, GridLinesTooCloseToTellApartAreMerged) {
+    ProjectSerializer serializer;
+    Project merged;
+    ASSERT_TRUE(serializer.deserialize(v31WithQuad(
+        R"({"geometry": {"uCoords": [0, 0.5, 0.50001, 1], "vCoords": [0, 1]}})"), merged).isSuccess());
+    EXPECT_EQ(merged.getScenes()[0].quads[0].getGeometry().getUCoords().size(), 3u);
+
+    Project kept;
+    ASSERT_TRUE(serializer.deserialize(v31WithQuad(
+        R"({"geometry": {"uCoords": [0, 0.5, 0.5002, 1], "vCoords": [0, 1]}})"), kept).isSuccess());
+    EXPECT_EQ(kept.getScenes()[0].quads[0].getGeometry().getUCoords().size(), 4u);
+}
+
+TEST_F(ProjectPersistenceTest, AFileTooLargeToBeAShowIsRefusedUnread) {
+    const fs::path file = dir_ / "huge.qmap";
+    touch(file);
+    std::error_code ec;
+    fs::resize_file(file, 1024ull * 1024 * 1024 + 1, ec);
+    if (ec) GTEST_SKIP() << "no room for the test file: " << ec.message();
+
+    auto loaded = ProjectSerializer::load(file);
+
+    ASSERT_TRUE(loaded.isError());
+    EXPECT_NE(loaded.error().message.find("too large"), std::string::npos) << loaded.error().message;
+}
+
+// The times are doubles in the model and in the file; a hold taken from a clip's
+// length must not change on the first reload.
+TEST_F(ProjectPersistenceTest, CompositionTimesKeepTheirFullPrecision) {
+    Project::SourceData composition;
+    composition.id = UUID::generate();
+    composition.kind = "composition";
+    composition.fadeSeconds = 0.3;
+    Project::SourceData::CueData cue;
+    cue.holdSeconds = 12.345678901234;
+    composition.cues.push_back(cue);
+    ProjectSerializer serializer;
+    Project loaded;
+
+    ASSERT_TRUE(serializer.deserialize(serializer.serialize(projectWithBoundQuad(composition, "")),
+                                       loaded).isSuccess());
+
+    ASSERT_EQ(loaded.getSources().size(), 1u);
+    EXPECT_EQ(loaded.getSources()[0].fadeSeconds, 0.3);
+    ASSERT_EQ(loaded.getSources()[0].cues.size(), 1u);
+    EXPECT_EQ(loaded.getSources()[0].cues[0].holdSeconds, 12.345678901234);
+}
+
 TEST_F(ProjectPersistenceTest, OutputMonitorResolutionRotationAreClamped) {
     ProjectSerializer serializer;
     Project project;
@@ -632,7 +725,7 @@ TEST_F(ProjectPersistenceTest, MeshOutsideTheShowFolderFallsBackToItsAbsolutePat
     const auto& saved = json["scenes"][0]["objects"][0];
     EXPECT_EQ(saved["path"], "../../library/props/column.obj");
     EXPECT_EQ(saved["absPath"], utf8FromPath(mesh));
-    EXPECT_EQ(json["version"], "3.4.0");
+    EXPECT_EQ(json["version"], "3.7.0");
 
     // Round trip in place: the relative path resolves.
     auto loaded = ProjectSerializer::load(file);
@@ -1464,6 +1557,125 @@ TEST(ProjectFixtureTest, GridHandlesRoundTrip) {
     const QuadGeometry& back = reloaded.getScenes()[0].quads[0].getGeometry();
     EXPECT_EQ(back.getVertexTangents(), g.getVertexTangents());
     EXPECT_EQ(back.getMeshVertices(), g.getMeshVertices());
+}
+
+TEST(ProjectFixtureTest, WarpModeRoundTripsAndMissingIsPerspective) {
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    scene.name = "Scene 1";
+    Quad linear;
+    linear.getGeometry().setWarpMode(WarpMode::LINEAR);
+    scene.quads.push_back(linear);
+    scene.quads.push_back(Quad());  // Perspective, the default
+    scene.texturePaths = {"", ""};
+    project.getScenes().push_back(std::move(scene));
+
+    ProjectSerializer serializer;
+    const std::string json = serializer.serialize(project);
+    // Written only for the Linear quad (ADR-058).
+    const size_t first = json.find("\"warpMode\"");
+    ASSERT_NE(first, std::string::npos);
+    EXPECT_EQ(json.find("\"warpMode\"", first + 1), std::string::npos);
+    Project reloaded;
+    ASSERT_TRUE(serializer.deserialize(json, reloaded).isSuccess());
+    const auto& quads = reloaded.getScenes()[0].quads;
+    ASSERT_EQ(quads.size(), 2u);
+    EXPECT_EQ(quads[0].getGeometry().getWarpMode(), WarpMode::LINEAR);
+    EXPECT_EQ(quads[1].getGeometry().getWarpMode(), WarpMode::PERSPECTIVE);
+
+    // A file without the key (every file before 3.5), or with an unknown value, is
+    // Perspective.
+    for (const char* extra : {"", R"(, "warpMode": "spline")"}) {
+        const std::string old = std::string(R"({"version": "3.4.0", "scenes": [{"quads": [{"geometry": {
+            "corners": [[0.1, 0.1], [0.9, 0.2], [0.8, 0.9], [0.1, 0.9]], "meshResolution": 1)") +
+                                extra + "}}]}]}";
+        Project p;
+        ASSERT_TRUE(serializer.deserialize(old, p).isSuccess()) << extra;
+        EXPECT_EQ(p.getScenes()[0].quads[0].getGeometry().getWarpMode(), WarpMode::PERSPECTIVE)
+            << extra;
+    }
+}
+
+// 3.6 (owner, 2026-11-23): Linear grid points and Crop survive a save and load, are
+// written only when used, and a file without them is all Spline and Warp.
+TEST(ProjectFixtureTest, LinearPointsAndCropRoundTripAndMissingIsSplineWarp) {
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    scene.name = "Scene 1";
+    Quad shaped;
+    QuadGeometry& g = shaped.getGeometry();
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    g.setMeshVertex(1, 1, Vec2(0.02f, 0.01f));
+    g.setVertexLinear(4, true);
+    g.setVertexLinear(7, true);
+    g.setContentMode(ContentMode::CROP);
+    scene.quads.push_back(shaped);
+    scene.quads.push_back(Quad());
+    scene.texturePaths = {"", ""};
+    project.getScenes().push_back(std::move(scene));
+
+    ProjectSerializer serializer;
+    const std::string json = serializer.serialize(project);
+    const size_t linearKey = json.find("\"meshLinear\"");
+    ASSERT_NE(linearKey, std::string::npos);
+    EXPECT_EQ(json.find("\"meshLinear\"", linearKey + 1), std::string::npos);
+    const size_t cropKey = json.find("\"contentMode\"");
+    ASSERT_NE(cropKey, std::string::npos);
+    EXPECT_EQ(json.find("\"contentMode\"", cropKey + 1), std::string::npos);
+
+    Project reloaded;
+    ASSERT_TRUE(serializer.deserialize(json, reloaded).isSuccess());
+    const auto& quads = reloaded.getScenes()[0].quads;
+    ASSERT_EQ(quads.size(), 2u);
+    const QuadGeometry& back = quads[0].getGeometry();
+    EXPECT_EQ(back.getContentMode(), ContentMode::CROP);
+    for (int i = 0; i < back.getVertexCount(); ++i) {
+        EXPECT_EQ(back.isVertexLinear(i), i == 4 || i == 7) << i;
+    }
+    EXPECT_EQ(quads[1].getGeometry().getContentMode(), ContentMode::WARP);
+    EXPECT_FALSE(quads[1].getGeometry().hasLinearVertices());
+
+    // An index the grid does not have is dropped; a malformed list fails the load.
+    const std::string base = R"({"version": "3.6.0", "scenes": [{"quads": [{"geometry": {
+        "corners": [[0.1, 0.1], [0.9, 0.2], [0.8, 0.9], [0.1, 0.9]], "meshResolution": 1)";
+    Project p;
+    ASSERT_TRUE(serializer.deserialize(base + R"(, "meshLinear": [0, 99]}}]}]})", p).isSuccess());
+    EXPECT_TRUE(p.getScenes()[0].quads[0].getGeometry().isVertexLinear(0));
+    EXPECT_FALSE(serializer.deserialize(base + R"(, "meshLinear": 3}}]}]})", p).isSuccess());
+    EXPECT_FALSE(serializer.deserialize(base + R"(, "meshLinear": ["a"]}}]}]})", p).isSuccess());
+}
+
+// The warp mode is read before the residuals, so a meshed, curved Linear quad's
+// control vertices land where they were saved (ADR-058).
+TEST(ProjectFixtureTest, MeshedLinearQuadKeepsItsControlVerticesThroughSaveAndLoad) {
+    Project project;
+    Project::SceneData scene;
+    scene.id = UUID::generate();
+    scene.name = "Scene 1";
+    Quad quad;
+    QuadGeometry& g = quad.getGeometry();
+    g.setCorners({Vec2(0.10f, 0.20f), Vec2(0.80f, 0.10f), Vec2(0.95f, 0.90f), Vec2(0.05f, 0.70f)});
+    g.setWarpMode(WarpMode::LINEAR);
+    g.setBezierEnabled(true);
+    g.setBezierControl(0, 0, g.getBezierControl(0, 0) + Vec2(0.0f, -0.05f));
+    g.setUniformGrid(2);
+    g.setMeshMode(MeshMode::MESH_EDIT);
+    g.setMeshVertex(1, 1, Vec2(0.03f, -0.02f));
+    g.setMeshVertex(0, 1, Vec2(-0.01f, 0.02f));
+    const std::vector<Vec2> expected = g.generateMeshPositions();
+    scene.quads.push_back(quad);
+    scene.texturePaths.push_back("");
+    project.getScenes().push_back(std::move(scene));
+
+    ProjectSerializer serializer;
+    Project reloaded;
+    ASSERT_TRUE(serializer.deserialize(serializer.serialize(project), reloaded).isSuccess());
+    const QuadGeometry& back = reloaded.getScenes()[0].quads[0].getGeometry();
+    EXPECT_EQ(back.getWarpMode(), WarpMode::LINEAR);
+    expectPositions(back.generateMeshPositions(), expected, "reloaded");
 }
 
 TEST(ProjectFixtureTest, MalformedGridHandlesAreRejected) {

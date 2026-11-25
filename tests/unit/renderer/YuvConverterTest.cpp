@@ -15,10 +15,13 @@
 #include "renderer/Texture.hpp"
 #include "renderer/YuvConverter.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace quadmapper;
@@ -278,6 +281,68 @@ TEST(YuvConverter, PrefetchedFrameIsUsedAndAMismatchIsCopiedAnew) {
         doomed.reset();
         EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
     }
+    const auto after = GlObjectStats::Snapshot::capture();
+    EXPECT_TRUE(after.isFlat(baseline)) << after.diff(baseline);
+}
+
+// TD-35: a removed source's upload state is freed only once no copy writes into its
+// buffers, and asking never waits. idle() is false while its copy runs, true once it is
+// done; a copy still queued behind another source's is dropped (it never starts), so that
+// state is idle at once. Neither destructor then waits.
+TEST(YuvConverter, IdleNeverWaitsForACopyInFlightAndDropsAQueuedOne) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";
+    const auto baseline = GlObjectStats::Snapshot::capture();
+    std::atomic<int> copiesStarted{0};
+    std::atomic<bool> release{false};
+    YuvConverter::setCopyHookForTesting([&] {
+        ++copiesStarted;
+        while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    });
+    {
+        YuvConverter converter;
+        Texture target;
+        ASSERT_TRUE(target.createEmpty(WIDTH, HEIGHT, 4));
+        std::shared_ptr<BarsPicture> bars = makeBars(YuvLayout::NV12, YuvMatrix::BT709, false, 0);
+        YuvPicture a = bars->picture;
+        a.owner = bars;
+        std::shared_ptr<BarsPicture> nextBars = makeBars(YuvLayout::NV12, YuvMatrix::BT601, true, 0);
+        YuvPicture b = nextBars->picture;
+        b.owner = nextBars;
+
+        // Each state uploads one frame (released copies), then prefetches the next.
+        release = true;
+        auto running = std::make_unique<YuvUploadState>();
+        auto queued = std::make_unique<YuvUploadState>();
+        ASSERT_TRUE(converter.convert(a, target, *running));
+        ASSERT_TRUE(converter.convert(a, target, *queued));
+        EXPECT_TRUE(running->idle());  // nothing staged
+        copiesStarted = 0;
+        release = false;
+        converter.prefetch(b, *running);  // starts, and blocks in the hook
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (copiesStarted == 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ASSERT_EQ(copiesStarted, 1);
+        converter.prefetch(b, *queued);  // queued behind it
+
+        const auto asked = std::chrono::steady_clock::now();
+        EXPECT_FALSE(running->idle()) << "its copy is running";
+        EXPECT_TRUE(queued->idle()) << "a queued copy is dropped";
+        EXPECT_LT(std::chrono::steady_clock::now() - asked, std::chrono::milliseconds(100)) << "idle() waited";
+        queued.reset();  // unmapped without waiting: its copy never starts
+
+        release = true;
+        while (!running->idle() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_TRUE(running->idle());
+        running.reset();
+        EXPECT_EQ(copiesStarted, 1) << "the dropped copy ran anyway";
+        EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+    }
+    YuvConverter::setCopyHookForTesting(nullptr);
     const auto after = GlObjectStats::Snapshot::capture();
     EXPECT_TRUE(after.isFlat(baseline)) << after.diff(baseline);
 }

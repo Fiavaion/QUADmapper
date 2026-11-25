@@ -1,8 +1,8 @@
 #include "SliceEditor.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
-#include "app/SliceEditing.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/SliceEditing.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "project/Project.hpp"
@@ -37,10 +37,6 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
     const Scene* scene = OutputManager::sceneForOutput(es.scenes, output);
     if (!scene || !om) {
         ImGui::TextDisabled("Show a scene on this output to edit its slices.");
-        return;
-    }
-    if (es.calibratingOutputId == output.getId()) {
-        ImGui::TextDisabled("Leave calibration to edit this output's slices.");
         return;
     }
     const IVec2 canvas = scene->getCanvasSize();
@@ -142,9 +138,16 @@ void SliceEditor::render(EditorContext& ctx, OutputWindow& output) {
         if (ImGui::Button("Editing Warp on Canvas - Done")) es.endSliceWarp();
         ImGui::PopStyleColor(2);
     } else {
+        // The canvas belongs to calibration while a projector is calibrated
+        // (EditorState::beginSliceWarp refuses); the numbers below still edit the warp.
+        const bool calibrating = !es.calibratingOutputId.isNull();
+        ImGui::BeginDisabled(calibrating || es.aiScan.running);  // a scan owns Esc
         if (ImGui::Button("Edit Warp on Canvas")) es.beginSliceWarp(output, sliceId);
-        ImGui::SetItemTooltip("The canvas shows this output's frame; move the warp corners with "
-                              "the mouse or the keyboard, as for a quad");
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(calibrating
+                                  ? "Leave calibration to edit the warp on the canvas"
+                                  : "The canvas shows this output's frame; move the warp corners with "
+                                    "the mouse or the keyboard, as for a quad");
     }
     // Beside the button, above the help text: after the wrapped text it would run off
     // the panel's right edge.

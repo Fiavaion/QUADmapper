@@ -1,15 +1,18 @@
 {
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
     "name": "quadmapper",
-    "version": "0.1.0",
     "description": "Professional quad-based projection mapping application for Windows 11",
     "license": "MIT",
     "dependencies": [
         "glfw3",
         "glm",
         "nlohmann-json",
-        "ffmpeg",
+        {
+            "name": "ffmpeg",
+            "default-features": false,
+            "features": ["avcodec", "avdevice", "avformat", "swresample", "swscale"]
+        },
         "miniaudio"
     ],
-    "builtin-baseline": "0e39c10736341cc8135b560438229bbda3d3219a"
+    "builtin-baseline": "0699a19d0c6386247ce50d4dedbb8217d484d536"
 }

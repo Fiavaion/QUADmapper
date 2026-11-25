@@ -2,6 +2,7 @@
 #include "Texture.hpp"
 #include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
+#include "core/MainThreadTimings.hpp"
 
 #include <glad/glad.h>
 
@@ -131,6 +132,26 @@ public:
         finished_.wait(lock, [&job] { return job.done; });
     }
 
+    // Never waits: true once no copy writes into `job`'s mapping (a queued copy is
+    // dropped, it never starts), false while its copy runs.
+    bool drop(YuvUploadState::Staging& job) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (job.done) return true;
+        for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+            if (*it == &job) {
+                queue_.erase(it);
+                job.done = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static std::function<void()>& hook() {
+        static std::function<void()> h;
+        return h;
+    }
+
 private:
     void run() {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -140,6 +161,7 @@ private:
             YuvUploadState::Staging* job = queue_.front();
             queue_.pop_front();
             lock.unlock();
+            if (hook()) hook()();
             copyPlanes(*job);
             lock.lock();
             job->done = true;
@@ -180,6 +202,10 @@ YuvUploadState::~YuvUploadState() {
     }
 }
 
+bool YuvUploadState::idle() {
+    return !staging_.mapped || !copier_ || copier_->drop(staging_);
+}
+
 void YuvUploadState::settle() {
     if (staging_.mapped) {
         if (copier_) copier_->wait(staging_);
@@ -192,6 +218,10 @@ void YuvUploadState::settle() {
 }
 
 // --- YuvConverter ---
+
+void YuvConverter::setCopyHookForTesting(std::function<void()> hook) {
+    PlaneCopier::hook() = std::move(hook);
+}
 
 YuvConverter::~YuvConverter() {
     if (vao_ != 0) {
@@ -249,9 +279,16 @@ YuvConverter::Coefficients YuvConverter::coefficients(YuvMatrix matrix, bool ful
     return c;
 }
 
+bool YuvConverter::prepare() {
+    const bool ok = ensureObjects();
+    glUseProgram(0);  // ensureObjects() bound the program; outside begin()/end() nothing restores it
+    return ok;
+}
+
 bool YuvConverter::ensureObjects() {
     if (failed_) return false;
     if (program_.isValid()) return true;
+    ScopedMainThreadTiming timing("yuvShaderBuild");
 
     if (!program_.create(VERTEX_SOURCE, FRAGMENT_SOURCE)) {
         Logger::error("YuvConverter: the YUV -> RGBA shader failed to build; video stays black");
@@ -373,7 +410,12 @@ bool YuvConverter::uploadPlanes(const YuvPicture& picture, YuvUploadState& state
         staging = false;  // contents lost (a display mode change): copy again
     }
     staged.picture = YuvPicture{};
-    Logger::warning("YuvConverter: could not map a pixel buffer; this video frame was not uploaded");
+    // Once: a failure that lasts would otherwise write a line for every frame of the show.
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        Logger::warning("YuvConverter: could not map a pixel buffer; video frames are not uploaded while this lasts");
+    }
     return false;
 }
 

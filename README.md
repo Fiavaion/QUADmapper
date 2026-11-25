@@ -1,30 +1,43 @@
 # QUADmapper
 
-Professional quad-based projection mapping application for Windows 11.
+QUADmapper is a projection mapping application for Windows. It warps images, video and generated patterns onto physical surfaces, so a projector's picture lines up with a wall, a screen or a stage set.
 
-## Features
+It is made for live-event technicians, VJs, installation artists and projection designers who need to line up a projector quickly and keep the show running.
 
-- **Multi-quad warping** - Map content to complex surfaces with 4-corner perspective transform
-- **Mesh subdivision** - Smooth curved surface mapping with up to 64x64 mesh
-- **Multiple outputs** - Drive unlimited projectors with independent resolution/rotation
-- **Scene system** - Instant content switching with keyboard shortcuts (1-9)
-- **Video playback** - Multiple video formats with timeline sync and loop modes
-- **Audio mixing** - Per-source volume control with multi-output routing
+## What it does
 
-## Requirements
+- Corner-pin and mesh warping. Pull a quad's four corners, or subdivide it into a mesh for curved surfaces. Pick a corner with `Tab` and nudge it with the arrow keys (`Shift` = 10x, `Alt` = 0.1x), or drag it with the mouse.
+- Images, video, HAP video and procedural patterns (solid colour, gradient, checkerboard, grid, test patterns, noise, plasma) as sources. Video can be converted to HAP from the media bin. A webcam can be used as a source.
+- Several scenes, put on air with the `1` to `9` keys, with optional crossfades between them.
+- Several projector outputs. Each output can show part of the scene (slices), with edge blending where projectors overlap.
+- Perform mode with blackout (`Ctrl+B`) and a perform lock (`Ctrl+Shift+L`) that blocks edits during a show.
+- Projector calibration against 3D objects loaded from OBJ files.
+- OSC and MIDI control, including MIDI learn.
+- Autosave and crash recovery.
+- Optional AI assist for surface detection and camera scanning. See `resources/docs/ai-features-guide.html`.
 
-- Windows 10/11 (64-bit)
-- Visual Studio 2022 with C++ workload
-- CMake 3.20+
-- vcpkg with VCPKG_ROOT environment variable set
-- GPU with OpenGL 3.3+ support
+## System requirements
 
-## Quick Start
+- Windows 10 or 11, 64-bit.
+- A graphics card with OpenGL 3.3 or later. Every built-in pattern (solid colour, gradient, checkerboard, grid, noise, plasma and the test patterns) needs OpenGL 4.3; images and video do not.
+- For the AI features: an NVIDIA graphics card for speed. Without one, the AI features run on the CPU and are much slower.
+
+## Download
+
+The Windows installer, `QUADmapper-Setup-<version>.exe`, is on the [Releases](https://github.com/Fiavaion/QUADmapper/releases) page. The installer is not code-signed yet, so Windows may show "Windows protected your PC" when you run it: click **More info**, then **Run anyway**.
+
+## Getting started
+
+Open `resources/docs/quick-start.html` in a web browser. It takes about two minutes to read and covers the first mapping, the show controls and the keyboard shortcuts. The AI features have their own guide: `resources/docs/ai-features-guide.html`.
+
+## Building from source
+
+You need Visual Studio 2022 with the C++ workload, CMake 3.20 or later, and vcpkg installed at `C:\vcpkg` (the path `CMakePresets.json` expects).
 
 ```powershell
 # Clone the repository
-git clone https://github.com/youruser/quadmapper.git
-cd quadmapper
+git clone https://github.com/Fiavaion/QUADmapper.git
+cd QUADmapper
 
 # Configure (first time)
 cmake --preset debug
@@ -32,23 +45,26 @@ cmake --preset debug
 # Build
 cmake --build build/debug
 
+# Run the tests
+ctest --preset debug
+
 # Run
-./build/debug/QUADmapper.exe
+./build/debug/src/app/Debug/QUADmapper.exe
 ```
 
-## Build Presets
+### Build presets
 
 | Preset | Purpose |
 |--------|---------|
 | `debug` | Development with tests and debug symbols |
-| `release` | Optimized distribution build |
+| `release` | Optimised distribution build |
 | `relwithdebinfo` | Profiling and production debugging |
 
-## Project Structure
+### Project structure
 
 ```
 src/
-├── app/        # Application entry point
+├── app/        # Application loop, project session, AI assist
 ├── core/       # Utilities, types, logging
 ├── project/    # Save/load, serialization
 ├── scene/      # Quads, groups, mesh subdivision
@@ -57,12 +73,19 @@ src/
 ├── video/      # FFmpeg video decoding
 ├── audio/      # Audio mixing (miniaudio)
 ├── output/     # Multi-window, perform mode
+├── control/    # OSC and MIDI control
+├── source/     # Media sources: video, HAP, images, procedural, camera
+├── editor/     # Editor state, actions, perform lock
 ├── ui/         # Dear ImGui interface
 └── input/      # Keyboard shortcuts, mouse
 ```
 
 ## Documentation
 
+- [Quick start](resources/docs/quick-start.html)
+- [AI features guide](resources/docs/ai-features-guide.html)
+- [Release notes](RELEASE_NOTES.md)
+- [Third-party notices](THIRD-PARTY-NOTICES.md)
 - [Product Requirements](docs/PRD.md)
 - [Engineering Design](docs/EDD.md)
 - [Development Guide](CLAUDE.md)

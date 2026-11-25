@@ -44,6 +44,18 @@ public static class W {
 
 if (-not (Test-Path $ExePath))   { throw "exe not found: $ExePath" }
 if (-not (Test-Path $TestImage)) { throw "test image not found: $TestImage" }
+
+# The app runs the QM_AI_SELFTEST hook only with the AI Assist beta on; this script
+# never changes the user's preferences, so it asks for the switch instead.
+$prefsFile = Join-Path $env:APPDATA "QUADmapper/preferences.json"
+$aiBeta = $false
+if (Test-Path $prefsFile) {
+    $prefs = Get-Content -Raw $prefsFile | ConvertFrom-Json
+    $aiBeta = ($prefs.PSObject.Properties.Name -contains "general") -and
+              ($prefs.general.PSObject.Properties.Name -contains "aiAssistBeta") -and
+              [bool]$prefs.general.aiAssistBeta
+}
+if (-not $aiBeta) { throw "turn on AI Assist (beta) in Edit > Preferences first: the self-test hook is off without it" }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 $TestImage = (Resolve-Path $TestImage).Path

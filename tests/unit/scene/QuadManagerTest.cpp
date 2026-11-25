@@ -24,6 +24,16 @@ TEST_F(QuadManagerTest, CreateQuadAddsToManager) {
     EXPECT_FALSE(manager.isEmpty());
 }
 
+TEST_F(QuadManagerTest, CreatedQuadsWarpLinearlyAndDuplicatesKeepTheMode) {
+    Quad* quad = manager.createQuad();
+    EXPECT_EQ(quad->getGeometry().getWarpMode(), WarpMode::LINEAR);  // ADR-058
+
+    quad->getGeometry().setWarpMode(WarpMode::PERSPECTIVE);
+    Quad* copy = manager.duplicateQuad(quad->getId());
+    ASSERT_NE(copy, nullptr);
+    EXPECT_EQ(copy->getGeometry().getWarpMode(), WarpMode::PERSPECTIVE);
+}
+
 TEST_F(QuadManagerTest, CreateQuadWithNameSetsName) {
     Quad* quad = manager.createQuad("My Quad");
 
@@ -275,6 +285,21 @@ TEST_F(QuadManagerTest, DeleteSelectedUpdatesPrimarySelection) {
     EXPECT_EQ(manager.getPrimarySelectedId().value(), quad1->getId());
     EXPECT_FALSE(manager.isSelected(quad2->getId()));
     EXPECT_TRUE(manager.isSelected(quad1->getId()));
+}
+
+// The new primary is the first selected quad in list order, the same on every run.
+TEST_F(QuadManagerTest, LosingThePrimaryPicksTheFirstSelectedInListOrder) {
+    std::vector<Quad*> quads;
+    for (int i = 0; i < 8; ++i) quads.push_back(manager.createQuad());
+    for (int i = 6; i >= 0; --i) manager.addToSelection(quads[i]->getId());
+    manager.addToSelection(quads[7]->getId());
+    ASSERT_EQ(manager.getPrimarySelectedId().value(), quads[7]->getId());
+
+    manager.deselectQuad(quads[7]->getId());
+    EXPECT_EQ(manager.getPrimarySelectedId().value(), quads[0]->getId());
+
+    manager.deleteQuad(quads[0]->getId());
+    EXPECT_EQ(manager.getPrimarySelectedId().value(), quads[1]->getId());
 }
 
 // ============ Ordering Tests ============

@@ -9,53 +9,95 @@
 #include "renderer/YuvConverter.hpp"
 #include "renderer/DxInterop.hpp"
 #include "renderer/GpuCapabilities.hpp"
+#include "core/BackgroundWorker.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
+#include "core/MainThreadTimings.hpp"
+#include "video/VideoDecoder.hpp"
 
+#include <glad/glad.h>
+
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <exception>
+#include <utility>
 
 #ifdef QUADMAPPER_HAS_FFMPEG
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 }
+#include "video/LocalMediaInput.hpp"
 #endif
 
 namespace quadmapper {
 
 namespace {
 
-// Cheap codec probe: open the container, check whether its video stream is HAP,
-// close. FFmpeg stays behind this .cpp (ADR-011); routes HAP clips to the
-// demux-only HapFileSource instead of the FFmpeg-decode VideoFileSource (ADR-044).
-bool isHapContainer(const std::filesystem::path& path) {
+// What a cheap probe of a video file's container finds.
+enum class ContainerKind {
+    Unreadable,  // FFmpeg cannot open it as a container: it cannot be decoded
+    NoVideo,     // it opens, but holds no video stream (sound only, for example)
+    Hap,         // its video stream is HAP
+    Video,       // any other video stream
+};
+
+// Cheap codec probe: open the container, look at its streams, close. FFmpeg stays
+// behind this .cpp (ADR-011); routes HAP clips to the demux-only HapFileSource instead
+// of the FFmpeg-decode VideoFileSource (ADR-044), and refuses a file that cannot be a
+// video before its source exists. Runs on the main thread, so it reads the container
+// header only: HAP lives in containers (QuickTime, AVI, Matroska) whose header names
+// the codec. The streams are probed (avformat_find_stream_info decodes frames) only
+// when the header does not.
+ContainerKind probeContainer(const std::filesystem::path& path) {
 #ifdef QUADMAPPER_HAS_FFMPEG
     AVFormatContext* ctx = nullptr;
     const std::string pathStr = utf8FromPath(path);  // FFmpeg file names are UTF-8
-    if (avformat_open_input(&ctx, pathStr.c_str(), nullptr, nullptr) < 0) {
-        return false;
+    if (openLocalMediaInput(&ctx, pathStr.c_str()) < 0) {
+        return ContainerKind::Unreadable;
     }
 
-    bool isHap = false;
-    if (avformat_find_stream_info(ctx, nullptr) >= 0) {
+    auto scan = [ctx](bool& unknown) {
+        unknown = false;
+        bool video = false;
         for (unsigned int i = 0; i < ctx->nb_streams; ++i) {
-            AVCodecParameters* cp = ctx->streams[i]->codecpar;
-            if (cp->codec_type == AVMEDIA_TYPE_VIDEO && cp->codec_id == AV_CODEC_ID_HAP) {
-                isHap = true;
-                break;
-            }
+            const AVCodecParameters* cp = ctx->streams[i]->codecpar;
+            if (cp->codec_id == AV_CODEC_ID_HAP) return ContainerKind::Hap;
+            if (cp->codec_type == AVMEDIA_TYPE_VIDEO) video = true;
+            if (cp->codec_id == AV_CODEC_ID_NONE || cp->codec_type == AVMEDIA_TYPE_UNKNOWN) unknown = true;
         }
+        return video ? ContainerKind::Video : ContainerKind::NoVideo;
+    };
+    bool unknown = false;
+    ContainerKind kind = scan(unknown);
+    if (kind != ContainerKind::Hap && (unknown || ctx->nb_streams == 0) &&
+        avformat_find_stream_info(ctx, nullptr) >= 0) {
+        kind = scan(unknown);
     }
 
     avformat_close_input(&ctx);
-    return isHap;
+    return kind;
 #else
     (void)path;
-    return false;
+    return ContainerKind::Video;
 #endif
 }
 
 } // namespace
+
+// A video file opening on the opener thread. The worker writes `decoder` (or `hapFile`)
+// and then sets `done`; the main thread reads them only after seeing `done`.
+struct SourceManager::PendingOpen {
+    UUID id;
+    std::filesystem::path path;
+    bool hap = false;                    // a HAP clip: its container, not a decoder
+    DecodeOptions options;
+    std::atomic<bool> cancelled{false};  // the source was removed: open nothing more
+    std::atomic<bool> done{false};
+    std::unique_ptr<VideoDecoder> decoder;  // null when the file could not be opened
+    std::unique_ptr<HapFileSource::OpenedFile> hapFile;  // likewise
+};
 
 SourceManager::SourceManager()
     : yuvConverter_(std::make_unique<YuvConverter>())  // no GL work until the first video frame
@@ -65,8 +107,16 @@ SourceManager::SourceManager()
     masterTimeline_.play(std::chrono::steady_clock::now());
 }
 
+// Every worker is joined before what its tasks use is destroyed: the opener uses
+// dxInterop_, the reaper frees sources and decoders. GL objects are freed here, on the
+// main thread, as before.
 SourceManager::~SourceManager() {
     clear();
+    opener_.reset();  // waits for an open in progress; queued ones were cancelled
+    for (const auto& pending : opening_) retireOpened(*pending);
+    opening_.clear();
+    reaper_.reset();  // frees everything retired, then joins
+    retiredGl_.clear();
 }
 
 UUID SourceManager::createImageSource(const std::filesystem::path& path) {
@@ -122,28 +172,77 @@ UUID SourceManager::getOrCreateVideoSource(const std::filesystem::path& path) {
 }
 
 UUID SourceManager::createVideoSource(const std::filesystem::path& path) {
+    ScopedMainThreadTiming timing("createVideoSource");
     // Probe the container: HAP clips route to the demux-only HapFileSource so the
     // GPU-compressed frame is preserved; everything else uses the FFmpeg-decode
     // VideoFileSource (ADR-044). Both report SourceType::VIDEO_FILE.
-    std::unique_ptr<TextureSource> source;
-    if (isHapContainer(path)) {
-        source = std::make_unique<HapFileSource>(path);
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) {
+        Logger::error("SourceManager: Failed to create video source for '{}': no such file", utf8FromPath(path));
+        return UUID();
+    }
+    ContainerKind kind = ContainerKind::Video;
+    {
+        ScopedMainThreadTiming probeTiming("videoProbe");
+        kind = probeContainer(path);
+    }
+    if (kind == ContainerKind::Unreadable || kind == ContainerKind::NoVideo) {
+        Logger::error("SourceManager: Failed to create video source for '{}': {}", utf8FromPath(path),
+                      kind == ContainerKind::Unreadable ? "not a file FFmpeg can read" : "it holds no video");
+        return UUID();
+    }
+    // The file opens on the opener thread (TD-35: up to 3.4 s on the main thread under
+    // load, a HAP clip's container up to 18 ms); updateAll() hands what was opened to the
+    // source. A HAP clip demuxes only (ADR-044); any other is decoded through FFmpeg, and
+    // the first stream that leaves frames on the GPU also prepares the zero-copy device
+    // there, so its first frame does not create it (TD-35: up to 3.1 s).
+    auto pending = std::make_shared<PendingOpen>();
+    pending->path = path;
+    if (kind == ContainerKind::Hap) {
         Logger::debug("SourceManager: '{}' is HAP — using HapFileSource", utf8FromPath(path.filename()));
+        auto source = std::make_unique<HapFileSource>(path);
+        source->beginOpen();
+        pending->hap = true;
+        pending->id = addEntry(std::move(source));
     } else {
         // Hardware frames stay on the GPU when this GL context can share them (ADR-056).
-        DecodeOptions options = VideoFileSource::playbackDecodeOptions();
-        options.zeroCopy = dxInterop_->available();
-        source = std::make_unique<VideoFileSource>(path, options);
+        pending->options = VideoFileSource::playbackDecodeOptions();
+        pending->options.zeroCopy = dxInterop_->available();
+        auto source = std::make_unique<VideoFileSource>(path, pending->options);
+        source->beginOpen();
+        pending->id = addEntry(std::move(source));
     }
-    UUID id = source->getId();
-
-    if (!registerSource(std::move(source)).isNull()) {
-        Logger::debug("SourceManager: Created video source for '{}'", utf8FromPath(path.filename()));
-        return id;
-    }
-
-    Logger::error("SourceManager: Failed to create video source for '{}'", utf8FromPath(path));
-    return UUID();
+    opening_.push_back(pending);
+    if (!opener_) opener_ = std::make_unique<BackgroundWorker>("Video opener");
+    // Whatever happens in the open, `done` is set: an exception fails the open (the
+    // source then goes the way of a file that cannot be decoded), never leaves it opening.
+    opener_->post([pending, interop = dxInterop_.get(), hook = openHookForTesting_] {
+        if (!pending->cancelled) {
+            try {
+                if (hook) hook(pending->path);
+                if (pending->hap) {
+                    pending->hapFile = HapFileSource::openFile(pending->path);
+                } else {
+                    std::unique_ptr<VideoDecoder> decoder =
+                        VideoFileSource::openDecoder(pending->path, pending->options);
+                    if (decoder && decoder->isZeroCopy() && !pending->cancelled) {
+                        interop->prepare(VideoDecoder::sharedD3dDevice());
+                    }
+                    // Its decode thread too, idle until finishOpen() hands it the clock's
+                    // position, so the main thread does not create it (TD-35).
+                    if (decoder) decoder->startIdleThread();
+                    pending->decoder = std::move(decoder);
+                }
+            } catch (const std::exception& e) {
+                Logger::error("SourceManager: Opening '{}' failed: {}", utf8FromPath(pending->path), e.what());
+            } catch (...) {
+                Logger::error("SourceManager: Opening '{}' failed", utf8FromPath(pending->path));
+            }
+        }
+        pending->done.store(true, std::memory_order_release);
+    });
+    Logger::debug("SourceManager: Opening video source for '{}'", utf8FromPath(path.filename()));
+    return pending->id;
 }
 
 UUID SourceManager::createCameraSource(const std::string& deviceName) {
@@ -159,6 +258,18 @@ UUID SourceManager::createCameraSource(const std::string& deviceName) {
     Logger::error("SourceManager: Failed to create camera source '{}'",
                   deviceName.empty() ? "(default)" : deviceName);
     return UUID();
+}
+
+UUID SourceManager::createCompositionSource(CompositionSettings settings) {
+    auto& cues = settings.cues;
+    cues.erase(std::remove_if(cues.begin(), cues.end(),
+                              [this](const CompositionCue& cue) {
+                                  return getSourceAs<CompositionSource>(cue.sourceId) != nullptr;
+                              }),
+               cues.end());
+    const UUID id = addEntry(std::make_unique<CompositionSource>(std::move(settings)));
+    compositionOrder_.push_back(id);
+    return id;
 }
 
 UUID SourceManager::createProceduralSource(ProceduralType type, int width, int height) {
@@ -187,34 +298,37 @@ UUID SourceManager::registerSource(std::unique_ptr<TextureSource> source) {
         return UUID();
     }
 
-    UUID id = source->getId();
+    if (!source->initialize()) {
+        return UUID();
+    }
+    return addEntry(std::move(source));
+}
+
+UUID SourceManager::addEntry(std::unique_ptr<TextureSource> source) {
+    const UUID id = source->getId();
+    if (timeSource_) {
+        if (auto* playable = dynamic_cast<PlayableSource*>(source.get())) playable->setTimeSource(timeSource_);
+    }
 
     SourceEntry entry;
     entry.source = std::move(source);
     entry.needsTextureUpdate = true;
 
-    // Initialize the source
-    if (!entry.source->initialize()) {
-        return UUID();
-    }
-
-    // Create GPU texture
     createGPUTexture(entry);
 
     sources_[id] = std::move(entry);
-
-    if (sourceAddedCallback_) {
-        sourceAddedCallback_(id);
-    }
 
     return id;
 }
 
 void SourceManager::removeSource(const UUID& id) {
+    ScopedMainThreadTiming timing("removeSource");
     auto it = sources_.find(id);
     if (it != sources_.end()) {
-        it->second.source->shutdown();
+        retire(it->second);
         sources_.erase(it);
+        compositionOrder_.erase(std::remove(compositionOrder_.begin(), compositionOrder_.end(), id),
+                                compositionOrder_.end());
 
         if (sourceRemovedCallback_) {
             sourceRemovedCallback_(id);
@@ -223,10 +337,197 @@ void SourceManager::removeSource(const UUID& id) {
 }
 
 void SourceManager::clear() {
+    ScopedMainThreadTiming timing("clearSources");
     for (auto& [id, entry] : sources_) {
-        entry.source->shutdown();
+        retire(entry);
     }
     sources_.clear();
+    compositionOrder_.clear();
+    // Kept for the next source of their size: a new project seldom has one, and they hold
+    // video memory (TD-35).
+    while (std::unique_ptr<DxInteropTarget> spare = dxInterop_->takeSpare(true)) {
+        RetiredGl gl;
+        gl.zeroCopy = std::move(spare);
+        retireGl(std::move(gl));
+    }
+}
+
+// Free a source that is leaving: its GL objects here (they need this thread's context),
+// a video file's decode threads, FFmpeg and D3D11 objects on the reaper thread. Joining
+// those threads and freeing their decoders took up to 3.6 s on the main thread (TD-35).
+void SourceManager::retire(SourceEntry& entry) {
+    for (const auto& pending : opening_) {
+        if (pending->id == entry.source->getId()) pending->cancelled = true;
+    }
+    RetiredGl gl;
+    gl.texture = std::move(entry.texture);
+    gl.yuvUpload = std::move(entry.yuvUpload);
+    gl.compressedUpload = std::move(entry.compressedUpload);
+    // Its shared planes, still registered, wait for the next source of their size (TD-35).
+    gl.zeroCopy = dxInterop_->recycle(std::move(entry.zeroCopy));
+    retireGl(std::move(gl));
+    if (entry.source->getType() == SourceType::VIDEO_FILE) {
+        // Video and HAP sources hold no GL objects; everything they own may be freed
+        // on any thread once their own threads are joined, which shutdown() does.
+        std::shared_ptr<TextureSource> doomed(std::move(entry.source));
+        reaper().post([doomed = std::move(doomed)]() mutable {
+            doomed->shutdown();
+            doomed.reset();
+        });
+    } else {
+        // Procedural sources may own GL textures: freed here. So are cameras: DirectShow
+        // capture graphs are COM objects of the apartment that built them, which is this
+        // thread (CameraSource), so their device is opened and closed here.
+        entry.source->shutdown();
+        entry.source.reset();
+    }
+}
+
+// Removed GL state waits here until it can be freed without this thread waiting on the
+// GPU, the driver or the copier thread (releaseRetiredGl). The fence marks the end of
+// every GL command that may still read it: the frames already drawn with its texture,
+// the planes uploaded or converted into it.
+void SourceManager::retireGl(RetiredGl retired) {
+    if (!retired.texture && !retired.yuvUpload && !retired.compressedUpload && !retired.zeroCopy) return;
+    if (glFenceSync) retired.fence.reset(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
+    retired.retiredAt = std::chrono::steady_clock::now();
+    retiredGl_.push_back(std::move(retired));
+}
+
+void SourceManager::GlFenceDeleter::operator()(void* fence) const {
+    glDeleteSync(static_cast<GLsync>(fence));
+}
+
+// Free removed GL state without waiting on this thread (TD-35: up to 318 ms for one
+// source under load, in glDeleteTextures, wglDXUnregisterObjectNV or waiting for a frame
+// copy). An entry is touched only once its fence has signalled (checked, never waited
+// on); a pixel buffer still being filled by the copier waits for a later frame (a copy
+// merely queued is dropped). Then its objects go one per step (a texture, an upload
+// state, one shared plane): at least one step a frame, and more only while the frame's
+// 1 ms budget lasts. A single driver call can still stall its step (unregistering a plane
+// took up to 57 ms with the GPU done with it), which is why removed sources' shared
+// planes are kept for the next source instead (DxInterop::recycle). A fence that has not
+// signalled after FENCE_LIMIT never will (a GPU reset): it is taken as signalled, or
+// everything retired after it would be held for the rest of the session.
+void SourceManager::releaseRetiredGl() {
+    if (retiredGl_.empty()) return;
+    ScopedMainThreadTiming timing("retiredGlRelease");
+    constexpr double BUDGET_SECONDS = 0.001;
+    const auto start = std::chrono::steady_clock::now();
+    bool stepped = false;
+    auto budgetLeft = [&] {
+        return !stepped || std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() <
+                               BUDGET_SECONDS;
+    };
+    for (size_t i = 0; i < retiredGl_.size() && budgetLeft();) {
+        RetiredGl& r = retiredGl_[i];
+        if (r.fence) {
+            // Flushes, so the fence is sure to signal, but never waits (timeout 0).
+            const GLenum status =
+                fenceNeverSignalsForTesting_
+                    ? GL_TIMEOUT_EXPIRED
+                    : glClientWaitSync(static_cast<GLsync>(r.fence.get()), GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+            if (status == GL_TIMEOUT_EXPIRED) {
+                // Fences signal in order: so are the later ones.
+                if (std::chrono::steady_clock::now() - r.retiredAt < fenceLimit_) break;
+                if (!fenceTimeoutLogged_) {
+                    fenceTimeoutLogged_ = true;
+                    Logger::warning("SourceManager: a GPU fence did not signal in {} ms (GPU reset?); "
+                                    "freeing removed GL state without it", fenceLimit_.count());
+                }
+            }
+            r.fence.reset();  // signalled (or failed: then nothing can be learned by waiting)
+        }
+        if (r.yuvUpload && r.yuvUpload->idle()) {
+            r.yuvUpload.reset();
+            stepped = true;
+        } else if (r.compressedUpload && r.compressedUpload->idle()) {
+            r.compressedUpload.reset();
+            stepped = true;
+        } else if (r.zeroCopy) {
+            if (r.zeroCopy->releaseStep()) r.zeroCopy.reset();
+            stepped = true;
+        } else if (r.texture) {
+            r.texture.reset();
+            stepped = true;
+        } else if (!r.yuvUpload && !r.compressedUpload) {
+            retiredGl_.erase(retiredGl_.begin() + static_cast<std::ptrdiff_t>(i));
+            continue;
+        } else {
+            ++i;  // a copy still fills one of its buffers: try the next entry
+        }
+    }
+}
+
+// What an open made for a source that no longer wants it: freed on the reaper (a decoder
+// joins its threads and frees FFmpeg and D3D11 objects; a HAP container closes its file).
+void SourceManager::retireOpened(PendingOpen& pending) {
+    std::shared_ptr<VideoDecoder> decoder(std::move(pending.decoder));
+    std::shared_ptr<HapFileSource::OpenedFile> hapFile(std::move(pending.hapFile));
+    if (!decoder && !hapFile) return;
+    reaper().post([decoder = std::move(decoder), hapFile = std::move(hapFile)]() mutable {
+        decoder.reset();
+        hapFile.reset();
+    });
+}
+
+BackgroundWorker& SourceManager::reaper() {
+    if (!reaper_) reaper_ = std::make_unique<BackgroundWorker>("Source reaper");
+    return *reaper_;
+}
+
+// Main thread: give each opened decoder to its source, which starts decoding at once.
+void SourceManager::adoptOpenedSources() {
+    for (auto it = opening_.begin(); it != opening_.end();) {
+        PendingOpen& pending = **it;
+        if (!pending.done.load(std::memory_order_acquire)) {
+            ++it;
+            continue;
+        }
+        auto entry = pending.cancelled ? sources_.end() : sources_.find(pending.id);
+        TextureSource* source = entry != sources_.end() ? entry->second.source.get() : nullptr;
+        if (auto* video = dynamic_cast<VideoFileSource*>(source); video && video->isOpening()) {
+            ScopedMainThreadTiming timing("finishOpen");
+            if (!video->finishOpen(std::move(pending.decoder))) failedOpens_.push_back(pending.id);
+        } else if (auto* hap = dynamic_cast<HapFileSource*>(source); hap && hap->isOpening()) {
+            ScopedMainThreadTiming timing("finishOpen");
+            if (!hap->finishOpen(std::move(pending.hapFile))) failedOpens_.push_back(pending.id);
+        }
+        retireOpened(pending);  // whatever its source, removed meanwhile, did not take
+        it = opening_.erase(it);
+    }
+}
+
+void SourceManager::prepareGpu() {
+    yuvConverter_->prepare();
+    dxInterop_->available();
+}
+
+void SourceManager::finishBackgroundWork() {
+    if (opener_) opener_->drain();
+    adoptOpenedSources();
+    if (reaper_) reaper_->drain();
+    dxInterop_->finishBackgroundWork();
+    retiredGl_.clear();
+    dxInterop_->releaseSpares();
+}
+
+std::vector<UUID> SourceManager::takeFailedOpens() {
+    return std::exchange(failedOpens_, {});
+}
+
+void SourceManager::setOpenHookForTesting(std::function<void(const std::filesystem::path&)> hook) {
+    openHookForTesting_ = std::move(hook);
+}
+
+void SourceManager::setFenceHooksForTesting(bool neverSignals, std::chrono::milliseconds limit) {
+    fenceNeverSignalsForTesting_ = neverSignals;
+    fenceLimit_ = limit;
+}
+
+void SourceManager::setStandIn(const UUID& id, const UUID& standIn) {
+    auto it = sources_.find(id);
+    if (it != sources_.end()) it->second.standIn = standIn;
 }
 
 size_t SourceManager::releaseUnreferenced(const std::unordered_set<UUID>& inUse) {
@@ -237,7 +538,8 @@ size_t SourceManager::releaseUnreferenced(const std::unordered_set<UUID>& inUse)
         const bool procedural = type >= SourceType::PROCEDURAL_SOLID &&
                                 type <= SourceType::PROCEDURAL_GRID;
         const bool camera = type == SourceType::WEBCAM;
-        if ((fileBacked || procedural || camera) && inUse.count(id) == 0) {
+        const bool composition = type == SourceType::COMPOSITION;  // kept by the editor while it exists
+        if ((fileBacked || procedural || camera || composition) && inUse.count(id) == 0) {
             unused.push_back(id);
         }
     }
@@ -283,6 +585,11 @@ size_t SourceManager::getSourceCount() const {
     return sources_.size();
 }
 
+bool SourceManager::showsCurrentFrame(const UUID& id) const {
+    auto it = sources_.find(id);
+    return it != sources_.end() && it->second.hasFrame && !it->second.uploadDeferred;
+}
+
 Texture* SourceManager::getTexture(const UUID& id) {
     auto it = sources_.find(id);
     if (it == sources_.end()) {
@@ -290,6 +597,15 @@ Texture* SourceManager::getTexture(const UUID& id) {
     }
 
     SourceEntry& entry = it->second;
+
+    // A replacement still opening shows the source it replaces (setStandIn), when that
+    // has a picture to show.
+    if (!entry.hasFrame && !entry.standIn.isNull()) {
+        auto standIn = sources_.find(entry.standIn);
+        if (standIn != sources_.end() && standIn->second.texture && standIn->second.texture->isValid()) {
+            return standIn->second.texture.get();
+        }
+    }
 
     // For GPU-native sources, the texture wraps the source's native texture
     // For CPU sources, we manage the texture
@@ -309,27 +625,37 @@ std::unordered_map<UUID, Texture*> SourceManager::getTextureMap(const std::vecto
 
 std::unordered_map<UUID, Texture*> SourceManager::getTextureMap() {
     std::unordered_map<UUID, Texture*> map;
-    for (auto& [id, entry] : sources_) {
-        if (entry.texture) {
-            map[id] = entry.texture.get();
+    for (const auto& [id, entry] : sources_) {
+        if (Texture* texture = getTexture(id)) {
+            map[id] = texture;
         }
     }
     return map;
 }
 
 void SourceManager::updateAll(double deltaTime) {
+    ScopedMainThreadTiming timing("updateAll");
+    adoptOpenedSources();
+    dxInterop_->beginFrame();  // zero-copy set-up: one costly GL call this frame at most (TD-35)
     yuvConverter_->begin();  // GL state is saved once, at the first conversion, and restored below
     for (auto& [id, entry] : sources_) {
-        if (!entry.source || !entry.source->isReady()) {
+        if (!entry.source) {
             continue;
         }
+        // A locked source still opening follows the master too: its clock already runs.
         auto* playable = dynamic_cast<PlayableSource*>(entry.source.get());
         if (playable && playable->isTimelineLocked()) {
             playable->followTimeline(masterTimeline_);
         }
+        if (!entry.source->isReady()) {
+            continue;
+        }
+        if (entry.source->getType() == SourceType::COMPOSITION) {
+            continue;  // drawn below, from the frames its cues take here
+        }
 
-        // Update the source
-        bool hasNewFrame = entry.source->update(deltaTime);
+        // Update the source; a frame whose upload had to wait (uploadDeferred) is offered again.
+        const bool hasNewFrame = entry.source->update(deltaTime) || entry.uploadDeferred;
 
         if (hasNewFrame) {
             if (entry.source->isGPUNative()) {
@@ -351,6 +677,7 @@ void SourceManager::updateAll(double deltaTime) {
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
                 ++uploadStats_.uploads;
             }
+            if (!entry.uploadDeferred) entry.hasFrame = true;
         }
     }
     // The zero-copy frames staged above, all under one interop lock (ADR-056).
@@ -361,15 +688,35 @@ void SourceManager::updateAll(double deltaTime) {
     uploadStats_.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     yuvConverter_->end();
 
-    // The shared planes of one source that fell back: releasing a target unregisters it
-    // from GL and frees its D3D11 textures, a few milliseconds each, so when many sources
-    // fall back together they go one a frame instead of all in the frame they failed.
-    for (auto& [id, entry] : sources_) {
-        if (entry.zeroCopyFailed && entry.zeroCopy) {
-            entry.zeroCopy.reset();
-            break;
+    // Compositions (ADR-061), after every other source has its frame for this update.
+    for (const UUID& id : compositionOrder_) {
+        auto it = sources_.find(id);
+        if (it == sources_.end()) continue;
+        SourceEntry& entry = it->second;
+        auto* composition = static_cast<CompositionSource*>(entry.source.get());
+        composition->advance(deltaTime, [this](const UUID& cueId) { return getSource(cueId); });
+        composition->render([this](const UUID& cueId) -> Texture* {
+            const auto cue = sources_.find(cueId);
+            if (cue == sources_.end() || !cue->second.hasFrame) return nullptr;
+            return cue->second.texture.get();
+        });
+        const uint32_t glId = composition->getGLTextureId();
+        if (glId == 0) continue;
+        if (!entry.texture) entry.texture = std::make_unique<Texture>();
+        if (entry.texture->getId() != glId || entry.texture->getWidth() != composition->getWidth() ||
+            entry.texture->getHeight() != composition->getHeight()) {
+            entry.texture->setGLTextureId(glId, composition->getWidth(), composition->getHeight(), 4);
         }
+        entry.hasFrame = true;
     }
+
+    // Shared planes no source took for DxInterop::SPARE_LIFETIME go, one target a frame.
+    if (std::unique_ptr<DxInteropTarget> spare = dxInterop_->takeSpare()) {
+        RetiredGl gl;
+        gl.zeroCopy = std::move(spare);
+        retireGl(std::move(gl));
+    }
+    releaseRetiredGl();
 }
 
 void SourceManager::seekAllToStart() {
@@ -378,29 +725,53 @@ void SourceManager::seekAllToStart() {
             playable->seek(0.0);
         }
     }
+    for (const UUID& id : compositionOrder_) {
+        if (auto* composition = getSourceAs<CompositionSource>(id)) composition->restart();
+    }
     restartMasterTimeline();
 }
 
 void SourceManager::playMasterTimeline() {
-    masterTimeline_.play(std::chrono::steady_clock::now());
+    masterTimeline_.play(clockNow());
 }
 
 void SourceManager::pauseMasterTimeline() {
-    masterTimeline_.pause(std::chrono::steady_clock::now());
+    masterTimeline_.pause(clockNow());
 }
 
 void SourceManager::restartMasterTimeline() {
-    masterTimeline_.seek(0.0, std::chrono::steady_clock::now());
+    masterTimeline_.seek(0.0, clockNow());
+}
+
+PlaybackTimePoint SourceManager::clockNow() const {
+    return timeSource_ ? timeSource_() : std::chrono::steady_clock::now();
+}
+
+void SourceManager::setTimeSource(std::function<PlaybackTimePoint()> source) {
+    timeSource_ = std::move(source);
+    for (auto& [id, entry] : sources_) {
+        if (auto* playable = dynamic_cast<PlayableSource*>(entry.source.get())) {
+            if (timeSource_) playable->setTimeSource(timeSource_);
+        }
+    }
+}
+
+bool SourceManager::framesCoverClock() const {
+    for (const auto& [id, entry] : sources_) {
+        const auto* playable = dynamic_cast<const PlayableSource*>(entry.source.get());
+        if (!playable || !playable->isReady()) continue;
+        if (!playable->framesCoverClock()) return false;
+        // Taken is not yet shown: a zero-copy stream's first frame reaches the texture
+        // a few updates later (showsCurrentFrame).
+        if (!entry.hasFrame || entry.uploadDeferred) return false;
+    }
+    return true;
 }
 
 void SourceManager::setTimelineLocked(const UUID& id, bool locked) {
     if (auto* playable = getSourceAs<PlayableSource>(id)) {
         playable->setTimelineLocked(locked, masterTimeline_);
     }
-}
-
-void SourceManager::setSourceAddedCallback(SourceAddedCallback callback) {
-    sourceAddedCallback_ = std::move(callback);
 }
 
 void SourceManager::setSourceRemovedCallback(SourceRemovedCallback callback) {
@@ -443,6 +814,7 @@ void SourceManager::createGPUTexture(SourceEntry& entry) {
 }
 
 void SourceManager::uploadFrameToTexture(SourceEntry& entry) {
+    entry.uploadDeferred = false;  // set again if the frame must wait (uploadYuvFrame)
     if (!entry.source || !entry.texture) {
         return;
     }
@@ -476,8 +848,11 @@ void SourceManager::uploadFrameToTexture(SourceEntry& entry) {
             entry.texture->compressedFormat() != frame->compressedFormat ||
             entry.texture->getWidth() != frame->width ||
             entry.texture->getHeight() != frame->height) {
-            entry.texture->createCompressed(frame->width, frame->height, frame->compressedFormat,
-                                            nullptr, frame->compressed->size());
+            if (!entry.texture->createCompressed(frame->width, frame->height, frame->compressedFormat,
+                                                 nullptr, frame->compressed->size())) {
+                entry.source->markFrameConsumed();
+                return;
+            }
         }
         // Through the source's pixel buffers, the bytes copied off the main thread (TD-31).
         if (!entry.compressedUpload) entry.compressedUpload = std::make_unique<CompressedUploadState>();
@@ -513,17 +888,28 @@ void SourceManager::uploadFrameToTexture(SourceEntry& entry) {
 // Video as YUV planes (ADR-055): the planes go up through the source's pixel buffers
 // and a GPU pass writes them into its RGBA texture, the one texture every consumer samples.
 void SourceManager::uploadYuvFrame(SourceEntry& entry, const FrameData& frame) {
+    // Left on the GPU (ADR-056), a source's first frame sets its shared planes up over a
+    // few updates (TD-35); meanwhile it keeps the frame, and its texture what it showed.
+    std::string why;
+    DxInterop::SetUp setUp = DxInterop::SetUp::Failed;
+    if (frame.yuv.onGpu() && !entry.zeroCopyFailed) {
+        if (!entry.zeroCopy) entry.zeroCopy = std::make_unique<DxInteropTarget>();
+        setUp = dxInterop_->setUp(frame.yuv, *entry.zeroCopy, why);
+        if (setUp == DxInterop::SetUp::Later) {
+            entry.uploadDeferred = true;
+            return;
+        }
+    }
     Texture& texture = *entry.texture;
     if (texture.getId() == 0 || texture.isCompressed() || texture.getChannels() != 4 ||
         texture.getWidth() != frame.width || texture.getHeight() != frame.height) {
         texture.createEmpty(frame.width, frame.height, 4);
     }
     if (frame.yuv.onGpu()) {
-        // Left on the GPU (ADR-056): staged now, delivered by finish() at the end of updateAll().
+        // Staged now, delivered by finish() at the end of updateAll().
         if (!entry.zeroCopyFailed) {
-            std::string why;
-            if (!entry.zeroCopy) entry.zeroCopy = std::make_unique<DxInteropTarget>();
-            if (dxInterop_->stage(frame.yuv, *entry.zeroCopy, texture, &entry, why)) {
+            if (setUp == DxInterop::SetUp::Ready &&
+                dxInterop_->stage(frame.yuv, *entry.zeroCopy, texture, &entry, why)) {
                 entry.source->markFrameConsumed();
                 return;
             }
@@ -547,7 +933,12 @@ void SourceManager::uploadYuvFrame(SourceEntry& entry, const FrameData& frame) {
 // streams falling back at once stalled a frame for 700 ms).
 void SourceManager::fallBackFromZeroCopy(SourceEntry& entry, const std::string& why) {
     if (entry.zeroCopyFailed) return;
-    entry.zeroCopyFailed = true;  // its target is never staged again; released by updateAll()
+    entry.zeroCopyFailed = true;  // never staged again
+    // Its shared planes go as a removed source's do (unregistering a target from GL costs
+    // milliseconds; 16 sources fall back together when the lock fails for all).
+    RetiredGl gl;
+    gl.zeroCopy = std::move(entry.zeroCopy);
+    retireGl(std::move(gl));
     if (auto* video = dynamic_cast<VideoFileSource*>(entry.source.get())) video->stopZeroCopy(why);
 }
 

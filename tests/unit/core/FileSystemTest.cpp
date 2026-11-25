@@ -161,5 +161,56 @@ TEST_F(FileSystemAtomicTest, UnwritableDirectoryReturnsErrAndCreatesNothing) {
     EXPECT_FALSE(fs::exists(target));
 }
 
+// The app's own folders must not depend on the folder it was started from.
+TEST(AppFoldersTest, ExecutableDirHoldsTheRunningProgramWhateverTheCurrentFolder) {
+    const fs::path before = executableDir();
+    const fs::path cwd = fs::current_path();
+    fs::current_path(fs::temp_directory_path());
+    const fs::path after = executableDir();
+    fs::current_path(cwd);
+
+    EXPECT_EQ(before, after);
+    EXPECT_TRUE(fs::exists(before / "test_core.exe"));
+    EXPECT_EQ(resourcePath("fonts/a.ttf"), before / "resources" / "fonts" / "a.ttf");
+}
+
+TEST(AppFoldersTest, UserFoldersExistAndAreNamedForTheApp) {
+    for (const fs::path& dir : {userConfigDir(), userLocalDir()}) {
+        EXPECT_EQ(dir.filename(), "QUADmapper");
+        EXPECT_TRUE(fs::is_directory(dir));
+    }
+    EXPECT_NE(userConfigDir(), userLocalDir());
+}
+
+TEST_F(FileSystemAtomicTest, ReadBinaryFileReturnsExactBytesAndErrOnMissingFile) {
+    const fs::path file = dir_ / "bytes.bin";
+    spit(file, std::string("\x01\x00\x02", 3));
+
+    auto ok = FileSystem::readBinaryFile(file);
+    ASSERT_TRUE(ok.isSuccess());
+    EXPECT_EQ(ok.value(), (std::vector<uint8_t>{1, 0, 2}));
+    EXPECT_TRUE(FileSystem::readBinaryFile(dir_ / "absent.bin").isError());
+}
+
+// Windows reports a name this long as an error, not as "not found".
+TEST(FileSystemPathTest, APathThatCannotBeExaminedDoesNotExist) {
+    const fs::path tooLong = fs::path("C:\\") / std::wstring(40000, L'a');
+
+    EXPECT_FALSE(FileSystem::exists(tooLong));
+    EXPECT_FALSE(FileSystem::isDirectory(tooLong));
+    EXPECT_NO_THROW(FileSystem::makeRelative(tooLong, "C:\\"));
+    EXPECT_NO_THROW(FileSystem::resolveRelative(tooLong, "C:\\"));
+}
+
+TEST_F(FileSystemAtomicTest, AFileOverTheLimitIsNotRead) {
+    const fs::path file = dir_ / "five.bin";
+    spit(file, "12345");
+
+    EXPECT_TRUE(FileSystem::readFile(file, 5).isSuccess());
+    EXPECT_TRUE(FileSystem::readFile(file, 4).isError());
+    EXPECT_TRUE(FileSystem::readBinaryFile(file, 5).isSuccess());
+    EXPECT_TRUE(FileSystem::readBinaryFile(file, 4).isError());
+}
+
 }  // namespace test
 }  // namespace quadmapper

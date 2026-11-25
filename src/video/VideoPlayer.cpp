@@ -2,6 +2,7 @@
 #include "FrameSelection.hpp"
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
+#include "core/MainThreadTimings.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -32,17 +33,40 @@ bool VideoPlayer::load(const std::filesystem::path& path, const DecodeOptions& o
     }
 
     path_ = path;
+    transport_.load(decoder_->getInfo().duration);
+    start();
+    LOG_INFO("Loaded video: {}", utf8FromPath(path));
+    return true;
+}
+
+void VideoPlayer::beginOpen(const std::filesystem::path& path) {
+    unload();
+    path_ = path;
+    opening_ = true;
+}
+
+bool VideoPlayer::finishOpen(std::unique_ptr<VideoDecoder> decoder) {
+    if (!opening_) return false;
+    opening_ = false;
+    if (!decoder || !decoder->isOpen()) return false;
+    decoder_ = std::move(decoder);  // the unopened one it replaces holds no thread or file
+    // Play, pause, seek, speed, loop and lock given while the file opened already moved
+    // the clock: keep its position and state, now with the clip's duration.
+    transport_.setDuration(decoder_->getInfo().duration);
+    start();
+    LOG_INFO("Loaded video: {}", utf8FromPath(path_));
+    return true;
+}
+
+// The decoder just opened: playback state from its info, decoding at the clock's position.
+void VideoPlayer::start() {
     const auto& info = decoder_->getInfo();
     state_.duration = info.duration;
     state_.totalFrames = info.totalFrames;
-    transport_.load(info.duration);
     if (transport_.loopMode() == LoopMode::PING_PONG) {
         transport_.setLoopMode(LoopMode::PING_PONG, decoder_->checkReverse(reverseCacheBytes_));
     }
     applyTransport();  // starts background decoding at the clock's position
-
-    LOG_INFO("Loaded video: {}", utf8FromPath(path));
-    return true;
 }
 
 void VideoPlayer::unload() {
@@ -54,6 +78,7 @@ void VideoPlayer::unload() {
     state_.reset();
     currentFrame_ = VideoFrame{};
     path_.clear();
+    opening_ = false;
     hasNewFrame_ = false;
     refreshPending_ = false;
     durationChecked_ = false;
@@ -63,20 +88,24 @@ bool VideoPlayer::isLoaded() const {
     return decoder_ && decoder_->isOpen();
 }
 
+bool VideoPlayer::takesTransport() const {
+    return opening_ || isLoaded();
+}
+
 void VideoPlayer::play() {
-    if (!isLoaded()) return;
+    if (!takesTransport()) return;
     transport_.play();
     applyTransport();
 }
 
 void VideoPlayer::pause() {
-    if (!isLoaded()) return;
+    if (!takesTransport()) return;
     transport_.pause();
     applyTransport();
 }
 
 void VideoPlayer::stop() {
-    if (!isLoaded()) return;
+    if (!takesTransport()) return;
     transport_.stop();
     applyTransport();
 }
@@ -90,7 +119,7 @@ void VideoPlayer::togglePlayPause() {
 }
 
 void VideoPlayer::seek(double timeSeconds) {
-    if (!isLoaded()) return;
+    if (!takesTransport()) return;
     transport_.seek(timeSeconds);
     applyTransport();
 }
@@ -116,7 +145,7 @@ void VideoPlayer::setLoopMode(LoopMode mode) {
     const std::string reverseProblem = mode == LoopMode::PING_PONG && isLoaded()
         ? decoder_->checkReverse(reverseCacheBytes_) : std::string();
     transport_.setLoopMode(mode, reverseProblem);
-    if (isLoaded()) applyTransport();
+    if (takesTransport()) applyTransport();
 }
 
 LoopMode VideoPlayer::getLoopMode() const {
@@ -133,7 +162,7 @@ void VideoPlayer::setReverseCacheBytes(size_t bytes) {
 
 void VideoPlayer::setTimelineLocked(bool locked, const PlaybackClock& master) {
     transport_.setTimelineLocked(locked, master);
-    if (isLoaded()) applyTransport();
+    if (takesTransport()) applyTransport();
 }
 
 bool VideoPlayer::isTimelineLocked() const {
@@ -154,6 +183,17 @@ const PlaybackClock& VideoPlayer::getClock() const {
 
 PlaybackTimePoint VideoPlayer::now() const {
     return transport_.now();
+}
+
+bool VideoPlayer::framesCoverClock() const {
+    if (!isLoaded()) return false;  // still opening (or failed: the caller times out)
+    const bool playing = transport_.state() == PlaybackState::PLAYING;
+    if (!playing && !refreshPending_) return true;  // holds its frame
+    if (refreshPending_) return false;              // the frame after a seek is not in yet
+    const double timeline = transport_.clock().timeline(transport_.now());
+    double nextDue = 0.0;
+    if (decoder_->peekBufferedDue(nextDue)) return nextDue > timeline;
+    return decoder_->isAtEnd();  // nothing buffered: only covered when nothing more comes
 }
 
 void VideoPlayer::setTimeSource(PlaybackTransport::TimeSource source) {
@@ -198,11 +238,14 @@ std::string VideoPlayer::getZeroCopyNote() const {
 }
 
 void VideoPlayer::applyTransport() {
-    if (transport_.takeReposition()) reposition();
+    // While the file opens the request waits: finishOpen() starts decoding wherever the
+    // clock is then.
+    if (isLoaded() && transport_.takeReposition()) reposition();
     refreshState();
 }
 
 void VideoPlayer::reposition() {
+    ScopedMainThreadTiming timing("reposition");
     const PlaybackClock& clock = transport_.clock();
     DecodePlan plan;
     plan.timeline = clock.timeline(transport_.now());

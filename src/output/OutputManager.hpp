@@ -82,6 +82,11 @@ struct MonitorResolution {
 // grid lines and two solid white bands, drawn over opaque black.
 std::vector<Quad> makeBlendTestPattern();
 
+// Identify's overlay for output `number` (1-based) on a frame of `frameSize` pixels,
+// in normalized frame space, in draw order: a dark panel in the middle, a white
+// border round the frame, and the number in white seven-segment digits on the panel.
+std::vector<Quad> makeIdentifyOverlay(int number, IVec2 frameSize);
+
 class OutputManager {
 public:
     OutputManager();
@@ -231,11 +236,66 @@ public:
     /**
      * What a monitor picker shows for `output` (the Output panel and the Inspector):
      * the display it resolved to, marked "(automatic)" when none was chosen; else the
-     * chosen display marked "(not connected)"; else "Not connected". Never names a
-     * display the output is not on. Pure.
+     * chosen display marked "(not connected)"; else, when `previewsOnOnlyScreen`
+     * (onlyScreenPreview is this output), the only display marked "(automatic: the
+     * only display)"; else "Not connected". Pure.
      */
     static std::string describeMonitorChoice(const std::vector<MonitorInfo>& monitors,
-                                             const OutputWindow& output);
+                                             const OutputWindow& output,
+                                             bool previewsOnOnlyScreen = false);
+
+    /**
+     * The output that F11 previews on the editor's own screen, or null (owner,
+     * 2026-11-20; ADR-046 amendment): with exactly one display connected and no enabled
+     * output on it, the first enabled Automatic output left unresolved. An output
+     * chosen for a projector that is not plugged in is never one (QM-090), and a
+     * hotplug in perform mode never moves an output onto the editor's screen. Pure.
+     */
+    static const OutputWindow* onlyScreenPreview(
+        const std::vector<MonitorInfo>& monitors,
+        const std::vector<std::unique_ptr<OutputWindow>>& outputs);
+
+    // ---- Projector auto-setup (owner, 2026-11-23) ---------------------------------
+    /**
+     * The displays that should get an output of their own: every connected display
+     * other than `editorMonitor` that no output is on (resolved to), in monitor order;
+     * then, with `includeEditorScreen` and more than one display connected, the
+     * editor's display last if no output is on it. Pure.
+     */
+    static std::vector<int> displaysWithoutOutput(
+        const std::vector<MonitorInfo>& monitors,
+        const std::vector<std::unique_ptr<OutputWindow>>& outputs, int editorMonitor,
+        bool includeEditorScreen = false);
+
+    /** "Projector N" with the lowest N >= 1 that no output is named. Pure. */
+    static std::string nextProjectorName(const std::vector<std::unique_ptr<OutputWindow>>& outputs);
+
+    /**
+     * Give each display that displaysWithoutOutput lists (after re-resolving, so an
+     * output waiting for a display takes it first) an output of its own, named by
+     * nextProjectorName, at the display's current resolution. `includeEditorScreen`
+     * (startup and File > New, owner 2026-11-23) gives the editor's screen one too,
+     * last, when another display is connected: in perform mode it covers the editor.
+     * When there was no output at all, the first one stays Automatic, so a show taken
+     * to a one-screen computer still previews on it at F11; every other one, and the
+     * editor's screen's always, is chosen for its display, so projectors never swap
+     * outputs when the display list changes. Does nothing in perform mode. Returns
+     * the outputs added, in that order.
+     */
+    std::vector<OutputWindow*> addOutputsForUnusedDisplays(bool includeEditorScreen = false);
+
+    /**
+     * The Automatic outputs that a hotplug gave a display while they had none, since
+     * the last call (ids; the list is cleared). The editor gives each its display's
+     * resolution when it may change the show (adoptDisplayResolution).
+     */
+    std::vector<UUID> takeOutputsPlacedByHotplug();
+
+    /**
+     * Set `output` to its display's current resolution. False, changing nothing, when
+     * it has no display or already has that resolution.
+     */
+    bool adoptDisplayResolution(OutputWindow& output);
 
     /**
      * The user explicitly chose monitor `monitorIndex` for `output` (-1 =
@@ -263,6 +323,11 @@ public:
     using NoticeCallback = std::function<void(const std::string&)>;
     void setNoticeCallback(NoticeCallback callback);
 
+    // Asked each time perform mode is to be entered: a non-empty answer refuses it and
+    // is passed on as a notice. A video export draws the projector frames while it runs.
+    using PerformRefusal = std::function<std::string()>;
+    void setPerformRefusal(PerformRefusal refusal) { performRefusal_ = std::move(refusal); }
+
     // Scene take keys (US-008): in perform mode an output window can hold the OS
     // focus, so its scene-take presses (see sceneTakeNumber) are handed to this
     // callback with the scene number.
@@ -283,6 +348,14 @@ public:
     void setBlackout(bool on);
     void toggleBlackout() { setBlackout(!blackout_); }
     bool isBlackout() const { return blackout_; }
+
+    // Video export (owner, 2026-11-23): while on, every output's frame is drawn at the
+    // output's own resolution (not its window's size), and neither blackout nor
+    // Identify is drawn, so the file is the show itself. The export turns it on around
+    // its own renderOutputFrames calls only.
+    void setExportRendering(bool on) { exportRendering_ = on; }
+    // The pixel size an output is exported at: its resolution, rounded down to even.
+    static IVec2 exportFrameSize(const OutputWindow& output);
 
     // True for the blackout shortcut: a Ctrl+B press, no Shift/Alt/Super. Pure, like
     // sceneTakeNumber, so the editor and output windows share one testable rule.
@@ -347,6 +420,19 @@ public:
      * Check if currently in perform mode.
      */
     bool isInPerformMode() const { return performMode_; }
+
+    /**
+     * Identify (owner, 2026-11-20): for IDENTIFY_SECONDS every output shows its number,
+     * its place in the Outputs list, over its picture, so each projector can be matched
+     * to its output. Outside perform mode it enters perform mode for that time and
+     * leaves it again, unless the operator left perform mode meanwhile. False when no
+     * output could be shown.
+     */
+    static constexpr double IDENTIFY_SECONDS = 5.0;
+    bool identifyOutputs();
+    bool isIdentifying() const { return identifyUntil_ > 0.0; }
+    // Once per frame, after setFrameTime: ends Identify when its time is up.
+    void retireIdentify();
 
     // Key event handlers for perform mode (prepared for Phase 7 input system)
 
@@ -494,6 +580,19 @@ public:
     Rotation sceneCanvasRotation(const UUID& sceneId) const;
 
     /**
+     * What `output` shows of `scene` with no crossfade, drawn over what the bound
+     * target holds: the scene's 3D objects from the output's projector, then the
+     * scene's canvas (as the last renderOutputFrames drew it) through the output's
+     * slices, blend zones and black level. `effectiveSize` is the output's unturned
+     * frame. The output frames are drawn with it, and so is the editor's calibration
+     * view (TD-29), which is why a point picked on that view is a projector pixel
+     * whatever the slicing. Changes the blend function; a caller that needs its own
+     * restores it.
+     */
+    void renderSceneFrame(const OutputWindow& output, const Scene& scene, IVec2 effectiveSize,
+                          const std::unordered_map<UUID, Texture*>& textures, Renderer& renderer);
+
+    /**
      * Blend test pattern (ADR-047 §3): while on, every canvas is drawn as a grid of
      * white lines on black with solid white bands across the middle instead of its
      * scene's quads, so the outputs show it through their slices and the overlaps can
@@ -505,10 +604,11 @@ public:
     /**
      * Like renderOutputFrames, but every output's frame is one fullscreen calibration
      * quad (One-Flash pattern, QM-059) instead of its scene, so one photo can solve
-     * the projector->surface homography (QM-060).
+     * the projector->surface homography (QM-060). With `only` set, that output alone
+     * shows the pattern and the others are black (a Gray-code scan, ADR-053 §3).
      */
     void renderPatternFrames(const Quad& patternQuad, const Texture* texture,
-                             Renderer& renderer);
+                             Renderer& renderer, const UUID& only = UUID::null());
 
     /**
      * Show the frames drawn this frame: copy each enabled, created, VISIBLE output's
@@ -546,6 +646,7 @@ private:
 
     // Setup key callbacks on output windows for perform mode
     void setupPerformModeKeyCallbacks();
+    void setPerformModeKeyCallback(OutputWindow& output);
 
     // Remove key callbacks from output windows
     void clearPerformModeKeyCallbacks();
@@ -569,8 +670,10 @@ private:
     bool sceneOnAnOutput(const UUID& sceneId) const;
 
     // The size an output's frame is drawn at: its window's framebuffer, or its
-    // resolution while it has no window or the window is minimised.
-    static IVec2 frameSize(const OutputWindow& output);
+    // resolution while it has no window or the window is minimised, or while
+    // exporting (exportRendering_).
+    IVec2 frameSize(const OutputWindow& output) const;
+    bool exportRendering_ = false;
 
     // The monitor the editor window's centre is on; the primary monitor if the
     // editor is off every monitor (e.g. minimised), -1 if unknown.
@@ -610,6 +713,9 @@ private:
     // in the MAIN GL context and are destroyed in shutdown()/deleteOutput() with it
     // current; their colour textures are shared with the output contexts.
     std::unordered_map<UUID, std::unique_ptr<Framebuffer>> frames_;
+    // The size each output's frame last failed to allocate at, so it is reported once
+    // per size.
+    std::unordered_map<UUID, IVec2> failedFrameSizes_;
 
     // Each shown scene's canvas (ADR-047), keyed by scene UUID; main context, like
     // frames_. It is drawn turned by the rotation every output showing the scene
@@ -630,6 +736,20 @@ private:
     // Scene crossfades in progress, by output (ADR-047 §5), and the frame clock.
     SceneFades sceneFades_;
     double frameTime_ = 0.0;
+
+    // Identify: shown until this frame time (0: off). Each output's overlay is kept
+    // while its number and frame size hold, so its quads keep their ids in the
+    // renderer's cache. identifyLeavesPerform_: Identify entered perform mode itself.
+    double identifyUntil_ = 0.0;
+    bool identifyLeavesPerform_ = false;
+    struct IdentifyOverlay {
+        int number = 0;
+        IVec2 size = IVec2(0, 0);
+        std::vector<Quad> quads;
+    };
+    std::unordered_map<UUID, IdentifyOverlay> identifyOverlays_;
+    void endIdentify();
+    void renderIdentifyOverlay(const OutputWindow& output, int number, IVec2 size, Renderer& renderer);
 
     // During a fade whose scenes have 3D objects, each scene's whole frame (its
     // objects, then its canvas through the output's slices) renders into its own
@@ -677,6 +797,7 @@ private:
 
     // Available monitors
     std::vector<MonitorInfo> monitors_;
+    std::vector<UUID> placedByHotplug_;  // see takeOutputsPlacedByHotplug
 
     // Perform mode state
     bool performMode_ = false;
@@ -690,6 +811,7 @@ private:
     // Monitor change detection
     MonitorChangeCallback monitorChangeCallback_;
     NoticeCallback noticeCallback_;
+    PerformRefusal performRefusal_;
     SceneKeyCallback sceneKeyCallback_;
     OutputRemovedCallback outputRemovedCallback_;
     bool monitorChangeDetectionEnabled_ = false;

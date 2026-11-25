@@ -1,4 +1,5 @@
 #include "ComputeShader.hpp"
+#include "core/GlObjectStats.hpp"
 #include "core/Logger.hpp"
 #include <glad/glad.h>
 #include <glm/gtc/type_ptr.hpp>
@@ -34,8 +35,9 @@ static void* getGLProcAddress(const char* name) {
 #ifdef _WIN32
     void* p = (void*)wglGetProcAddress(name);
     if (p == nullptr || (p == (void*)0x1) || (p == (void*)0x2) || (p == (void*)0x3) || (p == (void*)-1)) {
-        HMODULE module = LoadLibraryA("opengl32.dll");
-        p = (void*)GetProcAddress(module, name);
+        // Already loaded with the context: asked for by handle, never searched for.
+        HMODULE module = GetModuleHandleW(L"opengl32.dll");
+        p = module ? (void*)GetProcAddress(module, name) : nullptr;
     }
     return p;
 #else
@@ -56,22 +58,25 @@ static bool loadComputeFunctions() {
     glMemoryBarrierPtr = (PFNGLPRIVATEMEMORYBARRIERPROC)getGLProcAddress("glMemoryBarrier");
     glBindImageTexturePtr = (PFNGLPRIVATEBINDIMAGETEXTUREPROC)getGLProcAddress("glBindImageTexture");
 
-    computeFunctionsLoaded = true;
+    // Loaded only when all three are there: a failed load is tried again, not reported
+    // as a success on the next call.
+    computeFunctionsLoaded = glDispatchComputePtr && glMemoryBarrierPtr && glBindImageTexturePtr;
+    return computeFunctionsLoaded;
+}
 
-    if (!glDispatchComputePtr || !glMemoryBarrierPtr || !glBindImageTexturePtr) {
-        Logger::warning("ComputeShader: Some compute shader functions not available. OpenGL 4.3+ required.");
-        return false;
+// Deletes a program and takes it off the live-object count.
+static void deleteProgram(uint32_t& programId) {
+    if (programId != 0) {
+        glDeleteProgram(programId);
+        GlObjectStats::onShaderProgramDestroyed();
+        programId = 0;
     }
-    return true;
 }
 
 ComputeShader::ComputeShader() = default;
 
 ComputeShader::~ComputeShader() {
-    if (programId_ != 0) {
-        glDeleteProgram(programId_);
-        programId_ = 0;
-    }
+    deleteProgram(programId_);
 }
 
 ComputeShader::ComputeShader(ComputeShader&& other) noexcept
@@ -84,9 +89,7 @@ ComputeShader::ComputeShader(ComputeShader&& other) noexcept
 
 ComputeShader& ComputeShader::operator=(ComputeShader&& other) noexcept {
     if (this != &other) {
-        if (programId_ != 0) {
-            glDeleteProgram(programId_);
-        }
+        deleteProgram(programId_);
         programId_ = other.programId_;
         errorMessage_ = std::move(other.errorMessage_);
         uniformLocationCache_ = std::move(other.uniformLocationCache_);
@@ -96,18 +99,16 @@ ComputeShader& ComputeShader::operator=(ComputeShader&& other) noexcept {
 }
 
 bool ComputeShader::loadFromSource(const std::string& source) {
-    // Load compute shader functions if not already done
-    loadComputeFunctions();
-
-    // Clean up existing program
-    if (programId_ != 0) {
-        glDeleteProgram(programId_);
-        programId_ = 0;
-    }
+    deleteProgram(programId_);
     uniformLocationCache_.clear();
     errorMessage_.clear();
 
-    // Create and compile shader
+    if (!loadComputeFunctions()) {
+        errorMessage_ = "this graphics driver has no compute shaders (OpenGL 4.3 is needed)";
+        Logger::error("ComputeShader: {}", errorMessage_);
+        return false;
+    }
+
     GLuint shaderId = glCreateShader(GL_COMPUTE_SHADER);
     if (shaderId == 0) {
         errorMessage_ = "Failed to create compute shader - GL_COMPUTE_SHADER may not be supported";
@@ -119,7 +120,6 @@ bool ComputeShader::loadFromSource(const std::string& source) {
     glShaderSource(shaderId, 1, &src, nullptr);
     glCompileShader(shaderId);
 
-    // Check compilation
     GLint success;
     glGetShaderiv(shaderId, GL_COMPILE_STATUS, &success);
     if (!success) {
@@ -133,12 +133,11 @@ bool ComputeShader::loadFromSource(const std::string& source) {
         return false;
     }
 
-    // Create program and link
     programId_ = glCreateProgram();
+    GlObjectStats::onShaderProgramCreated();
     glAttachShader(programId_, shaderId);
     glLinkProgram(programId_);
 
-    // Check linking
     glGetProgramiv(programId_, GL_LINK_STATUS, &success);
     if (!success) {
         GLint logLength;
@@ -148,8 +147,7 @@ bool ComputeShader::loadFromSource(const std::string& source) {
         errorMessage_ = "Compute shader linking failed: " + log;
         Logger::error("{}", errorMessage_);
         glDeleteShader(shaderId);
-        glDeleteProgram(programId_);
-        programId_ = 0;
+        deleteProgram(programId_);
         return false;
     }
 

@@ -59,6 +59,7 @@ TEST(VideoSourcePipeline, LoadsAdvancesAndUploads) {
     // Load + register: a non-null id proves initialize() (file open) + the id fix.
     UUID id = sm.createVideoSource(video);
     ASSERT_FALSE(id.isNull());
+    sm.finishBackgroundWork();  // opened off the main thread (TD-35)
 
     auto* v = sm.getSourceAs<VideoFileSource>(id);
     ASSERT_NE(v, nullptr);
@@ -83,7 +84,7 @@ TEST(VideoSourcePipeline, LoadsAdvancesAndUploads) {
 }
 
 // QM-088 / D4: a project load restores a video's transport through the PlayableSource
-// interface (Application::createSourceFrom: setLoopMode, setSpeed, play). The source
+// interface (ProjectMapping.cpp createSourceFrom: setLoopMode, setSpeed, play). The source
 // must then actually play, with its clock on the wall clock (ADR-050) and frames never
 // ahead of it; a saved ping-pong is real Ping-Pong again.
 TEST(VideoSourcePipeline, RestoredTransportPlaysAtClockPace) {
@@ -196,7 +197,9 @@ TEST(VideoSourcePipeline, PausedSourceShowsFirstFrame) {
     for (int i = 0; i < 100 && !uploaded; ++i) {
         sm.updateAll(1.0 / 60.0);
         const FrameData* frame = playable->getCurrentFrame();
-        uploaded = frame && frame->isYuv();
+        // On the zero-copy path the first frame reaches the texture a few updates after
+        // the source holds it (TD-35).
+        uploaded = frame && frame->isYuv() && sm.showsCurrentFrame(id);
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     ASSERT_TRUE(uploaded);

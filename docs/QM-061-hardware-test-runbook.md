@@ -2,7 +2,8 @@
 
 **Status:** TODO (hardware-gated). This is the make-or-break gate for the AI pre-show wedge:
 Phase 2 (One-Flash auto-warp) is **not "done"** until this passes on real hardware.
-Everything upstream (QM-055..060, QM-062) is software-complete and synthetic-validated.
+Everything upstream (QM-055..060, QM-062) is software-complete and synthetic-validated. The
+ADR-053 features (Pick Surface, Scan Output, Place From Photo) are built and share this gate.
 
 **Goal (acceptance criteria):** On a real projector + real surface + real phone photo,
 **One-Flash produces a visibly correct warp** — projected content lands aligned on the surface,
@@ -19,9 +20,11 @@ structured-light behind the same `/oneflash` sidecar contract (see Fallback).
       1280×720 was the dev camera) OR a phone you can copy a photo from.
 - [ ] **Phone camera** for the single calibration photo (if not using the webcam).
 - [ ] Room you can **dim** (ChArUco detection wants decent contrast; avoid washout/glare).
-- [ ] Python sidecar runnable: `tools/ai-sidecar/` deps installed (`requirements.txt`;
-      surface detection also needs the Metric3D model, but **One-Flash itself is GPU-free** —
-      `cv2.aruco` only, so QM-061 does **not** require the GPU model).
+- [ ] Python sidecar set up: run `tools/ai-sidecar/setup.ps1` once. It builds
+      `tools/ai-sidecar/.venv` (about 5.2 GB) and downloads SAM 2.1 small and tiny and
+      Depth Anything V2 Small (about 440 MB) into `%LOCALAPPDATA%\QUADmapper\models`, checking
+      each SHA-256. **One-Flash itself is GPU-free** (`cv2.aruco` only). Detect Surface, Pick
+      Surface and Scan Output use the models, and are much faster on a CUDA GPU.
 - [ ] Debug build current: `cmake --build build/debug` → `QUADmapper.exe`.
 
 ---
@@ -31,8 +34,23 @@ structured-light behind the same `/oneflash` sidecar contract (see Fallback).
 1. Launch `build/debug/src/app/Debug/QUADmapper.exe`.
 2. Add/select a quad (the default "Quad 1" is fine) — this is the quad One-Flash will warp.
 3. **AI ▸ Enable AI Assist.** Status shows "connecting…" then "AI assist enabled
-   (sidecar connected)" (TD-10 made this non-blocking). If it says unavailable, confirm Python
-   is on `PATH` and `tools/ai-sidecar/sidecar.py` exists; check the log.
+   (sidecar connected)" (TD-10 made this non-blocking). If it says unavailable, confirm
+   `tools/ai-sidecar/setup.ps1` has run (the app prefers `tools/ai-sidecar/.venv`) and that
+   `tools/ai-sidecar/sidecar.py` exists; check the log. The sidecar loads its models at start,
+   so the first request can wait for that. Requests have a 120 s ceiling and run off the main
+   thread, so the app stays responsive.
+
+## 1b. Detect Surface and Pick Surface (ADR-053)
+
+3a. **AI ▸ Detect Surface.** Photographs the scene and proposes four corners. The status begins
+    "AI: surface found (confidence X) - " and names the mapping used. Low confidence applies
+    nothing. Record the confidence and whether the quad lands on the surface.
+3b. **AI ▸ Pick Surface...** opens the AI Photo panel. Take Photo, click the surface, check the
+    outline and corners, then press Apply. Tab and the arrows refine the corners. Ctrl+Z undoes
+    the warp.
+3c. Both map their photo corners through a current Scan Output map first (section 5b), else a
+    One-Flash homography from this session (section 3), else photo space. Photo space assumes
+    the camera stands at the projector, so expect a misfit without a scan or a One-Flash.
 
 ## 2. Emit the calibration pattern on the projector
 
@@ -74,6 +92,20 @@ structured-light behind the same `/oneflash` sidecar contract (see Fallback).
 
 ---
 
+## 5b. Scan Output and Place From Photo (ADR-053)
+
+10a. Select the projector output. **AI ▸ Scan Output** shows Gray-code stripes fullscreen for
+     about 15 s and photographs each frame. Esc or **Cancel Scan** stops it. Keep the camera
+     and projector still.
+10b. On success the status reads "Scan: map ready - the camera saw N% of the output (noise X
+     px)". Record N and X. A low N means the camera did not see the output.
+10c. Repeat Pick Surface or Detect Surface. The status should say the corners were applied
+     through the scan.
+10d. In the calibration view, select a point, press **Place From Photo**, and click the same
+     spot in the AI Photo panel. The point's pixel is set exactly. Ctrl+Z undoes it.
+10e. Note whether the 250 ms settle time per frame was enough for the camera. If frames
+     looked wrong or the coverage was low, say so.
+
 ## 6. Document the result (fill this in during the test)
 
 | Item | Result |
@@ -87,6 +119,11 @@ structured-light behind the same `/oneflash` sidecar contract (see Fallback).
 | Solve confidence (inlier ratio, reprojection RMS px) | |
 | Content landed aligned? (yes / partial / no) | |
 | Anamorphic (QM-062) correct from viewpoint? | |
+| Detect Surface confidence / landed on the surface? | |
+| Pick Surface landed on the clicked surface? | |
+| Scan Output (coverage %, noise px, settle time enough?) | |
+| Pick/Detect through the scan: aligned? | |
+| Place From Photo: point set where clicked? | |
 | Screenshots / photos (paths) | |
 
 **Failure modes observed** (lighting washout, oblique throw, surface texture/specular,
@@ -97,8 +134,10 @@ keystone extremes, marker occlusion, focus/blur, rolling-shutter): _____
 ## 7. Fallback if One-Flash fails on real hardware
 
 If single-shot ChArUco detection is unreliable in the field (low contrast, oblique throw,
-textured surface), **port MIT gray-code structured-light behind the same `POST /oneflash`
-sidecar contract** so the C++ side and UI are unchanged:
+textured surface), use **Scan Output** (section 5b). It is the Gray-code structured-light
+path from ADR-053 §3 and is already built: the app shows the patterns, the sidecar decodes
+them to a dense camera-to-projector map. If One-Flash fails and the scan works, record that.
+The notes below are the original port plan, kept for reference:
 
 - Emit a **sequence** of gray-code patterns (horizontal + vertical, plus inverses) instead of
   one ChArUco — `OutputManager::renderPatternToOutputs` already draws a fullscreen quad; drive
@@ -114,6 +153,6 @@ sidecar contract** so the C++ side and UI are unchanged:
 ## 8. After it passes
 
 - Update **QM-061 → DONE** in [TASKS.md](../TASKS.md) with the documented result, clear the
-  blocker in [SESSION_STATE.json](../SESSION_STATE.json), and mark Phase 9 fully complete.
+  🚩 item in [notes/CURRENT_STATUS.md](../notes/CURRENT_STATUS.md), and mark Phase 9 fully complete.
 - Open the **`dev`→`master` PR** to bring the wedge (and the v1.1 polish) into `master` — see
   [docs/QM-061-pr-prep.md](QM-061-pr-prep.md) for the ready-to-use PR body.

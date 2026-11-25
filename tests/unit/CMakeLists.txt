@@ -5,10 +5,7 @@ add_quadmapper_test(test_core
     core/UUIDTest.cpp
     core/ResultTest.cpp
     core/LoggerTest.cpp
-    core/TimerTest.cpp
     core/CommandHistoryTest.cpp
-    core/PerformanceMonitorTest.cpp
-    core/ErrorNotificationTest.cpp
     core/FileSystemTest.cpp
 )
 target_link_libraries(test_core PRIVATE quadmapper_core)
@@ -61,16 +58,9 @@ add_quadmapper_test(test_audio
     audio/AudioDeviceTest.cpp
     audio/AudioDriftControllerTest.cpp
     audio/SyncedAudioSourceTest.cpp
+    audio/OfflineAudioMixTest.cpp  # export sound; fixtures written with video/Mp4Writer
 )
-target_link_libraries(test_audio PRIVATE quadmapper_audio quadmapper_core)
-
-# Audio from video kept on the playback clock (ADR-050 §2): real decode, real mixer path,
-# the app's clock mapping (app/SourceAudio.hpp). Media tests skip without D:	esting Videos.
-add_quadmapper_test(test_audio_sync
-    audio/AudioSyncTest.cpp
-)
-target_link_libraries(test_audio_sync PRIVATE quadmapper_audio quadmapper_source quadmapper_video
-    quadmapper_scene quadmapper_core)
+target_link_libraries(test_audio PRIVATE quadmapper_audio quadmapper_video quadmapper_core)
 
 # Input module tests
 add_quadmapper_test(test_input
@@ -95,7 +85,9 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND AVUTIL_LIBRARY)
         video/VideoPlayerPlaybackTest.cpp
         video/LoopSpliceSafetyTest.cpp    # TD-30/TD-31 review: splice-safety regressions
         source/HapPlaybackTest.cpp
-        video/HapExportTest.cpp           # QM-082 Convert to HAP, end to end
+        source/AsyncSourceLifecycleTest.cpp  # TD-35: opening and freeing sources off the main thread
+        video/HapExportTest.cpp          # QM-082 Convert to HAP, end to end
+        video/Mp4WriterTest.cpp          # Export video: H.264 MP4 writer
         video/RealMediaPlaybackBench.cpp  # opt-in (DISABLED_), needs local media
         video/HardwareDecodeTest.cpp      # ADR-055; needs local media + a D3D11 video decoder
         video/ColourBarsPlaybackTest.cpp  # ADR-055 colour gate; needs a GL 3.3 context
@@ -115,13 +107,15 @@ endif()
 add_quadmapper_test(test_media
     media/MediaLibraryTest.cpp
     media/ImageLoaderTest.cpp
+    media/ThumbnailCacheTest.cpp
 )
-target_link_libraries(test_media PRIVATE quadmapper_media quadmapper_core)
+target_link_libraries(test_media PRIVATE quadmapper_media quadmapper_core glad)
 
 # Source module tests (QM-055 camera)
 add_quadmapper_test(test_source
     source/CameraSourceTest.cpp
     source/SourceReleaseTest.cpp
+    source/CompositionPlayheadTest.cpp
 )
 target_link_libraries(test_source PRIVATE quadmapper_source quadmapper_core)
 
@@ -188,16 +182,68 @@ add_quadmapper_test(test_control
 )
 target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws2_32)
 
-# The application's control targets (app/ControlBindings.hpp) on real scenes, quads and
-# sources, plus the control preferences, the missing-media relocation logic
-# (app/MissingMedia.hpp) and the mesh-edit keyboard workflow (app/MeshEditKeys.hpp).
-# No GL context needed.
-add_quadmapper_test(test_control_app
-    control/ControlBindingsTest.cpp
-    app/MissingMediaTest.cpp
-    app/ReplaceMediaTest.cpp
-    app/MeshEditKeysTest.cpp
-    app/SceneTakeRoutingTest.cpp
+# The editor library (ADR-051 E4), linked alone: no panel, no app code.
+# The control targets (editor/ControlBindings.hpp) on real scenes, quads and sources, the
+# preferences file, missing media and relocation, replace in show, the mesh-edit
+# keyboard workflow, scene takes and slice editing, grid undo, and the live<->DTO
+# mapping (editor/ProjectMapping.cpp). Also the editor tests the lower modules' targets
+# held until E8: output persistence, the "(modified)" label, and audio from video kept
+# on the playback clock (editor/SourceAudio.hpp; real decode and mixer, media tests skip
+# without D:\testing Videos).
+add_quadmapper_test(test_editor
+    editor/ActionRegistryTest.cpp
+    editor/EditActionsTest.cpp
+    editor/ControlBindingsTest.cpp
+    editor/PreferencesTest.cpp
+    editor/MissingMediaTest.cpp
+    editor/ReplaceMediaTest.cpp
+    editor/MeshEditKeysTest.cpp
+    editor/SceneTakeRoutingTest.cpp
+    editor/GridUndoTest.cpp
+    editor/ProjectMappingTest.cpp
+    editor/VideoExportPlanTest.cpp
+    editor/PerformLockTest.cpp
+    editor/OutputPersistenceTest.cpp
+    editor/UnsavedIndicatorTest.cpp
+    editor/AudioSyncTest.cpp
 )
-target_link_libraries(test_control_app PRIVATE quadmapper_ui quadmapper_control
-    quadmapper_project quadmapper_scene quadmapper_source quadmapper_core)
+target_link_libraries(test_editor PRIVATE quadmapper_editor)
+target_compile_definitions(test_editor PRIVATE
+    QM_PROJECT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/projects"
+)
+
+# The ui library: the PanelHost, the Preferences window, the shortcut router, and the
+# editor frame's order with the menu's action items against
+# headless ImGui, and the calibration view on the canvas (ViewportEditor in a hidden GL
+# window; skips without GL).
+add_quadmapper_test(test_ui
+    ui/PanelHostTest.cpp
+    ui/PreferencesWindowTest.cpp
+    ui/CalibrationViewEditorTest.cpp
+    ui/ShortcutRouterTest.cpp
+    ui/EditorUiFrameTest.cpp
+    ui/PerformLockUiTest.cpp
+    ui/ListPanelHelpersTest.cpp
+)
+target_link_libraries(test_ui PRIVATE quadmapper_ui glfw)
+
+# The project session (app/ProjectSession.cpp, compiled in here because the app is an
+# executable, TD-14). It opens files through ui/AsyncFileDialog. No GL context needed.
+# The perform lock sweep (TD-34) drives the real EditorUi with the session in a hidden
+# GL window (skips without GL).
+add_quadmapper_test(test_app
+    app/ProjectSessionTest.cpp
+    app/PerformLockSweepTest.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/ProjectSession.cpp
+)
+target_link_libraries(test_app PRIVATE quadmapper_ui quadmapper_editor glfw)
+
+# The AI assist's status paths (app/AiAssist.cpp, compiled in here because the app is an
+# executable, TD-14) without a sidecar, camera or GL context.
+add_quadmapper_test(test_ai_assist
+    app/AiAssistTest.cpp
+    app/GrayCodeScanTest.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/AiAssist.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/GrayCodeScan.cpp
+)
+target_link_libraries(test_ai_assist PRIVATE quadmapper_editor quadmapper_ai)

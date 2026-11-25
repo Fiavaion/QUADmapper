@@ -357,3 +357,39 @@ TEST(OscParserFuzzTest, MutationsOfValidPacketsNeverCrashOrOverrun) {
         guard.parse(data.data(), data.size(), out);
     }
 }
+
+TEST(OscParserTest, RejectsAnAddressOrStringArgumentOverTheLengthLimit) {
+    auto build = [](size_t addressLength, size_t textLength) {
+        OscPacket p;
+        p.string("/" + std::string(addressLength - 1, 'a'));
+        p.string(",s");
+        p.string(std::string(textLength, 't'));
+        return p.bytes();
+    };
+    std::vector<OscMessage> out;
+    EXPECT_TRUE(parse(build(kMaxStringBytes, kMaxStringBytes), out));
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].address.size(), kMaxStringBytes);
+    EXPECT_EQ(out[0].args[0].s.size(), kMaxStringBytes);
+    out.clear();
+    EXPECT_FALSE(parse(build(kMaxStringBytes + 1, 4), out));
+    EXPECT_FALSE(parse(build(8, kMaxStringBytes + 1), out));
+    EXPECT_TRUE(out.empty());
+}
+
+TEST(OscParserTest, RejectsAMessageWithTooManyArguments) {
+    // Zero-size tags cost no payload: one datagram could otherwise carry ~65,000 arguments.
+    auto build = [](size_t count) {
+        OscPacket p;
+        p.string("/a");
+        p.string("," + std::string(count, 'T'));
+        return p.bytes();
+    };
+    std::vector<OscMessage> out;
+    EXPECT_TRUE(parse(build(kMaxArgsPerMessage), out));
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].args.size(), kMaxArgsPerMessage);
+    out.clear();
+    EXPECT_FALSE(parse(build(kMaxArgsPerMessage + 1), out));
+    EXPECT_TRUE(out.empty());
+}

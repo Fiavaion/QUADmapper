@@ -69,3 +69,6 @@ Cross-cutting helpers added (benefit both modes):
 7. Quad List drag reorders layer order.
 8. Send to Projector (F11) works; success-metric warp intact in BOTH modes.
 9. Advanced mode unchanged; `ctest` green.
+
+## Amendment (2026-11-20, owner): Outputs and Scenes in Simple mode
+Some users stay in Simple mode but drive several projectors. The Outputs tab of the Resources window is now shown in both modes: add, remove and rename outputs, choose each one's display, resolution and rotation, and Identify (each projector shows its output's number, as numbered in the list, for 5 seconds). The Scenes tab is shown in both modes too, so a Simple-mode user can give each projector its own scene and switch between them while editing (its canvas-size row stays Advanced-only; routing sizes the canvas). Slices, calibration, the Preview and Project tabs stay Advanced-only. Selecting an output in Simple mode edits it in the Outputs tab; the Inspector stays the curated quad panel.

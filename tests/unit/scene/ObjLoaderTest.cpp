@@ -166,6 +166,33 @@ TEST_F(ObjLoaderTest, MalformedInputReturnsErr) {
     EXPECT_NE(result.error().message.find("line 4"), std::string::npos) << result.error().message;
 }
 
+// A line is read into a fixed buffer: one that does not fit fails the import with its
+// line number, and one just inside the limit (here a comment) is read as before.
+TEST_F(ObjLoaderTest, ALineTooLongToBeRealFailsTheImport) {
+    const std::string triangle = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+
+    auto fits = loadObj(write("# " + std::string(1000 * 1000, 'x') + "\n" + triangle));
+    ASSERT_TRUE(fits.isSuccess()) << fits.error().message;
+    EXPECT_EQ(fits.value().indices.size(), 3u);
+
+    auto tooLong = loadObj(write(triangle + "# " + std::string(3 * 1024 * 1024, 'x') + "\n"));
+    ASSERT_TRUE(tooLong.isError());
+    EXPECT_NE(tooLong.error().message.find("line 5"), std::string::npos) << tooLong.error().message;
+    EXPECT_NE(tooLong.error().message.find("too long"), std::string::npos) << tooLong.error().message;
+
+    // The last line needs no line break.
+    auto unterminated = loadObj(write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3"));
+    EXPECT_TRUE(unterminated.isSuccess());
+}
+
+TEST_F(ObjLoaderTest, ACoordinateTooLargeForAFloatToPlaceFailsTheImport) {
+    auto result = loadObj(write("v 0 0 0\nv 1e10 0 0\nv 0 1 0\nf 1 2 3\n"));
+    ASSERT_TRUE(result.isError());
+    EXPECT_NE(result.error().message.find("line 2"), std::string::npos) << result.error().message;
+
+    EXPECT_TRUE(loadObj(write("v 0 0 0\nv -9e8 0 0\nv 0 1 0\nf 1 2 3\n")).isSuccess());
+}
+
 TEST_F(ObjLoaderTest, EmptyOrFacelessFileReturnsErr) {
     EXPECT_TRUE(loadObj(write("")).isError());
     EXPECT_TRUE(loadObj(write("# only a comment\nv 0 0 0\n")).isError());

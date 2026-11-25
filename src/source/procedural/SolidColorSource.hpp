@@ -23,7 +23,6 @@ public:
 
     // --- SolidColorSource ---
     void setColor(const Color& color);
-    const Color& getColor() const { return color_; }
 
 protected:
     std::string getShaderSource() const override;

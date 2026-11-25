@@ -139,14 +139,13 @@ public:
         static constexpr float SizeTitle    = 26.0f;
         static constexpr float SizeHero     = 36.0f;
 
-        // Font file paths (relative to resources). Redesign: Hanken Grotesk (UI) +
+        // Font file paths, relative to the resources folder (resourcePath). Redesign: Hanken Grotesk (UI) +
         // JetBrains Mono (numeric/paths), both OFL — see resources/fonts/README.md.
         // Variable TTFs render at their default (Regular) instance under stb_truetype.
-        static constexpr const char* PathRegular = "resources/fonts/HankenGrotesk-Variable.ttf";
-        static constexpr const char* PathMedium  = "resources/fonts/HankenGrotesk-Variable.ttf";
-        static constexpr const char* PathBold    = "resources/fonts/HankenGrotesk-Variable.ttf";
-        static constexpr const char* PathMono    = "resources/fonts/JetBrainsMono-Variable.ttf";
-        static constexpr const char* PathIcons   = "resources/fonts/FontAwesome-Solid.ttf";
+        static constexpr const char* PathRegular = "fonts/HankenGrotesk-Variable.ttf";
+        static constexpr const char* PathMedium  = "fonts/HankenGrotesk-Variable.ttf";
+        static constexpr const char* PathBold    = "fonts/HankenGrotesk-Variable.ttf";
+        static constexpr const char* PathMono    = "fonts/JetBrainsMono-Variable.ttf";
     };
 
     // Loaded font references
@@ -180,9 +179,6 @@ public:
     // Get loaded fonts
     static const Fonts& fonts();
 
-    // Apply dark theme (alias for apply() for compatibility)
-    static void applyDark() { apply(); }
-
     //=========================================================================
     // COLOR UTILITIES
     //=========================================================================
@@ -190,219 +186,11 @@ public:
     // Convert ImU32 to ImVec4
     static ImVec4 toVec4(ImU32 color);
 
-    // Convert ImVec4 to ImU32
-    static ImU32 toU32(const ImVec4& color);
-
-    // Create color with modified alpha (0.0 - 1.0)
-    static ImU32 withAlpha(ImU32 color, float alpha);
-
-    // Interpolate between two colors
-    static ImU32 lerp(ImU32 a, ImU32 b, float t);
-
-    // Lighten a color by percentage (0.0 - 1.0)
-    static ImU32 lighten(ImU32 color, float amount);
-
-    // Darken a color by percentage
-    static ImU32 darken(ImU32 color, float amount);
-
-    //=========================================================================
-    // STYLE PRESETS (push/pop patterns)
-    //=========================================================================
-
-    // Primary accent style (cyan buttons, etc.)
-    static void pushAccent();
-    static void popAccent();
-
-    // Secondary accent style (magenta)
-    static void pushSecondary();
-    static void popSecondary();
-
-    // Danger/destructive action style (red)
-    static void pushDanger();
-    static void popDanger();
-
-    // Success style (green)
-    static void pushSuccess();
-    static void popSuccess();
-
-    // Warning style (amber)
-    static void pushWarning();
-    static void popWarning();
-
-    // Ghost/subtle button style (transparent background)
-    static void pushGhost();
-    static void popGhost();
-
-    // Disabled visual style
-    static void pushDisabled();
-    static void popDisabled();
-
-    // Header bar style (for panel headers)
-    static void pushHeader();
-    static void popHeader();
-
-    //=========================================================================
-    // CUSTOM WIDGETS
-    //=========================================================================
-
-    // Styled horizontal separator with optional label
-    static void separator(const char* label = nullptr);
-
-    // Section header with accent underline
-    static void sectionHeader(const char* label);
-
-    // Subsection header (smaller, no underline)
-    static void subsectionHeader(const char* label);
-
-    // Styled tooltip (call between BeginTooltip/EndTooltip)
-    static void tooltipText(const char* text);
-
-    // Badge/tag with color
-    static void badge(const char* text, ImU32 bgColor = Colors::CyanDark,
-                     ImU32 textColor = Colors::Snow);
-
-    // Status indicator dot
-    static void statusDot(ImU32 color, const char* tooltip = nullptr);
-
-    // Animated status indicator (pulsing)
-    static void statusPulse(ImU32 color, const char* tooltip = nullptr);
-
-    // Progress bar with glow effect
-    static void progressBar(float fraction, const ImVec2& size = ImVec2(-1, 4),
-                           ImU32 color = Colors::Cyan, const char* overlay = nullptr);
-
-    // Vertical progress/level meter
-    static void levelMeter(float fraction, const ImVec2& size = ImVec2(6, -1),
-                          ImU32 color = Colors::Cyan);
-
-    // Gradient panel background (call at start of window)
-    static void panelGradient();
-
-    // Accent line decoration
-    static void accentLine(float width = -1);
-
-    // Keyboard shortcut display
-    static void shortcutHint(const char* shortcut);
-
-    // Icon with optional color
-    static void icon(const char* icon, ImU32 color = Colors::Cloud);
-
-    // Icon button (square, icon only)
-    static bool iconButton(const char* icon, const char* tooltip = nullptr,
-                          ImU32 color = Colors::Cloud);
-
-    //=========================================================================
-    // LAYOUT HELPERS
-    //=========================================================================
-
-    // Begin a styled card/panel
-    static bool beginCard(const char* label, bool border = true);
-    static void endCard();
-
-    // Horizontal button group (no gaps between buttons)
-    static void beginButtonGroup();
-    static void endButtonGroup();
-
-    // Toolbar area
-    static void beginToolbar();
-    static void endToolbar();
-
-    // Centered content
-    static void beginCentered(float width);
-    static void endCentered();
-
-    //=========================================================================
-    // ANIMATION HELPERS
-    //=========================================================================
-
-    // Get pulsing alpha value (for blinking indicators)
-    static float pulseAlpha(float speed = 2.0f, float min = 0.4f, float max = 1.0f);
-
-    // Get smooth sine wave value
-    static float sine(float speed = 1.0f);
-
-    // Get current animation time
-    static float time();
-
 private:
     static Fonts s_fonts;
 
     static void configureStyle(ImGuiStyle& style);
     static void configureColors(ImGuiStyle& style);
-    static void configureColorsDark(ImGuiStyle& style);
 };
-
-//=============================================================================
-// ICON CONSTANTS (FontAwesome subset)
-//=============================================================================
-
-namespace Icons {
-    // Media controls
-    constexpr const char* Play          = "\xEF\x81\x8B";  //
-    constexpr const char* Pause         = "\xEF\x81\x8C";  //
-    constexpr const char* Stop          = "\xEF\x81\x8D";  //
-    constexpr const char* Forward       = "\xEF\x81\x8E";  //
-    constexpr const char* Backward      = "\xEF\x81\x8A";  //
-    constexpr const char* StepForward   = "\xEF\x81\x91";  //
-    constexpr const char* StepBackward  = "\xEF\x81\x88";  //
-
-    // File operations
-    constexpr const char* FolderOpen    = "\xEF\x81\xBC";  //
-    constexpr const char* File          = "\xEF\x85\x9B";  //
-    constexpr const char* Save          = "\xEF\x83\x87";  //
-    constexpr const char* Download      = "\xEF\x80\x99";  //
-    constexpr const char* Upload        = "\xEF\x82\x93";  //
-
-    // Editing
-    constexpr const char* Plus          = "\xEF\x81\xA7";  //
-    constexpr const char* Minus         = "\xEF\x81\xA8";  //
-    constexpr const char* Times         = "\xEF\x80\x8D";  //
-    constexpr const char* Check         = "\xEF\x80\x8C";  //
-    constexpr const char* Edit          = "\xEF\x8C\x84";  //
-    constexpr const char* Trash         = "\xEF\x87\xB8";  //
-    constexpr const char* Copy          = "\xEF\x83\x85";  //
-    constexpr const char* Undo          = "\xEF\x83\xA2";  //
-    constexpr const char* Redo          = "\xEF\x80\x9E";  //
-
-    // View
-    constexpr const char* Eye           = "\xEF\x81\xAE";  //
-    constexpr const char* EyeSlash      = "\xEF\x81\xB0";  //
-    constexpr const char* Expand        = "\xEF\x81\xA5";  //
-    constexpr const char* Compress      = "\xEF\x81\xA6";  //
-    constexpr const char* Search        = "\xEF\x80\x82";  //
-    constexpr const char* ZoomIn        = "\xEF\x80\x8E";  //
-    constexpr const char* ZoomOut       = "\xEF\x80\x90";  //
-
-    // Arrows
-    constexpr const char* ArrowUp       = "\xEF\x81\xA2";  //
-    constexpr const char* ArrowDown     = "\xEF\x81\xA3";  //
-    constexpr const char* ArrowLeft     = "\xEF\x81\xA0";  //
-    constexpr const char* ArrowRight    = "\xEF\x81\xA1";  //
-    constexpr const char* ChevronUp     = "\xEF\x81\xB7";  //
-    constexpr const char* ChevronDown   = "\xEF\x81\xB8";  //
-    constexpr const char* ChevronLeft   = "\xEF\x81\x93";  //
-    constexpr const char* ChevronRight  = "\xEF\x81\x94";  //
-
-    // Objects
-    constexpr const char* Cog           = "\xEF\x80\x93";  //
-    constexpr const char* Lock          = "\xEF\x80\xA3";  //
-    constexpr const char* Unlock        = "\xEF\x82\x9C";  //
-    constexpr const char* Image         = "\xEF\x80\xBE";  //
-    constexpr const char* Video         = "\xEF\x80\x88";  //
-    constexpr const char* Music         = "\xEF\x80\x81";  //
-    constexpr const char* VolumeUp      = "\xEF\x80\xA8";  //
-    constexpr const char* VolumeMute    = "\xEF\x9A\xA9";  //
-    constexpr const char* Display       = "\xEF\x84\x88";  //
-    constexpr const char* Grid          = "\xEF\x80\x8A";  //
-    constexpr const char* Layers        = "\xEF\x97\xBD";  //
-    constexpr const char* Cube          = "\xEF\x86\xB2";  //
-
-    // Status
-    constexpr const char* CircleDot     = "\xEF\x86\x92";  //
-    constexpr const char* Circle        = "\xEF\x84\x91";  //
-    constexpr const char* Warning       = "\xEF\x81\xB1";  //
-    constexpr const char* Info          = "\xEF\x81\x9A";  //
-    constexpr const char* Question      = "\xEF\x81\x99";  //
-}
 
 } // namespace quadmapper

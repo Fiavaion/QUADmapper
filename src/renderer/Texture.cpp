@@ -109,9 +109,8 @@ bool Texture::loadFromFile(const std::filesystem::path& path) {
 
     // Read through the wide path: stbi_load() opens its filename in the ANSI code page,
     // so an install folder with non-ASCII characters would fail.
-    auto bytes = FileSystem::readBinaryFile(path);
-    if (!bytes || bytes.value().empty() ||
-        bytes.value().size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    auto bytes = FileSystem::readBinaryFile(path, static_cast<size_t>(std::numeric_limits<int>::max()));
+    if (!bytes || bytes.value().empty()) {
         Logger::error("Failed to load texture: {} - cannot read file", utf8FromPath(path));
         return false;
     }
@@ -140,6 +139,26 @@ bool Texture::loadFromFile(const std::filesystem::path& path) {
 
 bool Texture::create(int width, int height, int channels, const unsigned char* data) {
     destroy();
+
+    if (width <= 0 || height <= 0) {
+        Logger::error("Texture::create: {}x{} is not a size", width, height);
+        return false;
+    }
+
+    // Past GL_MAX_TEXTURE_SIZE glTexImage2D fails silently and the quad would sample black.
+    GLint maxSize = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxSize);
+    if (maxSize > 0 && (width > maxSize || height > maxSize)) {
+        // Callers retry every frame; name each oversize image once, not per frame.
+        static thread_local int lastWidth = 0, lastHeight = 0;
+        if (width != lastWidth || height != lastHeight) {
+            lastWidth = width;
+            lastHeight = height;
+            Logger::error("Texture {}x{} is larger than this GPU's limit of {}x{}; it cannot be shown",
+                          width, height, maxSize, maxSize);
+        }
+        return false;
+    }
 
     width_ = width;
     height_ = height;
@@ -170,7 +189,6 @@ bool Texture::create(int width, int height, int channels, const unsigned char* d
             break;
     }
 
-    // Create texture
     glGenTextures(1, &textureId_);
     GlObjectStats::onTextureCreated();
     glBindTexture(GL_TEXTURE_2D, textureId_);
@@ -181,10 +199,8 @@ bool Texture::create(int width, int height, int channels, const unsigned char* d
         glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, data);
     }
 
-    // Generate mipmaps
     glGenerateMipmap(GL_TEXTURE_2D);
 
-    // Set default parameters
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
@@ -199,11 +215,30 @@ bool Texture::createEmpty(int width, int height, int channels) {
     return create(width, height, channels, nullptr);
 }
 
+size_t Texture::compressedByteSize(GpuCompressedFormat fmt, int width, int height) {
+    if (width <= 0 || height <= 0) return 0;
+    size_t bytesPerBlock = 0;
+    switch (fmt) {
+        case GpuCompressedFormat::BC1_RGB:   bytesPerBlock = 8; break;
+        case GpuCompressedFormat::BC3_RGBA:
+        case GpuCompressedFormat::BC3_YCoCg:
+        case GpuCompressedFormat::BC7_RGBA:  bytesPerBlock = 16; break;
+        case GpuCompressedFormat::None:
+        default:                             return 0;
+    }
+    const size_t blocks = ((static_cast<size_t>(width) + 3) / 4) * ((static_cast<size_t>(height) + 3) / 4);
+    return blocks * bytesPerBlock;
+}
+
 bool Texture::createCompressed(int width, int height, GpuCompressedFormat fmt,
                                const unsigned char* data, size_t size) {
     GLenum internalFormat = glCompressedInternalFormat(fmt);
     if (internalFormat == 0 || width <= 0 || height <= 0) {
         Logger::error("Texture::createCompressed: invalid format/dimensions ({}x{})", width, height);
+        return false;
+    }
+    if (size != 0 && size != compressedByteSize(fmt, width, height)) {
+        Logger::error("Texture::createCompressed: {} bytes is not the size of a {}x{} level", size, width, height);
         return false;
     }
 
@@ -251,6 +286,10 @@ bool Texture::updateCompressed(const unsigned char* data, size_t size) {
     if (internalFormat == 0) {
         return false;
     }
+    if (size != compressedByteSize(compressedFormat_, width_, height_)) {
+        Logger::error("Texture::updateCompressed: {} bytes is not the size of a {}x{} level", size, width_, height_);
+        return false;
+    }
 
     glBindTexture(GL_TEXTURE_2D, textureId_);
     // Compressed levels are re-specified whole; a full-image SubImage matches
@@ -286,6 +325,13 @@ void Texture::update(const unsigned char* data) {
 
 void Texture::update(int x, int y, int width, int height, const unsigned char* data) {
     if (!isValid()) return;
+    // The rectangle must lie inside the texture: compared without adding, so nothing
+    // overflows.
+    if (x < 0 || y < 0 || width <= 0 || height <= 0 || width > width_ - x || height > height_ - y) {
+        Logger::error("Texture::update: {}x{} at {},{} is outside the {}x{} texture", width, height, x, y,
+                      width_, height_);
+        return;
+    }
 
     GLenum format = GL_RGBA;
     switch (channels_) {
@@ -336,16 +382,6 @@ void Texture::bind(uint32_t slot) const {
 }
 
 void Texture::unbind() {
-    glBindTexture(GL_TEXTURE_2D, 0);
-}
-
-void Texture::setWrapMode(bool repeat) {
-    if (!isValid()) return;
-
-    GLenum mode = repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE;
-    glBindTexture(GL_TEXTURE_2D, textureId_);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, mode);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, mode);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 

@@ -7,6 +7,7 @@
 #include "source/SourceManager.hpp"
 #include "source/TextureSource.hpp"
 
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -61,6 +62,7 @@ TEST(SourceRelease, ReleasesOnlyUnreferencedMediaSources) {
     const size_t released = sm.releaseUnreferenced({boundVideo, binProcedural, boundCamera});
 
     EXPECT_EQ(released, 4u);
+    sm.finishBackgroundWork();  // videos are shut down off the main thread (TD-35)
     EXPECT_EQ(shutdowns, 4);  // each released source was shut down (decode thread joined)
     EXPECT_TRUE(sm.hasSource(boundVideo));
     EXPECT_FALSE(sm.hasSource(orphanVideo));
@@ -99,4 +101,22 @@ TEST(SourceRelease, RemovalIsReportedThroughTheCallback) {
 
     sm.releaseUnreferenced({});
     EXPECT_EQ(removed, orphan);
+}
+
+// Video export (ADR-060): the master timeline runs on an injected clock, not the
+// steady clock, so an export steps it frame by frame.
+TEST(SourceTimeSourceTest, MasterTimelineFollowsTheInjectedClock) {
+    SourceManager sm;
+    PlaybackTimePoint now{};  // far from steady_clock::now()
+    sm.setTimeSource([&now] { return now; });
+    EXPECT_EQ(sm.clockNow(), now);
+    sm.restartMasterTimeline();
+    sm.playMasterTimeline();
+    now += std::chrono::milliseconds(2500);
+    EXPECT_NEAR(sm.getMasterTimeline().timeline(sm.clockNow()), 2.5, 1e-9);
+    sm.pauseMasterTimeline();
+    now += std::chrono::seconds(10);  // paused: stays put
+    EXPECT_NEAR(sm.getMasterTimeline().timeline(sm.clockNow()), 2.5, 1e-9);
+    // No playable source: nothing to wait for.
+    EXPECT_TRUE(sm.framesCoverClock());
 }

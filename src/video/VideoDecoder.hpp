@@ -81,6 +81,17 @@ struct DecodeOptions {
     // flags. Each retry consumes one count; 0 disables (the real check runs instead).
     int testForceSeekLandsLateFrames = 0;
     int testForceSeekLandsOffKeyFrames = 0;
+    // Test hooks (TD-35 review): run on the decode thread at the two points where a
+    // startPlayback() from another thread can land between a check and the queue: after
+    // the zero-copy fallback took the queued frames out to copy them to memory and before
+    // it puts them back, and after a decoded frame passed the replan check and before it
+    // is queued. A hook may call startPlayback() itself to land a reposition right there.
+    std::function<void()> testDuringLeaveGpu;
+    std::function<void()> testBeforeQueueFrame;
+    // Test hook: runs before each read of the file, on the thread that reads, with the
+    // flag stopBackgroundDecoding() raises to cut the reads of a file that has stopped
+    // answering. A hook that waits for the flag stands in for such a file.
+    std::function<void(const std::atomic<bool>& cutReads)> testBeforeFileRead;
 };
 
 // Memory the backward GOP decoder may hold for Ping-Pong's reverse leg (ADR-050 §4).
@@ -179,13 +190,6 @@ public:
     bool seek(double timeSeconds);
 
     /**
-     * @brief Seek to a specific frame
-     * @param frameNumber Target frame number
-     * @return true if successful
-     */
-    bool seekFrame(int64_t frameNumber);
-
-    /**
      * @brief Decode the next frame
      * @return Decoded frame, or invalid frame if EOF/error
      */
@@ -215,12 +219,22 @@ public:
     void startBackgroundDecoding(size_t bufferSize = 8);
 
     /**
+     * @brief Start the decode thread now, idle until startPlayback() hands it a plan
+     *
+     * Creating a thread costs the caller milliseconds on a loaded machine; a file opened
+     * off the main thread (TD-35) starts its thread there, so the main thread's first
+     * startPlayback() only hands the plan over. Any thread that owns the decoder.
+     */
+    void startIdleThread();
+
+    /**
      * @brief Restart background decoding to follow a playback clock (ADR-050)
      * @param plan Timeline position, clip duration and loop mode to produce frames for
      * @param bufferSize Number of frames to buffer ahead
      *
-     * Stops the thread, discards buffered frames and positions the decoder at the
-     * frame the plan's timeline instant shows. Frames then carry VideoFrame::due.
+     * Discards buffered frames and hands the plan to the decode thread (starting it if
+     * need be), which positions itself at the frame the plan's timeline instant shows;
+     * returns without waiting for it (TD-35). Frames then carry VideoFrame::due.
      */
     void startPlayback(const DecodePlan& plan, size_t bufferSize = 8);
 
@@ -322,6 +336,14 @@ public:
      * the app exits (ADR-055).
      */
     static int hardwareDevicesCreated();
+
+    /**
+     * @brief The shared decode device (an ID3D11Device*), or null before the first
+     *        hardware decoder opened or where there is none
+     *
+     * Frames left on the GPU carry it as GpuSurface::device. Any thread.
+     */
+    static void* sharedD3dDevice();
 
     // --- Zero-copy frames (ADR-056) ---
 

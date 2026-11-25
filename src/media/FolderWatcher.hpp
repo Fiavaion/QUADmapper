@@ -48,23 +48,10 @@ public:
      *
      * The callback is invoked from the watcher thread.
      */
-    void setCallback(FileCallback callback) { callback_ = std::move(callback); }
-
-    /**
-     * @brief Check if currently watching a folder.
-     */
-    bool isWatching() const { return watching_.load(); }
-
-    /**
-     * @brief Get the folder being watched.
-     */
-    const std::filesystem::path& getWatchedFolder() const { return folder_; }
-
-    /**
-     * @brief Set the polling interval in milliseconds.
-     * @param intervalMs Polling interval (default 2000ms)
-     */
-    void setPollingInterval(int intervalMs) { pollingIntervalMs_ = intervalMs; }
+    void setCallback(FileCallback callback) {
+        std::lock_guard<std::mutex> lock(cacheMutex_);
+        callback_ = std::move(callback);
+    }
 
 private:
     void watchThread();

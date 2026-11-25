@@ -24,8 +24,6 @@ struct VideoPlaybackState {
 
     // Helper methods
     bool isPlaying() const { return state == PlaybackState::PLAYING; }
-    bool isPaused() const { return state == PlaybackState::PAUSED; }
-    bool isStopped() const { return state == PlaybackState::STOPPED; }
     bool isFinished() const { return state == PlaybackState::FINISHED; }
 
     float getProgress() const {

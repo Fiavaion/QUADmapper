@@ -38,7 +38,8 @@ void HapConvertWindow::start(const std::filesystem::path& source, hap::HapVarian
     jobs_.push_back(std::move(job));
 }
 
-void HapConvertWindow::render(const AddToBin& addToBin, const ReplaceInShow& replaceInShow) {
+void HapConvertWindow::render(const AddToBin& addToBin, const ReplaceInShow& replaceInShow,
+                              bool showLocked) {
     // A finished file joins the media bin whether or not the window is looked at.
     for (Job& job : jobs_) {
         const HapConversion& c = *job.conversion;
@@ -57,7 +58,7 @@ void HapConvertWindow::render(const AddToBin& addToBin, const ReplaceInShow& rep
     bool open = true;
     // No close button while converting: the rows are the only way to cancel. It does
     // not take focus when it appears, so the canvas keeps the vertex keys.
-    if (ImGui::Begin("Convert to HAP##hapconvert", running ? nullptr : &open,
+    if (ImGui::Begin(WINDOW_ID, running ? nullptr : &open,
                      ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
                          ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing)) {
         size_t dismiss = jobs_.size();
@@ -84,16 +85,21 @@ void HapConvertWindow::render(const AddToBin& addToBin, const ReplaceInShow& rep
                                 utf8FromPath(r.output.filename()).c_str(), static_cast<long long>(r.frames));
                     if (!r.audioNote.empty()) ImGui::TextDisabled("%s", r.audioNote.c_str());
                     if (!job.replaceError.empty()) ImGui::TextColored(ERROR_COLOUR, "%s", job.replaceError.c_str());
-                    ImGui::BeginDisabled(job.replaced);
+                    ImGui::BeginDisabled(job.replaced || showLocked);
                     if (ImGui::Button(job.replaced ? "Replaced" : "Replace in show") && replaceInShow) {
                         job.replaceError = replaceInShow(c.source(), r.output);
                         job.replaced = job.replaceError.empty();
                     }
                     ImGui::EndDisabled();
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                        ImGui::SetTooltip("Every quad and 3D object showing %s shows the HAP file instead,\n"
-                                          "playing on from the same place. Undo (Ctrl+Z) reverts it.",
-                                          utf8FromPath(c.source().filename()).c_str());
+                        if (showLocked && !job.replaced) {
+                            ImGui::SetTooltip("The show is locked (Output > Perform Lock): unlock it to "
+                                              "replace %s.", utf8FromPath(c.source().filename()).c_str());
+                        } else {
+                            ImGui::SetTooltip("Every quad and 3D object showing %s shows the HAP file instead,\n"
+                                              "playing on from the same place. Undo (Ctrl+Z) reverts it.",
+                                              utf8FromPath(c.source().filename()).c_str());
+                        }
                     }
                     ImGui::SameLine();
                 } else if (r.status == HapExportResult::Status::Cancelled) {

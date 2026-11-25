@@ -13,14 +13,6 @@ inline const char* QUAD_FRAG = R"GLSL(
 @QUAD_FRAG_SOURCE@
 )GLSL";
 
-inline const char* MESH_VERT = R"GLSL(
-@MESH_VERT_SOURCE@
-)GLSL";
-
-inline const char* MESH_FRAG = R"GLSL(
-@MESH_FRAG_SOURCE@
-)GLSL";
-
 // 3D mesh objects seen from a projector (ADR-052); links with QUAD_FRAG.
 inline const char* MESH3D_VERT = R"GLSL(
 @MESH3D_VERT_SOURCE@

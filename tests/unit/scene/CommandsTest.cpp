@@ -4,7 +4,6 @@
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGroup.hpp"
 #include "scene/Scene.hpp"
-#include "app/GridUndo.hpp"
 #include "core/CommandHistory.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <map>
@@ -554,27 +553,6 @@ TEST_F(SceneCommandsTest, MoveQuadCommandMerges) {
     }
 }
 
-// SetMeshResolutionCommand tests
-TEST_F(SceneCommandsTest, SetMeshResolutionCommandExecutes) {
-    Quad* quad = manager().createQuad();
-
-    history_->execute(std::make_unique<SetMeshResolutionCommand>(ref(quad), 32));
-
-    EXPECT_EQ(quad->getGeometry().getMeshResolution(), 32);
-}
-
-TEST_F(SceneCommandsTest, SetMeshResolutionCommandUndoRestoresVertices) {
-    Quad* quad = manager().createQuad();
-    int originalRes = quad->getGeometry().getMeshResolution();
-    auto originalVertices = quad->getGeometry().getMeshVertices();
-
-    history_->execute(std::make_unique<SetMeshResolutionCommand>(ref(quad), 32));
-    history_->undo();
-
-    EXPECT_EQ(quad->getGeometry().getMeshResolution(), originalRes);
-    EXPECT_EQ(quad->getGeometry().getMeshVertices().size(), originalVertices.size());
-}
-
 // QuadPropertyCommand tests (template; bezier undo uses it)
 TEST_F(SceneCommandsTest, QuadPropertyCommandWorks) {
     Quad* quad = manager().createQuad();
@@ -594,6 +572,40 @@ TEST_F(SceneCommandsTest, QuadPropertyCommandWorks) {
 
     manager().deleteQuad(quad->getId());
     EXPECT_FALSE(cmd->execute());
+}
+
+// The Properties warp switch (ADR-058): one step that undoes and redoes the mode and
+// leaves a meshed quad's control vertices where they are.
+TEST_F(SceneCommandsTest, WarpModeChangeUndoesAndRedoesWithoutMovingTheMesh) {
+    Quad* quad = manager().createQuad();
+    QuadGeometry& geo = quad->getGeometry();
+    geo.setCorners({Vec2(0.1f, 0.2f), Vec2(0.8f, 0.1f), Vec2(0.9f, 0.9f), Vec2(0.2f, 0.7f)});
+    geo.setUniformGrid(2);
+    geo.setMeshMode(MeshMode::MESH_EDIT);
+    geo.setMeshVertex(1, 1, Vec2(0.02f, 0.03f));
+    const std::vector<Vec2> positions = geo.generateMeshPositions();
+    const WarpMode before = geo.getWarpMode();
+    ASSERT_EQ(before, WarpMode::LINEAR);
+
+    history_->execute(std::make_unique<QuadPropertyCommand<WarpMode>>(
+        "Warp Mode", ref(quad), before, WarpMode::PERSPECTIVE,
+        [](Quad& q, const WarpMode& m) { q.getGeometry().setWarpMode(m); }));
+    auto expectMeshUnmoved = [&](const char* when) {
+        const std::vector<Vec2> now = geo.generateMeshPositions();
+        ASSERT_EQ(now.size(), positions.size()) << when;
+        for (size_t i = 0; i < now.size(); ++i) {
+            EXPECT_NEAR(now[i].x, positions[i].x, 1e-5f) << when << " vertex " << i;
+            EXPECT_NEAR(now[i].y, positions[i].y, 1e-5f) << when << " vertex " << i;
+        }
+    };
+    EXPECT_EQ(geo.getWarpMode(), WarpMode::PERSPECTIVE);
+    expectMeshUnmoved("after the change");
+    history_->undo();
+    EXPECT_EQ(geo.getWarpMode(), WarpMode::LINEAR);
+    expectMeshUnmoved("after undo");
+    history_->redo();
+    EXPECT_EQ(geo.getWarpMode(), WarpMode::PERSPECTIVE);
+    expectMeshUnmoved("after redo");
 }
 
 // Grid-line handle moves (ADR-049 §3): consecutive moves of one handle merge into one
@@ -621,29 +633,6 @@ TEST_F(SceneCommandsTest, MoveGridHandleMergesPerHandleAndIsSafeAfterDelete) {
     ASSERT_TRUE(history_->redo());
     manager().deleteQuad(quad->getId());
     EXPECT_FALSE(history_->redo());
-    EXPECT_FALSE(history_->undo());
-}
-
-// Grid undo (app/GridUndo.hpp) through the id-based command
-TEST_F(SceneCommandsTest, GridChangeUndoRestoresGridAndIsSafeAfterDelete) {
-    Quad* quad = manager().createQuad();
-    QuadGeometry& geo = quad->getGeometry();
-    geo.setGridHandlePosition(1, GRID_HANDLE_V_AFTER, Vec2(0.75f, 0.4f));  // a grid-line handle
-    GridSnapshot before = captureGrid(geo);
-    geo.insertUDivision(0.3f);
-    pushGridChange(*history_, ref(quad), "Add Column", before, captureGrid(geo));
-    const int columnsAfter = geo.getColumns();
-
-    history_->undo();
-    EXPECT_EQ(geo.getUCoords(), before.u);
-    EXPECT_EQ(geo.getMeshVertices(), before.offsets);
-    EXPECT_EQ(geo.getVertexTangents(), before.tangents);
-    EXPECT_TRUE(geo.getVertexTangent(1).isExplicit(GRID_HANDLE_V_AFTER));
-
-    history_->redo();
-    EXPECT_EQ(geo.getColumns(), columnsAfter);
-
-    manager().deleteQuad(quad->getId());
     EXPECT_FALSE(history_->undo());
 }
 

@@ -85,11 +85,6 @@ public:
     void setUniform(const std::string& name, const Vec4& value);
 
     /**
-     * @brief Get the OpenGL program ID
-     */
-    uint32_t getProgramId() const { return programId_; }
-
-    /**
      * @brief Get the last compile/link error message
      */
     const std::string& getErrorMessage() const { return errorMessage_; }

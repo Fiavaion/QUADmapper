@@ -37,6 +37,21 @@ public:
     bool load(const std::filesystem::path& path, const DecodeOptions& options = {});
 
     /**
+     * @brief Load in two steps, the file opened elsewhere (TD-35)
+     *
+     * beginOpen() unloads and names the file; the transport (play, pause, seek, speed,
+     * loop, lock) works from then on and its clock runs, while a worker opens a
+     * VideoDecoder on the file. finishOpen() takes that decoder and starts decoding
+     * wherever the clock is by then. False if no open was begun, or if the decoder is
+     * not open: the player is then no longer opening and stays empty, but its transport
+     * state (playing, loop, speed, lock) is kept, so a project saved now writes the clip
+     * back as it was asked to play.
+     */
+    void beginOpen(const std::filesystem::path& path);
+    bool finishOpen(std::unique_ptr<VideoDecoder> decoder);
+    bool isOpening() const { return opening_; }
+
+    /**
      * @brief Unload the current video
      */
     void unload();
@@ -153,6 +168,8 @@ public:
      * @brief Replace the clock's time source (tests); default std::chrono::steady_clock
      */
     void setTimeSource(PlaybackTransport::TimeSource source);
+    // See PlayableSource::framesCoverClock.
+    bool framesCoverClock() const;
 
     /**
      * @brief Get video info
@@ -239,6 +256,10 @@ public:
     void setEndCallback(EndCallback callback);
 
 private:
+    // The decoder just opened (load or finishOpen): start playing it.
+    void start();
+    // Transport changes apply: a clip is loaded, or opening.
+    bool takesTransport() const;
     // Restart decoding at the clock's position when a transport change asked for it.
     void applyTransport();
     void reposition();
@@ -256,6 +277,7 @@ private:
     std::filesystem::path path_;
     size_t reverseCacheBytes_ = DEFAULT_REVERSE_CACHE_BYTES;
 
+    bool opening_ = false;         // beginOpen() ran; finishOpen() has not
     bool hasNewFrame_ = false;
     bool refreshPending_ = false;  // a load/seek made the shown frame stale
     double lastTimeline_ = 0.0;    // clock timeline at the previous update

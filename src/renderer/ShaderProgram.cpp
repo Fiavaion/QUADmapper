@@ -39,8 +39,7 @@ ShaderProgram& ShaderProgram::operator=(ShaderProgram&& other) noexcept {
 }
 
 bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource) {
-    uniformsByName_.clear();  // locations and values belong to the program being replaced
-    uniforms_.clear();
+    destroy();  // a second create replaces the program; it does not leak the first
 
     // Compile shaders
     uint32_t vertexShader = compileShader(GL_VERTEX_SHADER, vertexSource);
@@ -54,14 +53,12 @@ bool ShaderProgram::create(const char* vertexSource, const char* fragmentSource)
         return false;
     }
 
-    // Create and link program
     programId_ = glCreateProgram();
     GlObjectStats::onShaderProgramCreated();
     glAttachShader(programId_, vertexShader);
     glAttachShader(programId_, fragmentShader);
     glLinkProgram(programId_);
 
-    // Check for link errors
     if (!checkProgramLinkError(programId_)) {
         glDeleteProgram(programId_);
         GlObjectStats::onShaderProgramDestroyed();

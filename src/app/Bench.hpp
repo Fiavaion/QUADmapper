@@ -24,7 +24,7 @@ namespace quadmapper {
 //                             own vsync pacing
 //   --bench-quads=N           quads per scene in quads256
 //   --bench-videos=N          simultaneous video sources in videos16
-//   --bench-media=PATH        video file for videos16 / drift
+//   --bench-media=PATH        video file for videos16 / drift ("" = skip)
 //   --bench-hap-media=PATH    HAP file for the videos16 HAP case ("" = skip)
 //   --bench-scenes=N          scenes cycled by sceneSwitch (2-9: taken by keys 1-9)
 //   --bench-switch-every=K    frames between scene switches
@@ -41,8 +41,8 @@ struct BenchConfig {
     bool vsync = false;
     int quads = 256;
     int videos = 16;
-    std::string media = "D:/testing Videos/greenCrystals_15Sec.mp4";
-    std::string hapMedia = "D:/testing Videos/Hap/5sec_hap.mov";
+    std::string media;     // no default: the shipped program names no machine's files
+    std::string hapMedia;
     int scenes = 4;
     int switchEvery = 30;
     int latencySamples = 60;

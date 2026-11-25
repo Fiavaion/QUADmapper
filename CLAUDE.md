@@ -49,8 +49,12 @@ ctest --preset debug
 | `src/video/` | Video decoding (FFmpeg) and playback | Phase 3 |
 | `src/audio/` | Audio mixing and multi-output routing | Phase 6 |
 | `src/output/` | Output window management, perform mode | Phase 4 |
-| `src/ui/` | User interface with Dear ImGui | All Phases |
-| `src/input/` | Input handling and keyboard shortcuts | Phase 7 |
+| `src/control/` | OSC and MIDI external control (ADR-048) | Post-MVP |
+| `src/source/` | Media sources: video, HAP, images, procedural, camera | Phase 3 |
+| `src/editor/` | Editor state and mutations, actions, perform lock: no ImGui panels (ADR-051) | ADR-051 |
+| `src/ui/` | Panels, PanelHost, EditorUi, menus and dialogs with Dear ImGui | All Phases |
+| `src/input/` | Canvas key maths (`VertexKeyboard.hpp`) | Phase 7 |
+| `src/app/` | Application loop, ProjectSession, AiAssist, AppActions, bench/stress | All Phases |
 | `tests/` | GoogleTest unit and integration tests | All Phases |
 
 ## Code Conventions
@@ -93,19 +97,17 @@ ctest --preset debug
 ```
 core (no deps)
   ↓
-project, scene, media (depend on core)
+project, scene, media, video, audio, control, renderer, source, output, input
   ↓
-renderer (depends on core, scene)
+editor   (EditorState, commands helpers, ActionRegistry, PerformLock; no ImGui panels)
   ↓
-video (depends on core, media)
-audio (depends on core)
-output (depends on core, renderer)
+ui       (panels, PanelHost, EditorUi, ShortcutRouter)
   ↓
-ui (depends on all above)
-input (depends on core)
-  ↓
-app (depends on all)
+app      (Application loop, ProjectSession, AiAssist, AppActions)
 ```
+
+The `layering_check` ctest fails on any `ui/` or `app/` include under `src/editor` and any
+`app/` include under `src/ui` (ADR-051).
 
 ## Testing
 
@@ -139,6 +141,10 @@ ctest --preset debug
 | `src/video/VideoDecoder.hpp` | FFmpeg video decoding |
 | `src/project/ProjectSerializer.hpp` | .qmap file format |
 | `src/ui/panels/InspectorPanel.hpp` | Main property editor |
+| `src/editor/EditorState.hpp` | Live editor model and selection |
+| `src/editor/ActionRegistry.hpp` | Editor actions: keys and menu run the same code |
+| `src/ui/EditorUi.hpp` | Frame order: canvas, dockspace, menu, shortcuts, takes, panels |
+| `src/app/Application.hpp` | Main loop, setup/shutdown, projector frames |
 
 ## Third-Party Libraries
 
@@ -172,9 +178,12 @@ This project uses a session management system for development continuity:
 
 | File | Purpose |
 |------|---------|
-| `PROJECT_HISTORY.md` | Chronological development log |
+| `notes/CURRENT_STATUS.md` | One-page restart package, rewritten at `/end` |
+| `docs/sessions/` | Dated session logs; the latest is the detailed record |
 | `TASKS.md` | Task status tracking (QM-XXX IDs) |
-| `SESSION_STATE.json` | Machine-readable state for auto-continue |
+
+`SESSION_STATE.json` and `PROJECT_HISTORY.md` were retired on 2026-11-19 (owner decision; they
+stopped at Session 20) and kept read-only in [docs/archive/](docs/archive/). Do not update them.
 
 ## Sub-Agent Strategy
 
@@ -196,24 +205,34 @@ Agents spawn automatically when:
 - Component interface is ready for dependent work
 - Integration tests pass
 
-See `.claude/agent-state/spawn-rules.json` for full configuration.
+Spawn-rule configuration (`.claude/agent-state/spawn-rules.json`) is not present yet.
 
 ## Common Tasks
 
 ### Adding a New Panel
 
-1. Create `src/ui/panels/NewPanel.hpp` and `.cpp` (add both to `src/ui/CMakeLists.txt`) with a
-   `render(EditorContext& ctx)` that returns early when its `show…` flag is off, like
-   `VideoPlayerPanel` or `ControlPanel`.
-2. Hold the panel and its visibility flag in `EditorState` (`src/app/EditorState.hpp`).
-3. Draw it from `Application::render()` next to the other panels.
-4. Add a toggle in the Window menu (`src/ui/panels/MainMenuBar.cpp`).
-5. Check the dock layout on a first run (`imgui.ini`) so it docks sensibly.
+1. Create `src/ui/panels/NewPanel.hpp` and `.cpp` (add both to `src/ui/CMakeLists.txt`) that
+   subclass `Panel` (`src/ui/panels/Panel.hpp`): a stable `id()` (the ImGui window name), and
+   `drawContent(EditorContext&)`; the host does Begin/End. Override `kind()` for a Resources tab
+   or an overlay, `tick()` for work that must run while hidden, and `editsShow()` (false only for
+   show controls, so the perform lock leaves it usable).
+2. Register it in `EditorUi` (`src/ui/EditorUi.cpp`). The Window menu is generated from the
+   registered panels, so there is no flag in `EditorState` and no menu edit.
+3. Get everything through `EditorContext`; editor code that must open it posts
+   `es.requestPanelOpen(id)`.
+4. Check the dock layout on a first run (`imgui.ini`) so it docks sensibly.
 
 ### Adding a New Keyboard Shortcut
 
-- **Editor-wide shortcuts** go in the shortcut block of `Application::render()`, behind its
-  guards (no text field active, no popup open), with `ImGui::IsKeyPressed(key, false)`.
+- **Editor-wide shortcuts** are actions in the `ActionRegistry` (`src/editor/ActionRegistry.hpp`):
+  ids and default chords in `src/editor/EditActions.cpp`, registered in `src/app/AppActions.cpp`.
+  Give the action default chords (several allowed; the first shows in the menu), a class
+  (Show/Edit/File/View) and a guard. `ShortcutRouter` fires it on any chord with exact modifiers;
+  the menu uses `actionMenuItem`. Never hand-write key checks for editor-wide keys.
+- **Users rebind** in Edit > Preferences > Keyboard; overrides live in `preferences.json` under
+  `"keyboard"` and are applied at startup. The registry refuses Tab, the arrows and H (any
+  modifiers), another action's chord, and bare keys other than F1–F24 and Delete; F11, Esc and
+  Ctrl+B are fixed. A new *default* chord needs the owner's sign-off.
 - **Canvas editing keys** (vertex select and nudge) live in `ViewportEditor.cpp` and
   `src/input/VertexKeyboard.hpp`, which claim the keys with `SetKeyOwner`. Never let a new
   shortcut take Tab, the arrows, Shift or Alt from the canvas.
@@ -226,7 +245,7 @@ See `.claude/agent-state/spawn-rules.json` for full configuration.
 
 1. Extend `MediaItem` type enum in `src/media/MediaItem.hpp`
 2. Add loader in `MediaLibrary`
-3. Add thumbnail generation in `ThumbnailGenerator`
+3. Add thumbnail generation in `ThumbnailCache::generateThumbnail`
 4. Update UI to display new type
 
 ## Debugging
@@ -261,25 +280,17 @@ maths and key ownership in [VertexKeyboard.hpp](src/input/VertexKeyboard.hpp); n
 
 ## Model Selection Policy
 
-The authoritative per-task rubric is the **`modelswitcher`** skill — consult it before any
-multi-step plan or multi-agent fan-out. The tiers below are the fallback if it is absent.
-
-- **Opus-class** — planning, architecture, multi-file/cross-cutting changes, agent-team
-  lead, non-obvious debugging (render/timing/threading), high-risk refactors, audit
-  synthesis, the `/release` gate.
-- **Sonnet-class** — day-to-day feature work, routine refactors, test writing, rubric-driven
-  scans (security/slop/dead-code), browser/manual-UX sweeps.
-- **Haiku-class** — file listing, log triage, bulk mechanical edits.
-- **Fable-class** — *opportunistic upgrade for long-horizon agentic coding* (investigate →
-  patch → test → recover across many files). **Confirm availability via `/status` before
-  routing to it** — it is a bonus over Opus, never a dependency. Best used for the
-  remediation/fix phase, not the audit/planning phase.
-- **Advisor (on-demand)** — the Executor may spawn a single-question Opus subagent for
+- Routing lives in `~/.claude/CLAUDE.md` + the `switcher` skill — not restated here. Delegate
+  through the named global agents; never the built-in `general-purpose` agent — it inherits
+  the orchestrator's model and bypasses routing.
+- Project specialists: **Advisor (on-demand)** — the Executor may spawn a single-question Opus subagent for
   architectural forks, hard-to-reverse decisions, or repeated stalls. Keep the prompt under
-  200 words; receive one recommendation and return. See `.claude/agents/advisor.md`.
-
-> Note: the "Fable 10% / Opus 80% / Fable 10% by calendar" rule is **not** used — allocate
-> by task shape (above), not by project timeline.
+  200 words; receive one recommendation and return. See `.claude/agents/advisor.md`. Also in
+  `.claude/agents/`: `audio-specialist` (`src/audio`), `cpp-executor` (cross-module C++ work
+  from an agreed plan), `renderer-specialist` (`src/renderer`, `src/shaders`, `src/output`,
+  the render loop), `ui-specialist` (`src/ui`, ImGui interaction), `video-specialist`
+  (`src/video`, `VideoFileSource`, FFmpeg playback).
+- Project exceptions: none.
 
 ## Change Boundaries
 
@@ -294,6 +305,7 @@ These areas are **no-edit-without-approval**; changing them is hard to reverse:
   changing a header that downstream modules include is cross-cutting; plan it.
 - **`external/`** vendored libs (ImGui/GLAD/stb) — do not hand-edit; update via the
   documented process.
+- **Secrets** — never commit credentials or keys; none belong in this repo.
 
 Everything else: keep diffs **surgical** — touch only what the task needs, match the
 surrounding style, and clean up only the mess your change introduces.
@@ -307,8 +319,8 @@ Release-gate set (global, run before shipping): `/release` orchestrates
 gate. Also available individually: `/prod-ready`, `/security-harden`, `/slop-clean`,
 `/humanize`. **Run `/release` before any release build.**
 
-Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/todos`
-(scan code TODO/FIXME into `notes/TODOs.md`).
+Bootstrap additions: `/end` (extracts `LESSON-*` tags into the ledger and syncs TODO/FIXME
+into `notes/TODOs.md`).
 
 ## Token & Context Rules
 
@@ -316,16 +328,18 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
 - `/context` to inspect, `/compact` (with a focused instruction) after milestones, `/cost`
   before expensive phases (e.g. the full audit).
 - Don't paste big build logs — save to a file and `@`-mention; summarize first, then zoom in.
-- Standard loop: **plan (Opus, plan mode) → execute (Sonnet, small diffs) → compact/checkpoint.**
+- Standard loop: **plan (plan mode) → execute (small diffs) → compact/checkpoint.** Which model runs it is global routing's call.
 
 ## Dev & Bug-Fix Discipline
 
+- **Karpathy core:** think before coding · simplicity first · surgical changes · goal-driven execution. Verification is the binding constraint — wire "done" to a runnable check (run the app and warp a quad), not a feeling.
 - **Minimalism ladder — before writing code, walk it in order:** (1) does this need to exist?
   — if not, skip it (YAGNI); (2) does the C++17 stdlib do it? (3) a feature of an
   already-linked lib (GLM / GLFW / ImGui / FFmpeg / stb / miniaudio)? (4) only then a new
   dependency — and that needs an **ADR + approval** (see Change Boundaries); (5) can it be a few
   lines? (6) then the minimum that works. Never cut validation, error handling, RAII/GL cleanup,
   or the success-metric UX to be "minimal."
+- **Scope:** build the in-scope must-haves (the Success Metric workflow) first; everything else is explicitly deferred (tracked in `TASKS.md`), not "maybe." For a new panel or UI flow, validate the UI with dummy data before wiring the backend.
 - **Build → test → commit, one change at a time.** One feature/fix per commit; no `wip`
   commits on `main`. Incremental, reversible steps.
 - **Reviewer mode before "done".** After writing code, re-read your own diff as a senior
@@ -336,6 +350,7 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
 - **Done means verified working** — a feature is complete only when its behavior is seen
   working (run the app) or user-confirmed. Green tests ≠ done (624 tests pass while the
   real interaction could still be broken).
+- **Never build on an unverified foundation** — the Success Metric workflow is seen working before new phase work lands on top of it.
 - **Acceptance criteria up front** — before building anything non-trivial, write the *checkable*
   criteria that define done (e.g. "vertex warps precisely with Tab-cycle + arrow nudge, sent
   fullscreen to the chosen output") and fix them before, not after — so the loop has a real gate
@@ -348,12 +363,27 @@ Bootstrap additions: `/lessons` (extract `LESSON-*` tags into the ledger), `/tod
   (geometry → mesh → render → output), count expected vs actual at each step, fix all.
 - **Zero technical debt** — delete old code (git is the backup), never comment it out; no
   dead/parallel paths. Any accepted deferral goes in `TECHNICAL_DEBT.md` with a cost.
+- Fix debt the moment it appears — `DEFERRED`, `TEMPORARY` or `refactor later` in a core path (`src/core/`, `src/renderer/`, `ProjectSerializer`) means stop and fix; core work is never deferred. Refactors remove the old path in the same change. If a deadline would need debt, say so and get a decision.
 - **Isolate parallel/background agent work in a git worktree** to keep `main` clean.
+
+### Verification budget (owner decision 2026-10-02)
+
+Testing serves the success metric; it is not the goal. Spend it in proportion to risk:
+
+1. **No full `ctest` per change** (owner, 2026-10-03). Build, and run only the tests for the
+   code you changed. The full suite runs once, near release (part of `/release`).
+2. **A fresh-context review only for risky changes:** threading, the `.qmap` format, the
+   perform lock, the render loop. Everything else gets the lead's own read of the diff.
+3. **No mutation runs** except to settle one specific doubt, and then one or two at most.
+4. **Stress loops: at most 5 rounds, no added load**, unless chasing a reported failure.
+5. **Benchmarks only for changes meant to affect speed.**
+6. **No speed work below what a user would notice** unless the owner reports a stall.
+7. **The owner's hands-on testing comes before more automated proof.**
 
 ## Session Continuity Layer
 
-Source of truth stays the existing `TASKS.md` / `SESSION_STATE.json` / `PROJECT_HISTORY.md`
-(read by `/start` and `/end`). The bootstrap added only non-overlapping pieces:
+Source of truth is `TASKS.md`, `notes/CURRENT_STATUS.md` and the latest `docs/sessions/` log
+(read by `/start`, written by `/end`). Alongside them:
 [TECHNICAL_DEBT.md](TECHNICAL_DEBT.md), [notes/lessons.md](notes/lessons.md) (the
 `LESSON-{ARCH|BUG|PERF|API|UI|TEST|BUILD}-NNN` ledger), and [notes/TODOs.md](notes/TODOs.md).
 
@@ -361,4 +391,6 @@ The one-page restart package is [notes/CURRENT_STATUS.md](notes/CURRENT_STATUS.m
 (rewritten at `/end`; the next session reads it, not the chat history). `/end` also writes a
 dated log under [docs/sessions/](docs/sessions/) (the latest is the detailed source of truth on
 conflict). Hard-to-reverse decisions get an ADR in [docs/adr/](docs/adr/) — written *before*
-implementation (ADR-031+; ADR-001–030 are recorded informally in `SESSION_STATE.json`).
+implementation (ADR-031+; ADR-001–030 are recorded informally in `docs/archive/SESSION_STATE.json`).
+
+Tag TODOs inline as `TODO[cl]:` so `/end` can sync them. **Fix the process, not the output:** when a mistake is corrected, write the correction into this file, a rule in `.claude/rules/` or a skill so it can't recur.

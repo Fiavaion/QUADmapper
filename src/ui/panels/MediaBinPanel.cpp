@@ -1,13 +1,23 @@
 #include "MediaBinPanel.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
+#include "editor/ReplaceMedia.hpp"
 #include "core/FileSystem.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
 #include "media/ThumbnailCache.hpp"
+#include "scene/Scene.hpp"
+#include "scene/QuadManager.hpp"
+#include "scene/Quad.hpp"
+#include "scene/MeshObject.hpp"
 #include "source/SourceManager.hpp"
 #include "source/procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
 #include "ui/dialogs/HapConvertWindow.hpp"
+#include "ui/panels/InspectorPanel.hpp"
 #include "video/VideoDecoder.hpp"
+#include "ui/ConfirmPopup.hpp"
 #include <imgui.h>
 #include <vector>
 #include <algorithm>
@@ -35,8 +45,7 @@ static const char* getProceduralTypeName(ProceduralType type) {
     }
 }
 
-MediaBinPanel::MediaBinPanel() : Panel("Media Bin") {
-    selectedItemId_ = UUID::null();
+MediaBinPanel::MediaBinPanel() {
     contextMenuItemId_ = UUID::null();
 }
 
@@ -47,6 +56,10 @@ Texture* MediaBinPanel::getVideoThumbnail(const std::filesystem::path& path) {
     const std::string key = utf8FromPath(path);
     auto it = videoThumbs_.find(key);
     if (it != videoThumbs_.end()) return it->second.get();
+
+    // One new thumbnail per frame: the render thread also drives the projector outputs.
+    if (thumbsBuiltThisFrame_ >= MAX_THUMBS_PER_FRAME) return nullptr;
+    ++thumbsBuiltThisFrame_;
 
     // Cache a null entry first so a file that fails to decode isn't retried each frame.
     videoThumbs_[key] = nullptr;
@@ -73,16 +86,27 @@ Texture* MediaBinPanel::getVideoThumbnail(const std::filesystem::path& path) {
     return raw;
 }
 
-void MediaBinPanel::render() {
-    if (!visible_) return;
+void MediaBinPanel::onAttach(EditorContext& ctx) {
+    es_ = &ctx.es;
+    mediaLibrary_ = ctx.mediaLibrary;
+    sourceManager_ = ctx.sourceManager;
+    thumbnailCache_ = ctx.thumbnails;
+}
 
-    ImGui::Begin(title_.c_str(), &visible_);
+void MediaBinPanel::drawContent(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    const UUID prevMediaSelection = es.selectedMediaId;
     renderContent();
-    ImGui::End();
+    // Switch to Media properties if a media item was just selected
+    if (!es.selectedMediaId.isNull() && es.selectedMediaId != prevMediaSelection) {
+        es.currentSelectionType = EditorState::SelectionType::Media;
+        es.quadManager().deselectAll();
+        es.selectedOutputId = UUID();
+    }
 }
 
 void MediaBinPanel::renderContent() {
-    if (!mediaLibrary_) {
+    if (!mediaLibrary_ || !es_) {
         ImGui::TextDisabled("No media library connected");
         return;
     }
@@ -91,6 +115,74 @@ void MediaBinPanel::renderContent() {
     renderControls();
     ImGui::Separator();
     renderThumbnailGrid();
+    processRemoveRequest();
+    renderRemoveConfirm();
+}
+
+size_t countMediaUsers(const std::vector<std::unique_ptr<Scene>>& scenes, const UUID& sourceId) {
+    if (sourceId.isNull()) return 0;
+    size_t users = 0;
+    for (const auto& scene : scenes) {
+        if (!scene) continue;
+        for (const auto& quad : scene->getQuadManager().getQuads()) {
+            if (quad->getTexture().mediaId == sourceId) ++users;
+        }
+        for (const auto& object : scene->getObjects()) {
+            if (object->getTexture().mediaId == sourceId) ++users;
+        }
+    }
+    return users;
+}
+
+// The source the quads bind for this item: a procedural item owns one; an image or
+// video gets it from the SourceManager, once it has been assigned.
+static UUID sourceIdOf(const MediaItem& item, const SourceManager* sources) {
+    if (item.hasSource()) return item.getSourceId();
+    if (!sources) return UUID();
+    if (item.getType() == MediaType::IMAGE) return sources->findImageSourceByPath(item.getPath());
+    if (item.getType() == MediaType::VIDEO) return sources->findVideoSourceByPath(item.getPath());
+    return UUID();
+}
+
+// "Remove from Library" only records the request: removing the item inside its own
+// context menu would free it while the menu still reads it. An item no quad or object
+// uses goes at once; one in use asks first.
+void MediaBinPanel::processRemoveRequest() {
+    if (removeRequestId_.isNull()) return;
+    const UUID id = removeRequestId_;
+    removeRequestId_ = UUID::null();
+    const MediaItem* item = mediaLibrary_->getItem(id);
+    if (!item) return;
+
+    const size_t users = countMediaUsers(es_->scenes, sourceIdOf(*item, sourceManager_));
+    if (users == 0) {
+        removeItem(id);
+        return;
+    }
+    pendingRemoveId_ = id;
+    removeConfirm_.request(
+        "Remove Media?",
+        "'" + item->getName() + "' is used by " + std::to_string(users) +
+            (users == 1 ? " quad" : " quads") + ". Removing it leaves them without media.",
+        "Remove");
+}
+
+void MediaBinPanel::renderRemoveConfirm() {
+    if (!removeConfirm_.draw()) return;
+    const UUID id = pendingRemoveId_;
+    pendingRemoveId_ = UUID::null();
+    removeItem(id);
+}
+
+void MediaBinPanel::removeItem(const UUID& id) {
+    const MediaItem* item = mediaLibrary_->getItem(id);
+    if (!item) return;
+    if (es_->selectedMediaId == id) es_->selectedMediaId = UUID::null();
+    // Also remove the source from SourceManager if it exists
+    if (sourceManager_ && item->hasSource()) {
+        sourceManager_->removeSource(item->getSourceId());
+    }
+    mediaLibrary_->removeItem(id);
 }
 
 void MediaBinPanel::renderControls() {
@@ -115,7 +207,6 @@ void MediaBinPanel::renderControls() {
 
     ImGui::SameLine();
 
-    // Create procedural button with dropdown
     if (ImGui::Button("+ Create")) {
         ImGui::OpenPopup("ProceduralMenu");
     }
@@ -123,17 +214,7 @@ void MediaBinPanel::renderControls() {
         ImGui::SetTooltip("Create procedural texture source");
     }
 
-    // Render the procedural creation menu
     renderProceduralMenu();
-
-    ImGui::SameLine();
-
-    // Thumbnail size slider
-    ImGui::SetNextItemWidth(100.0f);
-    ImGui::SliderFloat("##size", &thumbnailSize_, 48.0f, 128.0f, "%.0f px");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Thumbnail size");
-    }
 
     // Second row: search and filter
     ImGui::SetNextItemWidth(150.0f);
@@ -224,6 +305,7 @@ void MediaBinPanel::renderThumbnailGrid() {
 
     // Collect which video (if any) is hovered this pass; reconciled after the loop.
     hoveredVideoThisFrame_.clear();
+    thumbsBuiltThisFrame_ = 0;
 
     int index = 0;
     for (MediaItem* item : filteredItems) {
@@ -244,14 +326,14 @@ void MediaBinPanel::renderThumbnailGrid() {
 void MediaBinPanel::updateHoverPreview() {
     if (!sourceManager_) return;
     // Only act when the hovered video changes (avoid per-frame decoder churn).
-    if (hoveredVideoThisFrame_ == hoverPreviewPath_) return;
+    if (hoveredVideoThisFrame_ == es_->previewSourcePath) return;
 
     // Retire the previous preview decoder; the frame boundary removes it unless
-    // something bound it meanwhile (takeEndedPreviews).
-    if (!hoverPreviewId_.isNull()) {
-        endedPreviews_.push_back(hoverPreviewId_);
-        hoverPreviewId_ = UUID();
-        hoverPreviewPath_.clear();
+    // something bound it meanwhile (releaseUnusedSources).
+    if (!es_->previewSourceId.isNull()) {
+        es_->endedPreviews.push_back(es_->previewSourceId);
+        es_->previewSourceId = UUID();
+        es_->previewSourcePath.clear();
     }
 
     // Spin up a dedicated decoder for the newly-hovered video and play it. This is a
@@ -260,8 +342,8 @@ void MediaBinPanel::updateHoverPreview() {
     if (!hoveredVideoThisFrame_.empty()) {
         UUID sid = sourceManager_->createVideoSource(pathFromUtf8(hoveredVideoThisFrame_));
         if (!sid.isNull()) {
-            hoverPreviewId_ = sid;
-            hoverPreviewPath_ = hoveredVideoThisFrame_;
+            es_->previewSourceId = sid;
+            es_->previewSourcePath = hoveredVideoThisFrame_;
             if (auto* v = sourceManager_->getSourceAs<PlayableSource>(sid)) v->play();
         }
     }
@@ -270,10 +352,9 @@ void MediaBinPanel::updateHoverPreview() {
 void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
     ImGui::PushID(index);
 
-    bool isSelected = (item->getId() == selectedItemId_);
+    bool isSelected = (item->getId() == es_->selectedMediaId);
     ImVec2 size(thumbnailSize_, thumbnailSize_);
 
-    // Create a button-like area for the thumbnail
     ImVec2 cursorPos = ImGui::GetCursorScreenPos();
 
     // Background color based on selection
@@ -293,19 +374,18 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
 
     // Handle selection on click
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-        selectedItemId_ = item->getId();
+        es_->selectedMediaId = item->getId();
     }
 
     // Handle right-click for context menu
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-        selectedItemId_ = item->getId();
+        es_->selectedMediaId = item->getId();
         contextMenuItemId_ = item->getId();
         ImGui::OpenPopup("MediaItemContextMenu");
     }
 
     // Drag source for drag-drop to quads
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-        // Store the UUID as payload
         UUID id = item->getId();
         ImGui::SetDragDropPayload(DRAG_DROP_MEDIA_ID, &id, sizeof(UUID));
 
@@ -326,13 +406,25 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
         );
     }
 
-    // Draw thumbnail image or placeholder icon
     bool thumbnailDrawn = false;
 
-    // Try to get a real thumbnail for image items
-    if (thumbnailCache_ && item->getType() == MediaType::IMAGE) {
-        GLuint thumbTex = thumbnailCache_->getThumbnail(item->getPath(),
-                                                         static_cast<int>(thumbnailSize_));
+    // A cell scrolled out of view asks for nothing.
+    const bool cellVisible =
+        ImGui::IsRectVisible(cursorPos, ImVec2(cursorPos.x + size.x, cursorPos.y + size.y));
+
+    // Try to get a real thumbnail for image items. A new one is built at most
+    // MAX_THUMBS_PER_FRAME times a frame; cells still waiting show the placeholder.
+    if (thumbnailCache_ && cellVisible && item->getType() == MediaType::IMAGE) {
+        GLuint thumbTex = 0;
+        bool mayBuild = true;
+        if (thumbnailCache_->needsGeneration(item->getPath())) {
+            mayBuild = thumbsBuiltThisFrame_ < MAX_THUMBS_PER_FRAME;
+            if (mayBuild) ++thumbsBuiltThisFrame_;
+        }
+        if (mayBuild) {
+            thumbTex = thumbnailCache_->getThumbnail(item->getPath(),
+                                                     static_cast<int>(thumbnailSize_));
+        }
         if (thumbTex != 0) {
             // Calculate aspect-fit placement within the thumbnail area
             // For now, just center the thumbnail
@@ -378,10 +470,10 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
         if (ImGui::IsItemHovered()) hoveredVideoThisFrame_ = path;
 
         Texture* drawTex = nullptr;
-        if (path == hoverPreviewPath_ && sourceManager_ && !hoverPreviewId_.isNull()) {
-            drawTex = sourceManager_->getTexture(hoverPreviewId_);  // live preview
+        if (path == es_->previewSourcePath && sourceManager_ && !es_->previewSourceId.isNull()) {
+            drawTex = sourceManager_->getTexture(es_->previewSourceId);  // live preview
         }
-        if (!drawTex || !drawTex->isValid()) {
+        if ((!drawTex || !drawTex->isValid()) && cellVisible) {
             drawTex = getVideoThumbnail(item->getPath());           // static first frame
         }
         if (drawTex && drawTex->isValid()) {
@@ -456,11 +548,10 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
         ImGui::EndTooltip();
     }
 
-    // Handle double-click for procedural editing
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-        if (item->getType() == MediaType::PROCEDURAL && proceduralEditCallback_) {
-            proceduralEditCallback_(item->getId());
-        }
+    // A pattern's parameters are edited in Properties; the first click selected it.
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+        item->getType() == MediaType::PROCEDURAL) {
+        es_->requestPanelOpen(InspectorPanel::ID);
     }
 
     // Context menu
@@ -481,23 +572,13 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
 
         // Procedural-specific options
         if (item->getType() == MediaType::PROCEDURAL) {
-            if (ImGui::MenuItem("Edit Parameters...")) {
-                if (proceduralEditCallback_) {
-                    proceduralEditCallback_(item->getId());
-                }
-            }
+            // The right-click that opened this menu selected the item.
+            if (ImGui::MenuItem("Edit Parameters...")) es_->requestPanelOpen(InspectorPanel::ID);
             ImGui::Separator();
         }
 
         if (ImGui::MenuItem("Remove from Library")) {
-            if (selectedItemId_ == item->getId()) {
-                selectedItemId_ = UUID::null();
-            }
-            // Also remove the source from SourceManager if it exists
-            if (sourceManager_ && item->hasSource()) {
-                sourceManager_->removeSource(item->getSourceId());
-            }
-            mediaLibrary_->removeItem(item->getId());
+            removeRequestId_ = item->getId();
         }
 
         // Re-encode as HAP beside the original (QM-082); runs in the background.
@@ -525,9 +606,12 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
         if (item->getType() != MediaType::PROCEDURAL) {
             if (ImGui::MenuItem("Reveal in Explorer")) {
                 std::wstring path = item->getPath().wstring();
-                // Use ShellExecute to open explorer and select the file
-                std::wstring param = L"/select,\"" + path + L"\"";
-                ShellExecuteW(NULL, L"open", L"explorer.exe", param.c_str(), NULL, SW_SHOWNORMAL);
+                // No file name holds a quote; one from a project file would end the
+                // quoted path and add an Explorer switch.
+                if (path.find(L'"') == std::wstring::npos) {
+                    std::wstring param = L"/select,\"" + path + L"\"";
+                    ShellExecuteW(NULL, L"open", L"explorer.exe", param.c_str(), NULL, SW_SHOWNORMAL);
+                }
             }
 
             if (ImGui::MenuItem("Copy Path")) {
@@ -546,7 +630,14 @@ void MediaBinPanel::renderConversions() {
         [this](const std::filesystem::path& converted) {
             if (mediaLibrary_) mediaLibrary_->addItem(converted);  // null if already there
         },
-        replaceInShowCallback_);
+        [this](const std::filesystem::path& original, const std::filesystem::path& converted) {
+            if (!sourceManager_ || !es_) return std::string("Media cannot be loaded right now.");
+            if (refusedByPerformLock(*es_, "Replace in show")) {
+                return std::string("The show is locked (Output > Perform Lock).");
+            }
+            return replaceClipInShow(*es_, *sourceManager_, original, converted);
+        },
+        es_ && es_->performLock.isOn());
 }
 
 void MediaBinPanel::handleImport() {
@@ -657,30 +748,22 @@ void MediaBinPanel::createProcedural(ProceduralType type) {
         return;
     }
 
-    // Create the procedural source in SourceManager
     UUID sourceId = sourceManager_->createProceduralSource(type);
     if (sourceId.isNull()) {
         return;
     }
 
-    // Create a MediaItem linked to this source
     auto item = std::make_unique<MediaItem>();
     item->setName(getProceduralTypeName(type));
     item->setType(MediaType::PROCEDURAL);
     item->setProceduralType(type);
     item->setSourceId(sourceId);
 
-    // Add to media library
     UUID itemId = item->getId();
     mediaLibrary_->addItem(std::move(item));
 
     // Select the newly created item
-    selectedItemId_ = itemId;
-
-    // Optionally open editor for the new procedural
-    if (proceduralEditCallback_) {
-        proceduralEditCallback_(itemId);
-    }
+    es_->selectedMediaId = itemId;
 }
 
 const char* MediaBinPanel::getMediaTypeIcon(MediaType type) const {

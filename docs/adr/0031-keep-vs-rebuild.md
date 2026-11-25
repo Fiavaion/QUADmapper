@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-14
 **Status:** Accepted (ratified by user 2026-06-14)
-**Deciders:** user (animaphic), Claude (5-specialist audit synthesis)
+**Deciders:** the owner, Claude (5-specialist audit synthesis)
 
 ## Context
 

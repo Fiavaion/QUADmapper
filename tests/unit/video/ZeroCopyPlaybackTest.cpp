@@ -17,6 +17,7 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+#include "core/MainThreadTimings.hpp"
 #include "renderer/DxInterop.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/YuvConverter.hpp"
@@ -119,6 +120,7 @@ public:
     void afterUpdate(SourceManager& sm, const UUID& id, VideoFileSource& video) {
         const FrameData* frame = video.getCurrentFrame();
         if (!frame || !frame->isYuv()) return;
+        if (!sm.showsCurrentFrame(id)) return;  // a first frame still being set up (TD-35)
         if (seen_ && frame->frameNumber == lastNumber_ && frame->timestamp == lastTimestamp_) return;
         seen_ = true;
         lastNumber_ = frame->frameNumber;
@@ -254,6 +256,7 @@ TEST(ZeroCopyPlayback, EveryFrameMatchesItsOwnDownloadAcrossPoolWraps) {
     SourceManager sm;
     const UUID id = sm.createVideoSource(H264_CLIP);
     ASSERT_FALSE(id.isNull());
+    sm.finishBackgroundWork();  // opened off the main thread (TD-35)
     auto* video = sm.getSourceAs<VideoFileSource>(id);
     ASSERT_NE(video, nullptr);
     if (!video->isHardwareDecoding()) GTEST_SKIP() << "no GPU decoding here: " << video->getDecodeNote();
@@ -269,6 +272,73 @@ TEST(ZeroCopyPlayback, EveryFrameMatchesItsOwnDownloadAcrossPoolWraps) {
     EXPECT_GE(check.deliveredOnGpu, 30);
     EXPECT_EQ(check.held, 0);
     EXPECT_EQ(readbacks, 0);
+}
+
+// TD-35: a clip removed and opened again takes over the shared planes the removed source
+// kept (DxInterop::recycle): no plane is registered again. Every frame it then shows is
+// its own, not one left in the planes by the source before it: the second opens 5 s
+// further on. Only the opener is waited for, never finishBackgroundWork(), which would
+// release the kept planes.
+TEST(ZeroCopyPlayback, AReopenedClipShowsItsOwnFramesThroughTheKeptPlanes) {
+    GLContext ctx;
+    const std::string skip = playbackSkip(ctx);
+    if (!skip.empty()) GTEST_SKIP() << skip;
+    DxInterop::testHooks() = DxInterop::TestHooks{};
+    MainThreadTimings::markMainThread();
+    MainThreadTimings::reset();
+    auto registrations = [] {
+        for (const auto& s : MainThreadTimings::summarize()) {
+            if (s.op == "zeroCopyPlaneRegister") return s.count;
+        }
+        return size_t(0);
+    };
+    long readbacks = 0;
+    {
+        SourceManager sm;
+        FrameCheck before("before the removal");
+        const UUID first = sm.createVideoSource(H264_CLIP);
+        sm.finishBackgroundWork();
+        auto* video = sm.getSourceAs<VideoFileSource>(first);
+        ASSERT_NE(video, nullptr);
+        if (!video->isHardwareDecoding()) GTEST_SKIP() << "no GPU decoding here: " << video->getDecodeNote();
+        video->play();
+        for (int i = 0; i < 5000 && before.deliveredOnGpu < 5 && !HasFatalFailure(); ++i) {
+            update(sm, readbacks);
+            before.afterUpdate(sm, first, *video);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ASSERT_GE(before.deliveredOnGpu, 5);
+        const size_t registered = registrations();
+        EXPECT_EQ(registered, 2u);
+        sm.removeSource(first);
+        for (int i = 0; i < 5; ++i) update(sm, readbacks);
+
+        FrameCheck after("reopened");
+        const UUID again = sm.createVideoSource(H264_CLIP);
+        video = sm.getSourceAs<VideoFileSource>(again);
+        ASSERT_NE(video, nullptr);
+        video->seek(5.0);  // carried over the open
+        video->play();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (sm.getOpeningCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+            update(sm, readbacks);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ASSERT_EQ(sm.getOpeningCount(), 0u);
+        for (int i = 0; i < 5000 && after.deliveredOnGpu < 20 && !HasFatalFailure(); ++i) {
+            update(sm, readbacks);
+            after.afterUpdate(sm, again, *video);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_EQ(registrations(), registered) << "the kept planes were not taken: they were registered again";
+        EXPECT_TRUE(video->isZeroCopy()) << video->getZeroCopyNote();
+        EXPECT_GE(after.deliveredOnGpu, 20);
+        EXPECT_EQ(after.held, 0);
+        sm.removeSource(again);
+    }
+    MainThreadTimings::reset();
+    EXPECT_EQ(readbacks, 0);
+    EXPECT_EQ(DxInterop::liveObjects(), 0);
 }
 
 // A run-time interop failure (the lock, forced after a few frames) moves that source to
@@ -291,6 +361,7 @@ TEST(ZeroCopyPlayback, LockFailureMidStreamFallsBackWithoutABlackFrame) {
         SourceManager sm;
         const UUID id = sm.createVideoSource(H264_CLIP);
         ASSERT_FALSE(id.isNull());
+        sm.finishBackgroundWork();  // opened off the main thread (TD-35)
         auto* video = sm.getSourceAs<VideoFileSource>(id);
         ASSERT_NE(video, nullptr);
         if (!video->isHardwareDecoding()) {
@@ -340,6 +411,7 @@ TEST(ZeroCopyPlayback, OneSourcesLockFailureLeavesTheOthersOnZeroCopy) {
         for (int s = 0; s < STREAMS; ++s) {
             ids.push_back(sm.createVideoSource(H264_CLIP));  // not deduplicated, unlike getOrCreate
             ASSERT_FALSE(ids.back().isNull());
+            sm.finishBackgroundWork();  // opened off the main thread (TD-35)
             videos.push_back(sm.getSourceAs<VideoFileSource>(ids.back()));
             ASSERT_NE(videos.back(), nullptr);
             if (!videos.back()->isHardwareDecoding()) GTEST_SKIP() << "no GPU decoding here";

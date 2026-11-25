@@ -6,6 +6,8 @@ add_library(quadmapper_source STATIC
     TextureSource.hpp
     SourceManager.hpp
     SourceManager.cpp
+    CompositionSource.hpp
+    CompositionSource.cpp
 
     # Static image source
     StaticImageSource.hpp

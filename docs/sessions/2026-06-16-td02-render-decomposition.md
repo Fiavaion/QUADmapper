@@ -63,11 +63,11 @@ Extract the pre-`ImGui::NewFrame()` viewport editing into a **non-`Panel` `Viewp
 ## Verification gate (per batch)
 `cmake --build build/debug` → `ctest --test-dir build/debug` (590/590; trust the "100% tests
 passed" line — TD-07 build-exit-code flake) →
-`powershell -ExecutionPolicy Bypass -File tests/smoke/drive_smoke.ps1 -ExePath C:\Users\jones\AIprojects\QUADmapper\build\debug\src\app\Debug\QUADmapper.exe`
+`powershell -ExecutionPolicy Bypass -File tests/smoke/drive_smoke.ps1 -ExePath <repo>\build\debug\src\app\Debug\QUADmapper.exe`
 (the absolute `-ExePath` avoids a PowerShell 5.1 `..`-traversal quirk).
 
 ## Pointers
 - Contract/decision: [docs/adr/0034-render-decomposition.md](../adr/0034-render-decomposition.md)
 - Restart package: [notes/CURRENT_STATUS.md](../../notes/CURRENT_STATUS.md)
 - Debt: [TECHNICAL_DEBT.md](../../TECHNICAL_DEBT.md) (TD-02 in progress; TD-07/08/09 open)
-- Approved plan (local, not in repo): `C:\Users\jones\.claude\plans\hidden-strolling-marshmallow.md`
+- Approved plan (local, not in repo): `%USERPROFILE%\.claude\plans\hidden-strolling-marshmallow.md`

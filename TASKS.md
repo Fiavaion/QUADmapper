@@ -1,17 +1,32 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-09-26 (Session 23)
+Last Updated: 2026-11-25 (QM-127 code review and fix batches)
 
 ## Quick Status
 - In Progress: 0
-- Todo: ADR-051 editor architecture / Application.cpp split (with Phase 0 S6: move AI out of
-  Application.cpp), TD-12 present threads (hardware), TD-14b, TD-29 calibration with slices,
-  TD-32/33 (pre-existing loop bugs), dev→master PR #2, 🚩 QM-061
+- Todo: owner hands-on test of the AI features (QM-124, next), the GUI check of the perform lock and the Keyboard preferences (QM-122), TD-12 present threads (hardware), TD-14b, TD-29 running-app check
+  (calibration on sliced outputs, done in code), TD-32/33 (pre-existing loop bugs), dev→master
+  PR #3 (draft; #2 merged), 🚩 QM-061
 - Done: Session 22 added QM-083..QM-099; Session 23 added QM-100..QM-109 (PRD MVP gaps + control);
   2026-09-27/28 added QM-117..QM-121 (ADR-047 canvas/slices/blend/crossfades, ADR-049, ADR-056
-  zero-copy), TD-30/31 fixed; quiet-machine gates met (see TECHNICAL_DEBT.md)
+  zero-copy), TD-30/31 fixed; quiet-machine gates met (see TECHNICAL_DEBT.md); 2026-09-29
+  QM-122 (ADR-051 editor architecture E0–E8, perform lock)
 - Blocked: 0
 - Plan of record: [docs/audits/2026-09-25-foundation-audit.md](docs/audits/2026-09-25-foundation-audit.md) §8
+
+## 2026-09-28/29 — ADR-051 editor architecture
+
+- **QM-122 DONE (code and tests; GUI check pending)** — ADR-051 E0–E8 and the shortcut amendment: dead stubs gone, `AiAssist` and
+  `ProjectSession` out of `Application.cpp`, the `quadmapper_editor` library with
+  `layering_check`, `Panel` / `PanelHost` / `EditorUi`, `ActionRegistry` and the shortcut
+  router, and the perform lock (E7) with its review fixes. `Application.cpp` went from 878 to 860 lines over the review fixes and E8. The
+  lower modules' tests no longer include editor code (E8). The owner's decisions
+  (2026-09-30, ADR-051 "Amendment: shortcuts and rebinding") are built: Ctrl+Shift+L for the
+  perform lock; Ctrl+N / Ctrl+O / Ctrl+Shift+S for New / Open / Save As; Ctrl+Shift+Z beside
+  Ctrl+Y for redo; several chords per action; user rebinding in Edit > Preferences > Keyboard
+  (saved under "keyboard" in preferences.json); under the lock the Project tab's Save and
+  Convert to HAP's Cancel stay usable. Pending by hand: the ADR-051 §6 manual gate, the lock
+  and the Keyboard preferences included.
 
 ## Session 24 (2026-09-27) — ADR-047 scene canvas → output slices
 
@@ -32,8 +47,8 @@ Last Updated: 2026-09-26 (Session 23)
   Alt 0.1×) in an explicit slice-warp mode; Auto-blend of facing edges (one undo step); blend
   test pattern (session only, orange banner while on); canvas size in the Scenes panel with
   slice rescale and the canvas lock (`scenes[].canvasLocked`, routing never overwrites a set
-  size); calibration restricted to outputs with the default slicing (TD-29). GUI-checked on
-  the v3.4 fixture.
+  size); calibration restricted to outputs with the default slicing (TD-29; lifted in code on
+  2026-09-28 by ADR-047 Amendment 6, running-app check pending). GUI-checked on the v3.4 fixture.
 - **QM-121 B2 DONE (2026-09-27, ADR-047 Amendment 4)** — scene crossfades: Preferences fade
   default (0 = cut), OSC `/qm/scene/take i n f seconds`, both canvases mixed in the slice
   shader before blend and black level, blended groups fade together, take-during-fade
@@ -352,7 +367,9 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **AC:** on a real projector + real surface + real phone photo, One-Flash produces a visibly correct warp, watched working; failure modes documented. Fallback if it fails: port MIT gray-code structured-light behind the same sidecar contract.
 - **Runbook (Session 15):** turnkey step-by-step procedure + result template at
   [docs/QM-061-hardware-test-runbook.md](docs/QM-061-hardware-test-runbook.md). Note: One-Flash
-  itself is GPU-free (`cv2.aruco` only) — QM-061 does **not** need the Metric3D model.
+  itself is GPU-free (`cv2.aruco` only). Updated 2026-10-10: the runbook now also covers Detect
+  Surface, Pick Surface, Scan Output and Place From Photo (QM-123), and setup is
+  `tools/ai-sidecar/setup.ps1` (Metric3D is gone).
 - **On pass:** open the `dev`→`master` PR using the prepared body
   [docs/QM-061-pr-prep.md](docs/QM-061-pr-prep.md).
 
@@ -363,6 +380,64 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **AC met (software):** AC1 frontal-from-viewpoint warp applied ✓ (the perspective claim is hardware-validated) · AC2 geometry-only, `.qmap`-safe, smoke green ✓.
 - **Verified:** anamorphic round-trip test (audience target → corners → forward `H` lands back on target, <2px); in-app Anamorphic Warp via `QM_AI_SELFTEST=anamorphic` (conf 0.99, watched). 15/15 sidecar pytest; 596/596 ctest.
 - **Note:** a projector-off (QM-057-only) anamorphic is geometrically underdetermined (the spike's finding); this is the One-Flash-based (projector-pose-observed) realization.
+
+#### QM-123: AI proposals and assisted calibration (ADR-053 §1–3, 3D-C and 3D-B v1)
+- **Status:** DONE (software-complete; the owner has not yet checked it on a real camera) — **Completed:** 2026-10-10. Branch `dev`.
+- **Effort:** L · **Depends On:** QM-057, QM-058, QM-060
+- **Delivered:**
+  - Async AI: camera capture and sidecar requests run off the main thread (`ae8c4a0`, `4b1dae9`); the request ceiling is 120 s and the sidecar warms its models at start (`c27fbf9`).
+  - §1: `tools/ai-sidecar/setup.ps1` and an isolated `.venv`, pinned models with SHA-256, `/health` capabilities (`62fd0bf`).
+  - §2: Pick Surface and the AI Photo panel with `/segment` (SAM 2.1) (`d973cb5`, `e10212b`); Detect Surface re-engined on SAM 2 + Depth Anything V2 Small, Metric3D and Open3D removed (`62fd0bf`); every AI warp is one undo step (`6fd682d`).
+  - §3: Gray-code Scan Output, session maps, Pick/Detect mapped through the scan (scan, then One-Flash, then photo space), assisted calibration through Place From Photo (`3b77499`, `1b5a475`).
+- **Not verified:** nothing has run on a real camera or projector. The camera settle time (250 ms) is a guess. See TD-37..TD-40.
+- **Note:** ADR-053 Amendment 1 (2026-10-10) records what was built, the measured model sizes and the owner's hands-on checklist.
+
+#### QM-124: Owner hands-on test of AI features (Pick Surface, Detect Surface, Scan Output, Place From Photo)
+- **Status:** TODO — next · **Effort:** S · **Depends On:** QM-123
+- **AC:** the owner runs the checklist in ADR-053 Amendment 1 with a webcam aimed at the display or a projector, and records what works and what does not. Failures go back as fixes before the `dev`→`master` PR.
+
+#### QM-125: Release-readiness audit and fixes
+- **Status:** DONE (software) — **Completed:** 2026-11-14. Branch `dev`, `06b17a6`..`4a3a8af` (local, not pushed).
+- **Effort:** L · **Depends On:** none
+- **Delivered:**
+  - App start: fonts, layout and logs no longer depend on the start folder; a log file and a crash dump with an emergency save; `.qmap` by double-click or drop; window title with the show name and unsaved mark; status bar with the canvas keys; Help menu (`06b17a6`, `9fe251a`, `ebd61d2`).
+  - Engine hardening: OSC, audio, image, texture, HAP and video failure paths (`a16fd80`).
+  - Undo steps for mesh keys and Properties edits; the quad lock holds for every shape edit (`ec41b0a`).
+  - Panels: crashes on delete, confirmations, thumbnail stalls (`38f4b86`).
+  - AI engine link: token, Origin/Host checks, full launch paths, job-object listener check (`9b87089`).
+  - User README, quick-start guide, full third-party notices (`8cc2160`).
+  - One fresh-context review; its seven findings fixed in one pass (`4a3a8af`).
+- **Gate:** `ctest --test-dir build/debug -C Debug -j 8 | 4a3a8af | 1766 passed, 0 failed` (8 disabled, some skipped for missing hardware). `pytest tools/ai-sidecar | 4a3a8af | 119 passed`.
+- **Not verified by hand:** a real AI engine launch with the token, the confirmation dialogs, Properties undo, a real crash through the crash filter. They are on the owner's test list in `notes/CURRENT_STATUS.md`.
+- **Open:** the release package (TD-44) and the smaller gaps in TD-41..TD-43.
+
+#### QM-126: AI Assist behind a beta switch, off by default
+- **Status:** DONE (code and tests; GUI check pending) — **Completed:** 2026-11-19. Branch `dev`, `31b5e91` (not pushed).
+- **Effort:** S · **Depends On:** none · **Why:** AI is part of the app but not of the MVP; mapping must not need it.
+- **Delivered:**
+  - `general.aiAssistBeta` in `preferences.json`, default false (old files load as off). Preferences > General > AI Assist (beta).
+  - Off hides the AI (Beta) menu, the AI Photo panel, Help > AI Features Guide and Calibration's Place From Photo.
+  - On→off calls `AiAssist::disable()`: it cancels a scan, clears the pattern and the proposal, and stops the engine, which can be started again.
+  - The user guide, AI guide and release notes say how to turn it on.
+- **Gate:** `test_editor` 220 + 1 flaky (AudioSyncTest real-time, unrelated), `test_ui` 54, `test_app` 28, `layering_check` 1/1 at `31b5e91`.
+- **Not verified by hand:** hands-on item 5 in `notes/CURRENT_STATUS.md`.
+
+#### QM-127: Code-quality and security review, and its fix batches
+- **Status:** DONE (code and tests; owner hands-on test pending) — **Completed:** 2026-11-25. Branch `dev`, `5821039`..`494cc40` (pushed).
+- **Effort:** L · **Depends On:** none · **Why:** the repo went public on 2026-11-23 and 1.0.0 is next.
+- **Delivered:**
+  - A read-only review of the whole codebase: 0 critical, 0 high, 22 medium, 55 low. Findings and plan are in `REVIEW/` (ignored by git).
+  - Fix batches 0 to 9, one fix per commit: privacy, session data, UI, compositions and HAP, media threads, the project loader, other untrusted input, renderer and outputs, build and packaging, core.
+  - The third `/release` pass (PASS at `711cb1b`) and the removal of dead code (`786b932`..`8123a30`).
+  - vcpkg baseline 2026-10-08 (FFmpeg 9.0.2, GLFW 3.5.1), Release hardening flags, the GitHub installer workflow with pinned actions.
+  - Three fresh-context reviews (batches 4, 5 and 8), each fixed in one pass. The review of `.qmap` 3.5 to 3.7 owed since 2026-11-23 was part of batch 5.
+- **Gate:** `ctest --preset debug | 828e194 | 1827 passed, 0 failed, 8 disabled`; then `test_core` 55, `test_scene` 392, `test_media` 53 at `494cc40`.
+- **Not verified by hand:** everything; see the hands-on list in `notes/CURRENT_STATUS.md`. Real-media tests skipped on the work PC.
+- **Open:** the owner decisions listed in `notes/CURRENT_STATUS.md`; review items M22 (patterns need OpenGL 4.3), L41, L42, L43 and L49, and batch 10, are not done.
+
+#### 3D-B2: ChArUco camera calibration, stereo and ICP (FUTURE)
+- **Status:** not planned · Needs its own ADR-053 amendment before any work (ADR-053 §3, "Deferred to 3D-B2").
+- **Scope:** calibrate the camera with ChArUco, then camera–projector stereo to make a point cloud and register the mesh to it (ICP), for fully automatic 3D calibration.
 
 ---
 
@@ -1138,6 +1213,11 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-060 | One-Flash homography solve → push warp | DONE | Phase 9 |
 | QM-061 | 🚩 Real-device validation gate | TODO | Phase 9 |
 | QM-062 | Audience-perspective anamorphic warp | DONE | Phase 9 |
+| QM-123 | AI proposals and assisted calibration (ADR-053 §1–3) | DONE | Phase 9 |
+| QM-124 | Owner hands-on test of AI features | TODO | Phase 9 |
+| QM-125 | Release-readiness audit and fixes | DONE | Phase 9 |
+| QM-126 | AI Assist behind a beta switch | DONE | Phase 9 |
+| QM-127 | Code-quality and security review, fix batches 0 to 9 | DONE | Phase 9 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |

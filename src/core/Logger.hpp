@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <iostream>
 #include <sstream>
@@ -22,15 +23,13 @@ public:
     static void setLevel(LogLevel level);
     static LogLevel getLevel();
 
-    // File output
+    // File output. The path is UTF-8, like every path held in a string.
     static bool enableFileOutput(const std::string& filePath);
     static void disableFileOutput();
-    static bool isFileOutputEnabled();
     static std::string getLogFilePath();
 
     // Console output control
     static void setConsoleOutput(bool enabled);
-    static bool isConsoleOutputEnabled();
 
     // Basic logging (no format)
     static void trace(const std::string& message);
@@ -81,7 +80,7 @@ public:
     static void flush();
 
 private:
-    static LogLevel currentLevel_;
+    static std::atomic<LogLevel> currentLevel_;  // read by every thread that logs
     static std::unique_ptr<std::ofstream> logFile_;
     static std::string logFilePath_;
     static bool consoleEnabled_;
@@ -95,14 +94,20 @@ private:
         return oss.str();
     }
 
+    // One pass over the format: text an argument inserts is never searched for the next
+    // {}, so a file name that contains "{}" cannot shift the arguments after it.
     template<typename T, typename... Rest>
     static std::string formatMessage(const std::string& format, T&& first, Rest&&... rest) {
-        size_t pos = format.find("{}");
-        if (pos == std::string::npos) {
-            return format;
+        const std::string values[] = {formatArg(first), formatArg(rest)...};
+        std::string result;
+        size_t from = 0;
+        for (const std::string& value : values) {
+            const size_t pos = format.find("{}", from);
+            if (pos == std::string::npos) break;
+            result.append(format, from, pos - from).append(value);
+            from = pos + 2;
         }
-        std::string result = format.substr(0, pos) + formatArg(first) + format.substr(pos + 2);
-        return formatMessage(result, std::forward<Rest>(rest)...);
+        return result.append(format, from, std::string::npos);
     }
 
     static std::string formatMessage(const std::string& format) {

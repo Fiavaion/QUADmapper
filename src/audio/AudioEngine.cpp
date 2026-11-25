@@ -2,7 +2,9 @@
 
 #include "AudioDevice.hpp"
 #include "AudioMixer.hpp"
+#include "core/BackgroundWorker.hpp"
 #include "core/Logger.hpp"
+#include "core/MainThreadTimings.hpp"
 
 namespace quadmapper {
 
@@ -16,6 +18,7 @@ AudioEngine::AudioEngine(Options options)
 
 AudioEngine::~AudioEngine() {
     attachments_.clear();  // each leaves the mix before its decoder stops
+    reaper_.reset();       // the released ones are freed (they no longer touch the mixer)
     mixer_->shutdown();
     mixer_.reset();
     device_.reset();       // the mixer's device was opened on this context
@@ -79,6 +82,8 @@ void AudioEngine::sync(const UUID& id, const std::filesystem::path& path, const 
     auto it = attachments_.find(id);
     if (it == attachments_.end() || it->second->path() != path) {
         // New source, or the same id now showing another file (relocated media).
+        ScopedMainThreadTiming timing("audioAttachmentCreate");
+        if (it != attachments_.end()) release(std::move(it->second));
         auto attachment = std::make_unique<AudioAttachment>(path, *mixer_);
         it = attachments_.insert_or_assign(id, std::move(attachment)).first;
     }
@@ -87,8 +92,28 @@ void AudioEngine::sync(const UUID& id, const std::filesystem::path& path, const 
 
 void AudioEngine::retainOnly(const std::unordered_set<UUID>& live) {
     for (auto it = attachments_.begin(); it != attachments_.end();) {
-        it = live.count(it->first) ? std::next(it) : attachments_.erase(it);
+        if (live.count(it->first)) {
+            ++it;
+            continue;
+        }
+        ScopedMainThreadTiming timing("audioAttachmentRelease");
+        release(std::move(it->second));
+        it = attachments_.erase(it);
     }
+}
+
+// Out of the mix here, on the control thread; the decode thread is joined and the
+// decoder freed on the reaper (joining one busy in a seek blocked a frame, TD-35).
+void AudioEngine::release(std::unique_ptr<AudioAttachment> attachment) {
+    if (!attachment) return;
+    attachment->leaveMix();
+    if (!reaper_) reaper_ = std::make_unique<BackgroundWorker>("Audio reaper");
+    std::shared_ptr<AudioAttachment> doomed(std::move(attachment));
+    reaper_->post([doomed = std::move(doomed)]() mutable { doomed.reset(); });
+}
+
+void AudioEngine::finishReleasing() {
+    if (reaper_) reaper_->drain();
 }
 
 SourceAudioStatus AudioEngine::status(const UUID& id) const {

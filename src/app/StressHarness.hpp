@@ -25,7 +25,8 @@ struct StressConfig {
     // exercise the output draw path or vsync pacing.
     bool hidden         = false;
     // H3: working-set bound — FAIL if post-warm-up working set grows more than
-    // this many MB across all cycles.
+    // this many MB in any cycle. Private bytes are logged beside it, not gated: under
+    // load they swing as much (up to +58 MB, then back), so they are no steadier.
     long workingSetBoundMB = 64;
     // H3: per-cycle wall-clock budget (ms). A cycle that hangs longer than this
     // is flagged as a wedge and aborts the run.
@@ -38,7 +39,18 @@ struct StressConfig {
     // cycle, so its audio attachment (decoder thread, mixer input) is created and freed
     // each cycle under the working-set bound. Audio runs on the silent null device.
     bool audioChurn     = false;
+    // Test only: each video file opens this much later (on the opener thread), to show
+    // that a slow open is not counted as a wedge. 0 = disabled.
+    int  openDelayMs    = 0;
+    // Video export (ADR-060): after the cycles, export 2 s of the first output into
+    // this folder and check that the file was written. "" = disabled.
+    std::string exportCheck = "";
 };
+
+// A harness number from the command line, held to [lo, hi]. Text that is not a number
+// gives lo.
+int harnessInt(const char* text, int lo, int hi);
+double harnessSeconds(const char* text, double lo, double hi);
 
 // Consume one command-line argument if it is a --stress flag (the first one seen
 // creates `cfg`). Returns false for arguments that are not stress flags.
@@ -46,5 +58,9 @@ bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg);
 
 // Process working set in bytes (psapi), or 0 when it cannot be read.
 std::size_t processWorkingSetBytes();
+
+// Process private bytes (commit charge: memory the process allocated, resident or
+// paged out) in bytes (psapi), or 0 when it cannot be read.
+std::size_t processPrivateBytes();
 
 }  // namespace quadmapper

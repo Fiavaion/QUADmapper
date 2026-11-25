@@ -240,6 +240,20 @@ TEST(Midi14BitTest, LearnStaysSevenBitWithoutAPairInTime) {
     EXPECT_EQ(high.mappings[0].bits, 7);
 }
 
+// The perform lock cancels learning (TD-36): a pair whose first half was learned just
+// before stays as learned, and its other half is then an ordinary message.
+TEST(Midi14BitTest, CancelLearnDropsAPairWaitingForItsOtherHalf) {
+    Rig rig;
+    rig.dispatcher.beginLearn(Rig::path("opacity"));
+    rig.cc(7, 0x40, 5.0);
+    ASSERT_EQ(rig.mappings.size(), 1u);
+    rig.dispatcher.cancelLearn();
+    rig.cc(39, 0x01, 5.0 + k14BitPairSeconds * 0.5);
+    ASSERT_EQ(rig.mappings.size(), 1u);
+    EXPECT_EQ(rig.mappings[0].bits, 7);
+    EXPECT_EQ(rig.mappings[0].number, 7);
+}
+
 TEST(Midi14BitTest, RelearningAnLsbFirstPairOverAnExistingMappingKeepsOne) {
     Rig rig;
     MidiMapping existing;

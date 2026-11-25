@@ -7,9 +7,16 @@
 namespace quadmapper {
 
 namespace {
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
-    std::uniform_int_distribution<uint64_t> dis;
+// One generator per thread, so two threads never share its state, seeded with 256 bits:
+// a single 32-bit seed allows only four billion different id sequences.
+std::mt19937_64& generator() {
+    thread_local std::mt19937_64 gen = [] {
+        std::random_device rd;
+        std::seed_seq seed{rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd()};
+        return std::mt19937_64(seed);
+    }();
+    return gen;
+}
 }
 
 UUID::UUID() : high_(0), low_(0) {}
@@ -17,31 +24,36 @@ UUID::UUID() : high_(0), low_(0) {}
 UUID::UUID(uint64_t high, uint64_t low) : high_(high), low_(low) {}
 
 UUID UUID::generate() {
-    return UUID(dis(gen), dis(gen));
+    std::mt19937_64& gen = generator();
+    const uint64_t high = gen();
+    return UUID(high, gen());
 }
 
 UUID UUID::fromString(const std::string& str) {
-    // Expected format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 chars)
+    // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx: hex digits, with the dashes in those four
+    // places only. Anything looser would let two different strings name one id.
     if (str.length() != 36) {
         throw std::invalid_argument("Invalid UUID string length");
     }
 
-    // Remove dashes and parse as two 64-bit values
-    std::string cleaned;
-    for (char c : str) {
-        if (c != '-') {
-            cleaned += c;
+    uint64_t halves[2] = {0, 0};
+    int digits = 0;
+    for (size_t i = 0; i < str.length(); ++i) {
+        const char c = str[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-') throw std::invalid_argument("Invalid UUID format");
+            continue;
         }
+        uint64_t value = 0;
+        if (c >= '0' && c <= '9') value = static_cast<uint64_t>(c - '0');
+        else if (c >= 'a' && c <= 'f') value = static_cast<uint64_t>(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') value = static_cast<uint64_t>(c - 'A' + 10);
+        else throw std::invalid_argument("Invalid UUID format");
+        halves[digits / 16] = (halves[digits / 16] << 4) | value;
+        ++digits;
     }
 
-    if (cleaned.length() != 32) {
-        throw std::invalid_argument("Invalid UUID format");
-    }
-
-    uint64_t high = std::stoull(cleaned.substr(0, 16), nullptr, 16);
-    uint64_t low = std::stoull(cleaned.substr(16, 16), nullptr, 16);
-
-    return UUID(high, low);
+    return UUID(halves[0], halves[1]);
 }
 
 UUID UUID::null() {

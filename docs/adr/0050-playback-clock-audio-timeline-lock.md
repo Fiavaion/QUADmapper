@@ -77,3 +77,10 @@ Three PRD MVP items are open: audio (US-012, P0: "audio playback from video file
 1. **Audio as the master clock (ffplay-style).** Rejected: it gives silent and sounding sources different models, and it makes timeline lock depend on which sources have audio.
 2. **Repair `TimelineSyncManager`.** Rejected: it holds raw pointers, restarts by seeking instead of computing positions from the clock, and has no tests.
 3. **Cut audio from the MVP.** Rejected by the owner (US-012 is P0).
+
+## Amendment 1 (2026-11-20, owner): the top bar drives every video
+Hands-on testing found the top bar's Play/Pause and Restart did nothing visible: they drove only the master timeline, and no video was locked to it. The owner's ruling: the videos in the quads are part of the show and the show transport controls them.
+- The top bar's Play/Pause and Restart, a tap of Space and `/qm/timeline/play`, `pause`, `restart` and `running` now drive every video (`editor/ShowTransport.hpp`).
+- A locked video still follows the master clock exactly. An unlocked one keeps its own clock, speed and loop, and is paused, resumed (only if paused) and restarted with the master.
+- Restart is what Reset Playheads was (`SourceManager::seekAllToStart`), so the Reset Playheads button is gone.
+- Per-video play, pause and seek in the Video Player and `/qm/source/<id>/*` are unchanged.

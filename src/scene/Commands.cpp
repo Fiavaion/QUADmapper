@@ -407,37 +407,6 @@ std::string RenameQuadCommand::getDescription() const {
     return "Rename quad";
 }
 
-// SetMeshResolutionCommand implementation
-SetMeshResolutionCommand::SetMeshResolutionCommand(const QuadRef& target, int newResolution)
-    : target_(target)
-    , oldResolution_(16)
-    , newResolution_(newResolution)
-{
-    if (const Quad* quad = target_.quad()) {
-        oldResolution_ = quad->getGeometry().getMeshResolution();
-        oldMeshVertices_ = quad->getGeometry().getMeshVertices();
-    }
-}
-
-bool SetMeshResolutionCommand::execute() {
-    Quad* quad = resolveForCommand(target_, getDescription());
-    if (!quad) return false;
-    quad->getGeometry().setMeshResolution(newResolution_);
-    return true;
-}
-
-bool SetMeshResolutionCommand::undo() {
-    Quad* quad = resolveForCommand(target_, getDescription());
-    if (!quad) return false;
-    quad->getGeometry().setMeshResolution(oldResolution_);
-    quad->getGeometry().setMeshVertices(oldMeshVertices_);
-    return true;
-}
-
-std::string SetMeshResolutionCommand::getDescription() const {
-    return "Change mesh resolution";
-}
-
 // MoveQuadCommand implementation
 MoveQuadCommand::MoveQuadCommand(const QuadRef& target, const Vec2& delta)
     : target_(target)

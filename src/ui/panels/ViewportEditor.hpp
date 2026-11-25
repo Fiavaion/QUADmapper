@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Types.hpp"
+
 namespace quadmapper {
 
 struct EditorContext;
@@ -19,8 +21,10 @@ struct EditorContext;
 // Application claims Tab/arrows after NewFrame so a focused panel cannot swallow
 // them. (See ADR-0034 / the CLAUDE.md success metric.)
 // While a projector is being calibrated (EditorState::calibratingOutputId, ADR-052)
-// quad editing is suspended and, when the canvas shows that projector, the same mouse
-// and keyboard model places, drags and nudges its calibration points instead.
+// quad editing is suspended and, when that projector shows the active scene, the canvas
+// shows its output frame (objects from its projector, slices of the scene's canvas over
+// them, TD-29) and the same mouse and keyboard model places, drags and nudges its
+// calibration points, in projector pixels, instead.
 // While a slice warp is edited (EditorState::sliceWarpOutputId, ADR-047) the canvas
 // shows that output's frame and the same model moves the slice's warp corners; the
 // selected output's slice input rectangles are outlined on the scene canvas otherwise.
@@ -33,8 +37,19 @@ class ViewportEditor {
 public:
     ViewportEditor() = default;
 
+    // The mouse over the editor window: its position in window coordinates (GLFW's
+    // logical pixels) and whether the left button is down.
+    struct Pointer {
+        Vec2 position{0.0f, 0.0f};
+        bool leftDown = false;
+        bool rightDown = false;  // a right click on a grid point opens its menu
+    };
+
     // Call once per frame, right after ImGui::NewFrame(), from Application::render().
+    // Reads the pointer from the editor window.
     void render(EditorContext& ctx);
+    // The same frame with the pointer given (tests drive the canvas with it).
+    void render(EditorContext& ctx, const Pointer& pointer);
 };
 
 }  // namespace quadmapper

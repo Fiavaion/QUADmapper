@@ -127,3 +127,33 @@ TEST(TextureUpload, RestoresTheCallersUnpackAlignment) {
     glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
     EXPECT_EQ(alignment, 8);
 }
+
+TEST(TextureUpload, ASizeOfZeroOrLessIsRefused) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";
+
+    Texture tex;
+    EXPECT_FALSE(tex.createEmpty(0, HEIGHT, 4));
+    EXPECT_FALSE(tex.isValid());
+    EXPECT_FALSE(tex.createEmpty(WIDTH, -1, 4));
+    EXPECT_FALSE(tex.isValid());
+}
+
+TEST(TextureUpload, ARectangleOutsideTheTextureIsNotUploaded) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";
+
+    const std::vector<uint8_t> pixels = gradient();
+    Texture tex;
+    ASSERT_TRUE(tex.create(WIDTH, HEIGHT, 3, pixels.data()));
+    while (glGetError() != GL_NO_ERROR) {}
+
+    tex.update(WIDTH - 1, 0, 2, 1, pixels.data());   // one column too wide
+    tex.update(0, HEIGHT, 1, 1, pixels.data());      // one row below the last
+    tex.update(-1, 0, 1, 1, pixels.data());
+    tex.update(0, 0, 0, 1, pixels.data());
+    EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR)) << "the call reached OpenGL";
+
+    tex.update(WIDTH - 1, HEIGHT - 1, 1, 1, pixels.data());  // the last texel: allowed
+    EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+}

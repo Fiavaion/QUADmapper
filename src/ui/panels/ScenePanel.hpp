@@ -1,6 +1,8 @@
 #pragma once
 
+#include "Panel.hpp"
 #include "core/UUID.hpp"
+#include "ui/ConfirmPopup.hpp"
 
 namespace quadmapper {
 
@@ -12,25 +14,35 @@ struct EditorContext;
 // assign each scene to an output window. Scenes 1-9 show their take hotkey. The viewport, Quad List and Inspector all edit the active
 // scene (EditorState::activeScene()), so switching here makes them follow.
 //
-// Rendered as a tab inside the Resources panel via renderContent(ctx); it owns
-// no scene state itself — that lives in EditorState, reached through the
-// per-frame EditorContext. Only transient rename UI state is local.
-class ScenePanel {
+// The Scenes tab of the Resources window, in both UI modes (one scene per projector,
+// switched between while editing; the canvas size only in Advanced); it owns no scene state
+// itself — that lives in EditorState, reached through the per-frame EditorContext.
+// Only transient rename UI state is local.
+class ScenePanel : public Panel {
 public:
+    static constexpr const char* ID = "Scenes";
+
     ScenePanel() = default;
 
-    // Render the panel body (no window wrapper) for embedding in a tab.
-    void renderContent(EditorContext& ctx);
+    const char* id() const override { return ID; }
+    PanelKind kind() const override { return PanelKind::Tab; }
+    void drawContent(EditorContext& ctx) override;
 
 private:
     void renderActionButtons(EditorContext& ctx);
     void renderCanvasControls(EditorContext& ctx);
     void renderSceneList(EditorContext& ctx);
     void beginRename(const Scene& scene);
+    // Ask before deleting a scene; the delete runs when the modal is confirmed.
+    void requestDelete(EditorContext& ctx, const UUID& id);
+    void renderDeleteConfirm(EditorContext& ctx);
 
     // Tracked by id: duplicate and reorder move scenes to other list positions.
     UUID renamingId_;  // null = not renaming
     char renameBuffer_[128] = "";
+
+    ConfirmPopup deleteConfirm_{"scenedelete"};
+    UUID pendingDeleteId_;  // the scene the open confirmation is about
 
     // The active scene's canvas size as typed; applied when a field is left (ADR-047).
     UUID canvasSceneId_;

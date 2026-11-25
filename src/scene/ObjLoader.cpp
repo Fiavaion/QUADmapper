@@ -4,7 +4,9 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <fstream>
+#include <new>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -16,9 +18,16 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Guards against files that would exhaust memory or overflow 32-bit indices.
+// Guards against files that would exhaust memory or overflow 32-bit indices. 16.7M per
+// list is far past any projection model and a quarter of the earlier 2^26 limit.
 constexpr std::uintmax_t kMaxFileBytes = 512ull * 1024 * 1024;
-constexpr size_t kMaxElements = size_t(1) << 26;  // per v/vt/vn list, and per triangle list
+constexpr size_t kMaxElements = size_t(1) << 24;  // per v/vt/vn list, and per triangle list
+// A line is read into a buffer of this size, so one endless line cannot be read whole.
+// A face of tens of thousands of vertices still fits.
+constexpr size_t kMaxLineBytes = size_t(1) << 20;
+// A float cannot tell neighbouring points apart beyond this, and the normals and bounds
+// computed from larger values overflow.
+constexpr float kMaxCoordinate = 1e9f;
 
 // One face corner as resolved 0-based indices; -1 = not given.
 struct Corner {
@@ -92,7 +101,7 @@ Result<MeshData, Error> loadObj(const fs::path& path, const std::atomic<bool>* c
     bool anyUv = false;
     bool allNormals = true;
 
-    std::string line;
+    std::string line(kMaxLineBytes + 1, '\0');
     std::vector<std::string_view> tokens;
     std::vector<uint32_t> face;
     size_t lineNo = 0;
@@ -100,12 +109,13 @@ Result<MeshData, Error> loadObj(const fs::path& path, const std::atomic<bool>* c
         return Err<MeshData>(name + " line " + std::to_string(lineNo) + ": " + what);
     };
 
-    while (std::getline(in, line)) {
+    // getline stops with failbit, and without eofbit, at a line that does not fit.
+    while (in.getline(line.data(), static_cast<std::streamsize>(line.size()))) {
         ++lineNo;
         if (cancel && (lineNo & 0xFFF) == 0 && cancel->load(std::memory_order_relaxed)) {
             return Err<MeshData>(name + ": loading cancelled");
         }
-        std::string_view view(line);
+        std::string_view view(line.c_str());
         if (const size_t hash = view.find('#'); hash != std::string_view::npos) {
             view = view.substr(0, hash);
         }
@@ -119,6 +129,10 @@ Result<MeshData, Error> loadObj(const fs::path& path, const std::atomic<bool>* c
             if (tokens.size() < 4 || !parseFloat(tokens[1], p.x) || !parseFloat(tokens[2], p.y) ||
                 !parseFloat(tokens[3], p.z)) {
                 return fail("expected three numbers after '" + std::string(kw) + "'");
+            }
+            if (kw == "v" && (std::abs(p.x) > kMaxCoordinate || std::abs(p.y) > kMaxCoordinate ||
+                              std::abs(p.z) > kMaxCoordinate)) {
+                return fail("a coordinate is too large");
             }
             auto& list = (kw == "v") ? positions : normals;
             if (list.size() >= kMaxElements) return fail("too many elements");
@@ -182,6 +196,10 @@ Result<MeshData, Error> loadObj(const fs::path& path, const std::atomic<bool>* c
         // Anything else (o, g, s, usemtl, mtllib, l, p, ...) carries no geometry we use.
     }
     if (in.bad()) return Err<MeshData>(name + ": read error");
+    if (!in.eof()) {
+        ++lineNo;
+        return fail("the line is too long");
+    }
     if (mesh.indices.empty()) return Err<MeshData>(name + ": no faces found");
 
     if (!anyUv) mesh.uvs.clear();
@@ -278,7 +296,17 @@ void ObjLoadQueue::run() {
         cancelRunning_ = false;
         lock.unlock();
 
-        Result<MeshData, Error> mesh = loadObj(path, &cancelRunning_);
+        // Past the element caps a large file can still run out of memory; an exception
+        // leaving this thread would end the app.
+        Result<MeshData, Error> mesh = [&]() -> Result<MeshData, Error> {
+            try {
+                return loadObj(path, &cancelRunning_);
+            } catch (const std::bad_alloc&) {
+                return Err<MeshData>(utf8FromPath(path.filename()) + ": not enough memory to import");
+            } catch (const std::exception& e) {
+                return Err<MeshData>(utf8FromPath(path.filename()) + ": import failed (" + e.what() + ")");
+            }
+        }();
 
         lock.lock();
         running_ = 0;

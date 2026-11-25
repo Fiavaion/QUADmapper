@@ -3,6 +3,7 @@
 #include "video/VideoDecoder.hpp"
 #include "video/PngWriter.hpp"
 #include "core/Logger.hpp"
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -27,9 +28,11 @@ bool CameraSource::initialize() {
         return true;
     }
 
+    // Only a device Windows lists is opened: the name can come from a project file,
+    // and FFmpeg would read anything after a ':' in it as a second device to open.
+    const auto devices = enumerateCameraDevices();
     std::string dev = deviceName_;
     if (dev.empty()) {
-        auto devices = enumerateCameraDevices();
         if (devices.empty()) {
             Logger::error("CameraSource: no video capture devices found");
             return false;
@@ -37,6 +40,10 @@ bool CameraSource::initialize() {
         dev = devices.front().name;
         deviceName_ = dev;
         name_ = dev;
+    } else if (std::none_of(devices.begin(), devices.end(),
+                            [&dev](const CameraDevice& d) { return d.name == dev; })) {
+        Logger::error("CameraSource: '{}' is not a connected camera", dev);
+        return false;
     }
 
     if (!decoder_->openCamera(dev, reqWidth_, reqHeight_, reqFps_)) {
@@ -99,6 +106,10 @@ const FrameData* CameraSource::getCurrentFrame() const {
 
 void CameraSource::markFrameConsumed() {
     hasNewFrame_ = false;
+}
+
+std::string CameraSource::getErrorMessage() const {
+    return decoder_ ? decoder_->getLastError() : std::string();
 }
 
 SourceCapabilities CameraSource::getCapabilities() const {

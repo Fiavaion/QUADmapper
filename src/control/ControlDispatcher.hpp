@@ -23,6 +23,7 @@ class ControlDispatcher {
 public:
     static constexpr size_t kRecentMessages = 20;
     static constexpr size_t kRecentUnknown = 8;
+    static constexpr size_t kMaxWarnedAddresses = 256;  // distinct refused addresses logged
 
     explicit ControlDispatcher(ControlRegistry& registry) : registry_(registry) {}
 
@@ -47,7 +48,12 @@ public:
         learnTarget_ = targetPath;
         pendingPair_.reset();
     }
-    void cancelLearn() { learnTarget_.reset(); }
+    // Cancels a pending learn, and a 14-bit pair still waiting for its other half: the
+    // perform lock cancels learning, and that half would still change the mapping (TD-36).
+    void cancelLearn() {
+        learnTarget_.reset();
+        pendingPair_.reset();
+    }
     bool isLearning() const { return learnTarget_.has_value(); }
     const std::string& learnTarget() const;
     // Index into `mappings` of the mapping the last learn created or found, or -1.
@@ -61,7 +67,6 @@ public:
     const std::deque<std::string>& recentOsc() const { return recentOsc_; }            // newest first
     const std::deque<std::string>& recentUnknown() const { return recentUnknown_; }    // newest first
     const std::string& lastMidi() const { return lastMidi_; }
-    double lastOscTime() const { return lastOscTime_; }
     double lastMidiTime() const { return lastMidiTime_; }
     // When a target (by canonical path) was last driven, or < 0.
     double lastActivity(const std::string& canonicalPath) const;
@@ -122,8 +127,8 @@ private:
     std::deque<std::string> recentUnknown_;
     std::string lastMidi_;
     std::string lastRefused_;
-    std::unordered_set<std::string> warnedRefused_;  // addresses already warned about
-    double lastOscTime_ = -1.0;
+    std::unordered_set<std::string> warnedRefused_;  // addresses already warned about (capped)
+    bool warnedRefusedFull_ = false;
     double lastMidiTime_ = -1.0;
     std::unordered_map<std::string, double> activity_;
 };

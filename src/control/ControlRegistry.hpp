@@ -60,6 +60,8 @@ struct ControlEntity {
 // /qm/quad/*/opacity names every quad's opacity.
 class ControlRegistry {
 public:
+    static constexpr size_t kMaxWarnedAddresses = 256;  // distinct ambiguous addresses logged
+
     struct Resolved {
         const ControlTarget* target = nullptr;
         std::string entityId;        // empty for a global target
@@ -136,7 +138,7 @@ private:
 
     std::vector<std::pair<std::string, ControlTarget>> globals_;
     std::vector<Collection> collections_;
-    std::unordered_set<std::string> warnedAmbiguous_;  // addresses already warned about
+    std::unordered_set<std::string> warnedAmbiguous_;  // addresses already warned about (capped)
 };
 
 }  // namespace quadmapper::control

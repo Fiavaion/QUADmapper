@@ -4,6 +4,7 @@
 #include "source/hap/HapFrameParser.hpp"
 #include "source/hap/snappy/SnappyDecoder.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 
@@ -138,6 +139,7 @@ static bool appendSnappy(const uint8_t* src, size_t srcLen, std::vector<uint8_t>
     // Reused per thread: a playing clip decodes every frame into the same memory.
     thread_local std::vector<uint8_t> tmp;
     if (!snappy::decompressSnappy(src, srcLen, tmp)) return false;
+    if (tmp.size() > MAX_SECTION_SIZE - std::min(dest.size(), MAX_SECTION_SIZE)) return false;
     dest.insert(dest.end(), tmp.begin(), tmp.end());
     return true;
 }
@@ -252,6 +254,8 @@ static bool decodeComplex(const uint8_t* payload, size_t payloadLen,
         if (chunkCompressors[i] == kChunkCompressorSnappy) {
             if (!appendSnappy(chunk, chunkLen, out)) return false;
         } else if (chunkCompressors[i] == kChunkCompressorNone) {
+            // Offsets may overlap, so the running size can exceed the payload many times over.
+            if (chunkLen > MAX_SECTION_SIZE - std::min(out.size(), MAX_SECTION_SIZE)) return false;
             out.insert(out.end(), chunk, chunk + chunkLen);
         } else {
             return false; // unknown chunk compressor

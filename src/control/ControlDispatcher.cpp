@@ -10,6 +10,8 @@ namespace quadmapper::control {
 
 namespace {
 
+constexpr size_t kMaxDescribedArgs = 16;
+
 void pushRecent(std::deque<std::string>& list, std::string entry, size_t limit) {
     list.push_front(std::move(entry));
     while (list.size() > limit) list.pop_back();
@@ -30,6 +32,13 @@ double ControlDispatcher::lastActivity(const std::string& canonicalPath) const {
 void ControlDispatcher::noteRefused(const std::string& address, const std::string& reason) {
     ++refusals_;
     lastRefused_ = address + ": " + reason;
+    if (warnedRefused_.size() >= kMaxWarnedAddresses) {
+        if (!warnedRefusedFull_) {
+            warnedRefusedFull_ = true;
+            Logger::warning("Control: too many distinct refused addresses; further refusals are not logged");
+        }
+        return;
+    }
     if (warnedRefused_.insert(address).second) Logger::warning("Control: {} refused ({})", address, reason);
 }
 
@@ -50,7 +59,12 @@ MidiMode ControlDispatcher::defaultMode(MidiControlType type, TargetKind kind) {
 
 std::string ControlDispatcher::describe(const OscMessage& message) {
     std::string text = message.address;
+    size_t shown = 0;
     for (const auto& arg : message.args) {
+        if (shown++ == kMaxDescribedArgs) {
+            text += " ...";
+            break;
+        }
         text += ' ';
         char number[32];
         switch (arg.type) {
@@ -173,7 +187,6 @@ void ControlDispatcher::noteActivity(const ControlRegistry::Resolved& r, double 
 void ControlDispatcher::dispatchOsc(const ControlEvent& event, double now) {
     const OscMessage& message = event.osc;
     ++oscMessages_;
-    lastOscTime_ = now;
     pushRecent(recentOsc_, describe(message), kRecentMessages);
 
     // One target for a plain address, every match for a pattern (/qm/quad/*/opacity).

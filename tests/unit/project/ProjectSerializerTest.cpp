@@ -458,7 +458,7 @@ TEST(ProjectSerializerV3Test, V3RoundTripScenesAndOutputs) {
     original.getScenes().push_back(std::move(s2));
 
     std::string json = serializer.serialize(original);
-    EXPECT_NE(json.find("\"version\": \"3.4.0\""), std::string::npos);
+    EXPECT_NE(json.find("\"version\": \"3.7.0\""), std::string::npos);
     EXPECT_NE(json.find("scenes"), std::string::npos);
     EXPECT_NE(json.find("outputs"), std::string::npos);
     // 3.0-3.3 readers still find the routing where they look for it.
@@ -746,7 +746,7 @@ TEST(ProjectSerializerControlTest, FourteenBitMappingsRoundTripAndSevenBitStaysU
     original.getMidiMappings() = {fine, coarse};
 
     const std::string json = serializer.serialize(original);
-    EXPECT_NE(json.find("\"version\": \"3.4.0\""), std::string::npos);
+    EXPECT_NE(json.find("\"version\": \"3.7.0\""), std::string::npos);
     size_t bitsFields = 0;
     for (size_t at = json.find("\"bits\""); at != std::string::npos; at = json.find("\"bits\"", at + 1)) {
         ++bitsFields;

@@ -19,6 +19,13 @@ struct VideoFrame;
  * plain (non-playable) TextureSource: live capture has no timeline, seek, or
  * duration. Frames decode on a background thread and are drained to the newest
  * one each update() to keep the preview low-latency. See QM-055.
+ *
+ * initialize() and shutdown() run on the main thread, unlike a video file's open and
+ * close (TD-35): FFmpeg's dshow input calls CoInitialize on the thread that opens the
+ * device and CoUninitialize on the thread that closes it, and the capture graph's COM
+ * objects belong to the opening thread's apartment, so open and close must happen on
+ * the same thread. SourceManager therefore opens and frees cameras where it creates
+ * them; a camera's open and close can cost the frame they run in.
  */
 class CameraSource : public TextureSource {
 public:
@@ -52,6 +59,10 @@ public:
     SourceCapabilities getCapabilities() const override;
     int getWidth() const override { return width_; }
     int getHeight() const override { return height_; }
+
+    // The decoder's last error, empty while healthy: a camera that fails or is unplugged says
+    // why. Not an override: getErrorMessage() is declared on PlayableSource, not TextureSource.
+    std::string getErrorMessage() const;
 
     // --- Camera-specific ---
     const std::string& getDeviceName() const { return deviceName_; }

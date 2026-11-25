@@ -69,7 +69,8 @@ enum class SourceType {
     PROCEDURAL_PLASMA,
     PROCEDURAL_GRID,
     SPOUT,
-    SYPHON
+    SYPHON,
+    COMPOSITION  // CompositionSource (ADR-061)
 };
 
 // Procedural texture type enum

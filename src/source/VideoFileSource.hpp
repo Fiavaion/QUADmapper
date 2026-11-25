@@ -96,6 +96,8 @@ public:
     // --- PlayableSource: Clock ---
     const PlaybackClock& getClock() const override;
     PlaybackTimePoint getClockNow() const override;
+    void setTimeSource(std::function<PlaybackTimePoint()> source) override;
+    bool framesCoverClock() const override;
 
     // --- PlayableSource: Health ---
     std::string getErrorMessage() const override;
@@ -110,8 +112,19 @@ public:
     bool isZeroCopy() const;
     void stopZeroCopy(const std::string& reason);
     std::string getZeroCopyNote() const;
-    // The player behind this source (tests inject time and a reverse cache budget).
-    VideoPlayer& getPlayer() { return *player_; }
+
+    // --- Opening off the main thread (TD-35) ---
+    // initialize() opens the file here and now. SourceManager instead calls beginOpen(),
+    // opens the decoder with openDecoder() on a worker, and hands it to finishOpen() on
+    // the main thread. In between the source is not ready and shows nothing, but its
+    // transport (play, pause, seek, speed, loop, lock) already works and its clock runs.
+    static std::unique_ptr<VideoDecoder> openDecoder(const std::filesystem::path& path,
+                                                     const DecodeOptions& options);  // any thread
+    void beginOpen();
+    // False (logged; getErrorMessage() says so) when `decoder` is null or not open; the
+    // source stays empty and keeps the transport it was given.
+    bool finishOpen(std::unique_ptr<VideoDecoder> decoder);
+    bool isOpening() const;
 
 private:
     void convertVideoFrame(const VideoFrame& videoFrame);
@@ -124,6 +137,7 @@ private:
     FrameData frame_;
     bool ready_ = false;
     bool hasNewFrame_ = false;
+    bool openFailed_ = false;  // the last open failed (the source stays empty)
 };
 
 } // namespace quadmapper

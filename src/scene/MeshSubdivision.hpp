@@ -9,7 +9,8 @@ namespace quadmapper {
 // Vertex for rendering
 struct MeshVertex {
     Vec2 position;
-    Vec3 texCoord;  // (u*q, v*q, q); quad.frag divides by q for projective mapping
+    Vec3 texCoord;    // (u*q, v*q, q); quad.frag divides by q for projective mapping
+    Vec3 imageCoord;  // where the image is sampled, same form; == texCoord unless Crop
 };
 
 // Mesh generation utilities
@@ -41,7 +42,6 @@ public:
     // Validate resolution is within allowed range
     static int clampResolution(int resolution);
 
-    // Check if a resolution is valid
     static bool isValidResolution(int resolution);
 
     // The triangles of a resolution x resolution grid, in generateMesh's order.

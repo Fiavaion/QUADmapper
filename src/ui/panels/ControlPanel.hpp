@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Panel.hpp"
+
 #include <string>
 
 namespace quadmapper {
@@ -58,16 +60,18 @@ private:
 //   - Mappings: the show's MIDI mappings with mode editing, "any device", delete,
 //     activity, 14-bit CC pairs marked, and unresolved targets (a deleted quad or
 //     scene) marked.
-// Settings changes are applied to `control` at once; render() returns true when
-// `prefs` changed so the caller can save preferences. Visibility is
-// ctx.es.showControl. Does not inherit Panel (EditorContext is needed per frame).
-class ControlPanel {
+// Settings changes are applied to ctx.control at once and saved (ctx.services). Hidden
+// by default; drawn only where there is external control (not in the harnesses).
+class ControlPanel : public Panel {
 public:
-    ControlPanel() = default;
+    static constexpr const char* ID = "Control";
 
-    // `now` is the clock the dispatcher records activity with (seconds).
-    bool render(EditorContext& ctx, control::ExternalControl& control, ControlPreferences& prefs,
-                double now);
+    ControlPanel() { visible = false; }
+
+    const char* id() const override { return ID; }
+    const char* menuLabel() const override { return "Control (OSC / MIDI)"; }
+    bool available(const EditorContext& ctx) const override;
+    void drawContent(EditorContext& ctx) override;
 
 private:
     bool renderOsc(control::ExternalControl& control, ControlPreferences& prefs);

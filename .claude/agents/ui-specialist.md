@@ -10,8 +10,8 @@ You own the interface: `src/ui/` (panels, dialogs, menus, widgets, theme) and th
 interaction code in `src/app/Application.cpp`.
 
 ## Ground rules
-- New panel → inherit `Panel`, register in `UIManager::initializePanels()`, add a `MainMenu`
-  entry (see CLAUDE.md "Adding a New Panel").
+- New panel → subclass `Panel`, register it in `EditorUi` (the Window menu is generated), see
+  CLAUDE.md "Adding a New Panel"; new shortcuts are `ActionRegistry` actions (ADR-051).
 - **Guard all canvas keyboard handling on `!io.WantTextInput && !io.WantCaptureKeyboard`** so
   typing in fields never moves vertices. This protects the core vertex-editing UX
   (`Application.cpp:674-808`) — the product's success metric.

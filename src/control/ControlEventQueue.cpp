@@ -9,7 +9,10 @@ ControlEventQueue::ControlEventQueue(size_t capacity)
 
 bool ControlEventQueue::push(ControlEvent&& event) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (count_ == slots_.size()) {
+    // OSC is refused at three-quarters full so a flood cannot crowd out MIDI.
+    const size_t limit =
+        event.source == ControlEvent::Source::Osc ? slots_.size() * 3 / 4 : slots_.size();
+    if (count_ >= std::max<size_t>(1, limit)) {
         dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }

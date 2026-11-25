@@ -2,10 +2,21 @@
 
 add_library(quadmapper_ui STATIC
     Theme.hpp
+    ConfirmPopup.hpp
     Theme.cpp
     AsyncFileDialog.hpp
     AsyncFileDialog.cpp
+    ShortcutRouter.hpp
+    ShortcutRouter.cpp
+    EditorUi.hpp
+    EditorUi.cpp
+    PanelHost.hpp
+    PanelHost.cpp
     panels/Panel.hpp
+    panels/ResourcesPanel.hpp
+    panels/ResourcesPanel.cpp
+    panels/Banners.hpp
+    panels/Banners.cpp
     panels/InspectorPanel.hpp
     panels/InspectorPanel.cpp
     panels/ViewportEditor.hpp
@@ -18,6 +29,8 @@ add_library(quadmapper_ui STATIC
     panels/QuadListPanel.cpp
     panels/ScenePanel.hpp
     panels/ScenePanel.cpp
+    panels/CompositionPanel.hpp
+    panels/CompositionPanel.cpp
     panels/SliceEditor.hpp
     panels/SliceEditor.cpp
     panels/OutputPreviewPanel.hpp
@@ -26,26 +39,22 @@ add_library(quadmapper_ui STATIC
     panels/VideoPlayerPanel.cpp
     panels/MediaBinPanel.hpp
     panels/MediaBinPanel.cpp
-    panels/ProceduralEditorPanel.hpp
-    panels/ProceduralEditorPanel.cpp
     panels/CalibrationPanel.hpp
     panels/CalibrationPanel.cpp
     panels/ControlPanel.hpp
     panels/ControlPanel.cpp
+    panels/AiPhotoPanel.hpp
+    panels/AiPhotoPanel.cpp
     dialogs/PreferencesDialog.hpp
     dialogs/PreferencesDialog.cpp
-    dialogs/OutputConfigDialog.hpp
-    dialogs/OutputConfigDialog.cpp
     dialogs/HapConvertWindow.hpp
     dialogs/HapConvertWindow.cpp
-    widgets/QuadCornerWidget.hpp
-    widgets/QuadCornerWidget.cpp
-    widgets/PlaybackControls.hpp
-    widgets/PlaybackControls.cpp
-    widgets/MediaThumbnail.hpp
-    widgets/MediaThumbnail.cpp
-    menus/MainMenu.hpp
-    menus/MainMenu.cpp
+    dialogs/MissingMediaWindow.hpp
+    dialogs/MissingMediaWindow.cpp
+    dialogs/ExportVideoWindow.hpp
+    dialogs/ExportVideoWindow.cpp
+    dialogs/SessionDialogs.hpp
+    dialogs/SessionDialogs.cpp
 )
 
 target_include_directories(quadmapper_ui
@@ -56,6 +65,7 @@ target_include_directories(quadmapper_ui
 
 target_link_libraries(quadmapper_ui
     PUBLIC
+        quadmapper_editor
         quadmapper_core
         quadmapper_scene
         quadmapper_renderer
@@ -67,8 +77,6 @@ target_link_libraries(quadmapper_ui
         quadmapper_input
         quadmapper_control
         imgui
-    PRIVATE
-        nlohmann_json::nlohmann_json
 )
 
 set_target_properties(quadmapper_ui PROPERTIES

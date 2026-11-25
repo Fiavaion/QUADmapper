@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 #include "output/OutputManager.hpp"
-#include "app/OutputPersistence.hpp"
 #include "core/GlObjectStats.hpp"
 #include "renderer/Framebuffer.hpp"
 #include "renderer/Renderer.hpp"
 #include "renderer/Texture.hpp"
+#include "scene/CalibrationSession.hpp"
 #include "scene/MeshObject.hpp"
 #include "scene/ProjectorCamera.hpp"
 #include "scene/Scene.hpp"
@@ -159,6 +159,24 @@ TEST(OutputManagerTest, EnterPerformModeFailsWithNoOutputs) {
 
     EXPECT_FALSE(result.isSuccess());
     EXPECT_FALSE(manager.isInPerformMode());
+}
+
+// An export running refuses perform mode for every caller, and says why.
+TEST(OutputManagerTest, APerformRefusalKeepsPerformModeOffAndIsShown) {
+    OutputManager manager;
+    std::string notice;
+    manager.setNoticeCallback([&notice](const std::string& message) { notice = message; });
+    manager.setPerformRefusal([] { return std::string("an export is running"); });
+
+    auto result = manager.enterPerformMode();
+
+    EXPECT_FALSE(result.isSuccess());
+    EXPECT_EQ(result.error().message, "an export is running");
+    EXPECT_EQ(notice, "an export is running");
+    EXPECT_FALSE(manager.isInPerformMode());
+
+    manager.setPerformRefusal([] { return std::string(); });  // nothing to refuse for
+    EXPECT_NE(manager.enterPerformMode().error().message, "an export is running");
 }
 
 TEST(OutputManagerTest, ExitPerformModeSucceedsWhenNotInPerformMode) {
@@ -696,6 +714,55 @@ TEST(OutputManagerTest, ExitPerformModeSucceedsWhenAlreadyExited) {
     EXPECT_TRUE(result.isSuccess());
 }
 
+TEST(OutputManagerTest, IdentifyNeedsAnOutputOnScreen) {
+    OutputManager manager;  // not initialized: no output can go fullscreen
+    manager.createOutput("Test");
+    EXPECT_FALSE(manager.identifyOutputs());
+    EXPECT_FALSE(manager.isIdentifying());
+    EXPECT_FALSE(manager.isInPerformMode());
+    manager.retireIdentify();  // nothing to end
+    EXPECT_FALSE(manager.isInPerformMode());
+}
+
+// Identify's number: a dark panel, the frame's four edges, then one quad per lit
+// segment, all inside the frame and the digits on the panel.
+TEST(IdentifyOverlayTest, PanelEdgesAndSevenSegmentDigits) {
+    auto bounds = [](const Quad& q) {
+        const auto& c = q.getGeometry().getCorners();
+        return std::array<float, 4>{c[0].x, c[0].y, c[2].x, c[2].y};  // x0 y0 x1 y1
+    };
+    const IVec2 hd(1920, 1080);
+    for (const auto& [number, segments] : {std::pair{1, 2}, std::pair{8, 7}, std::pair{12, 7}}) {
+        const std::vector<Quad> quads = makeIdentifyOverlay(number, hd);
+        ASSERT_EQ(quads.size(), 1u + 4u + static_cast<size_t>(segments)) << number;
+        EXPECT_EQ(quads[0].getColorCorrection().rgbGain, Vec3(0.0f)) << "the panel is dark";
+        EXPECT_LT(quads[0].getOpacity(), 1.0f);
+        const auto panel = bounds(quads[0]);
+        for (size_t i = 0; i < quads.size(); ++i) {
+            const auto b = bounds(quads[i]);
+            EXPECT_GE(b[0], 0.0f);
+            EXPECT_GE(b[1], 0.0f);
+            EXPECT_LE(b[2], 1.0f);
+            EXPECT_LE(b[3], 1.0f);
+            EXPECT_LT(b[0], b[2]);
+            EXPECT_LT(b[1], b[3]);
+            if (i >= 5) {  // a segment
+                EXPECT_TRUE(quads[i].getColorCorrection().isIdentity()) << "white";
+                EXPECT_GE(b[0], panel[0]);
+                EXPECT_GE(b[1], panel[1]);
+                EXPECT_LE(b[2], panel[2]);
+                EXPECT_LE(b[3], panel[3]);
+            }
+        }
+    }
+    // A portrait (rotated) frame still fits the number.
+    for (const Quad& q : makeIdentifyOverlay(88, IVec2(1080, 1920))) {
+        const auto b = bounds(q);
+        EXPECT_GE(b[0], 0.0f);
+        EXPECT_LE(b[2], 1.0f);
+    }
+}
+
 TEST(OutputManagerTest, EnterPerformModeIdempotent) {
     OutputManager manager;
 
@@ -752,6 +819,45 @@ TEST(DescribeMonitorChoiceTest, ResolvedChosenAutomaticAndUnresolved) {
     savedIndexOnly.savedIndex = 0;
     output.setDesiredMonitor(savedIndexOnly);
     EXPECT_FALSE(output.isMonitorAutomatic());
+}
+
+// One display (a laptop): an Automatic output previews on it at F11, and says so.
+TEST(DescribeMonitorChoiceTest, AutomaticWithOnlyTheEditorsDisplayNamesIt) {
+    const std::vector<MonitorInfo> laptop = {monitorAt(0, "Laptop", IVec2(0, 0))};
+    OutputWindow output;
+    output.setMonitor(-1);  // resolution skips the editor's display
+    EXPECT_EQ(OutputManager::describeMonitorChoice(laptop, output, /*previewsOnOnlyScreen=*/true),
+              laptop[0].getDisplayString() + " (automatic: the only display)");
+    EXPECT_EQ(OutputManager::describeMonitorChoice(laptop, output), "Not connected")
+        << "another output takes the screen";
+
+    output.setDesiredMonitor({"Epson", IVec2(1920, 0), 1});  // a projector chosen, unplugged
+    EXPECT_EQ(OutputManager::describeMonitorChoice(laptop, output, true), "Epson (not connected)");
+}
+
+TEST(OnlyScreenPreviewTest, FirstEnabledAutomaticOutputOnTheOnlyDisplay) {
+    const std::vector<MonitorInfo> laptop = {monitorAt(0, "Laptop", IVec2(0, 0))};
+    std::vector<std::unique_ptr<OutputWindow>> outputs;
+    auto add = [&](bool enabled, const MonitorIdentity& desired, int resolved) {
+        auto output = std::make_unique<OutputWindow>();
+        output->setEnabled(enabled);
+        output->setDesiredMonitor(desired);
+        output->setMonitor(resolved);
+        outputs.push_back(std::move(output));
+        return outputs.back().get();
+    };
+    add(true, {"Epson", IVec2(1920, 0), 1}, -1);  // a chosen projector, unplugged: never
+    add(false, {}, -1);                             // disabled
+    const OutputWindow* automatic = add(true, {}, -1);
+    add(true, {}, -1);                              // a second Automatic one
+    EXPECT_EQ(OutputManager::onlyScreenPreview(laptop, outputs), automatic);
+
+    const std::vector<MonitorInfo> two = {monitorAt(0, "Laptop", IVec2(0, 0)),
+                                          monitorAt(1, "Epson", IVec2(1920, 0))};
+    EXPECT_EQ(OutputManager::onlyScreenPreview(two, outputs), nullptr) << "a projector is there";
+
+    add(true, {"Laptop", IVec2(0, 0), 0}, 0);  // the screen chosen on purpose for one
+    EXPECT_EQ(OutputManager::onlyScreenPreview(laptop, outputs), nullptr) << "already taken";
 }
 
 TEST(ResolveMonitorTest, ExactNameAndPositionWinOverStaleIndex) {
@@ -904,80 +1010,6 @@ TEST(ResolveMonitorTest, MonitorContainingPoint) {
     EXPECT_EQ(OutputManager::monitorContaining(monitors, IVec2(960, 540)), 0);
     EXPECT_EQ(OutputManager::monitorContaining(monitors, IVec2(1920, 0)), 1);
     EXPECT_EQ(OutputManager::monitorContaining(monitors, IVec2(-32000, -32000)), -1);
-}
-
-// ---- Save writes the desired identity (QM-090) --------------------------------
-
-TEST(OutputPersistenceTest, UnresolvedOutputSavesItsDesiredIdentity) {
-    OutputManager manager;  // no GLFW: no monitors connected at all
-    OutputWindow* output = manager.createOutput("Projector 1");
-    ASSERT_NE(output, nullptr);
-    output->setDesiredMonitor({"EPSON PJ", IVec2(1920, 0), 1});
-
-    manager.resolveOutputs();
-    EXPECT_EQ(output->getMonitor(), -1);
-
-    Project::OutputData saved = outputToData(*output, {});
-    EXPECT_EQ(saved.monitor, 1);
-    EXPECT_EQ(saved.monitorName, "EPSON PJ");
-    EXPECT_EQ(saved.monitorPosition, IVec2(1920, 0));
-}
-
-TEST(OutputPersistenceTest, FallbackIsNotWrittenBackToTheProject) {
-    // The show opened with the projector unplugged fell back to a spare display.
-    std::vector<MonitorInfo> monitors = {monitorAt(0, kGeneric, IVec2(0, 0)),
-                                         monitorAt(1, "Dell", IVec2(-1920, 0))};
-    OutputWindow output;
-    output.setDesiredMonitor({kGeneric, IVec2(1920, 0), 1});
-    auto r = OutputManager::resolveMonitor(monitors, output.getDesiredMonitor(), 0, {});
-    ASSERT_EQ(r.match, MonitorMatch::SavedIndex);
-    output.setMonitor(r.index);
-
-    Project::OutputData saved = outputToData(output, {});
-    EXPECT_EQ(saved.monitor, 1);
-    EXPECT_EQ(saved.monitorName, kGeneric);
-    EXPECT_EQ(saved.monitorPosition, IVec2(1920, 0));  // the projector, not the Dell
-
-    OutputWindow reloaded;
-    applyOutputData(saved, reloaded);
-    EXPECT_EQ(reloaded.getDesiredMonitor().name, kGeneric);
-    EXPECT_EQ(reloaded.getDesiredMonitor().position, IVec2(1920, 0));
-    EXPECT_EQ(reloaded.getDesiredMonitor().savedIndex, 1);
-}
-
-TEST(OutputPersistenceTest, ExplicitChoiceBecomesTheDesiredIdentity) {
-    OutputManager manager;
-    OutputWindow* output = manager.createOutput("Projector 1");
-    ASSERT_NE(output, nullptr);
-    output->setDesiredMonitor({"EPSON PJ", IVec2(1920, 0), 1});
-
-    manager.assignMonitor(*output, -1);  // "Automatic"
-    EXPECT_TRUE(output->getDesiredMonitor().name.empty());
-    EXPECT_EQ(output->getDesiredMonitor().savedIndex, -1);
-    EXPECT_EQ(outputToData(*output, {}).monitor, -1);
-}
-
-// An output that shows no scene, or a deleted one, is saved with neither: its slices
-// are in the pixels of a canvas the file would not name.
-TEST(OutputPersistenceTest, UnroutedOutputSavesNoSceneAndNoSlices) {
-    std::vector<std::unique_ptr<Scene>> scenes;
-    scenes.push_back(std::make_unique<Scene>());
-    scenes.push_back(std::make_unique<Scene>());
-    OutputWindow shows, none, deleted;
-    OutputManager::showScene(shows, scenes[0].get(), scenes);
-    OutputManager::showScene(none, scenes[0].get(), scenes);
-    OutputManager::showScene(none, nullptr, scenes);
-    OutputManager::showScene(deleted, scenes[1].get(), scenes);
-    scenes.pop_back();
-
-    const Project::OutputData a = outputToData(shows, scenes);
-    EXPECT_EQ(a.sceneId, scenes[0]->getId());
-    EXPECT_EQ(a.slices.size(), 1u);
-    for (const OutputWindow* o : {&none, &deleted}) {
-        const Project::OutputData d = outputToData(*o, scenes);
-        EXPECT_TRUE(d.sceneId.isNull());
-        EXPECT_TRUE(d.slices.empty());
-    }
 }
 
 // ---- Swap pacing (QM-090) ----------------------------------------------------
@@ -1967,6 +1999,260 @@ TEST(CanvasSliceRenderTest, CanvasIsColourOnly) {
 }
 
 // ---------------------------------------------------------------------------
+// The calibration view (TD-29): the calibrated output's frame, drawn by
+// renderSceneFrame as the output frames are. A pick on it maps to a projector pixel
+// by canvasToPixel, whatever the slicing.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// One slicing case: the scene's canvas size (in frames) and the slices of the output
+// the view shows (`partner` gives a second output showing the scene too, for a pair).
+struct CalibrationViewCase {
+    const char* name;
+    int canvasFrames;  // canvas width in frame widths
+    std::vector<Slice> (*slices)(IVec2 canvas, int w, int h);
+    std::vector<Slice> (*partner)(IVec2 canvas, int w, int h);
+};
+
+// Where the view shows things, one case: the lit pixels of the objects alone, and the
+// lit pixels of the marker quad alone, as frame-normalised points (+y down).
+struct CalibrationViewShot {
+    std::vector<unsigned char> objects;
+    std::vector<Vec2> markerPoints;
+};
+
+// The marker quad on the canvas, normalised (inside every case's slice input).
+constexpr float MARKER_X0 = 0.48f, MARKER_X1 = 0.72f, MARKER_Y0 = 0.40f, MARKER_Y1 = 0.50f;
+
+}  // namespace
+
+TEST(CalibrationViewTest, PicksMapToProjectorPixelsWhateverTheSlicing) {
+    EditorGL gl;
+    if (!gl.ok) GTEST_SKIP() << "No GL 3.3 context available";
+
+    const std::vector<CalibrationViewCase> cases = {
+        {"(a) default slicing", 1,
+         [](IVec2 canvas, int, int) { return std::vector<Slice>{makeFullCanvasSlice(canvas)}; },
+         nullptr},
+        {"(b) offset and scaled slice", 2,
+         [](IVec2, int w, int h) {
+             Slice s = makeFullCanvasSlice(IVec2(1, 1));
+             s.input = CanvasRect{0.5f * w, 0.1f * h, 1.0f * w, 0.8f * h};
+             return std::vector<Slice>{s};
+         },
+         nullptr},
+        {"(c) warped slice", 2,
+         [](IVec2 canvas, int, int) {
+             Slice s = makeFullCanvasSlice(canvas);
+             s.warp.setCorners({Vec2(0.10f, 0.05f), Vec2(0.95f, 0.0f), Vec2(0.85f, 1.0f),
+                                Vec2(0.0f, 0.90f)});
+             return std::vector<Slice>{s};
+         },
+         nullptr},
+        {"(d) right of a blended, keystoned pair", 2,
+         [](IVec2, int w, int h) {
+             Slice s = makeFullCanvasSlice(IVec2(1, 1));
+             s.input = CanvasRect{0.8f * w, 0.0f, 1.2f * w, 1.0f * h};
+             s.blend[SLICE_EDGE_LEFT].width = 0.4f * w;
+             s.warp.setCorners({Vec2(0.0f, 0.0f), Vec2(1.0f, 0.06f), Vec2(0.97f, 0.95f),
+                                Vec2(0.02f, 1.0f)});
+             return std::vector<Slice>{s};
+         },
+         [](IVec2, int w, int h) {
+             Slice s = makeFullCanvasSlice(IVec2(1, 1));
+             s.input = CanvasRect{0.0f, 0.0f, 1.2f * w, 1.0f * h};
+             s.blend[SLICE_EDGE_RIGHT].width = 0.4f * w;
+             return std::vector<Slice>{s};
+         }},
+    };
+
+    // Ground truth: the cube's corners as the projector projects them (the bounding
+    // box of its silhouette, in projector pixels).
+    Vec2 truthMin(1e9f), truthMax(-1e9f);
+    ProjectorCamera projector;
+    std::vector<CalibrationViewShot> shots;
+    int w = 0, h = 0;
+
+    for (const CalibrationViewCase& c : cases) {
+        SCOPED_TRACE(c.name);
+        OutputManager manager;
+        ASSERT_TRUE(manager.initialize(gl.win).isSuccess());
+        OutputWindow* output = manager.createOutput("Calibrated");
+        ASSERT_NE(output, nullptr);
+        glfwSetWindowSize(output->getGLFWwindow(), 96, 64);
+        glfwGetFramebufferSize(output->getGLFWwindow(), &w, &h);
+        OutputWindow* partner = c.partner ? manager.createOutput("Partner") : nullptr;
+        glfwMakeContextCurrent(gl.win);
+
+        auto media = patternTexture(32, 4);
+        std::vector<std::unique_ptr<Scene>> scenes;
+        scenes.push_back(std::make_unique<Scene>());
+        Scene& scene = *scenes.front();
+        const IVec2 canvas(c.canvasFrames * w, h);
+        scene.setCanvasSize(canvas);
+        std::unordered_map<UUID, Texture*> textures;
+        buildFeatureScene(scene, {media.get()}, textures);  // the cube
+        std::vector<UUID> quadIds;
+        for (const auto& quad : scene.getQuadManager().getQuads()) quadIds.push_back(quad->getId());
+        for (const UUID& id : quadIds) scene.getQuadManager().deleteQuad(id);
+        Quad* marker = scene.getQuadManager().createQuad("Marker");
+        marker->getGeometry().setCorners({Vec2(MARKER_X0, MARKER_Y0), Vec2(MARKER_X1, MARKER_Y0),
+                                          Vec2(MARKER_X1, MARKER_Y1), Vec2(MARKER_X0, MARKER_Y1)});
+        OutputManager::showScene(*output, &scene, scenes);
+        output->getSlices() = c.slices(canvas, w, h);
+        if (partner) {
+            OutputManager::showScene(*partner, &scene, scenes);
+            partner->getSlices() = c.partner(canvas, w, h);
+        }
+        Vec3 lo, hi;
+        ASSERT_TRUE(scene.visibleObjectBounds(lo, hi));
+        output->getProjector() = ProjectorCamera::fitToOutput(ProjectorCamera{}, w, h, &lo, &hi);
+        projector = output->getProjector();
+        truthMin = Vec2(1e9f);
+        truthMax = Vec2(-1e9f);
+        const MeshObject& cube = *scene.getObjects().front();
+        for (const Vec3& local : cube.getMesh().positions) {
+            Vec2 pixel;
+            ASSERT_TRUE(projector.project(Vec3(cube.getTransform() * glm::vec4(local, 1.0f)), pixel));
+            truthMin = glm::min(truthMin, pixel);
+            truthMax = glm::max(truthMax, pixel);
+        }
+
+        Renderer renderer;
+        ASSERT_TRUE(renderer.initialize());
+        // The view as the editor draws it: the canvases from the last output frames,
+        // then the calibrated output's frame over black.
+        auto view = [&]() {
+            manager.renderOutputFrames(scenes, textures, renderer);
+            Framebuffer target(Framebuffer::Depth::With);
+            EXPECT_TRUE(target.resize(w, h));
+            target.bind();
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            manager.renderSceneFrame(*output, scene, IVec2(w, h), textures, renderer);
+            renderer.endFrame();
+            std::vector<unsigned char> px = readBound(w, h);
+            Framebuffer::unbind();
+            return px;
+        };
+        CalibrationViewShot shot;
+        marker->setVisible(false);
+        shot.objects = view();
+        marker->setVisible(true);
+        const std::vector<unsigned char> both = view();
+        scene.getObjects().front()->setVisible(false);
+        const std::vector<unsigned char> quads = view();
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const size_t i = (static_cast<size_t>(y) * w + x) * 4;  // bottom-up rows
+                if (quads[i] + quads[i + 1] + quads[i + 2] > 60) {
+                    shot.markerPoints.emplace_back((x + 0.5f) / w, (h - 1 - y + 0.5f) / h);
+                }
+            }
+        }
+
+        // Draw order: the canvas lies over the objects. Where the opaque marker covers
+        // the cube (two pixels inside the marker, on the cube, outside the slice's blend
+        // zones), the view with both is the marker alone; where the canvas is transparent
+        // (nothing of the marker within two pixels), it is the objects alone.
+        const Slice& slice = output->getSlices().front();
+        auto lit = [&](const std::vector<unsigned char>& px, int x, int y) {
+            const size_t i = (static_cast<size_t>(y) * w + x) * 4;
+            return px[i] + px[i + 1] + px[i + 2] > 0;
+        };
+        auto outsideBlendZones = [&](int x, int y) {
+            const Vec2 uv = slice.warp.surfaceParamsAt(Vec2((x + 0.5f) / w, (h - 1 - y + 0.5f) / h));
+            if (uv.x < 0.0f) return false;
+            const float dLeft = uv.x * slice.input.width, dTop = uv.y * slice.input.height;
+            return dLeft > slice.blend[SLICE_EDGE_LEFT].width + 1.0f &&
+                   slice.input.width - dLeft > slice.blend[SLICE_EDGE_RIGHT].width + 1.0f &&
+                   dTop > slice.blend[SLICE_EDGE_TOP].width + 1.0f &&
+                   slice.input.height - dTop > slice.blend[SLICE_EDGE_BOTTOM].width + 1.0f;
+        };
+        int coveredCube = 0, coveredWrong = 0, uncoveredWrong = 0;
+        for (int y = 2; y < h - 2; ++y) {
+            for (int x = 2; x < w - 2; ++x) {
+                int markerAround = 0;
+                for (int dy = -2; dy <= 2; ++dy) {
+                    for (int dx = -2; dx <= 2; ++dx) markerAround += lit(quads, x + dx, y + dy) ? 1 : 0;
+                }
+                const size_t i = (static_cast<size_t>(y) * w + x) * 4;
+                int diffQuads = 0, diffObjects = 0;
+                for (int ch = 0; ch < 3; ++ch) {
+                    diffQuads = std::max(diffQuads, std::abs(both[i + ch] - quads[i + ch]));
+                    diffObjects = std::max(diffObjects, std::abs(both[i + ch] - shot.objects[i + ch]));
+                }
+                if (markerAround == 25 && lit(shot.objects, x, y)) {
+                    if (!outsideBlendZones(x, y)) continue;
+                    ++coveredCube;
+                    if (diffQuads > 1) ++coveredWrong;
+                } else if (markerAround == 0 && diffObjects > 1) {
+                    ++uncoveredWrong;
+                }
+            }
+        }
+        EXPECT_GT(coveredCube, 10) << "the marker must lie over the cube";
+        EXPECT_EQ(coveredWrong, 0) << "the objects show through the canvas";
+        EXPECT_EQ(uncoveredWrong, 0) << "the transparent canvas changed the objects";
+
+        // 2D: the view shows the canvas through this output's slice. Every lit pixel,
+        // taken back through the slice's warp (surfaceParamsAt) and input rectangle,
+        // lands on the marker quad of the canvas, within a canvas pixel.
+        EXPECT_GT(shot.markerPoints.size(), 10u) << "the marker must be in the view";
+        float worst = 0.0f;
+        for (const Vec2& f : shot.markerPoints) {
+            const Vec2 uv = slice.warp.surfaceParamsAt(f);
+            ASSERT_GE(uv.x, 0.0f) << "a lit pixel outside the slice's warp";
+            const Vec2 onCanvas(slice.input.x + uv.x * slice.input.width,
+                                slice.input.y + uv.y * slice.input.height);
+            const float dx = std::max({MARKER_X0 * canvas.x - onCanvas.x, onCanvas.x - MARKER_X1 * canvas.x, 0.0f});
+            const float dy = std::max({MARKER_Y0 * canvas.y - onCanvas.y, onCanvas.y - MARKER_Y1 * canvas.y, 0.0f});
+            worst = std::max(worst, std::max(dx, dy));
+        }
+        EXPECT_LE(worst, 1.0f) << "canvas pixels off the marker";
+        shots.push_back(std::move(shot));
+
+        renderer.shutdown();
+        media.reset();
+        manager.shutdown();
+    }
+
+    // Where the view shows the cube, against the ground truth.
+    const ProjectorIntrinsics& k = projector.intrinsics;
+    ASSERT_EQ(k.width, w);
+    ASSERT_EQ(k.height, h);
+    for (size_t s = 0; s < shots.size(); ++s) {
+        SCOPED_TRACE(cases[s].name);
+        // 3D: the objects are drawn in projector space, never through the slices, so
+        // they are the same picture whatever the slicing.
+        EXPECT_EQ(shots[s].objects, shots.front().objects) << "slicing moved the 3D objects";
+        // Picks at the silhouette's edges on the view map (canvasToPixel) to the
+        // projected bounding box, within a pixel.
+        int minX = w, minY = h, maxX = -1, maxY = -1;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const size_t i = (static_cast<size_t>(y) * w + x) * 4;
+                const auto& px = shots[s].objects;
+                if (px[i] + px[i + 1] + px[i + 2] <= 30) continue;
+                const int top = h - 1 - y;
+                minX = std::min(minX, x); maxX = std::max(maxX, x);
+                minY = std::min(minY, top); maxY = std::max(maxY, top);
+            }
+        }
+        ASSERT_GE(maxX, 0) << "the cube must be in the view";
+        const Vec2 pickedMin = canvasToPixel(Vec2(static_cast<float>(minX) / w,
+                                                  static_cast<float>(minY) / h), k);
+        const Vec2 pickedMax = canvasToPixel(Vec2(static_cast<float>(maxX + 1) / w,
+                                                  static_cast<float>(maxY + 1) / h), k);
+        EXPECT_NEAR(pickedMin.x, truthMin.x, 1.0f);
+        EXPECT_NEAR(pickedMin.y, truthMin.y, 1.0f);
+        EXPECT_NEAR(pickedMax.x, truthMax.x, 1.0f);
+        EXPECT_NEAR(pickedMax.y, truthMax.y, 1.0f);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Scene crossfades (ADR-047 §5, QM-121): readback of the mixed frames.
 // ---------------------------------------------------------------------------
 
@@ -2447,6 +2733,63 @@ TEST(SceneFadeRenderTest, AQuadFadingToAnObjectInItsPlaceDoesNotDip) {
             }
         }
     }
+}
+
+// ---- Projector auto-setup (owner, 2026-11-23) --------------------------------------
+
+TEST(ProjectorAutoSetupTest, DisplaysWithoutOutputSkipTheEditorsAndTakenOnes) {
+    const std::vector<MonitorInfo> monitors = {monitorAt(0, "Laptop", IVec2(0, 0)),
+                                               monitorAt(1, "Epson", IVec2(1920, 0)),
+                                               monitorAt(2, "Optoma", IVec2(3840, 0)),
+                                               monitorAt(3, "BenQ", IVec2(5760, 0))};
+    std::vector<std::unique_ptr<OutputWindow>> outputs;
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 0),
+              (std::vector<int>{1, 2, 3}));
+
+    outputs.push_back(std::make_unique<OutputWindow>());
+    outputs.back()->setMonitor(2);  // Optoma has an output
+    outputs.push_back(std::make_unique<OutputWindow>());
+    outputs.back()->setMonitor(-1);  // waiting for a display: takes none
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 0), (std::vector<int>{1, 3}));
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 3), (std::vector<int>{0, 1}))
+        << "the editor on another screen";
+
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 0, /*includeEditorScreen=*/true),
+              (std::vector<int>{1, 3, 0})) << "startup: the editor's screen too, last";
+    outputs.push_back(std::make_unique<OutputWindow>());
+    outputs.back()->setMonitor(0);
+    EXPECT_EQ(OutputManager::displaysWithoutOutput(monitors, outputs, 0, true), (std::vector<int>{1, 3}))
+        << "the editor's screen already has an output";
+
+    const std::vector<MonitorInfo> laptop = {monitorAt(0, "Laptop", IVec2(0, 0))};
+    EXPECT_TRUE(OutputManager::displaysWithoutOutput(laptop, {}, 0).empty())
+        << "a hotplug never gives the editor's screen an output";
+    EXPECT_TRUE(OutputManager::displaysWithoutOutput(laptop, {}, 0, true).empty())
+        << "alone, the editor's screen keeps the Automatic preview instead";
+}
+
+TEST(ProjectorAutoSetupTest, NextProjectorNameFillsTheLowestGap) {
+    std::vector<std::unique_ptr<OutputWindow>> outputs;
+    EXPECT_EQ(OutputManager::nextProjectorName(outputs), "Projector 1");
+    for (const char* name : {"Projector 1", "Stage left", "Projector 3"}) {
+        outputs.push_back(std::make_unique<OutputWindow>());
+        outputs.back()->setName(name);
+    }
+    EXPECT_EQ(OutputManager::nextProjectorName(outputs), "Projector 2");
+    outputs.push_back(std::make_unique<OutputWindow>());
+    outputs.back()->setName("Projector 2");
+    EXPECT_EQ(OutputManager::nextProjectorName(outputs), "Projector 4");
+}
+
+TEST(ProjectorAutoSetupTest, WithoutDisplaysNothingIsAddedOrAdopted) {
+    OutputManager manager;  // not initialized: no monitors
+    EXPECT_TRUE(manager.addOutputsForUnusedDisplays().empty());
+    EXPECT_EQ(manager.getOutputCount(), 0u);
+    OutputWindow* output = manager.createOutput("Projector 1");
+    ASSERT_NE(output, nullptr);
+    EXPECT_FALSE(manager.adoptDisplayResolution(*output));
+    EXPECT_EQ(output->getResolution(), IVec2(1920, 1080));
+    EXPECT_TRUE(manager.takeOutputsPlacedByHotplug().empty());
 }
 
 } // namespace test

@@ -61,6 +61,11 @@ void CommandHistory::execute(std::unique_ptr<Command> command) {
         LOG_WARNING("Attempted to execute null command");
         return;
     }
+    if (readOnly_) {
+        LOG_WARNING("Command '{}' refused: the history is read-only (perform lock)",
+                    command->getDescription());
+        return;
+    }
 
     // If we're building a compound command, add to it instead
     if (compoundCommand_) {
@@ -73,7 +78,6 @@ void CommandHistory::execute(std::unique_ptr<Command> command) {
         commands_.erase(commands_.begin() + undoIndex_, commands_.end());
     }
 
-    // Check if we can merge with the last command
     if (!commands_.empty() && undoIndex_ > 0) {
         auto& lastCommand = commands_[undoIndex_ - 1];
         if (lastCommand->canMergeWith(*command)) {
@@ -91,11 +95,9 @@ void CommandHistory::execute(std::unique_ptr<Command> command) {
     }
     LOG_TRACE("Executed command: {}", command->getDescription());
 
-    // Add to history
     commands_.push_back(std::move(command));
     undoIndex_ = commands_.size();
 
-    // Trim if we exceed max history
     trimHistory();
 
     notifyHistoryChanged();
@@ -104,6 +106,10 @@ void CommandHistory::execute(std::unique_ptr<Command> command) {
 bool CommandHistory::undo() {
     if (!canUndo()) {
         LOG_TRACE("Nothing to undo");
+        return false;
+    }
+    if (readOnly_) {
+        LOG_WARNING("Undo refused: the history is read-only (perform lock)");
         return false;
     }
 
@@ -123,6 +129,10 @@ bool CommandHistory::undo() {
 bool CommandHistory::redo() {
     if (!canRedo()) {
         LOG_TRACE("Nothing to redo");
+        return false;
+    }
+    if (readOnly_) {
+        LOG_WARNING("Redo refused: the history is read-only (perform lock)");
         return false;
     }
 
@@ -159,11 +169,6 @@ void CommandHistory::clear() {
     compoundCommand_.reset();
     LOG_DEBUG("Command history cleared");
     notifyHistoryChanged();
-}
-
-void CommandHistory::setMaxHistory(size_t max) {
-    maxHistory_ = max;
-    trimHistory();
 }
 
 void CommandHistory::beginCompoundCommand(const std::string& description) {

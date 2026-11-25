@@ -1,60 +1,22 @@
 #include "PreferencesDialog.hpp"
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
+#include "editor/ActionRegistry.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
 #include "audio/AudioEngine.hpp"
-#include "core/Logger.hpp"
-#include "core/FileSystem.hpp"
 #include "scene/SceneFade.hpp"
+#include "ui/ShortcutRouter.hpp"  // currentChordMods
 
 #include <imgui.h>
-#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cstdio>
-
-#ifdef _WIN32
-#include <ShlObj.h>
-#include <Windows.h>
-#endif
 
 namespace quadmapper {
 
 namespace {
 
-using nlohmann::json;
-
 const ImVec4 kSaveError(1.0f, 0.35f, 0.3f, 1.0f);
-
-// Type-checked reads: a missing key, the wrong type or an out-of-range number leaves
-// `out` as it was.
-void readBool(const json& section, const char* key, bool& out) {
-    auto it = section.find(key);
-    if (it != section.end() && it->is_boolean()) out = it->get<bool>();
-}
-
-void readInt(const json& section, const char* key, int& out, int min, int max) {
-    auto it = section.find(key);
-    if (it == section.end() || !it->is_number_integer()) return;
-    const auto value = it->get<long long>();
-    if (value >= min && value <= max) out = static_cast<int>(value);
-}
-
-void readFloat(const json& section, const char* key, float& out, float min, float max) {
-    auto it = section.find(key);
-    if (it == section.end() || !it->is_number()) return;
-    const double value = it->get<double>();
-    if (value >= min && value <= max) out = static_cast<float>(value);  // NaN fails both
-}
-
-void readString(const json& section, const char* key, std::string& out) {
-    auto it = section.find(key);
-    if (it != section.end() && it->is_string()) out = it->get<std::string>();
-}
-
-const json* sectionOf(const json& root, const char* name) {
-    auto it = root.find(name);
-    return it != root.end() && it->is_object() ? &*it : nullptr;
-}
 
 void appliesNote(const char* text) {
     ImGui::TextDisabled("%s", text);
@@ -62,61 +24,41 @@ void appliesNote(const char* text) {
 
 }  // namespace
 
-std::filesystem::path AppPreferences::getDefaultConfigPath() {
-    std::filesystem::path configDir;
-
-#ifdef _WIN32
-    wchar_t* appDataPath = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath))) {
-        configDir = std::filesystem::path(appDataPath);  // wide: no code-page narrowing
-    } else {
-        configDir = ".";
-    }
-    CoTaskMemFree(appDataPath);  // required even when the call fails; null is a no-op
-    configDir /= "QUADmapper";
-#else
-    if (const char* xdgConfig = std::getenv("XDG_CONFIG_HOME")) {
-        configDir = xdgConfig;
-    } else if (const char* home = std::getenv("HOME")) {
-        configDir = std::filesystem::path(home) / ".config";
-    } else {
-        configDir = ".";
-    }
-    configDir /= "quadmapper";
-#endif
-
-    FileSystem::createDirectory(configDir);
-    return configDir / "preferences.json";
-}
-
 // ---- Window -------------------------------------------------------------------
 
-void PreferencesDialog::render(EditorContext& ctx, control::ExternalControl* control) {
-    // A folder chosen in Browse lands even if the window was closed meanwhile.
-    std::vector<std::string> chosen;
-    if (folderDialog_.takeResult(chosen) && !chosen.empty()) {
-        preferences_.general.defaultMediaFolder = chosen.front();
-        save();
-    }
+int PreferencesDialog::windowFlags() const {
+    return ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
+}
 
-    bool& open = ctx.es.showPreferences;
-    if (!open) {
-        audioTabOpen_ = false;
-        return;
-    }
-
+void PreferencesDialog::beforeBegin(EditorContext& /*ctx*/) {
     // Sized in font units so it fits its hints at any display scale.
     const float em = ImGui::GetFontSize();
     ImGui::SetNextWindowSize(ImVec2(46.0f * em, 34.0f * em), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver,
                             ImVec2(0.5f, 0.5f));
-    if (!ImGui::Begin("Preferences", &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking)) {
-        ImGui::End();
-        return;
-    }
+}
 
+void PreferencesDialog::tick(EditorContext& ctx) {
+    std::vector<std::string> chosen;
+    if (folderDialog_.takeResult(chosen) && !chosen.empty()) mediaFolderChosen(ctx, chosen.front());
+    if (!visible) audioTabOpen_ = false;
+    // A closed window or a locked show ends a capture: the keys go back to the shortcuts.
+    if (!captureId_.empty() && (!visible || ctx.es.performLock.isOn())) endChordCapture(ctx);
+}
+
+void PreferencesDialog::mediaFolderChosen(EditorContext& ctx, const std::string& folder) {
+    // The dialog has no owner, so it can be answered after the perform lock was taken,
+    // which blocks Preferences edits (ADR-051 §4).
+    if (folder.empty() || refusedByPerformLock(ctx.es, "Changing the default media folder")) return;
+    preferences_.general.defaultMediaFolder = folder;
+    save();
+}
+
+void PreferencesDialog::drawContent(EditorContext& ctx) {
+    control::ExternalControl* control = ctx.control;
     bool changed = false;
     bool audioTab = false;
+    bool keyboardTab = false;
     if (ImGui::BeginTabBar("PreferenceTabs")) {
         if (ImGui::BeginTabItem("General")) {
             changed |= renderGeneralTab(ctx);
@@ -131,9 +73,18 @@ void PreferencesDialog::render(EditorContext& ctx, control::ExternalControl* con
             changed |= renderControlTab(control);
             ImGui::EndTabItem();
         }
+        const ImGuiTabItemFlags keyboardFlags =
+            selectKeyboardTab_ ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        selectKeyboardTab_ = false;
+        if (ImGui::BeginTabItem("Keyboard", nullptr, keyboardFlags)) {
+            keyboardTab = true;
+            changed |= renderKeyboardTab(ctx);
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
     audioTabOpen_ = audioTab;
+    if (!keyboardTab && !captureId_.empty()) endChordCapture(ctx);
     if (changed) save();
 
     if (!saveError_.empty()) {
@@ -142,7 +93,6 @@ void PreferencesDialog::render(EditorContext& ctx, control::ExternalControl* con
         ImGui::TextWrapped("Preferences could not be saved: %s", saveError_.c_str());
         ImGui::PopStyleColor();
     }
-    ImGui::End();
 }
 
 bool PreferencesDialog::renderGeneralTab(EditorContext& ctx) {
@@ -160,6 +110,25 @@ bool PreferencesDialog::renderGeneralTab(EditorContext& ctx) {
     }
     ImGui::SameLine();
     appliesNote("(applies now; QUADmapper starts in the mode last used)");
+
+    char sizeLabel[16];
+    snprintf(sizeLabel, sizeof(sizeLabel), "%d%%", general.uiScalePercent);
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::BeginCombo("Interface size", general.uiScalePercent == 0 ? "Automatic" : sizeLabel)) {
+        if (ImGui::Selectable("Automatic", general.uiScalePercent == 0)) {
+            general.uiScalePercent = 0;
+            changed = true;
+        }
+        for (const int percent : UI_SCALE_CHOICES) {
+            snprintf(sizeLabel, sizeof(sizeLabel), "%d%%", percent);
+            if (ImGui::Selectable(sizeLabel, general.uiScalePercent == percent)) {
+                general.uiScalePercent = percent;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    appliesNote("Applies now. Automatic follows the monitor's scale.");
 
     ImGui::SeparatorText("Scene takes");
     ImGui::SetNextItemWidth(200.0f);
@@ -204,6 +173,11 @@ bool PreferencesDialog::renderGeneralTab(EditorContext& ctx) {
     changed |= ImGui::Checkbox("Include subfolders", &general.recursiveFolderScan);
     ImGui::SetItemTooltip("For the startup import and for watching the folder for new files");
     appliesNote("Applies on restart. New files in the folder are imported while QUADmapper runs.");
+
+    ImGui::SeparatorText("Beta");
+    changed |= ImGui::Checkbox("AI Assist (beta)", &general.aiAssistBeta);
+    ImGui::SetItemTooltip("Camera-based surface detection and auto-warp. Mapping does not need it.");
+    appliesNote("Applies now. Adds the AI menu; turning it off stops the AI engine.");
     return changed;
 }
 
@@ -259,6 +233,137 @@ bool PreferencesDialog::renderControlTab(control::ExternalControl* control) {
     return changed;
 }
 
+bool PreferencesDialog::renderKeyboardTab(EditorContext& ctx) {
+    if (!ctx.actions) {
+        ImGui::TextDisabled("Shortcuts are not available in this session.");
+        return false;
+    }
+    ActionRegistry& registry = *ctx.actions;
+    bool changed = pollChordCapture(ctx);
+
+    appliesNote("Applies now. Tab, the arrows and H stay with the canvas, and 1-9 take scenes.");
+    appliesNote("A shortcut needs Ctrl, Shift, Alt or Super, except F1-F24 and Delete.");
+    const bool anyRebound = !keyBindingsOf(registry).empty();
+    ImGui::BeginDisabled(!anyRebound || !captureId_.empty());
+    if (ImGui::Button("Reset All")) {
+        registry.resetAllChords();
+        keyMessage_.clear();
+        changed = true;
+    }
+    ImGui::EndDisabled();
+
+    const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
+                                  ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("Shortcuts", 3, flags)) {
+        ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableSetupColumn("Keys", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("##edit", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+        ImGui::TableHeadersRow();
+        for (const Action& action : registry.actions()) {
+            ImGui::PushID(action.id.c_str());
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(action.label.c_str());
+
+            ImGui::TableNextColumn();
+            const bool capturing = captureId_ == action.id;
+            if (capturing) {
+                ImGui::TextUnformatted("Press a key chord (Esc cancels)");
+            } else if (action.chords.empty()) {
+                ImGui::TextDisabled("(none)");
+            } else {
+                ImGui::TextUnformatted(chordsText(action.chords).c_str());
+            }
+            if (keyMessageId_ == action.id && !keyMessage_.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, kSaveError);
+                ImGui::TextWrapped("%s", keyMessage_.c_str());
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::TableNextColumn();
+            if (action.fixed) {
+                ImGui::TextDisabled("Fixed");
+            } else if (capturing) {
+                if (ImGui::SmallButton("Cancel")) endChordCapture(ctx);
+            } else {
+                ImGui::BeginDisabled(!captureId_.empty());
+                if (ImGui::SmallButton(action.chords.empty() ? "Set" : "Change")) {
+                    beginChordCapture(ctx, action.id, 0);
+                }
+                if (action.chords.size() == 1) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Add")) beginChordCapture(ctx, action.id, 1);
+                } else if (action.chords.size() > 1) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove")) {
+                        // The later chords go; the first, the one the menu shows, stays.
+                        registry.setChords(action.id, {action.chords.front()});
+                        changed = true;
+                    }
+                }
+                if (action.chords != action.defaultChords) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reset")) {
+                        registry.resetChords(action.id);
+                        keyMessage_.clear();
+                        changed = true;
+                    }
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (changed) preferences_.keyBindings = keyBindingsOf(registry);
+    return changed;
+}
+
+bool PreferencesDialog::pollChordCapture(EditorContext& ctx) {
+    if (captureId_.empty()) return false;
+    // The canvas leaves the keys alone too: it acts only while ImGui does not want them.
+    ImGui::SetNextFrameWantCaptureKeyboard(true);
+    for (int key = ImGuiKey_NamedKey_BEGIN; key < ImGuiKey_NamedKey_END; ++key) {
+        if (!ImGui::IsKeyPressed(static_cast<ImGuiKey>(key), false)) continue;
+        if (key == ImGuiKey_Escape) {
+            endChordCapture(ctx);
+            return false;
+        }
+        if (!isChordKey(key)) continue;  // a modifier on its own, the mouse, a gamepad
+
+        const Action* action = ctx.actions->find(captureId_);
+        if (!action) {
+            endChordCapture(ctx);
+            return false;
+        }
+        std::vector<Chord> chords = action->chords;
+        const Chord chord{key, currentChordMods()};
+        if (captureSlot_ < chords.size()) {
+            chords[captureSlot_] = chord;
+        } else {
+            chords.push_back(chord);
+        }
+        const RebindCheck check = ctx.actions->setChords(captureId_, std::move(chords));
+        keyMessageId_ = captureId_;
+        keyMessage_ = rebindRefusal(check);
+        endChordCapture(ctx);
+        return check.result == RebindResult::Changed;
+    }
+    return false;
+}
+
+void PreferencesDialog::beginChordCapture(EditorContext& ctx, const std::string& id, size_t slot) {
+    captureId_ = id;
+    captureSlot_ = slot;
+    keyMessage_.clear();
+    ctx.es.capturingChord = true;
+}
+
+void PreferencesDialog::endChordCapture(EditorContext& ctx) {
+    captureId_.clear();
+    ctx.es.capturingChord = false;
+}
+
 void PreferencesDialog::save() {
     auto result = savePreferences();
     saveError_ = result ? std::string() : result.error().message;
@@ -271,106 +376,11 @@ std::filesystem::path PreferencesDialog::configPath() const {
 }
 
 Result<void, Error> PreferencesDialog::loadPreferences() {
-    return loadFromFile(configPath());
+    return preferences_.loadFromFile(configPath());
 }
 
 Result<void, Error> PreferencesDialog::savePreferences() {
-    return saveToFile(configPath());
-}
-
-Result<void, Error> PreferencesDialog::loadFromFile(const std::filesystem::path& path) {
-    auto result = FileSystem::readFile(path);
-    if (!result) {
-        Logger::warning("Could not load preferences from {}: {}", path.u8string(), result.error().message);
-        return Result<void, Error>::error(result.error());
-    }
-
-    json root;
-    try {
-        root = json::parse(result.value());
-    } catch (const json::exception& e) {
-        return Result<void, Error>::error(Error("Failed to parse preferences: " + std::string(e.what())));
-    }
-    if (!root.is_object() || !root.contains("version")) {
-        return Result<void, Error>::error(Error("Missing version in preferences file"));
-    }
-
-    // Keys this version no longer has (older files carry many) are ignored.
-    if (const json* gen = sectionOf(root, "general")) {
-        GeneralPreferences& general = preferences_.general;
-        readString(*gen, "defaultMediaFolder", general.defaultMediaFolder);
-        readBool(*gen, "autoLoadMediaOnStartup", general.autoLoadMediaOnStartup);
-        readBool(*gen, "recursiveFolderScan", general.recursiveFolderScan);
-        readBool(*gen, "autoSaveEnabled", general.autoSaveEnabled);
-        readInt(*gen, "autoSaveIntervalMinutes", general.autoSaveIntervalMinutes, MIN_AUTOSAVE_MINUTES,
-                MAX_AUTOSAVE_MINUTES);
-        readInt(*gen, "uiMode", general.uiMode, 0, 1);
-        readFloat(*gen, "sceneFadeSeconds", general.sceneFadeSeconds, 0.0f, MAX_SCENE_FADE_SECONDS);
-    }
-
-    if (const json* perf = sectionOf(root, "performance")) {
-        readString(*perf, "audioDevice", preferences_.performance.audioDevice);
-    }
-
-    // External control (ADR-048).
-    if (const json* ctl = sectionOf(root, "control")) {
-        ControlPreferences& control = preferences_.control;
-        readBool(*ctl, "oscEnabled", control.oscEnabled);
-        readInt(*ctl, "oscPort", control.oscPort, 1, 65535);
-        readString(*ctl, "oscBindAddress", control.oscBindAddress);
-        auto devices = ctl->find("midiDevices");
-        if (devices != ctl->end() && devices->is_array()) {
-            control.midiDevices.clear();
-            for (const auto& device : *devices) {
-                if (device.is_string()) control.midiDevices.push_back(device.get<std::string>());
-            }
-        }
-        readBool(*ctl, "oscFeedbackEnabled", control.oscFeedbackEnabled);
-        readString(*ctl, "oscFeedbackHost", control.oscFeedbackHost);
-        readInt(*ctl, "oscFeedbackPort", control.oscFeedbackPort, 0, 65535);  // 0 = the sender's port
-        readBool(*ctl, "oscFeedbackUseIds", control.oscFeedbackUseIds);
-    }
-
-    Logger::info("Loaded preferences from {}", path.u8string());
-    return Result<void, Error>::success();
-}
-
-Result<void, Error> PreferencesDialog::saveToFile(const std::filesystem::path& path) const {
-    json root;
-    root["version"] = "1.0";
-
-    const GeneralPreferences& general = preferences_.general;
-    json gen;
-    gen["defaultMediaFolder"] = general.defaultMediaFolder;
-    gen["autoLoadMediaOnStartup"] = general.autoLoadMediaOnStartup;
-    gen["recursiveFolderScan"] = general.recursiveFolderScan;
-    gen["autoSaveEnabled"] = general.autoSaveEnabled;
-    gen["autoSaveIntervalMinutes"] = general.autoSaveIntervalMinutes;
-    gen["uiMode"] = general.uiMode;
-    gen["sceneFadeSeconds"] = general.sceneFadeSeconds;
-    root["general"] = gen;
-
-    json perf;
-    perf["audioDevice"] = preferences_.performance.audioDevice;
-    root["performance"] = perf;
-
-    json ctl;
-    ctl["oscEnabled"] = preferences_.control.oscEnabled;
-    ctl["oscPort"] = preferences_.control.oscPort;
-    ctl["oscBindAddress"] = preferences_.control.oscBindAddress;
-    ctl["midiDevices"] = preferences_.control.midiDevices;
-    ctl["oscFeedbackEnabled"] = preferences_.control.oscFeedbackEnabled;
-    ctl["oscFeedbackHost"] = preferences_.control.oscFeedbackHost;
-    ctl["oscFeedbackPort"] = preferences_.control.oscFeedbackPort;
-    ctl["oscFeedbackUseIds"] = preferences_.control.oscFeedbackUseIds;
-    root["control"] = ctl;
-
-    // Atomic: a crash or full disk mid-write leaves the previous file, never half of one.
-    auto result = FileSystem::writeFileAtomic(path, root.dump(2));
-    if (result) {
-        Logger::info("Saved preferences to {}", path.u8string());
-    }
-    return result;
+    return preferences_.saveToFile(configPath());
 }
 
 } // namespace quadmapper

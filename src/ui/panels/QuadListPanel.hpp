@@ -1,25 +1,23 @@
 #pragma once
 
+#include "Panel.hpp"
 #include "core/UUID.hpp"
 
 namespace quadmapper {
 
 struct EditorContext;
 
-// Renders the "Quad List" dockable window (add/delete/duplicate quads, z-order
-// buttons, visibility/lock toggles, group management with drag-drop, and inline
-// group rename). Visibility is controlled by ctx.es.showQuadList; when false,
-// render() returns immediately without opening the window.
-//
-// Does NOT inherit from Panel — the Panel::render() signature takes no arguments
-// and this panel requires a per-frame EditorContext (same approach as MainMenuBar).
-// Ownership of per-frame group-rename buffer is a member to avoid function-static state.
-class QuadListPanel {
+// The "Quad List" dockable window (add/delete/duplicate quads, z-order buttons,
+// visibility/lock toggles, group management with drag-drop, and inline group rename),
+// with the active scene's 3D objects below.
+class QuadListPanel : public Panel {
 public:
+    static constexpr const char* ID = "Quad List";
+
     QuadListPanel() = default;
 
-    // Call once per frame inside the ImGui frame, after the dockspace.
-    void render(EditorContext& ctx);
+    const char* id() const override { return ID; }
+    void drawContent(EditorContext& ctx) override;
 
 private:
     // The "Objects" section below the quads (3D objects, ADR-052).

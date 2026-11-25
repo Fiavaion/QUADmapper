@@ -11,7 +11,7 @@ paths:
   `Tab`/`Shift+Tab` cycles verts, arrow keys nudge the selected vert, **`Shift` = 10×**,
   `Alt` = 0.1× fine, vertex snapping to neighbouring quads. Works in CORNERS_ONLY (4 corners)
   and mesh-edit modes; in mesh edit `H`/`Shift+H` cycles the selected vertex's grid-line
-  handles and the arrows nudge those with the same steps (ADR-049, `app/MeshEditKeys.hpp`).
+  handles and the arrows nudge those with the same steps (ADR-049, `editor/MeshEditKeys.hpp`).
   Changing nudge amounts/keybinds needs explicit sign-off.
 - **Corner pin (CORNERS_ONLY) is the default mode**; mesh edit is opt-in via checkbox
   (ADR-027). One surface for both (ADR-049): S = B + R, where B is the corner-pin surface

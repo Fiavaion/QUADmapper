@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QUADmapper AI Guide</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1f; --muted: #5c5c66;
+    --line: #e2e2e6; --accent: #2f6fdb; --accent-soft: #e8f0fd;
+    --warn: #9a5b00; --warn-soft: #fdf3e2; --code: #f0f0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141417; --panel: #1c1c21; --text: #ececf0; --muted: #a0a0ab;
+      --line: #2e2e36; --accent: #7aa7ff; --accent-soft: #1d2a44;
+      --warn: #f0b860; --warn-soft: #3a2d17; --code: #26262d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141417; --panel: #1c1c21; --text: #ececf0; --muted: #a0a0ab;
+    --line: #2e2e36; --accent: #7aa7ff; --accent-soft: #1d2a44;
+    --warn: #f0b860; --warn-soft: #3a2d17; --code: #26262d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+  header h1 { font-size: 1.9rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--muted); }
+  nav {
+    margin: 24px 0 8px; padding: 12px 16px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  nav ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 32px; }
+  nav a { color: var(--accent); text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  section {
+    margin-top: 20px; padding: 20px 22px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  h2 { font-size: 1.3rem; margin: 0 0 4px; }
+  h3 { font-size: 1.02rem; margin: 18px 0 6px; }
+  .what { color: var(--muted); margin: 0 0 12px; }
+  ol.steps { padding-left: 22px; margin: 8px 0; }
+  ol.steps li { margin: 6px 0; }
+  .menu, kbd {
+    font: 0.88em/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    background: var(--code); border: 1px solid var(--line); border-radius: 5px;
+    padding: 2px 6px; white-space: nowrap;
+  }
+  .note, .warn {
+    margin: 14px 0 0; padding: 10px 14px; border-radius: 8px; font-size: 0.95rem;
+  }
+  .note { background: var(--accent-soft); }
+  .warn { background: var(--warn-soft); }
+  .warn strong { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 0.85rem; text-align: center; }
+  @media (max-width: 600px) {
+    nav ol { columns: 1; }
+    section { padding: 16px; }
+    header h1 { font-size: 1.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>QUADmapper AI Guide</h1>
+  <p>How to use the AI features to warp quads onto real surfaces and calibrate projectors with a camera.</p>
+</header>
+
+<nav>
+  <ol>
+    <li><a href="#setup">Setup (once)</a></li>
+    <li><a href="#enable">Turn on AI Assist</a></li>
+    <li><a href="#scan">Scan Output</a></li>
+    <li><a href="#pick">Pick Surface</a></li>
+    <li><a href="#detect">Detect Surface</a></li>
+    <li><a href="#oneflash">One-Flash</a></li>
+    <li><a href="#calibrate">Place From Photo (3D calibration)</a></li>
+    <li><a href="#mapping">How photo corners reach the projector</a></li>
+    <li><a href="#rules">Rules that always apply</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+  </ol>
+</nav>
+
+<section id="setup">
+  <h2>1. Setup (once per machine)</h2>
+  <p class="what">The AI features run in a separate helper program (the "AI sidecar"), with its own Python environment. QUADmapper works without it; only the AI menu needs it.</p>
+  <ol class="steps">
+    <li>You need Windows, Python 3.11 (<span class="menu">py -3.11</span> must work) and a webcam. An NVIDIA GPU makes it much faster.</li>
+    <li>In PowerShell, run <span class="menu">tools\ai-sidecar\setup.ps1</span> from the QUADmapper folder.</li>
+    <li>It creates <span class="menu">tools\ai-sidecar\.venv</span> (about 5 GB) and downloads the models (about 440 MB) to <span class="menu">%LOCALAPPDATA%\QUADmapper\models</span>. Every file is checked against a fixed checksum.</li>
+    <li>Running it again is safe: it skips anything already installed and valid.</li>
+  </ol>
+  <div class="note">Your own global Python is never changed. All models are Apache-2.0 licensed: SAM 2.1 (small and tiny) and Depth Anything V2 Small.</div>
+</section>
+
+<section id="enable">
+  <h2>2. Turn on AI Assist</h2>
+  <ol class="steps">
+    <li>AI Assist is a beta and is off until you turn it on: tick <span class="menu">Edit &gt; Preferences... &gt; General &gt; AI Assist (beta)</span>. The <span class="menu">AI (Beta)</span> menu appears; this guide calls it the AI menu. Untick it to hide the menu again, which also stops the AI sidecar.</li>
+    <li>Choose <span class="menu">AI &gt; Enable AI Assist</span>. The app starts the AI sidecar in the background, so the editor stays usable.</li>
+    <li>When it's connected, the AI menu shows "AI engine connected" and the AI items become available.</li>
+    <li>The sidecar loads its models right after starting. The very first request may still take around 10 seconds; later ones take about a second on a GPU.</li>
+  </ol>
+  <div class="note">While a request is running, the status line says so, the AI menu shows "request running...", and the items that start a new request are greyed out. The app and projectors keep running normally.</div>
+</section>
+
+<section id="scan">
+  <h2>3. Scan Output: map the camera to the projector</h2>
+  <p class="what">The projector shows a sequence of black-and-white stripe patterns and the webcam photographs each one. QUADmapper then knows exactly which projector pixel each camera pixel sees. Pick Surface and Detect Surface use that map to place corners precisely, even on surfaces that aren't flat. Do this first for the best results.</p>
+  <ol class="steps">
+    <li>Fix the webcam in place so it sees the whole projected area. Don't move it, or the projector, after scanning.</li>
+    <li>In the Outputs panel, make sure the output has a display assigned, and select that output.</li>
+    <li>Choose <span class="menu">AI &gt; Scan Output</span>.</li>
+    <li>The output goes fullscreen and black, then the stripes start. The status line counts <span class="menu">Scan: 12/46 (Esc cancels)</span>. At 1080p it takes about 15–20 seconds.</li>
+    <li>When it finishes, the status says <span class="menu">Scan: map ready - the camera saw N% of the output</span>, and the output goes back to how it was.</li>
+  </ol>
+  <h3>Cancelling</h3>
+  <p>Press <kbd>Esc</kbd> or choose <span class="menu">AI &gt; Cancel Scan</span>. Turning on Blackout (<kbd>Ctrl+B</kbd>), engaging the perform lock, or changing the output's display or resolution also cancels it. Every way of ending restores the output.</p>
+  <div class="warn"><strong>The map is for this session only.</strong> It stops being used if the output's display, or that display's resolution, changes. Scan again after moving the camera or projector.</div>
+  <div class="note">You can't scan while 3D calibration or slice-warp editing is open, and you can't open either during a scan.</div>
+</section>
+
+<section id="pick">
+  <h2>4. Pick Surface: click a surface, get a quad</h2>
+  <p class="what">You click a surface in a webcam photo. SAM 2 outlines it and proposes the four corners of a quad. Nothing changes until you press Apply.</p>
+  <ol class="steps">
+    <li>Select the quad you want to warp.</li>
+    <li>Choose <span class="menu">AI &gt; Pick Surface...</span>. The <strong>AI Photo</strong> panel opens.</li>
+    <li>Click <span class="menu">Take Photo</span>. The webcam picture appears in the panel.</li>
+    <li>Click the surface you want in the photo, such as a screen, wall panel or box face.</li>
+    <li>An outline and four corners (TL, TR, BR, BL) appear, with a <em>confidence</em> and a <em>planarity</em> (flatness) score.</li>
+    <li>If it looks right, press <span class="menu">Apply</span>. Press <span class="menu">Clear</span> to discard the proposal, or click somewhere else to try again.</li>
+    <li>Fine-tune as usual: <kbd>Tab</kbd>/<kbd>Shift+Tab</kbd> to pick a corner, arrow keys to nudge (<kbd>Shift</kbd> ×10, <kbd>Alt</kbd> ×0.1).</li>
+  </ol>
+  <div class="note">Apply is only enabled when the proposal is real (not a placeholder) and its confidence is at least 0.35. A low planarity score means the surface probably isn't flat. If the AI warp is wrong, <kbd>Ctrl+Z</kbd> undoes it in one step.</div>
+  <div class="warn"><strong>Take the photo from the same camera position as the scan.</strong> The status after Apply tells you which mapping was used, for example "applied through the scan".</div>
+</section>
+
+<section id="detect">
+  <h2>5. Detect Surface: automatic</h2>
+  <p class="what">Like Pick Surface, but without a click. The AI looks for the best large, flat, upright surface in a webcam photo and warps the selected quad onto it.</p>
+  <ol class="steps">
+    <li>Select a quad.</li>
+    <li>Choose <span class="menu">AI &gt; Detect Surface</span>.</li>
+    <li>If it's confident (0.35 or higher), the quad is warped and the status starts with <span class="menu">AI: surface found (confidence X)</span>. If not, nothing changes and the status asks you to try again; use Pick Surface instead.</li>
+  </ol>
+  <div class="note">Detect Surface was tuned on a small set of test photos, so Pick Surface is the more reliable choice on a cluttered stage. It uses the same mapping and undo rules as Pick Surface.</div>
+</section>
+
+<section id="oneflash">
+  <h2>6. One-Flash: quick single-photo mapping</h2>
+  <p class="what">A faster alternative to Scan Output for flat surfaces. The projector shows one ChArUco pattern, the camera takes one photo, and QUADmapper solves a single camera-to-projector mapping. It is less precise than a scan and assumes the surface is flat.</p>
+  <ol class="steps">
+    <li><span class="menu">AI &gt; One-Flash &gt; Emit Pattern</span> arms the pattern.</li>
+    <li>Press <kbd>F11</kbd> to show it fullscreen on the projector.</li>
+    <li><span class="menu">AI &gt; One-Flash &gt; Capture Photo</span> takes the photo. Pick Surface and Detect Surface remember it and use it when there's no scan.</li>
+    <li>Optional, with a quad selected: <span class="menu">Solve &amp; Apply</span> warps it to the full camera view, and <span class="menu">Anamorphic Warp</span> makes content look like a front-on rectangle from the camera's viewpoint.</li>
+    <li><span class="menu">AI &gt; One-Flash &gt; Clear Pattern</span> gives the projector back to the show.</li>
+  </ol>
+  <div class="note">If the photo doesn't show the pattern clearly, Pick Surface stops using it, falls back to the next method and says so.</div>
+</section>
+
+<section id="calibrate">
+  <h2>7. Place From Photo: faster 3D calibration</h2>
+  <p class="what">When calibrating a projector against a 3D object, you normally place each point's projector position by hand. With a scan, you can just click where the point is in the webcam photo.</p>
+  <ol class="steps">
+    <li>Run <a href="#scan">Scan Output</a> for that output first, and take a photo in the AI Photo panel.</li>
+    <li>Choose <span class="menu">Edit &gt; Calibrate Projector...</span> for that output.</li>
+    <li>Add or select a calibration point as usual (click it on the model).</li>
+    <li>Press <span class="menu">Place From Photo</span>. The AI Photo panel comes to the front.</li>
+    <li>Click the point's location in the photo. Its projector position is set exactly from the scan map.</li>
+    <li>Fine-tune with <kbd>Tab</kbd> and the arrow keys as normal. <kbd>Ctrl+Z</kbd> undoes the placement.</li>
+  </ol>
+  <div class="note">Place From Photo only appears when that output has a current scan. <span class="menu">Cancel Photo Pick</span> stops it without changing anything.</div>
+</section>
+
+<section id="mapping">
+  <h2>8. How photo corners reach the projector</h2>
+  <p class="what">A corner found in the webcam photo has to be converted into projector coordinates. QUADmapper uses the best method available, in this order:</p>
+  <div class="scroll">
+  <table>
+    <tr><th>Order</th><th>Method</th><th>When it's used</th><th>Accuracy</th></tr>
+    <tr><td>1</td><td>Scan map</td><td>A current Scan Output exists for the output showing the scene</td><td>Exact per pixel, works on non-flat surfaces</td></tr>
+    <tr><td>2</td><td>One-Flash</td><td>A One-Flash photo was captured this session</td><td>Good on flat surfaces</td></tr>
+    <tr><td>3</td><td>Photo as-is</td><td>Neither of the above</td><td>Rough: assumes the camera sits at the projector</td></tr>
+  </table>
+  </div>
+  <p>If a corner falls outside the area the scan covered, it drops to the next method automatically, and the status line explains why.</p>
+</section>
+
+<section id="rules">
+  <h2>9. Rules that always apply</h2>
+  <ul>
+    <li><strong>Perform lock</strong> (<kbd>Ctrl+Shift+L</kbd>): every AI action is blocked except <span class="menu">Clear Pattern</span>. A result that arrives after the lock is engaged is thrown away.</li>
+    <li><strong>Undo:</strong> every AI warp (Pick, Detect, One-Flash) is one <kbd>Ctrl+Z</kbd> step.</li>
+    <li><strong>Deleted quads:</strong> if the target quad is deleted while a request runs, the result is dropped.</li>
+    <li><strong>One request at a time.</strong> Wait for the status to finish before starting another.</li>
+    <li><strong>Pre-show only.</strong> These are setup tools; lock the show before going live.</li>
+  </ul>
+</section>
+
+<section id="trouble">
+  <h2>10. Troubleshooting</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>What you see</th><th>What to do</th></tr>
+    <tr><td>There is no AI menu</td><td>Tick <span class="menu">Edit &gt; Preferences... &gt; General &gt; AI Assist (beta)</span>.</td></tr>
+    <tr><td>AI menu says "AI engine not running"</td><td>Choose Enable AI Assist. If it never connects, re-run <span class="menu">tools\ai-sidecar\setup.ps1</span>.</td></tr>
+    <tr><td>Pick Surface or Scan Output is greyed out</td><td>The sidecar is missing that feature (hover for the tooltip), the perform lock is on, or another request is running.</td></tr>
+    <tr><td>"update the AI sidecar"</td><td>The sidecar is older than the app. Re-run setup.</td></tr>
+    <tr><td>First request is slow</td><td>Normal: the models are loading. Without an NVIDIA GPU, Detect Surface can take 20–30 seconds.</td></tr>
+    <tr><td>Scan says the camera saw very little</td><td>Point the camera at the whole projected area, reduce room light, and check the output is on the right display.</td></tr>
+    <tr><td>Scan results look wrong, or blurred captures</td><td>The camera may be slow to settle between patterns. Keep the camera still and report it; the timing can be tuned.</td></tr>
+    <tr><td>"the output has no display"</td><td>Assign a display to the output in the Outputs panel, then scan again.</td></tr>
+    <tr><td>Corners land slightly off on a sliced or rotated output</td><td>Known limit: mapping is approximate on outputs with slices or rotation. Fine-tune with the keyboard.</td></tr>
+    <tr><td>Place From Photo has disappeared</td><td>The scan is no longer current (display or resolution changed). Scan again.</td></tr>
+  </table>
+  </div>
+</section>
+
+<footer>QUADmapper · AI features (ADR-035, ADR-053) · guide written 2026-10-13</footer>
+</div>
+</body>
+</html>

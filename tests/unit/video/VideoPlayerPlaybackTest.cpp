@@ -15,6 +15,7 @@
 #include "TestClips.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -582,6 +583,177 @@ INSTANTIATE_TEST_SUITE_P(Containers, VideoDecoderLoopSeam,
                                          ClipSpec{".ts", 12},
                                          ClipSpec{".mp4", 300}),
                          clipName);
+
+// --- Repositioning never waits for the decode thread (TD-35) ---
+
+// startPlayback() hands the plan to the decode thread and returns: a storm of
+// repositions (a scrub, or many sources resyncing after a stall) never joins it, as
+// one did for up to 1.7 s on the render thread. Whatever the thread was decoding for
+// an earlier plan is dropped: the frames queued afterwards are the last plan's, in order.
+TEST(VideoDecoderReposition, AStormNeverWaitsAndOnlyTheLastPlanIsQueued) {
+    const fs::path path = clipPath("clip", ".mp4");
+    if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";
+    VideoDecoder decoder;
+    ASSERT_TRUE(decoder.open(path));
+    DecodePlan plan;
+    plan.duration = DURATION;
+    plan.loopMode = LoopMode::LOOP;
+    constexpr size_t QUEUE = 4;
+
+    using Clock = std::chrono::steady_clock;
+    double slowest = 0.0;
+    for (int i = 0; i < 400; ++i) {
+        plan.timeline = double((i * 7) % (3 * FRAMES)) / FPS;  // all over three passes
+        const auto start = Clock::now();
+        decoder.startPlayback(plan, QUEUE);
+        slowest = std::max(slowest, std::chrono::duration<double>(Clock::now() - start).count());
+        // Now and then let the thread get into a seek or a decode before the next plan.
+        if (i % 40 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    constexpr int LAST = 37;  // frame 37 of the second pass
+    plan.timeline = DURATION + double(LAST) / FPS;
+    decoder.startPlayback(plan, QUEUE);
+    // A handover takes a lock and a notify, never a join or a seek. Generous for a loaded
+    // machine; a join that waits out a decode would take far longer on a stalled one.
+    EXPECT_LT(slowest, 0.1) << "a startPlayback() call took " << slowest * 1000.0 << " ms";
+
+    const auto deadline = Clock::now() + WAIT_LIMIT;
+    while (decoder.getBufferedFrameCount() < QUEUE && Clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(decoder.getBufferedFrameCount(), QUEUE);
+    for (size_t i = 0; i < QUEUE; ++i) {
+        const VideoFrame frame = decoder.getBufferedFrame();
+        EXPECT_EQ(frameIndex(frame), LAST + static_cast<int>(i)) << "queued frame " << i;
+        EXPECT_NEAR(frame.due, plan.timeline + double(i) / FPS, DUE_TOLERANCE) << "queued frame " << i;
+    }
+    decoder.close();
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
+namespace {
+
+// Wait (real time, bounded) until `ready` holds; false if it never did.
+template <typename Ready>
+bool waitUntil(Ready ready) {
+    const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+    while (!ready()) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+// The frames queued now are `count` frames of `plan` from clip frame `first` on.
+void expectQueuedFrom(VideoDecoder& decoder, const DecodePlan& plan, int first, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        const VideoFrame frame = decoder.getBufferedFrame();
+        EXPECT_EQ(frameIndex(frame), first + static_cast<int>(i)) << "queued frame " << i;
+        EXPECT_NEAR(frame.due, plan.timeline + double(i) / FPS, DUE_TOLERANCE) << "queued frame " << i;
+    }
+}
+
+}  // namespace
+
+// A reposition that lands after a decoded frame passed the decode thread's replan check
+// and before the frame is queued (TD-35 review): the frame belongs to the plan just
+// replaced and is dropped under the queue's lock, so the new plan's first frame is the
+// first one queued.
+// TD-35: a decoder opened off the main thread starts its decode thread there, idle: it
+// decodes nothing until startPlayback() hands it a plan, then the plan's frames come; a
+// decoder closed while its thread idles closes at once.
+TEST(VideoDecoderReposition, AnIdleThreadDecodesNothingUntilItsFirstPlan) {
+    const fs::path path = clipPath("clip", ".mp4");
+    if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";
+    constexpr size_t QUEUE = 4;
+    constexpr int LAST = 37;
+    {
+        VideoDecoder decoder;
+        ASSERT_TRUE(decoder.open(path));
+        decoder.startIdleThread();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        EXPECT_EQ(decoder.getBufferedFrameCount(), 0u) << "the idle thread decoded before its plan";
+        DecodePlan plan;
+        plan.duration = DURATION;
+        plan.loopMode = LoopMode::LOOP;
+        plan.timeline = double(LAST) / FPS;
+        decoder.startPlayback(plan, QUEUE);
+        ASSERT_TRUE(waitUntil([&] { return decoder.getBufferedFrameCount() == QUEUE; }));
+        expectQueuedFrom(decoder, plan, LAST, QUEUE);
+    }
+    const auto start = std::chrono::steady_clock::now();
+    {
+        VideoDecoder idle;
+        ASSERT_TRUE(idle.open(path));
+        idle.startIdleThread();
+    }  // closed while idle
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(5));
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
+TEST(VideoDecoderReposition, AFrameDecodedForAReplacedPlanIsNeverQueued) {
+    const fs::path path = clipPath("clip", ".mp4");
+    if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";
+    constexpr size_t QUEUE = 4;
+    constexpr int LAST = 37;
+    DecodePlan plan;
+    plan.duration = DURATION;
+    plan.loopMode = LoopMode::LOOP;
+    DecodePlan next = plan;
+    next.timeline = double(LAST) / FPS;
+
+    VideoDecoder decoder;
+    std::atomic<bool> armed{true};
+    DecodeOptions options;
+    // The first frame decoded for `plan` meets the reposition right before the queue.
+    options.testBeforeQueueFrame = [&] {
+        if (armed.exchange(false)) decoder.startPlayback(next, QUEUE);
+    };
+    ASSERT_TRUE(decoder.open(path, options));
+    decoder.startPlayback(plan, QUEUE);
+    ASSERT_TRUE(waitUntil([&] { return !armed && decoder.getBufferedFrameCount() == QUEUE; }));
+    expectQueuedFrom(decoder, next, LAST, QUEUE);
+    decoder.close();
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
+// The zero-copy fallback takes the queued frames out to copy them to memory on the
+// decode thread (ADR-056). A reposition handed over meanwhile empties the queue: the
+// frames taken out are the replaced plan's and are dropped, not put back in front of
+// the new plan's, where they held its frames back and froze the clip on a wrong frame
+// (TD-35 review: 30 of 30 tries on a 4K clip). Software decoding goes through the same
+// hand-back; the hook lands the reposition while the frames are out.
+TEST(VideoDecoderReposition, ARepositionDuringTheZeroCopyFallbackDropsTheOldPlansFrames) {
+    const fs::path path = clipPath("clip", ".mp4");
+    if (!testclips::writeMpeg2Clip(path, 12, FRAMES, FPS, 0)) GTEST_SKIP() << "no encoder";
+    constexpr size_t QUEUE = 4;
+    constexpr int LAST = 37;
+    DecodePlan plan;
+    plan.duration = DURATION;
+    plan.loopMode = LoopMode::LOOP;
+    DecodePlan next = plan;
+    next.timeline = double(LAST) / FPS;
+
+    VideoDecoder decoder;
+    std::atomic<bool> repositioned{false};
+    DecodeOptions options;
+    options.testDuringLeaveGpu = [&] {
+        decoder.startPlayback(next, QUEUE);
+        repositioned = true;
+    };
+    ASSERT_TRUE(decoder.open(path, options));
+    decoder.startPlayback(plan, QUEUE);
+    ASSERT_TRUE(waitUntil([&] { return decoder.getBufferedFrameCount() == QUEUE; }));
+    decoder.stopZeroCopy("test");
+    ASSERT_TRUE(waitUntil([&] { return repositioned && decoder.getBufferedFrameCount() == QUEUE; }));
+    expectQueuedFrom(decoder, next, LAST, QUEUE);
+    decoder.close();
+    std::error_code ec;
+    fs::remove(path, ec);
+}
 
 // The media bin lists .mp4/.mov files as videos and asks each for a thumbnail; one that
 // holds only sound is not an error (it used to log "[ERROR] No video stream found").

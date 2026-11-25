@@ -55,3 +55,21 @@ CMakeUserPresets.json
 
 # Logs
 *.log
+
+# What the app writes in the folder it runs from: a show saved there, and the ImGui
+# layout of builds before the layout moved to %APPDATA%\QUADmapper
+/imgui.ini
+/project.qmap
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Scratch output and agent worktrees
+.scratch/
+.claude/worktrees/
+
+# Local notes that are not for the public repo: session-memory copies, model routing
+# notes and code review reports
+notes/claude-memory/
+/000_SwitchMA.md
+/REVIEW/

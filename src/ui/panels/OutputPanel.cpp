@@ -1,4 +1,7 @@
 #include "OutputPanel.hpp"
+#include "ui/ConfirmPopup.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include <imgui.h>
@@ -6,20 +9,27 @@
 
 namespace quadmapper {
 
-OutputPanel::OutputPanel() : Panel("Outputs") {
-    selectedOutputId_ = UUID::null();
+bool OutputPanel::hasSelection() const { return !es_->selectedOutputId.isNull(); }
+
+void OutputPanel::onAttach(EditorContext& ctx) {
+    es_ = &ctx.es;
+    outputManager_ = ctx.outputManager;
 }
 
-void OutputPanel::render() {
-    if (!visible_) return;
-
-    ImGui::Begin(title_.c_str(), &visible_);
+void OutputPanel::drawContent(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    const UUID prevOutputSelection = es.selectedOutputId;
     renderContent();
-    ImGui::End();
+    // Switch to Output properties if an output was just selected
+    if (!es.selectedOutputId.isNull() && es.selectedOutputId != prevOutputSelection) {
+        es.currentSelectionType = EditorState::SelectionType::Output;
+        es.quadManager().deselectAll();
+        es.selectedMediaId = UUID();
+    }
 }
 
 void OutputPanel::renderContent() {
-    if (!outputManager_) {
+    if (!outputManager_ || !es_) {
         ImGui::TextDisabled("No output manager connected");
         return;
     }
@@ -29,6 +39,7 @@ void OutputPanel::renderContent() {
     renderActionButtons();
     ImGui::Separator();
     renderOutputList();
+    renderDeleteConfirm();
 
     // Show properties for selected output
     if (hasSelection()) {
@@ -78,11 +89,10 @@ void OutputPanel::renderPerformModeSection() {
 }
 
 void OutputPanel::renderActionButtons() {
-    // Add output button
     if (ImGui::Button("Add Output")) {
         OutputWindow* newOutput = outputManager_->createOutput();
         if (newOutput) {
-            selectedOutputId_ = newOutput->getId();
+            es_->selectedOutputId = newOutput->getId();
         }
     }
     if (ImGui::IsItemHovered()) {
@@ -94,16 +104,7 @@ void OutputPanel::renderActionButtons() {
     // Remove output button
     ImGui::BeginDisabled(!hasSelection() || outputManager_->getOutputCount() <= 1);
     if (ImGui::Button("Remove Output")) {
-        if (hasSelection()) {
-            outputManager_->deleteOutput(selectedOutputId_);
-            selectedOutputId_ = UUID::null();
-
-            // Select first remaining output
-            const auto& outputs = outputManager_->getOutputs();
-            if (!outputs.empty()) {
-                selectedOutputId_ = outputs[0]->getId();
-            }
-        }
+        if (hasSelection()) requestDelete(es_->selectedOutputId);
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -127,6 +128,14 @@ void OutputPanel::renderActionButtons() {
     }
 
     ImGui::SameLine();
+
+    if (ImGui::Button("Identify")) {
+        outputManager_->identifyOutputs();
+    }
+    ImGui::SetItemTooltip("Show each output's number on its projector for %.0f seconds",
+                          OutputManager::IDENTIFY_SECONDS);
+
+    ImGui::SameLine();
     ImGui::TextDisabled("(%zu outputs, %zu monitors)",
         outputManager_->getOutputCount(),
         outputManager_->getMonitorCount());
@@ -142,12 +151,46 @@ void OutputPanel::renderOutputList() {
     }
 
     ImGui::EndChild();
+
+    // Asked for from a row's menu: the confirmation opens once the list loop is done.
+    if (!menuDeleteId_.isNull()) {
+        requestDelete(menuDeleteId_);
+        menuDeleteId_ = UUID::null();
+    }
+}
+
+void OutputPanel::requestDelete(const UUID& id) {
+    const OutputWindow* output = outputManager_->getOutput(id);
+    if (!output || outputManager_->getOutputCount() <= 1) return;
+    pendingDeleteId_ = id;
+    deleteConfirm_.request(
+        "Remove Output?",
+        "Remove output '" + output->getName() +
+            "'? Its routing, slices and calibration are removed. This cannot be undone.",
+        "Remove");
+}
+
+void OutputPanel::renderDeleteConfirm() {
+    if (!deleteConfirm_.draw()) return;
+    const UUID id = pendingDeleteId_;
+    pendingDeleteId_ = UUID::null();
+    if (!outputManager_->getOutput(id) || outputManager_->getOutputCount() <= 1) return;
+    outputManager_->deleteOutput(id);
+    if (es_->selectedOutputId == id) {
+        es_->selectedOutputId = UUID::null();
+        const auto& outputs = outputManager_->getOutputs();
+        if (!outputs.empty()) es_->selectedOutputId = outputs[0]->getId();
+    }
 }
 
 void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
     ImGui::PushID(index);
 
-    bool isSelected = (output->getId() == selectedOutputId_);
+    bool isSelected = (output->getId() == es_->selectedOutputId);
+
+    // The number Identify shows on this output's projector.
+    ImGui::TextDisabled("%d", index + 1);
+    ImGui::SameLine();
 
     // Enabled checkbox
     bool enabled = output->isEnabled();
@@ -165,7 +208,7 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
         ImGui::SetKeyboardFocusHere();
         if (ImGui::InputText("##rename", renameBuffer_, sizeof(renameBuffer_),
                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
-            output->setName(renameBuffer_);
+            if (!isBlankName(renameBuffer_)) output->setName(renameBuffer_);
             isRenaming_ = false;
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
@@ -180,7 +223,7 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
 
         ImGuiSelectableFlags flags = ImGuiSelectableFlags_AllowDoubleClick;
         if (ImGui::Selectable(output->getName().c_str(), isSelected, flags)) {
-            selectedOutputId_ = output->getId();
+            es_->selectedOutputId = output->getId();
 
             if (ImGui::IsMouseDoubleClicked(0)) {
                 isRenaming_ = true;
@@ -218,12 +261,7 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
 
         bool canDelete = outputManager_->getOutputCount() > 1;
         ImGui::BeginDisabled(!canDelete);
-        if (ImGui::MenuItem("Delete")) {
-            outputManager_->deleteOutput(output->getId());
-            if (selectedOutputId_ == output->getId()) {
-                selectedOutputId_ = UUID::null();
-            }
-        }
+        if (ImGui::MenuItem("Delete")) menuDeleteId_ = output->getId();
         ImGui::EndDisabled();
 
         ImGui::EndPopup();
@@ -233,9 +271,9 @@ void OutputPanel::renderOutputRow(OutputWindow* output, int index) {
 }
 
 void OutputPanel::renderOutputProperties() {
-    OutputWindow* output = outputManager_->getOutput(selectedOutputId_);
+    OutputWindow* output = outputManager_->getOutput(es_->selectedOutputId);
     if (!output) {
-        selectedOutputId_ = UUID::null();
+        es_->selectedOutputId = UUID::null();
         return;
     }
 
@@ -257,13 +295,16 @@ void OutputPanel::renderMonitorDropdown(OutputWindow* output) {
 
     int currentMonitor = output->getMonitor();
     const auto& monitors = outputManager_->getMonitors();
-    // No chosen display = automatic: the first one that is not the editor's (QM-090).
+    // No chosen display = automatic: the first one that is not the editor's (QM-090),
+    // or at F11 the editor's when it is the only one.
     const bool automatic = output->isMonitorAutomatic();
-    const std::string previewStr = OutputManager::describeMonitorChoice(monitors, *output);
+    const std::string previewStr = OutputManager::describeMonitorChoice(
+        monitors, *output,
+        OutputManager::onlyScreenPreview(monitors, outputManager_->getOutputs()) == output);
 
     ImGui::SetNextItemWidth(-1);
     if (ImGui::BeginCombo("##monitor", previewStr.c_str())) {
-        if (ImGui::Selectable("Automatic (not the editor's display)", automatic)) {
+        if (ImGui::Selectable("Automatic (a projector, or this screen if it is the only one)", automatic)) {
             outputManager_->assignMonitor(*output, -1);
         }
 
@@ -278,7 +319,9 @@ void OutputPanel::renderMonitorDropdown(OutputWindow* output) {
             }
 
             if (ImGui::Selectable(label.c_str(), isSelected)) {
+                // Like the Inspector's picker: the output takes the display's resolution.
                 outputManager_->assignMonitor(*output, static_cast<int>(i));
+                outputManager_->adoptDisplayResolution(*output);
             }
         }
 
@@ -296,7 +339,6 @@ void OutputPanel::renderResolutionControls(OutputWindow* output) {
     ImGui::SetNextItemWidth(150);
     std::string presetLabel = std::to_string(res.x) + "x" + std::to_string(res.y);
 
-    // Check if matches a preset
     int matchedPreset = -1;
     for (size_t i = 0; i < RESOLUTION_PRESET_COUNT - 1; i++) {  // Exclude "Custom"
         if (RESOLUTION_PRESETS[i].width == res.x && RESOLUTION_PRESETS[i].height == res.y) {
@@ -326,9 +368,19 @@ void OutputPanel::renderResolutionControls(OutputWindow* output) {
     // Custom resolution inputs
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60);
-    int width = res.x;
-    if (ImGui::InputInt("##width", &width, 0, 0)) {
-        if (width > 0 && width <= 7680) {  // Max 8K
+    if (resEditId_ != output->getId()) {
+        resEditId_ = output->getId();
+        editingWidth_ = false;
+        editingHeight_ = false;
+    }
+    int width = editingWidth_ ? pendingWidth_ : res.x;
+    ImGui::InputInt("##width", &width, 0, 0);
+    if (ImGui::IsItemActive()) {
+        pendingWidth_ = width;
+        editingWidth_ = true;
+    } else {
+        editingWidth_ = false;
+        if (ImGui::IsItemDeactivatedAfterEdit() && width >= 64 && width <= 7680) {  // Max 8K
             output->setResolution(IVec2(width, res.y));
         }
     }
@@ -338,9 +390,14 @@ void OutputPanel::renderResolutionControls(OutputWindow* output) {
     ImGui::SameLine();
 
     ImGui::SetNextItemWidth(60);
-    int height = res.y;
-    if (ImGui::InputInt("##height", &height, 0, 0)) {
-        if (height > 0 && height <= 4320) {  // Max 8K
+    int height = editingHeight_ ? pendingHeight_ : res.y;
+    ImGui::InputInt("##height", &height, 0, 0);
+    if (ImGui::IsItemActive()) {
+        pendingHeight_ = height;
+        editingHeight_ = true;
+    } else {
+        editingHeight_ = false;
+        if (ImGui::IsItemDeactivatedAfterEdit() && height >= 64 && height <= 4320) {  // Max 8K
             output->setResolution(IVec2(res.x, height));
         }
     }

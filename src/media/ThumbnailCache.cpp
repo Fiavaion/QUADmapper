@@ -5,15 +5,33 @@
 #include "core/Logger.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 
 namespace quadmapper {
 
+namespace {
+// The largest thumbnail side written to the disk cache and accepted back from it.
+constexpr int MAX_THUMBNAIL_SIZE = 1024;
+constexpr auto THUMBNAIL_MAX_AGE = std::chrono::hours(24 * 90);
+}  // namespace
+
 ThumbnailCache::ThumbnailCache() {
-    // Ensure cache directory exists
     std::error_code ec;
     std::filesystem::create_directories(getCacheDir(), ec);
+    pruneDiskCache(getCacheDir(), THUMBNAIL_MAX_AGE);
+}
+
+void ThumbnailCache::pruneDiskCache(const std::filesystem::path& dir, std::chrono::hours maxAge) {
+    std::error_code ec;
+    const auto oldest = std::filesystem::file_time_type::clock::now() - maxAge;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code fileEc;
+        if (it->path().extension() != ".thumb") continue;
+        const auto written = std::filesystem::last_write_time(it->path(), fileEc);
+        if (!fileEc && written < oldest) std::filesystem::remove(it->path(), fileEc);
+    }
 }
 
 ThumbnailCache::~ThumbnailCache() {
@@ -30,8 +48,8 @@ std::filesystem::path ThumbnailCache::getCacheDir() {
         return dir;
     }
     free(appData);
-    // Fallback to temp directory
-    return std::filesystem::temp_directory_path() / "QUADmapper" / "thumbnails";
+    std::error_code ec;
+    return std::filesystem::temp_directory_path(ec) / "QUADmapper" / "thumbnails";
 }
 
 std::filesystem::path ThumbnailCache::getCachePath(const std::filesystem::path& filePath) const {
@@ -52,7 +70,6 @@ bool ThumbnailCache::isCacheValid(const std::filesystem::path& filePath,
         return false;
     }
 
-    // Check if source is newer than cache
     auto cacheTime = std::filesystem::last_write_time(cachePath, ec);
     if (ec) return false;
     auto sourceTime = std::filesystem::last_write_time(filePath, ec);
@@ -61,18 +78,42 @@ bool ThumbnailCache::isCacheValid(const std::filesystem::path& filePath,
     return sourceTime <= cacheTime;
 }
 
+namespace {
+// A file that cannot be stat'ed (missing) reads as the minimum time, so it too
+// counts as unchanged until it appears.
+std::filesystem::file_time_type lastWriteTimeOrMin(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto writeTime = std::filesystem::last_write_time(path, ec);
+    return ec ? std::filesystem::file_time_type::min() : writeTime;
+}
+}  // namespace
+
+bool ThumbnailCache::failedUnchanged(const std::filesystem::path& filePath,
+                                     const std::string& pathKey) const {
+    auto failed = failedFiles_.find(pathKey);
+    if (failed == failedFiles_.end()) return false;
+    return lastWriteTimeOrMin(filePath) == failed->second;
+}
+
+bool ThumbnailCache::needsGeneration(const std::filesystem::path& filePath) const {
+    std::lock_guard<std::mutex> lock(cacheMutex_);
+    const std::string pathKey = utf8FromPath(filePath);
+    return textureCache_.find(pathKey) == textureCache_.end() && !failedUnchanged(filePath, pathKey);
+}
+
 GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int maxSize) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
 
     std::string pathKey = utf8FromPath(filePath);
 
-    // Check memory cache first
     auto it = textureCache_.find(pathKey);
     if (it != textureCache_.end()) {
         return it->second;
     }
 
-    // Check disk cache
+    // A file that failed and has not changed since is not read or decoded again.
+    if (failedUnchanged(filePath, pathKey)) return 0;
+
     std::filesystem::path cachePath = getCachePath(filePath);
     if (isCacheValid(filePath, cachePath)) {
         GLuint texId = loadCachedThumbnail(cachePath);
@@ -82,17 +123,14 @@ GLuint ThumbnailCache::getThumbnail(const std::filesystem::path& filePath, int m
         }
     }
 
-    // Generate new thumbnail
     GLuint texId = generateThumbnail(filePath, maxSize);
     if (texId != 0) {
         textureCache_[pathKey] = texId;
+        failedFiles_.erase(pathKey);
+    } else {
+        failedFiles_[pathKey] = lastWriteTimeOrMin(filePath);
     }
     return texId;
-}
-
-bool ThumbnailCache::hasThumbnail(const std::filesystem::path& filePath) const {
-    std::lock_guard<std::mutex> lock(cacheMutex_);
-    return textureCache_.find(utf8FromPath(filePath)) != textureCache_.end();
 }
 
 void ThumbnailCache::invalidate(const std::filesystem::path& filePath) {
@@ -104,6 +142,7 @@ void ThumbnailCache::invalidate(const std::filesystem::path& filePath) {
         glDeleteTextures(1, &it->second);
         textureCache_.erase(it);
     }
+    failedFiles_.erase(pathKey);
 
     // Also remove disk cache
     std::error_code ec;
@@ -117,45 +156,13 @@ void ThumbnailCache::clearMemoryCache() {
         glDeleteTextures(1, &texId);
     }
     textureCache_.clear();
-}
-
-void ThumbnailCache::clearAllCaches() {
-    clearMemoryCache();
-
-    // Clear disk cache
-    std::error_code ec;
-    std::filesystem::path cacheDir = getCacheDir();
-    if (std::filesystem::exists(cacheDir, ec)) {
-        for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec)) {
-            if (entry.path().extension() == ".thumb") {
-                std::filesystem::remove(entry.path(), ec);
-            }
-        }
-    }
-}
-
-size_t ThumbnailCache::getDiskCacheSize() const {
-    size_t totalSize = 0;
-    std::error_code ec;
-    std::filesystem::path cacheDir = getCacheDir();
-
-    if (std::filesystem::exists(cacheDir, ec)) {
-        for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec)) {
-            if (entry.is_regular_file(ec) && entry.path().extension() == ".thumb") {
-                totalSize += static_cast<size_t>(entry.file_size(ec));
-            }
-        }
-    }
-    return totalSize;
-}
-
-size_t ThumbnailCache::getMemoryCacheCount() const {
-    std::lock_guard<std::mutex> lock(cacheMutex_);
-    return textureCache_.size();
+    failedFiles_.clear();
 }
 
 GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, int maxSize) {
-    // Check if it's a supported image format
+    // A larger one would be written to the disk cache, refused when read back, and
+    // made again on every start.
+    maxSize = std::clamp(maxSize, 1, MAX_THUMBNAIL_SIZE);
     std::string ext = utf8FromPath(filePath.extension());
     if (!MediaLibrary::isExtensionSupported(ext)) {
         return 0;
@@ -188,7 +195,7 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
     thumbHeight = std::max(1, thumbHeight);
 
     // Simple nearest-neighbor resize, top row first (the bin draws UV (0,0) at the top).
-    unsigned char* thumbData = new unsigned char[thumbWidth * thumbHeight * 4];
+    std::vector<unsigned char> thumbData(static_cast<size_t>(thumbWidth) * thumbHeight * 4);
     for (int y = 0; y < thumbHeight; ++y) {
         for (int x = 0; x < thumbWidth; ++x) {
             int srcX = (x * width) / thumbWidth;
@@ -203,22 +210,18 @@ GLuint ThumbnailCache::generateThumbnail(const std::filesystem::path& filePath, 
         }
     }
 
-    // Create OpenGL texture
     GLuint texId = 0;
     glGenTextures(1, &texId);
     glBindTexture(GL_TEXTURE_2D, texId);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, thumbWidth, thumbHeight, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, thumbData);
+                 GL_RGBA, GL_UNSIGNED_BYTE, thumbData.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Save to disk cache
-    saveThumbnailToCache(getCachePath(filePath), thumbData, thumbWidth, thumbHeight);
-
-    delete[] thumbData;
+    saveThumbnailToCache(getCachePath(filePath), thumbData.data(), thumbWidth, thumbHeight);
 
     Logger::debug("ThumbnailCache: Generated thumbnail for: {} ({}x{})",
                  utf8FromPath(filePath.filename()), thumbWidth, thumbHeight);
@@ -238,7 +241,7 @@ GLuint ThumbnailCache::loadCachedThumbnail(const std::filesystem::path& cachePat
     file.read(reinterpret_cast<char*>(&width), sizeof(int));
     file.read(reinterpret_cast<char*>(&height), sizeof(int));
 
-    if (width <= 0 || height <= 0 || width > 1024 || height > 1024) {
+    if (width <= 0 || height <= 0 || width > MAX_THUMBNAIL_SIZE || height > MAX_THUMBNAIL_SIZE) {
         return 0;
     }
 
@@ -251,7 +254,6 @@ GLuint ThumbnailCache::loadCachedThumbnail(const std::filesystem::path& cachePat
         return 0;
     }
 
-    // Create OpenGL texture
     GLuint texId = 0;
     glGenTextures(1, &texId);
     glBindTexture(GL_TEXTURE_2D, texId);
@@ -285,6 +287,11 @@ void ThumbnailCache::saveThumbnailToCache(const std::filesystem::path& cachePath
     file.write(reinterpret_cast<const char*>(&height), sizeof(int));
     file.write(reinterpret_cast<const char*>(data),
                static_cast<std::streamsize>(width * height * 4));
+    file.close();
+    if (!file) {
+        Logger::debug("ThumbnailCache: Failed to write cache file: {}", utf8FromPath(cachePath.filename()));
+        std::filesystem::remove(cachePath, ec);
+    }
 }
 
 } // namespace quadmapper

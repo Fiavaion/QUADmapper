@@ -44,6 +44,26 @@ public:
         finished_.wait(lock, [&job] { return job.done; });
     }
 
+    // Never waits: true once no copy writes into `job`'s mapping (a queued copy is
+    // dropped, it never starts), false while its copy runs.
+    bool drop(CompressedUploadState::Staging& job) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (job.done) return true;
+        for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+            if (*it == &job) {
+                queue_.erase(it);
+                job.done = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static std::function<void()>& hook() {
+        static std::function<void()> h;
+        return h;
+    }
+
 private:
     void run() {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -53,6 +73,7 @@ private:
             CompressedUploadState::Staging* job = queue_.front();
             queue_.pop_front();
             lock.unlock();
+            if (hook()) hook()();
             std::memcpy(job->mapped, job->bytes->data(), job->bytes->size());
             lock.lock();
             job->done = true;
@@ -85,6 +106,10 @@ CompressedUploadState::~CompressedUploadState() {
     }
 }
 
+bool CompressedUploadState::idle() {
+    return !staging_.mapped || !copier_ || copier_->drop(staging_);
+}
+
 void CompressedUploadState::settle() {
     if (staging_.mapped) {
         if (copier_) copier_->wait(staging_);
@@ -98,6 +123,10 @@ void CompressedUploadState::settle() {
 }
 
 // --- CompressedUploader ---
+
+void CompressedUploader::setCopyHookForTesting(std::function<void()> hook) {
+    ByteCopier::hook() = std::move(hook);
+}
 
 // Orphan the next buffer of the ring (the GPU may still read the frame uploaded from it
 // before) and map it for the copier to fill.
@@ -148,16 +177,21 @@ bool CompressedUploader::upload(const std::shared_ptr<const std::vector<uint8_t>
         staged.mapped = nullptr;
         staged.mappedBytes = 0;
         if (intact) {
-            target.updateCompressed(nullptr, size);  // from offset 0 of the bound buffer
+            const bool uploaded = target.updateCompressed(nullptr, size);  // from offset 0 of the bound buffer
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
             staged.bytes.reset();
-            return true;
+            return uploaded;
         }
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
         staging = false;  // contents lost (a display mode change): copy again
     }
     staged.bytes.reset();
-    Logger::warning("CompressedUploader: could not map a pixel buffer; this video frame was not uploaded");
+    // Once: a failure that lasts would otherwise write a line for every frame of the show.
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        Logger::warning("CompressedUploader: could not map a pixel buffer; video frames are not uploaded while this lasts");
+    }
     return false;
 }
 

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -61,10 +62,25 @@ namespace quadmapper {
 //         and one full-canvas slice with no warp and no blend on every output that
 //         shows a scene. A 3.4 output with a sceneId and no slices gets one
 //         full-canvas slice. Canvases are clamped to MAX_CANVAS_DIMENSION.
+//   3.5 = additive quad geometry "warpMode": "linear" (ADR-058), written only for a
+//         Linear quad (new quads are Linear). Missing = "perspective", the only warp
+//         before 3.5; a 3.4 reader ignores the key and draws the quad in perspective.
+//   3.6 = additive quad geometry (owner, 2026-11-23):
+//         - "meshLinear": [vertex indices] of the Linear grid points (straight grid
+//           lines to their neighbours), written only when there is one. Missing =
+//           every point Spline, as before 3.6.
+//         - "contentMode": "crop" when the bent outline cuts the image instead of
+//           warping it, written only for Crop. Missing = Warp.
+//         A 3.5 reader ignores both and draws the quad as Spline + Warp.
+//   3.7 = additive source kind "composition" (ADR-061): "name", "mode" ("timeline" |
+//         "switch"), "fadeSeconds", "loop", "restartOnCue", "width", "height" and
+//         "cues": [{"source": <sources id>, "hold": seconds}]. Every composition is
+//         written, used by a quad or not. A 3.6 reader skips the entry (unknown kind)
+//         and its quads fall back to their texturePath (none: no media).
 // Readers accept any major <= kMaxSupportedMajor; v1/v2 are wrapped/mapped into the
 // scene model so every read path yields >= 1 scene.
 static constexpr int kMaxSupportedMajor = 3;
-static constexpr const char* kSceneFormatVersion = "3.4.0";
+static constexpr const char* kSceneFormatVersion = "3.7.0";
 
 // Load-time clamps for untrusted values (ADR-046 §3).
 static constexpr int kMaxMonitorIndex = 63;
@@ -73,6 +89,14 @@ static constexpr size_t kMaxCalibrationPoints = 4096;
 static constexpr size_t kMaxSlicesPerOutput = 256;
 static constexpr float kMinPlaybackSpeed = 0.1f;  // VideoPlayer::setSpeed range
 static constexpr float kMaxPlaybackSpeed = 4.0f;
+static constexpr float kMinViewZoom = 0.1f;  // the canvas zoom range (EditorUi)
+static constexpr float kMaxViewZoom = 12.0f;
+// Far beyond a show the app can run: about 2,300 quads, each warped on the largest
+// grid (0.45 MB a quad). Saving has no limit, so this must stay out of a show's reach.
+static constexpr size_t kMaxProjectBytes = 1024u * 1024u * 1024u;
+// Grid lines closer than this are one line. Half the closest the editor places them
+// (QuadGeometry::insertUDivision), so no line the editor wrote is merged.
+static constexpr float kMinGridGap = 5e-5f;
 
 namespace fs = std::filesystem;
 
@@ -113,11 +137,24 @@ static float readFiniteFloat(const nlohmann::json& j) {
     if (!j.is_number()) {
         throw std::runtime_error("Malformed project file: expected a number");
     }
-    const float f = j.get<float>();
-    if (!std::isfinite(f)) {
+    // Checked as a double: converting one beyond the float range is undefined.
+    const double d = j.get<double>();
+    if (!std::isfinite(d) || std::abs(d) > std::numeric_limits<float>::max()) {
         throw std::runtime_error("Malformed project file: number out of range");
     }
-    return f;
+    return static_cast<float>(d);
+}
+
+// A whole number held to [lo, hi]. Clamped as a double, for the same reason.
+static int readClampedInt(const nlohmann::json& j, int lo, int hi) {
+    if (!j.is_number()) {
+        throw std::runtime_error("Malformed project file: expected a number");
+    }
+    const double d = j.get<double>();
+    if (!std::isfinite(d)) {
+        throw std::runtime_error("Malformed project file: number out of range");
+    }
+    return static_cast<int>(std::clamp(d, static_cast<double>(lo), static_cast<double>(hi)));
 }
 
 static const nlohmann::json& checkedArray(const nlohmann::json& j, size_t size) {
@@ -152,13 +189,13 @@ static std::vector<float> readGridCoords(const nlohmann::json& j) {
     std::vector<float> coords{0.0f, 1.0f};
     for (const auto& v : j) {
         if (!v.is_number()) continue;
-        const float f = v.get<float>();
-        if (!std::isfinite(f)) continue;
-        coords.push_back(std::clamp(f, 0.0f, 1.0f));
+        const double d = v.get<double>();
+        if (!std::isfinite(d)) continue;
+        coords.push_back(static_cast<float>(std::clamp(d, 0.0, 1.0)));
     }
     std::sort(coords.begin(), coords.end());
     coords.erase(std::unique(coords.begin(), coords.end(),
-                             [](float a, float b) { return b - a < 1e-6f; }),
+                             [](float a, float b) { return b - a < kMinGridGap; }),
                  coords.end());
     coords.back() = 1.0f;  // a near-1 survivor of the dedupe snaps to the endpoint
     if (coords.size() > static_cast<size_t>(MAX_MESH_RESOLUTION) + 1) {
@@ -182,6 +219,10 @@ static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
 
     j["meshResolution"] = geometry.getMeshResolution();
     j["meshMode"] = static_cast<int>(geometry.getMeshMode());
+    // Warp mode (ADR-058): written only for Linear; missing = Perspective.
+    if (geometry.getWarpMode() == WarpMode::LINEAR) j["warpMode"] = "linear";
+    // Crop (3.6): written only for Crop; missing = Warp.
+    if (geometry.getContentMode() == ContentMode::CROP) j["contentMode"] = "crop";
 
     // Non-uniform control grid (ADR-038): persist the division coordinates.
     // Uniform grids stay byte-clean (reconstructed from meshResolution on load).
@@ -218,6 +259,15 @@ static nlohmann::json serializeQuadGeometry(const QuadGeometry& geometry) {
         j["meshTangents"] = tangentsJson;
     }
 
+    // Linear grid points (3.6): only when there is one.
+    if (geometry.hasLinearVertices()) {
+        nlohmann::json linearJson = nlohmann::json::array();
+        for (int i = 0; i < geometry.getVertexCount(); ++i) {
+            if (geometry.isVertexLinear(i)) linearJson.push_back(i);
+        }
+        j["meshLinear"] = linearJson;
+    }
+
     // Bezier edges (ADR-043): persist only when enabled, so pre-bezier files and
     // straight-edge quads stay byte-clean and old readers ignore the extra keys.
     if (geometry.isBezierEnabled()) {
@@ -242,6 +292,16 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
         geometry.setCorners(corners);
     }
 
+    // Warp mode (ADR-058), set before any residuals load so none are re-expressed.
+    // Missing (every file before 3.5) or anything but "linear" = Perspective.
+    const auto warpMode = j.find("warpMode");
+    geometry.setWarpMode(warpMode != j.end() && *warpMode == "linear" ? WarpMode::LINEAR
+                                                                       : WarpMode::PERSPECTIVE);
+    // Crop (3.6). Missing or anything but "crop" = Warp.
+    const auto contentMode = j.find("contentMode");
+    geometry.setContentMode(contentMode != j.end() && *contentMode == "crop" ? ContentMode::CROP
+                                                                             : ContentMode::WARP);
+
     // Control grid (ADR-038): prefer explicit division coords; otherwise migrate
     // the legacy uniform meshResolution into an even grid. Either way this sets
     // the vertex count before the offsets below are applied.
@@ -249,13 +309,13 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
         j.contains("vCoords") && j["vCoords"].is_array()) {
         geometry.setGridCoords(readGridCoords(j["uCoords"]), readGridCoords(j["vCoords"]));
     } else if (j.contains("meshResolution")) {
-        geometry.setMeshResolution(j["meshResolution"].get<int>());  // clamps to [MIN,MAX]
+        geometry.setMeshResolution(
+            readClampedInt(j["meshResolution"], MIN_MESH_RESOLUTION, MAX_MESH_RESOLUTION));
     }
 
     if (j.contains("meshMode")) {
         // Anything but a known mode falls back to the default corner-pin mode.
-        const int mode = j["meshMode"].get<int>();
-        geometry.setMeshMode(mode == static_cast<int>(MeshMode::MESH_EDIT)
+        geometry.setMeshMode(j["meshMode"] == static_cast<int>(MeshMode::MESH_EDIT)
                                  ? MeshMode::MESH_EDIT : MeshMode::CORNERS_ONLY);
     }
 
@@ -302,6 +362,24 @@ static void deserializeQuadGeometry(const nlohmann::json& j, QuadGeometry& geome
                 tangents.explicitMask |= 1u << h;
             }
             geometry.setVertexTangent(static_cast<int>(vertex), tangents);
+        }
+    }
+
+    // Linear grid points (3.6), after the handles (setVertexTangent replaces the
+    // whole entry). An index the grid does not have is dropped; a non-array or a
+    // non-integer entry is an error, as for meshTangents.
+    if (j.contains("meshLinear")) {
+        const auto& linearJson = j["meshLinear"];
+        if (!linearJson.is_array()) {
+            throw std::runtime_error("Malformed project file: meshLinear must be an array");
+        }
+        for (const auto& entry : linearJson) {
+            if (!entry.is_number_integer()) {
+                throw std::runtime_error("Malformed project file: bad meshLinear entry");
+            }
+            const long long vertex = entry.get<long long>();
+            if (vertex < 0 || vertex >= geometry.getVertexCount()) continue;
+            geometry.setVertexLinear(static_cast<int>(vertex), true);
         }
     }
 
@@ -373,7 +451,7 @@ static void deserializeTextureBinding(const nlohmann::json& j, TextureBinding& b
         binding.uvScale = deserializeVec2(j["uvScale"]);
     }
     if (j.contains("uvRotation")) {
-        binding.uvRotation = j["uvRotation"].get<float>();
+        binding.uvRotation = readFiniteFloat(j["uvRotation"]);
     }
     if (j.contains("flipH")) {
         binding.flipH = j["flipH"].get<bool>();
@@ -383,10 +461,10 @@ static void deserializeTextureBinding(const nlohmann::json& j, TextureBinding& b
     }
     if (j.contains("crop") && j["crop"].is_object()) {
         const auto& c = j["crop"];
-        if (c.contains("x"))      binding.cropRect.x      = c["x"].get<float>();
-        if (c.contains("y"))      binding.cropRect.y      = c["y"].get<float>();
-        if (c.contains("width"))  binding.cropRect.width  = c["width"].get<float>();
-        if (c.contains("height")) binding.cropRect.height = c["height"].get<float>();
+        if (c.contains("x"))      binding.cropRect.x      = readFiniteFloat(c["x"]);
+        if (c.contains("y"))      binding.cropRect.y      = readFiniteFloat(c["y"]);
+        if (c.contains("width"))  binding.cropRect.width  = readFiniteFloat(c["width"]);
+        if (c.contains("height")) binding.cropRect.height = readFiniteFloat(c["height"]);
     }
 }
 
@@ -404,9 +482,9 @@ static nlohmann::json serializeColorCorrection(const ColorCorrection& cc) {
 // Helper to deserialize per-quad color correction. Each field is optional so
 // older files (and partial objects) fall back to identity defaults.
 static void deserializeColorCorrection(const nlohmann::json& j, ColorCorrection& cc) {
-    if (j.contains("brightness")) cc.brightness = j["brightness"].get<float>();
-    if (j.contains("contrast"))   cc.contrast   = j["contrast"].get<float>();
-    if (j.contains("gamma"))      cc.gamma      = j["gamma"].get<float>();
+    if (j.contains("brightness")) cc.brightness = readFiniteFloat(j["brightness"]);
+    if (j.contains("contrast"))   cc.contrast   = readFiniteFloat(j["contrast"]);
+    if (j.contains("gamma"))      cc.gamma      = readFiniteFloat(j["gamma"]);
     if (j.contains("rgbGain") && j["rgbGain"].is_array()) {
         cc.rgbGain = deserializeVec3(j["rgbGain"]);
     }
@@ -427,11 +505,11 @@ static nlohmann::json serializeSoftEdge(const SoftEdge& se) {
 // Helper to deserialize per-quad soft-edge blending. Each field is optional so
 // older files (and partial objects) fall back to identity (no feather) defaults.
 static void deserializeSoftEdge(const nlohmann::json& j, SoftEdge& se) {
-    if (j.contains("left"))   se.left   = j["left"].get<float>();
-    if (j.contains("right"))  se.right  = j["right"].get<float>();
-    if (j.contains("top"))    se.top    = j["top"].get<float>();
-    if (j.contains("bottom")) se.bottom = j["bottom"].get<float>();
-    if (j.contains("gamma"))  se.gamma  = j["gamma"].get<float>();
+    if (j.contains("left"))   se.left   = readFiniteFloat(j["left"]);
+    if (j.contains("right"))  se.right  = readFiniteFloat(j["right"]);
+    if (j.contains("top"))    se.top    = readFiniteFloat(j["top"]);
+    if (j.contains("bottom")) se.bottom = readFiniteFloat(j["bottom"]);
+    if (j.contains("gamma"))  se.gamma  = readFiniteFloat(j["gamma"]);
 }
 
 // Helper to serialize a single quad
@@ -472,7 +550,8 @@ static Quad deserializeQuad(const nlohmann::json& j, std::string& texturePath) {
         quad.setName(j["name"].get<std::string>());
     }
     if (j.contains("zOrder")) {
-        quad.setZOrder(j["zOrder"].get<int>());
+        quad.setZOrder(readClampedInt(j["zOrder"], std::numeric_limits<int>::min(),
+                                      std::numeric_limits<int>::max()));
     }
     if (j.contains("visible")) {
         quad.setVisible(j["visible"].get<bool>());
@@ -481,7 +560,7 @@ static Quad deserializeQuad(const nlohmann::json& j, std::string& texturePath) {
         quad.setLocked(j["locked"].get<bool>());
     }
     if (j.contains("opacity")) {
-        quad.setOpacity(j["opacity"].get<float>());
+        quad.setOpacity(readFiniteFloat(j["opacity"]));  // clamps to 0-1
     }
     if (j.contains("geometry")) {
         deserializeQuadGeometry(j["geometry"], quad.getGeometry());
@@ -638,8 +717,8 @@ static Project::SceneData deserializeScene(const nlohmann::json& j, UUID& assign
                                                       : UUID::null();
     if (j.contains("canvas")) {
         const auto& c = checkedArray(j["canvas"], 2);
-        scene.canvas = IVec2(std::clamp(c[0].get<int>(), 1, MAX_CANVAS_DIMENSION),
-                             std::clamp(c[1].get<int>(), 1, MAX_CANVAS_DIMENSION));
+        scene.canvas = IVec2(readClampedInt(c[0], 1, MAX_CANVAS_DIMENSION),
+                             readClampedInt(c[1], 1, MAX_CANVAS_DIMENSION));
     }
     if (j.contains("canvasLocked") && j["canvasLocked"].is_boolean()) {
         scene.canvasLocked = j["canvasLocked"].get<bool>();
@@ -647,7 +726,9 @@ static Project::SceneData deserializeScene(const nlohmann::json& j, UUID& assign
     if (j.contains("view") && j["view"].is_object()) {
         const auto& v = j["view"];
         if (v.contains("pan") && v["pan"].is_array()) scene.view.pan = deserializeVec2(v["pan"]);
-        if (v.contains("zoom")) scene.view.zoom = v["zoom"].get<float>();
+        if (v.contains("zoom")) {
+            scene.view.zoom = std::clamp(readFiniteFloat(v["zoom"]), kMinViewZoom, kMaxViewZoom);
+        }
         if (v.contains("gridVisible")) scene.view.gridVisible = v["gridVisible"].get<bool>();
         if (v.contains("snapToGrid")) scene.view.snapToGrid = v["snapToGrid"].get<bool>();
     }
@@ -700,8 +781,8 @@ static void deserializeProjector(const nlohmann::json& j, Project::OutputData& o
         const auto& k = j["intrinsics"];
         if (!k.is_object()) throw std::runtime_error("Malformed project file: expected intrinsics");
         ProjectorIntrinsics& in = camera.intrinsics;
-        if (k.contains("width"))  in.width  = std::clamp(k["width"].get<int>(), 1, kMaxOutputDimension);
-        if (k.contains("height")) in.height = std::clamp(k["height"].get<int>(), 1, kMaxOutputDimension);
+        if (k.contains("width"))  in.width  = readClampedInt(k["width"], 1, kMaxOutputDimension);
+        if (k.contains("height")) in.height = readClampedInt(k["height"], 1, kMaxOutputDimension);
         if (k.contains("fx")) in.fx = readFiniteFloat(k["fx"]);
         if (k.contains("fy")) in.fy = readFiniteFloat(k["fy"]);
         if (k.contains("cx")) in.cx = readFiniteFloat(k["cx"]);
@@ -860,7 +941,7 @@ static Project::OutputData deserializeOutput(const nlohmann::json& j) {
     output.name = j.contains("name") ? j["name"].get<std::string>() : "Output";
     // Clamp hardware settings to sane ranges (ADR-046 §3): -1 = no monitor chosen.
     if (j.contains("monitor")) {
-        output.monitor = std::clamp(j["monitor"].get<int>(), -1, kMaxMonitorIndex);
+        output.monitor = readClampedInt(j["monitor"], -1, kMaxMonitorIndex);
     }
     // Monitor identity (QM-087, additive): a malformed name or position is skipped
     // with a warning rather than failing the load, since the index is still a
@@ -880,12 +961,13 @@ static Project::OutputData deserializeOutput(const nlohmann::json& j) {
     }
     if (j.contains("resolution")) {
         const auto& r = checkedArray(j["resolution"], 2);
-        output.resolution = IVec2(std::clamp(r[0].get<int>(), 1, kMaxOutputDimension),
-                                  std::clamp(r[1].get<int>(), 1, kMaxOutputDimension));
+        output.resolution = IVec2(readClampedInt(r[0], 1, kMaxOutputDimension),
+                                  readClampedInt(r[1], 1, kMaxOutputDimension));
     }
     if (j.contains("rotation")) {
         // Snap to the nearest supported quarter turn in [0, 360).
-        const int deg = ((j["rotation"].get<int>() % 360) + 360) % 360;
+        // The limits are whole turns, so a value beyond them snaps to 0.
+        const int deg = ((readClampedInt(j["rotation"], -360000, 360000) % 360) + 360) % 360;
         output.rotationDegrees = ((deg + 45) / 90 % 4) * 90;
     }
     if (j.contains("enabled")) output.enabled = j["enabled"].get<bool>();
@@ -920,7 +1002,7 @@ static bool isFileSourceKind(const std::string& kind) {
 }
 
 static bool isKnownSourceKind(const std::string& kind) {
-    return isFileSourceKind(kind) || kind == "procedural" || kind == "camera";
+    return isFileSourceKind(kind) || kind == "procedural" || kind == "camera" || kind == "composition";
 }
 
 static const char* loopModeName(LoopMode mode) {
@@ -969,6 +1051,20 @@ static nlohmann::json serializeSource(const Project::SourceData& s, const fs::pa
         j["height"] = s.height;
     } else if (s.kind == "camera") {
         j["deviceName"] = s.deviceName;
+    } else if (s.kind == "composition") {
+        j["name"] = s.name;
+        j["mode"] = s.compositionMode;
+        j["fadeSeconds"] = s.fadeSeconds;
+        j["loop"] = s.loop;
+        j["restartOnCue"] = s.restartOnCue;
+        j["width"] = s.width;
+        j["height"] = s.height;
+        nlohmann::json cues = nlohmann::json::array();
+        for (const auto& cue : s.cues) {
+            cues.push_back({{"source", cue.source.isNull() ? std::string() : cue.source.toString()},
+                            {"hold", cue.holdSeconds}});
+        }
+        j["cues"] = std::move(cues);
     }
     return j;
 }
@@ -1016,8 +1112,38 @@ static std::optional<Project::SourceData> deserializeSource(const nlohmann::json
     } else if (s.kind == "procedural") {
         if (!j.contains("proceduralType") || !j["proceduralType"].is_string()) return std::nullopt;
         s.proceduralType = j["proceduralType"].get<std::string>();
-        if (j.contains("width"))  s.width  = std::clamp(j["width"].get<int>(), 1, kMaxOutputDimension);
-        if (j.contains("height")) s.height = std::clamp(j["height"].get<int>(), 1, kMaxOutputDimension);
+        if (j.contains("width"))  s.width  = readClampedInt(j["width"], 1, kMaxOutputDimension);
+        if (j.contains("height")) s.height = readClampedInt(j["height"], 1, kMaxOutputDimension);
+    } else if (s.kind == "composition") {
+        if (j.contains("name") && j["name"].is_string()) s.name = j["name"].get<std::string>();
+        if (j.contains("mode") && j["mode"].is_string()) {
+            s.compositionMode = j["mode"].get<std::string>() == "switch" ? "switch" : "timeline";
+        }
+        if (j.contains("fadeSeconds") && j["fadeSeconds"].is_number()) {
+            s.fadeSeconds = std::clamp(j["fadeSeconds"].get<double>(), 0.0, 30.0);
+        }
+        if (j.contains("loop") && j["loop"].is_boolean()) s.loop = j["loop"].get<bool>();
+        if (j.contains("restartOnCue") && j["restartOnCue"].is_boolean()) {
+            s.restartOnCue = j["restartOnCue"].get<bool>();
+        }
+        if (j.contains("width") && j["width"].is_number_integer()) {
+            s.width = readClampedInt(j["width"], 16, kMaxOutputDimension);
+        }
+        if (j.contains("height") && j["height"].is_number_integer()) {
+            s.height = readClampedInt(j["height"], 16, kMaxOutputDimension);
+        }
+        if (j.contains("cues") && j["cues"].is_array()) {
+            for (const auto& c : j["cues"]) {
+                if (!c.is_object()) continue;
+                Project::SourceData::CueData cue;
+                if (c.contains("source")) cue.source = parseUuidOrNull(c["source"]);
+                if (c.contains("hold") && c["hold"].is_number()) {
+                    cue.holdSeconds = std::clamp(c["hold"].get<double>(), 0.0, 86400.0);
+                }
+                s.cues.push_back(cue);
+                if (s.cues.size() >= 1000) break;  // untrusted input
+            }
+        }
     } else if (j.contains("deviceName") && j["deviceName"].is_string()) {  // camera
         s.deviceName = j["deviceName"].get<std::string>();
     }
@@ -1479,7 +1605,7 @@ Result<void, Error> ProjectSerializer::save(const Project& project, const std::f
 Result<Project, Error> ProjectSerializer::load(const std::filesystem::path& path) {
     Logger::info("Loading project from: {}", utf8FromPath(path));
 
-    auto result = FileSystem::readFile(path);
+    auto result = FileSystem::readFile(path, kMaxProjectBytes);
     if (!result) {
         return Err<Project>(result.error().message);
     }

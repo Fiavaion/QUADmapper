@@ -239,8 +239,11 @@ public:
         for (size_t i = 0; i < frameCount; ++i) {
             const float gain = lastMasterGain_ + span * (static_cast<float>(i + 1) / count);
             float* frame = output + i * AudioMixer::CHANNELS;
-            frame[0] = std::clamp(frame[0] * gain, -1.0f, 1.0f);
-            frame[1] = std::clamp(frame[1] * gain, -1.0f, 1.0f);
+            // std::clamp passes NaN through; one bad decoded sample must not taint the mix.
+            for (int c = 0; c < AudioMixer::CHANNELS; ++c) {
+                const float sample = frame[c] * gain;
+                frame[c] = std::isfinite(sample) ? std::clamp(sample, -1.0f, 1.0f) : 0.0f;
+            }
         }
         lastMasterGain_ = target;
 

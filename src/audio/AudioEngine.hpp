@@ -14,6 +14,7 @@ namespace quadmapper {
 
 class AudioDevice;
 class AudioMixer;
+class BackgroundWorker;
 
 enum class AudioOutputState {
     Closed,  // not opened yet, or shut down
@@ -40,7 +41,8 @@ enum class SourceAudioStatus {
  * Attachments are keyed by source id. The app calls sync() for every video source each
  * frame (creating the attachment on first sight) and retainOnly() with the live ids, so
  * a released source's audio stops and is freed, and a source restored by undo (or
- * re-created) gets its audio back.
+ * re-created) gets its audio back. A released attachment leaves the mix at once; its
+ * decode thread is joined and its decoder freed on a worker thread (TD-35).
  *
  * Control thread only.
  */
@@ -92,6 +94,9 @@ public:
     /** Release every attachment whose id is not in `live`. */
     void retainOnly(const std::unordered_set<UUID>& live);
 
+    /** Wait until every released attachment is freed (tests, leak checks). */
+    void finishReleasing();
+
     SourceAudioStatus status(const UUID& id) const;
     const AudioAttachment* attachment(const UUID& id) const;
     size_t attachmentCount() const { return attachments_.size(); }
@@ -99,10 +104,13 @@ public:
     AudioMixer& mixer() { return *mixer_; }
 
 private:
+    void release(std::unique_ptr<AudioAttachment> attachment);
+
     Options options_;
     std::unique_ptr<AudioDevice> device_;
     std::unique_ptr<AudioMixer> mixer_;
     std::unordered_map<UUID, std::unique_ptr<AudioAttachment>> attachments_;
+    std::unique_ptr<BackgroundWorker> reaper_;  // frees released attachments; before the mixer dies
     std::string preferredDevice_;
     AudioOutputState outputState_ = AudioOutputState::Closed;
 };

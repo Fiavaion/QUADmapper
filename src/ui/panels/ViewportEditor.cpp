@@ -1,12 +1,15 @@
 #include "ViewportEditor.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
-#include "app/TextureResolve.hpp"
-#include "app/GridUndo.hpp"
-#include "app/MeshEditKeys.hpp"
-#include "app/QuadSelection.hpp"
-#include "app/SliceEditing.hpp"
+#include "editor/EditActions.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/PerformLock.hpp"
+#include "editor/SceneGhosts.hpp"
+#include "editor/TextureResolve.hpp"
+#include "editor/GridUndo.hpp"
+#include "editor/MeshEditKeys.hpp"
+#include "editor/QuadSelection.hpp"
+#include "editor/SliceEditing.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGeometry.hpp"
@@ -27,6 +30,8 @@
 #include <imgui.h>
 #include <glm/glm.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <array>
 #include <unordered_map>
@@ -37,7 +42,9 @@ namespace {
 
 // Calibration mode on the canvas (ADR-052 §6): place, drag and nudge the output's
 // calibration pixels with the same press rule and keyboard model as quad vertices.
-// Pixels are canvas-normalised positions times the projector image size.
+// The canvas shows the output's frame edge to edge (calibrationViewOutput, TD-29), so
+// pixels are canvas-normalised positions times the projector image size, whatever
+// the output's slices.
 void editCalibrationPoints(EditorState& es, OutputWindow& output, const Vec2& mouseNorm,
                            bool mouseDown, bool canvasPress) {
     CalibrationSession& cal = es.calibration;
@@ -207,15 +214,56 @@ void drawSliceWarpCanvas(EditorState& es, Renderer& renderer, const OutputManage
     }
 }
 
+// The calibration view (TD-29): the calibrated output's frame as its projector shows
+// it outside a crossfade and blackout (mid-fade the view draws the incoming scene alone,
+// and it keeps the picture during blackout), drawn by the call that draws the output
+// frames (OutputManager::renderSceneFrame):
+// black, the scene's 3D objects from the projector, then the scene's canvas through the
+// output's slices, warp, blend zones and black level. `frameMin`..`frameMax` is the
+// frame on the editor framebuffer in GL pixels; the scissor (the canvas region) clips it.
+void drawCalibrationView(EditorState& es, Renderer& renderer, OutputManager& outputs,
+                         const OutputWindow& output,
+                         const std::unordered_map<UUID, Texture*>& textures, const IVec2& frameMin,
+                         const IVec2& frameMax) {
+    const Scene* shown = OutputManager::sceneForOutput(es.scenes, output);
+    if (!shown) return;
+
+    // The frame is black where the projector sends no light (outside the slices, in
+    // blend zones), not the editor's grey.
+    GLint scissor[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_SCISSOR_BOX, scissor);
+    GLfloat clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, clearColor);
+    const int x0 = std::max(frameMin.x, scissor[0]);
+    const int y0 = std::max(frameMin.y, scissor[1]);
+    const int x1 = std::min(frameMax.x, scissor[0] + scissor[2]);
+    const int y1 = std::min(frameMax.y, scissor[1] + scissor[3]);
+    glScissor(x0, y0, std::max(x1 - x0, 0), std::max(y1 - y0, 0));
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+    glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+
+    GLint prevBlend[4] = {GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA};
+    glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlend[0]);
+    glGetIntegerv(GL_BLEND_DST_RGB, &prevBlend[1]);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlend[2]);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlend[3]);
+    outputs.renderSceneFrame(output, *shown, output.getEffectiveResolution(), textures, renderer);
+    renderer.endFrame();
+    glBlendFuncSeparate(static_cast<GLenum>(prevBlend[0]), static_cast<GLenum>(prevBlend[1]),
+                        static_cast<GLenum>(prevBlend[2]), static_cast<GLenum>(prevBlend[3]));
+}
+
 // Outlines of the selected output's slice input rectangles on the scene canvas, while
 // the slice editor shows that output (an output selected in the Inspector) and it shows
 // the active scene. The selected slice is drawn brighter.
 void drawSliceInputOverlay(EditorState& es, Renderer& renderer, OutputManager* outputs) {
     if (!outputs || es.currentSelectionType != EditorState::SelectionType::Output ||
-        !es.outputPanel.hasSelection()) {
+        es.selectedOutputId.isNull()) {
         return;
     }
-    const OutputWindow* output = outputs->getOutput(es.outputPanel.getSelectedOutputId());
+    const OutputWindow* output = outputs->getOutput(es.selectedOutputId);
     if (!output || output->getSceneId() != es.activeScene().getId()) return;
     const IVec2 size = es.activeScene().getCanvasSize();
     const float w = static_cast<float>(size.x);
@@ -237,6 +285,15 @@ void drawSliceInputOverlay(EditorState& es, Renderer& renderer, OutputManager* o
 }  // namespace
 
 void ViewportEditor::render(EditorContext& ctx) {
+    double mouseX = 0.0, mouseY = 0.0;
+    glfwGetCursorPos(ctx.window, &mouseX, &mouseY);
+    const bool leftDown = glfwGetMouseButton(ctx.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    const bool rightDown = glfwGetMouseButton(ctx.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    render(ctx, Pointer{Vec2(static_cast<float>(mouseX), static_cast<float>(mouseY)), leftDown,
+                        rightDown});
+}
+
+void ViewportEditor::render(EditorContext& ctx, const Pointer& pointer) {
     // Same-named aliases keep the moved render()/interaction body verbatim
     // (LESSON-ARCH-006). All editing state lives in EditorState; the manager
     // pointers come from the per-frame EditorContext.
@@ -284,10 +341,12 @@ void ViewportEditor::render(EditorContext& ctx) {
     OutputWindow* canvasOutput = nullptr;
     const IVec2 canvasSize = es.activeScene().getCanvasSize();
     canvasAspect = static_cast<float>(canvasSize.x) / static_cast<float>(canvasSize.y);
-    // Slice warp editing shows that output's frame instead (its effective size).
+    // Slice warp editing and calibration show that output's frame instead (its
+    // effective size).
     OutputWindow* warpOutput = sliceWarpOutput(es, m_outputManager);
-    if (warpOutput) {
-        const IVec2 frame = warpOutput->getEffectiveResolution();
+    OutputWindow* calibrationView = calibrationViewOutput(es, m_outputManager);
+    if (OutputWindow* frameOutput = warpOutput ? warpOutput : calibrationView) {
+        const IVec2 frame = frameOutput->getEffectiveResolution();
         if (frame.x > 0 && frame.y > 0) {
             canvasAspect = static_cast<float>(frame.x) / static_cast<float>(frame.y);
         }
@@ -295,10 +354,8 @@ void ViewportEditor::render(EditorContext& ctx) {
     if (m_outputManager) {
         // The projector being calibrated when it shows this scene, else the first
         // output showing it.
-        OutputWindow* calibrated = m_outputManager->getOutput(es.calibratingOutputId);
-        canvasOutput = calibrated && calibrated->getSceneId() == es.activeScene().getId()
-                           ? calibrated
-                           : m_outputManager->firstOutputShowing(es.activeScene().getId());
+        canvasOutput = calibrationView ? calibrationView
+                                       : m_outputManager->firstOutputShowing(es.activeScene().getId());
         if (canvasOutput) canvasProjector = &canvasOutput->getProjector();
     }
 
@@ -347,6 +404,10 @@ void ViewportEditor::render(EditorContext& ctx) {
     // Projector calibration suspends quad editing (ADR-052 §6).
     const bool calibrating = !es.calibratingOutputId.isNull();
 
+    // Other scenes' quads in this canvas (SceneGhosts.hpp): outlined and snapped to.
+    const std::vector<Quad> ghosts =
+        es.showOtherScenes && es.scenes.size() > 1 ? otherSceneGhosts(es) : std::vector<Quad>{};
+
     // ---- Interaction -------------------------------------------------------
     // Mouse and keyboard editing runs BEFORE the canvas is drawn, so a drag or a
     // key handled this frame is already in this frame's picture and in the output
@@ -358,19 +419,19 @@ void ViewportEditor::render(EditorContext& ctx) {
         // stays under the cursor at any zoom/pan (the success-metric warp UX). Computed
         // ONCE here, before selection handling, so click-to-select works with no
         // current selection too.
-        double mouseX, mouseY;
-        glfwGetCursorPos(m_window, &mouseX, &mouseY);
+        const float mouseX = pointer.position.x;
+        const float mouseY = pointer.position.y;
 
         const float vnX = (regionW > 0.0f)
-            ? (static_cast<float>(mouseX) - regionX) / regionW : -1.0f;
+            ? (mouseX - regionX) / regionW : -1.0f;
         const float vnY = (regionH > 0.0f)
-            ? (static_cast<float>(mouseY) - regionY) / regionH : -1.0f;
+            ? (mouseY - regionY) / regionH : -1.0f;
         const Vec2 mouseNorm(
             (viewScaleX != 0.0f) ? (vnX - viewOffsetX) / viewScaleX : 0.0f,
             (viewScaleY != 0.0f) ? (vnY - viewOffsetY) / viewScaleY : 0.0f
         );
 
-        const bool mouseDown = glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        const bool mouseDown = pointer.leftDown;
         const bool mousePressed = mouseDown && !es.canvasMouseDownPrev;  // press edge
         es.canvasMouseDownPrev = mouseDown;
         const bool inRegion = mouseX >= regionX && mouseX <= regionX + regionW &&
@@ -380,35 +441,55 @@ void ViewportEditor::render(EditorContext& ctx) {
         // start only on such a press, so a slider or a bin clip dragged across a handle
         // never grabs it and clicks on overlays above the canvas never reselect quads.
         const bool canvasPress = mousePressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
+        const bool rightPressed = pointer.rightDown && !es.canvasRightDownPrev;
+        es.canvasRightDownPrev = pointer.rightDown;
+        const bool canvasRightPress = rightPressed && inRegion && !ImGui::GetIO().WantCaptureMouse;
+
+        // A quad drag the canvas is taken from (lock, slice warp editing, calibration)
+        // ends where the mouse left it, as its undo step; then nothing is hovered.
+        const auto leaveQuadEditing = [&]() {
+            commitCanvasDrags(es);
+            cornerHoveredVertex = meshHoveredVertex = -1;
+            es.meshHoveredHandle = es.bezierHovered = -1;
+            snapActive = false;
+        };
+
+        // The perform lock (ADR-051 §4): no picking, dragging or keys. The canvas still
+        // shows the show, and zoom and pan (EditorUi's canvas overlay) still work.
+        if (es.performLock.isOn()) {
+            leaveQuadEditing();
+            return;
+        }
+
+        // Space held: the hand tool (EditorUi) pans the canvas with the left button, so
+        // nothing is picked, dragged or nudged here meanwhile.
+        if (es.canvasHandTool) {
+            leaveQuadEditing();
+            return;
+        }
 
         // Slice warp editing: the canvas edits the selected slice's warp corners, and
         // quad vertices stay untouched (as while calibrating).
         if (warpOutput) {
+            leaveQuadEditing();
             editSliceWarp(es, *warpOutput, mouseNorm, mouseDown, canvasPress);
-            cornerHoveredVertex = cornerDraggedVertex = -1;
-            meshHoveredVertex = meshDraggedVertex = -1;
-            es.meshHoveredHandle = es.meshDraggedHandle = -1;
-            es.bezierHovered = es.bezierDragged = -1;
-            snapActive = false;
             return;
         }
 
-        // Calibrating: the canvas edits the calibration points of the projector it shows
-        // (when it shows the one being calibrated), and quad vertices stay untouched.
+        // Calibrating: the canvas edits the calibration points of the projector whose
+        // frame it shows, and quad vertices stay untouched.
         if (calibrating) {
-            if (canvasOutput && canvasOutput->getId() == es.calibratingOutputId) {
-                editCalibrationPoints(es, *canvasOutput, mouseNorm, mouseDown, canvasPress);
+            leaveQuadEditing();
+            if (calibrationView) {
+                editCalibrationPoints(es, *calibrationView, mouseNorm, mouseDown, canvasPress);
             }
-            cornerHoveredVertex = cornerDraggedVertex = -1;
-            meshHoveredVertex = meshDraggedVertex = -1;
-            es.meshHoveredHandle = es.meshDraggedHandle = -1;
-            es.bezierHovered = es.bezierDragged = -1;
-            snapActive = false;
             return;
         }
 
         constexpr float HIT_RADIUS = 0.015f;  // Slightly larger hit radius for corners
         constexpr float SNAP_RADIUS = 0.02f;  // Snap threshold for vertex snapping
+        constexpr float EDGE_RADIUS = 0.015f;  // a press this near the outline is on the edge
+        constexpr float LINE_RADIUS = 0.008f;  // a press this near a grid line grabs it
 
         Quad* selectedQuad = quadManager.getPrimarySelectedQuad();
 
@@ -435,6 +516,9 @@ void ViewportEditor::render(EditorContext& ctx) {
                             onSelectedHandle = true;
                             break;
                         }
+                    // A grid line of the selected quad is grabbed, not a quad behind it.
+                    bool column = false;
+                    if (g.gridLineNear(mouseNorm, LINE_RADIUS, column) >= 0) onSelectedHandle = true;
                 }
             }
             if (pickQuadOnCanvas(es, quadManager, mouseNorm, onSelectedHandle)) {
@@ -450,15 +534,25 @@ void ViewportEditor::render(EditorContext& ctx) {
             QuadGeometry& geometry = selectedQuad->getGeometry();
             MeshMode mode = geometry.getMeshMode();
 
-            // Reset snap state at start of each frame
+            // A locked quad (the Quad List's lock) can be selected and its vertices
+            // cycled, but not reshaped: no drag or insert starts on it and no arrow
+            // nudges it; the press or key that was refused says why on the status line.
+            const bool locked = selectedQuad->isLocked();
+            const auto mayStartDrag = [&]() { return !refusedByQuadLock(es, *selectedQuad); };
+            const auto readKeys = [&]() {
+                const CanvasKeys keys = readCanvasKeys();
+                if (keys.arrow() && locked) refusedByQuadLock(es, *selectedQuad);
+                return keys;
+            };
+
             snapActive = false;
 
             // Helper lambda to find snap target from other quads
             auto findSnapTarget = [&](const Vec2& pos, const UUID& excludeQuadId) -> Vec2 {
+                if (!es.vertexSnapping) return pos;  // the canvas Snap toggle
                 Vec2 snappedPos = pos;
                 float closestSnapDist = SNAP_RADIUS;
 
-                // Check all other quads for snap targets
                 const auto& allQuads = quadManager.getQuads();
                 for (const auto& otherQuad : allQuads) {
                     if (otherQuad->getId() == excludeQuadId) continue;  // Skip same quad
@@ -485,7 +579,17 @@ void ViewportEditor::render(EditorContext& ctx) {
                     }
                 }
 
-                // Set snap indicator state if snapping occurred
+                // The other scenes' quads too, when they are shown.
+                for (const Quad& ghost : ghosts) {
+                    for (const Vec2& point : snapPointsOf(ghost)) {
+                        const float dist = glm::length(pos - point);
+                        if (dist < closestSnapDist) {
+                            closestSnapDist = dist;
+                            snappedPos = point;
+                        }
+                    }
+                }
+
                 if (snappedPos != pos) {
                     snapActive = true;
                     snapTargetPos = snappedPos;
@@ -505,19 +609,26 @@ void ViewportEditor::render(EditorContext& ctx) {
                     es.gridInsert = EditorState::GridInsert::None;
                     es.gridInsertMouseLatch = false;
                     es.gridInsertDragIndex = -1;
-                } else if (mouseDown && (es.gridInsertMouseLatch || canvasPress)) {
-                    // The surface parameters under the cursor, as drawn (ADR-049).
+                } else if (mouseDown && (es.gridInsertMouseLatch || (canvasPress && mayStartDrag()))) {
+                    // The surface parameters under the cursor, as drawn (ADR-049); on
+                    // or just outside the outline, those of the nearest edge point
+                    // (owner, 2026-11-23), and while dragging, wherever the mouse goes.
                     Vec2 uv = geometry.surfaceParamsAt(mouseNorm);
+                    if (uv.x < 0.0f) {
+                        uv = geometry.boundaryParamsNear(
+                            mouseNorm, es.gridInsertMouseLatch ? 1e9f : EDGE_RADIUS);
+                    }
                     if (!es.gridInsertMouseLatch) {
                         // Press edge: snapshot the grid (for one-step undo), then
-                        // insert the new line where the user clicked.
+                        // insert the new line where the user clicked: a column from
+                        // the top or bottom edge, a row from the left or right.
                         es.gridInsertMouseLatch = true;
                         es.gridInsertBefore = captureGrid(geometry);
-                        if (uv.x > 0.001f && uv.x < 0.999f &&
-                            uv.y > 0.001f && uv.y < 0.999f) {
+                        const float t = isColumn ? uv.x : uv.y;
+                        if (t > 0.001f && t < 0.999f) {
                             es.gridInsertDragIndex = isColumn
-                                ? geometry.insertUDivision(uv.x)
-                                : geometry.insertVDivision(uv.y);
+                                ? geometry.insertUDivision(uv.x, es.newGridPointsLinear)
+                                : geometry.insertVDivision(uv.y, es.newGridPointsLinear);
                         }
                     } else if (es.gridInsertDragIndex >= 0 && uv.x >= 0.0f) {
                         // Held over the surface: drag the just-inserted line to
@@ -565,7 +676,6 @@ void ViewportEditor::render(EditorContext& ctx) {
                         cornerDraggedVertex = -1;
                     }
                 } else {
-                    // Check for hover over corners
                     cornerHoveredVertex = -1;
                     float closestDist = HIT_RADIUS;
 
@@ -579,7 +689,7 @@ void ViewportEditor::render(EditorContext& ctx) {
 
                     // Start drag if mouse pressed on a corner (not while the
                     // division-insert tool is armed).
-                    if (canvasPress && cornerHoveredVertex >= 0 && !insertArmed) {
+                    if (canvasPress && cornerHoveredVertex >= 0 && !insertArmed && mayStartDrag()) {
                         cornerDraggedVertex = cornerHoveredVertex;
                         cornerSelectedVertex = cornerHoveredVertex;
                         cornerDragStartMousePos = mouseNorm;
@@ -613,7 +723,7 @@ void ViewportEditor::render(EditorContext& ctx) {
                             float d = glm::length(mouseNorm - cp);
                             if (d < best) { best = d; es.bezierHovered = i; }
                         }
-                        if (canvasPress && es.bezierHovered >= 0 && !insertArmed) {
+                        if (canvasPress && es.bezierHovered >= 0 && !insertArmed && mayStartDrag()) {
                             es.bezierDragged = es.bezierHovered;
                             es.bezierDragBefore = geometry.getBezierOffsets();
                         }
@@ -624,8 +734,8 @@ void ViewportEditor::render(EditorContext& ctx) {
 
                 // Keyboard: Tab cycles TL, TR, BR, BL; arrows nudge (MeshEditKeys.hpp).
                 if (canvasOwnsEditingKeys(true)) {
-                    applyCornerKeys(readCanvasKeys(), es.quadRef(*selectedQuad), geometry,
-                                    es.commandHistory, cornerSelectedVertex);
+                    applyCornerKeys(readKeys(), es.quadRef(*selectedQuad), geometry,
+                                    es.commandHistory, cornerSelectedVertex, locked);
                 }
 
                 // Reset mesh state when in corner mode
@@ -639,6 +749,24 @@ void ViewportEditor::render(EditorContext& ctx) {
                 auto positions = geometry.generateMeshPositions();
                 auto basePositions = geometry.generateBasePositions();
                 constexpr float MESH_HIT_RADIUS = 0.012f;  // mesh handles are smaller
+
+                // A grid line dragged to a new place (owner, 2026-11-23): the mouse
+                // maps to (u,v) on the quad as the drag began, so moving the line does
+                // not move what it is measured against. One undo step on release.
+                if (es.gridLineDragIndex >= 0) {
+                    if (mouseDown) {
+                        Vec2 uv = es.gridLineDragFrom.surfaceParamsAt(mouseNorm);
+                        if (uv.x < 0.0f) uv = es.gridLineDragFrom.boundaryParamsNear(mouseNorm, 1e9f);
+                        if (uv.x >= 0.0f) {
+                            if (es.gridLineDragIsColumn) geometry.moveUDivision(es.gridLineDragIndex, uv.x);
+                            else geometry.moveVDivision(es.gridLineDragIndex, uv.y);
+                        }
+                        ImGui::SetMouseCursor(es.gridLineDragIsColumn ? ImGuiMouseCursor_ResizeEW
+                                                                      : ImGuiMouseCursor_ResizeNS);
+                    } else {
+                        commitCanvasDrags(es);
+                    }
+                }
 
                 // Grid-line handles of the selected vertex (ADR-049 §3). A handle drag
                 // records one undo step on release, as a vertex drag does.
@@ -659,8 +787,12 @@ void ViewportEditor::render(EditorContext& ctx) {
                     }
                 }
 
-                if (es.meshDraggedHandle >= 0) {
-                    meshHoveredVertex = -1;  // a handle drag owns the mouse
+                // An undo or delete during a drag can shrink the mesh under it.
+                if (meshDraggedVertex >= static_cast<int>(basePositions.size())) meshDraggedVertex = -1;
+
+                if (es.meshDraggedHandle >= 0 || es.gridLineDragIndex >= 0) {
+                    meshHoveredVertex = -1;  // a handle or line drag owns the mouse
+                    es.gridLineHovered = -1;
                 } else if (meshDraggedVertex >= 0) {
                     if (mouseDown) {
                         Vec2 mouseDelta = mouseNorm - meshDragStartMousePos;
@@ -713,13 +845,38 @@ void ViewportEditor::render(EditorContext& ctx) {
                         }
                     }
 
-                    if (canvasPress && es.meshHoveredHandle >= 0 && !insertArmed) {
+                    // Nothing nearer: a grid line under the mouse can be dragged.
+                    es.gridLineHovered = -1;
+                    if (meshHoveredVertex < 0 && es.meshHoveredHandle < 0 && !insertArmed) {
+                        bool column = false;
+                        es.gridLineHovered = geometry.gridLineNear(mouseNorm, LINE_RADIUS, column);
+                        es.gridLineHoveredIsColumn = column;
+                        if (es.gridLineHovered >= 0) {
+                            ImGui::SetMouseCursor(column ? ImGuiMouseCursor_ResizeEW
+                                                         : ImGuiMouseCursor_ResizeNS);
+                        }
+                    }
+
+                    // Right-click a point: its Linear / Spline menu.
+                    if (canvasRightPress && meshHoveredVertex >= 0) {
+                        if (meshHoveredVertex != meshSelectedVertex) es.meshSelectedHandle = -1;
+                        meshSelectedVertex = es.gridPointMenuVertex = meshHoveredVertex;
+                        ImGui::OpenPopup("##GridPointMenu");
+                    }
+
+                    if (canvasPress && es.gridLineHovered >= 0 && mayStartDrag()) {
+                        es.gridLineDragIndex = es.gridLineHovered;
+                        es.gridLineDragIsColumn = es.gridLineHoveredIsColumn;
+                        es.gridLineDragBefore = captureGrid(geometry);
+                        es.gridLineDragFrom = geometry;
+                    } else if (canvasPress && es.meshHoveredHandle >= 0 && !insertArmed && mayStartDrag()) {
                         es.meshDraggedHandle = es.meshSelectedHandle = es.meshHoveredHandle;
                         es.meshHandleDragStartMousePos = mouseNorm;
                         es.meshHandleDragStartPos =
                             geometry.gridHandlePosition(meshSelectedVertex, es.meshHoveredHandle);
                         es.meshHandleDragBefore = geometry.getVertexTangent(meshSelectedVertex);
-                    } else if (canvasPress && meshHoveredVertex >= 0 && !insertArmed) {
+                    } else if (canvasPress && meshHoveredVertex >= 0 && !insertArmed &&
+                               mayStartDrag()) {
                         if (meshHoveredVertex != meshSelectedVertex) es.meshSelectedHandle = -1;
                         meshDraggedVertex = meshHoveredVertex;
                         meshSelectedVertex = meshHoveredVertex;
@@ -731,9 +888,9 @@ void ViewportEditor::render(EditorContext& ctx) {
                 // Keyboard: Tab cycles vertices, H their grid-line handles, arrows nudge.
                 // Not mid handle-drag, which edits the selected vertex's handle.
                 if (es.meshDraggedHandle < 0 && canvasOwnsEditingKeys(true)) {
-                    applyMeshEditKeys(readCanvasKeys(), es.quadRef(*selectedQuad), geometry,
+                    applyMeshEditKeys(readKeys(), es.quadRef(*selectedQuad), geometry,
                                       es.commandHistory, meshSelectedVertex,
-                                      es.meshSelectedHandle);
+                                      es.meshSelectedHandle, locked);
                 }
 
                 // Reset corner state when in mesh mode
@@ -754,6 +911,41 @@ void ViewportEditor::render(EditorContext& ctx) {
     };
     handleInput();
 
+    // A grid point's menu (right-click on the canvas, owner 2026-11-23): Linear or
+    // Spline for it or for every point, one undo step each.
+    if (ImGui::BeginPopup("##GridPointMenu")) {
+        Quad* quad = quadManager.getPrimarySelectedQuad();
+        const int point = es.gridPointMenuVertex;
+        if (quad && quad->getGeometry().getMeshMode() == MeshMode::MESH_EDIT && point >= 0 &&
+            point < quad->getGeometry().getVertexCount()) {
+            QuadGeometry& g = quad->getGeometry();
+            const bool editable = !quad->isLocked() && !es.performLock.isOn();
+            auto step = [&](const char* name, auto&& change) {
+                const GridSnapshot before = captureGrid(g);
+                change();
+                pushGridChange(es.commandHistory, es.quadRef(*quad), name, before, captureGrid(g));
+            };
+            const bool linear = g.isVertexLinear(point);
+            ImGui::TextDisabled("Point %d", point + 1);
+            if (ImGui::MenuItem("Spline", nullptr, !linear, editable) && linear) {
+                step("Point Spline", [&] { g.setVertexLinear(point, false); });
+            }
+            if (ImGui::MenuItem("Linear", nullptr, linear, editable) && !linear) {
+                step("Point Linear", [&] { g.setVertexLinear(point, true); });
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("All points Spline", nullptr, false, editable)) {
+                step("All Points Spline", [&] { g.setAllVerticesLinear(false); });
+            }
+            if (ImGui::MenuItem("All points Linear", nullptr, false, editable)) {
+                step("All Points Linear", [&] { g.setAllVerticesLinear(true); });
+            }
+        } else {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     // Disable depth test for 2D rendering
     glDisable(GL_DEPTH_TEST);
 
@@ -770,7 +962,6 @@ void ViewportEditor::render(EditorContext& ctx) {
         glEnable(GL_DEPTH_TEST);
     };
 
-    // Render all quads
     if (m_renderer) {
         m_renderer->setViewTransform(glm::vec2(viewScaleX, viewScaleY),
                                      glm::vec2(viewOffsetX, viewOffsetY), canvasAspect);
@@ -794,6 +985,27 @@ void ViewportEditor::render(EditorContext& ctx) {
         // missing-media look.
         auto texturePtrs = buildQuadTextureMap(es, ctx.sourceManager, SurfaceView::Editor);
 
+        // Calibrating: the projector's output frame, no quad handles (TD-29). The
+        // calibration points are drawn over it by CalibrationPanel::drawCanvasOverlay.
+        if (calibrationView && m_outputManager) {
+            // The frame [0,1] on the framebuffer, in GL pixels (origin bottom-left).
+            const float left = regionX + viewOffsetX * regionW;
+            const float top = regionY + viewOffsetY * regionH;
+            const float right = left + viewScaleX * regionW;
+            const float bottom = top + viewScaleY * regionH;
+            const IVec2 frameMin(static_cast<int>(std::floor(left * dpiX)),
+                                 static_cast<int>(std::floor((winHeight - bottom) * dpiY)));
+            const IVec2 frameMax(static_cast<int>(std::ceil(right * dpiX)),
+                                 static_cast<int>(std::ceil((winHeight - top) * dpiY)));
+            drawCalibrationView(es, *m_renderer, *m_outputManager, *calibrationView, texturePtrs,
+                                frameMin, frameMax);
+            m_renderer->renderCanvasBorder(glm::vec4(0.45f, 0.45f, 0.5f, 0.9f), 1.0f);
+            m_renderer->endFrame();
+            m_renderer->resetViewTransform();
+            restoreViewport();
+            return;
+        }
+
         // 3D objects as the canvas's projector sees them (WYSIWYG with the output),
         // under the quads. The scissor limits the depth clear to the canvas region.
         glClear(GL_DEPTH_BUFFER_BIT);
@@ -801,6 +1013,14 @@ void ViewportEditor::render(EditorContext& ctx) {
                                       texturePtrs);
 
         m_renderer->renderQuads(quadManager, texturePtrs);
+        // Other scenes' quads as faint outlines (their grid too while in mesh edit).
+        for (const Quad& ghost : ghosts) {
+            Quad outline = ghost;
+            if (outline.getGeometry().getMeshMode() != MeshMode::MESH_EDIT) {
+                outline.getGeometry().setUniformGrid(1);  // the outline only
+            }
+            m_renderer->renderMeshGrid(outline, glm::vec4(1.0f, 0.55f, 0.15f, 0.55f), 1.5f);
+        }
         drawSliceInputOverlay(es, *m_renderer, m_outputManager);
 
         // Render handles for selected quad based on mode (none while calibrating, when

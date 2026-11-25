@@ -26,6 +26,16 @@ TEST(CameraDevicesTest, EnumerateDoesNotCrash) {
     SUCCEED() << "Found " << devices.size() << " capture device(s)";
 }
 
+// A name from a project file is opened only if Windows lists that device: FFmpeg reads
+// what follows a ':' as a second device.
+TEST(CameraSourceTest, ANameThatIsNotAListedDeviceIsNotOpened) {
+    for (const char* name : {"No Such Camera 6f1c", "No Such Camera 6f1c:audio=Microphone"}) {
+        CameraSource cam(name);
+        EXPECT_FALSE(cam.initialize()) << name;
+        EXPECT_FALSE(cam.isReady()) << name;
+    }
+}
+
 TEST(CameraSourceTest, OpensDefaultDeviceAndProducesFrame) {
     auto devices = enumerateCameraDevices();
     if (devices.empty()) {

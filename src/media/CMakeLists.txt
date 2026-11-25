@@ -7,8 +7,6 @@ add_library(quadmapper_media STATIC
     MediaItem.cpp
     ImageLoader.hpp
     ImageLoader.cpp
-    ThumbnailGenerator.hpp
-    ThumbnailGenerator.cpp
     FolderWatcher.hpp
     FolderWatcher.cpp
     ThumbnailCache.hpp

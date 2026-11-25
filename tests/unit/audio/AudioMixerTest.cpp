@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <new>
 #include <vector>
 #include <thread>
@@ -351,6 +352,18 @@ TEST_F(AudioMixerTest, RenderOfflineMixesSourcesAndAppliesTheMasterVolume) {
     EXPECT_NEAR(out[0], 0.25f, 1e-5);          // (0.25 + 0.25) x 0.5, left only
     EXPECT_NEAR(out[1], 0.0f, 1e-6);
     EXPECT_NEAR(out[511 * 2], 0.25f, 1e-5);
+}
+
+TEST_F(AudioMixerTest, ANonFiniteSampleFromASourceComesOutAsSilenceNotNaN) {
+    mixer->addSource(constantSource(std::nanf(""), 4096));
+    mixer->addSource(constantSource(std::numeric_limits<float>::infinity(), 4096));
+    mixer->addSource(constantSource(0.25f, 4096));
+    std::vector<float> out(512 * 2);
+    mixer->renderOffline(out.data(), 512, 0);
+    for (float v : out) {
+        ASSERT_TRUE(std::isfinite(v));
+        ASSERT_LE(std::fabs(v), 1.0f);
+    }
 }
 
 TEST_F(AudioMixerTest, MutedSourcesAndMasterStillConsumeSoTheyStayInStep) {

@@ -21,6 +21,8 @@ add_library(quadmapper_audio STATIC
     AudioAttachment.cpp
     AudioEngine.hpp
     AudioEngine.cpp
+    OfflineAudioMix.hpp
+    OfflineAudioMix.cpp
 )
 
 target_include_directories(quadmapper_audio

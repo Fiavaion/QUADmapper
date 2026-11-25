@@ -16,6 +16,8 @@ Quad* QuadManager::createQuad() {
 Quad* QuadManager::createQuad(const std::string& name) {
     auto quad = std::make_unique<Quad>();
     quad->setName(name);
+    // New quads warp linearly so snapped neighbours line up (ADR-058).
+    quad->getGeometry().setWarpMode(WarpMode::LINEAR);
     quad->setZOrder(static_cast<int>(quads_.size()));
 
     Quad* ptr = quad.get();
@@ -35,11 +37,7 @@ void QuadManager::deleteQuad(const UUID& id) {
         // Remove from selection
         selectedIds_.erase(id);
         if (primarySelectedId_.has_value() && *primarySelectedId_ == id) {
-            primarySelectedId_.reset();
-            // Select next available quad if any
-            if (!selectedIds_.empty()) {
-                primarySelectedId_ = *selectedIds_.begin();
-            }
+            primarySelectedId_ = firstSelectedInOrder();
         }
 
         quads_.erase(it);
@@ -106,6 +104,15 @@ Quad* QuadManager::quadAtPoint(const Vec2& p) const {
     return nullptr;
 }
 
+// In list order, not the set's: a set's first element is arbitrary, so the new primary
+// would differ from run to run.
+std::optional<UUID> QuadManager::firstSelectedInOrder() const {
+    for (const auto& quad : quads_) {
+        if (selectedIds_.count(quad->getId()) > 0) return quad->getId();
+    }
+    return std::nullopt;
+}
+
 void QuadManager::selectQuad(const UUID& id) {
     if (getQuad(id) == nullptr) {
         return;
@@ -120,11 +127,7 @@ void QuadManager::selectQuad(const UUID& id) {
 void QuadManager::deselectQuad(const UUID& id) {
     if (selectedIds_.erase(id) > 0) {
         if (primarySelectedId_.has_value() && *primarySelectedId_ == id) {
-            if (!selectedIds_.empty()) {
-                primarySelectedId_ = *selectedIds_.begin();
-            } else {
-                primarySelectedId_.reset();
-            }
+            primarySelectedId_ = firstSelectedInOrder();
         }
         notifySelectionChanged();
     }

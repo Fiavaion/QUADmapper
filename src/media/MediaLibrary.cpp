@@ -1,4 +1,5 @@
 #include "MediaLibrary.hpp"
+#include "FolderWalk.hpp"
 #include "core/Logger.hpp"
 #include <algorithm>
 #include <cctype>
@@ -17,7 +18,6 @@ static const std::vector<std::string> VIDEO_EXTENSIONS = {
 };
 
 MediaItem* MediaLibrary::addItem(const std::filesystem::path& path) {
-    // Check if path already exists
     if (hasPath(path)) {
         return nullptr;
     }
@@ -73,7 +73,6 @@ bool MediaLibrary::hasPath(const std::filesystem::path& path) const {
 int MediaLibrary::scanFolder(const std::filesystem::path& folder, bool recursive) {
     int count = 0;
 
-    // Check if folder exists and is a directory
     std::error_code ec;
     if (!std::filesystem::exists(folder, ec) || !std::filesystem::is_directory(folder, ec)) {
         return 0;
@@ -94,17 +93,10 @@ int MediaLibrary::scanFolder(const std::filesystem::path& folder, bool recursive
         }
     };
 
-    // Scan directory
     if (recursive) {
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(folder, ec)) {
-            if (ec) break;
-            processEntry(entry);
-        }
+        walkFolder<std::filesystem::recursive_directory_iterator>(folder, nullptr, processEntry);
     } else {
-        for (const auto& entry : std::filesystem::directory_iterator(folder, ec)) {
-            if (ec) break;
-            processEntry(entry);
-        }
+        walkFolder<std::filesystem::directory_iterator>(folder, nullptr, processEntry);
     }
 
     return count;
@@ -120,7 +112,6 @@ const std::vector<std::string>& MediaLibrary::getSupportedVideoExtensions() {
 
 bool MediaLibrary::isExtensionSupported(const std::string& extension) {
     std::string ext = extension;
-    // Add dot if not present
     if (!ext.empty() && ext[0] != '.') {
         ext = "." + ext;
     }
@@ -128,11 +119,9 @@ bool MediaLibrary::isExtensionSupported(const std::string& extension) {
     std::transform(ext.begin(), ext.end(), ext.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-    // Check image extensions
     for (const auto& imgExt : IMAGE_EXTENSIONS) {
         if (ext == imgExt) return true;
     }
-    // Check video extensions
     for (const auto& vidExt : VIDEO_EXTENSIONS) {
         if (ext == vidExt) return true;
     }
@@ -141,7 +130,6 @@ bool MediaLibrary::isExtensionSupported(const std::string& extension) {
 
 std::optional<MediaType> MediaLibrary::getTypeFromExtension(const std::string& extension) {
     std::string ext = extension;
-    // Add dot if not present
     if (!ext.empty() && ext[0] != '.') {
         ext = "." + ext;
     }

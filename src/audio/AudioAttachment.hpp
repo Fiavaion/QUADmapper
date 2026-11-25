@@ -73,8 +73,11 @@ enum class AudioAttachmentState {
  *
  * Destruction order (the teardown the audio thread relies on): the source is removed
  * from the mixer first — removeSource() returns only once no callback can reach it —
- * then the decode thread is joined, then the source, buffer and decoder are freed, all
- * on the control thread.
+ * then the decode thread is joined, then the source, buffer and decoder are freed.
+ * leaveMix() does the first step on the control thread; the rest may then run on any
+ * thread (AudioEngine frees attachments on a worker, so joining a decode thread busy
+ * in a seek never blocks a frame, TD-35). Without leaveMix() the destructor does it all
+ * and must run on the control thread.
  */
 class AudioAttachment {
 public:
@@ -85,6 +88,10 @@ public:
     AudioAttachment& operator=(const AudioAttachment&) = delete;
 
     void update(const AudioTransport& transport);
+
+    // Control thread: out of the mix for good (no callback can reach the source once it
+    // returns); update() must not be called again. The destructor may then run anywhere.
+    void leaveMix();
 
     AudioAttachmentState state() const { return state_.load(); }
     const std::filesystem::path& path() const { return path_; }
@@ -124,6 +131,7 @@ private:
 
     // Decode thread.
     void decodeLoop();
+    void decodeUntilStopped();
     void startSegment(const Request& request);
     // Push queued samples, decoding more as the queue empties; returns when the buffer
     // is full, the pass ended or a request arrived.
@@ -142,6 +150,7 @@ private:
 
     // Control thread state.
     bool registered_ = false;
+    bool left_ = false;           // leaveMix() ran: never registered again
     uint32_t generation_ = 0;
     Request requested_;           // the last request made
     uint64_t lastDiscontinuity_ = 0;

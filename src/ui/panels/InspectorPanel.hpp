@@ -1,41 +1,36 @@
 #pragma once
 
+#include "Panel.hpp"
 #include "SliceEditor.hpp"
 #include "core/Types.hpp"
 #include "core/UUID.hpp"
 
 #include <glm/glm.hpp>
 
+#include <functional>
 #include <string>
 
 namespace quadmapper {
 
 struct EditorContext;
-struct TextureBinding;
 class Quad;
 
-// Renders the context-sensitive "Properties" dockable window.
-// When ctx.es.showProperties is false, render() returns immediately.
-// Dispatches to one of three sub-renderers based on ctx.es.currentSelectionType:
-//   Quad    -> renderQuadProperties
-//   Output  -> renderOutputProperties
-//   Media   -> renderMediaProperties
-//
-// Does NOT inherit from Panel — the Panel::render() signature takes no arguments
-// and this panel requires a per-frame EditorContext (same approach as MainMenuBar
-// and QuadListPanel). The three static char buffers from the original inline block
-// are promoted to member variables to eliminate function-static state.
-class InspectorPanel {
+// The context-sensitive "Properties" dockable window. Dispatches on
+// ctx.es.currentSelectionType to the quad, output, media or object properties.
+class InspectorPanel : public Panel {
 public:
+    static constexpr const char* ID = "Properties";
+
     InspectorPanel() = default;
 
-    // Call once per frame inside the ImGui frame, after the dockspace.
-    void render(EditorContext& ctx);
+    const char* id() const override { return ID; }
+    void drawContent(EditorContext& ctx) override;
 
 private:
     void renderQuadProperties(EditorContext& ctx);
     void renderSimpleQuadProperties(EditorContext& ctx, Quad& quad);  // ADR-042 simple mode
-    void renderCropControls(EditorContext& ctx, TextureBinding& texBinding);
+    void renderGridWarpControls(EditorContext& ctx, Quad& quad);      // both modes
+    void renderCropControls(EditorContext& ctx, Quad& quad);
     void renderOutputProperties(EditorContext& ctx);
     void renderMediaProperties(EditorContext& ctx);
     void renderObjectProperties(EditorContext& ctx);  // 3D objects (ADR-052)
@@ -56,11 +51,16 @@ private:
     float objectScale_ = 1.0f;
 
     // Normalized position (0..1) for inserting a grid division (ADR-038 Tier 1).
-    float gridInsertPos_ = 0.5f;
 
     // The quad and media path the texture Path field last showed (followTexturePath).
     UUID pathFieldQuad_;
     std::string pathFieldPath_;
+
+    // The undo step the active quad drag or slider records when it is released (one
+    // drag is one step); empty while none is active. pendingStepQuad_ is the quad the
+    // Properties showed last frame, the one such a step belongs to.
+    std::function<void()> pendingStep_;
+    UUID pendingStepQuad_;
 };
 
 }  // namespace quadmapper

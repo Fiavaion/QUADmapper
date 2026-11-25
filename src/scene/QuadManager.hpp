@@ -89,7 +89,6 @@ public:
     // placed on top and selected. Returns nullptr if id is unknown or newId is taken.
     Quad* duplicateQuad(const UUID& id, const UUID& newId = UUID::generate());
 
-    // Generate unique name for new quad
     std::string generateUniqueName() const;
 
     // Callbacks for external notifications
@@ -100,6 +99,8 @@ public:
 
 private:
     void notifySelectionChanged();
+    // The selected quad that comes first in the list, or none.
+    std::optional<UUID> firstSelectedInOrder() const;
     int findQuadIndex(const UUID& id) const;
     void updateZOrders();
 

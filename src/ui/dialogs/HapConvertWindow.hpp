@@ -19,6 +19,8 @@ class HapConversion;
 
 class HapConvertWindow {
 public:
+    static constexpr const char* WINDOW_ID = "Convert to HAP##hapconvert";
+
     // A finished file to add to the media bin.
     using AddToBin = std::function<void(const std::filesystem::path&)>;
     // Move the show from original to converted; returns why not, or empty.
@@ -35,8 +37,10 @@ public:
     void start(const std::filesystem::path& source, hap::HapVariant variant);
     bool isConverting(const std::filesystem::path& source, hap::HapVariant variant) const;
 
-    /// Draw the window while it has conversions to show.
-    void render(const AddToBin& addToBin, const ReplaceInShow& replaceInShow);
+    /// Draw the window while it has conversions to show. While `showLocked` (the perform
+    /// lock) "Replace in show" is disabled; Cancel and Dismiss stay usable, since they
+    /// leave the show alone.
+    void render(const AddToBin& addToBin, const ReplaceInShow& replaceInShow, bool showLocked);
 
 private:
     struct Job {

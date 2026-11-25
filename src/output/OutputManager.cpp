@@ -77,6 +77,21 @@ void OutputManager::shutdown() {
     }
     outputs_.clear();
 
+    // What was kept per output or per session goes with them: a second initialize()
+    // starts clean.
+    sceneFades_.clear();
+    knownSizes_.clear();
+    endIdentify();
+    placedByHotplug_.clear();
+    lastPresents_.clear();
+    presentedRefresh_.clear();
+    mixedRefreshNotice_.clear();
+    failedFrameSizes_.clear();
+    canvasScenes_.clear();
+    maxTextureSize_ = 0;  // the next main window's context is asked again
+    blackout_ = false;
+    performExitPending_ = false;
+
     mainWindow_ = nullptr;
     outputCounter_ = 0;
 
@@ -99,7 +114,6 @@ OutputWindow* OutputManager::createOutput(const std::string& name) {
     }
     output->setName(outputName);
 
-    // Create the GLFW window if manager is initialized
     if (mainWindow_ != nullptr) {
         auto result = output->create(mainWindow_);
         if (!result) {
@@ -421,8 +435,97 @@ void OutputManager::resolveOutputs() {
     }
 }
 
+const OutputWindow* OutputManager::onlyScreenPreview(
+        const std::vector<MonitorInfo>& monitors,
+        const std::vector<std::unique_ptr<OutputWindow>>& outputs) {
+    if (monitors.size() != 1) return nullptr;
+    for (const auto& output : outputs) {
+        if (output->isEnabled() && output->getMonitor() == 0) return nullptr;  // taken
+    }
+    for (const auto& output : outputs) {
+        if (output->isEnabled() && output->isMonitorAutomatic() && output->getMonitor() < 0) {
+            return output.get();
+        }
+    }
+    return nullptr;
+}
+
+std::vector<int> OutputManager::displaysWithoutOutput(
+        const std::vector<MonitorInfo>& monitors,
+        const std::vector<std::unique_ptr<OutputWindow>>& outputs, int editorMonitor,
+        bool includeEditorScreen) {
+    auto used = [&outputs](int i) {
+        return std::any_of(outputs.begin(), outputs.end(),
+            [i](const std::unique_ptr<OutputWindow>& o) { return o && o->getMonitor() == i; });
+    };
+    const int count = static_cast<int>(monitors.size());
+    std::vector<int> displays;
+    for (int i = 0; i < count; ++i) {
+        if (i != editorMonitor && !used(i)) displays.push_back(i);
+    }
+    if (includeEditorScreen && count > 1 && editorMonitor >= 0 && editorMonitor < count &&
+        !used(editorMonitor)) {
+        displays.push_back(editorMonitor);
+    }
+    return displays;
+}
+
+std::string OutputManager::nextProjectorName(const std::vector<std::unique_ptr<OutputWindow>>& outputs) {
+    for (int n = 1; ; ++n) {
+        const std::string name = "Projector " + std::to_string(n);
+        const bool taken = std::any_of(outputs.begin(), outputs.end(),
+            [&name](const std::unique_ptr<OutputWindow>& o) { return o && o->getName() == name; });
+        if (!taken) return name;
+    }
+}
+
+std::vector<OutputWindow*> OutputManager::addOutputsForUnusedDisplays(bool includeEditorScreen) {
+    std::vector<OutputWindow*> added;
+    if (performMode_) return added;
+    resolveOutputs();  // an output waiting for a display takes it first
+    const bool hadNone = outputs_.empty();
+    const int editorMonitor = editorMonitorIndex();
+    for (int index : displaysWithoutOutput(monitors_, outputs_, editorMonitor, includeEditorScreen)) {
+        OutputWindow* output = createOutput(nextProjectorName(outputs_));
+        if (!output) continue;
+        // The very first output stays Automatic; it resolves to this display below,
+        // since every other new output is chosen for its own. Automatic never picks
+        // the editor's screen, so that screen's output is always chosen.
+        if (!(hadNone && added.empty()) || index == editorMonitor) assignMonitor(*output, index);
+        added.push_back(output);
+        LOG_INFO("Display '{}' found: added output '{}'", monitors_[index].name, output->getName());
+    }
+    resolveOutputs();
+    for (OutputWindow* output : added) adoptDisplayResolution(*output);
+    return added;
+}
+
+std::vector<UUID> OutputManager::takeOutputsPlacedByHotplug() {
+    std::vector<UUID> placed;
+    placed.swap(placedByHotplug_);
+    return placed;
+}
+
+bool OutputManager::adoptDisplayResolution(OutputWindow& output) {
+    const MonitorInfo* monitor = getMonitor(output.getMonitor());
+    if (monitor == nullptr || monitor->resolution.x <= 0 || monitor->resolution.y <= 0 ||
+        output.getResolution() == monitor->resolution) {
+        return false;
+    }
+    output.setResolution(monitor->resolution);
+    if (output.isCreated()) {
+        auto result = output.applyResolution();
+        if (!result) {
+            LOG_WARNING("Output '{}': could not apply {}x{}: {}", output.getName(),
+                        monitor->resolution.x, monitor->resolution.y, result.error().message);
+        }
+    }
+    return true;
+}
+
 std::string OutputManager::describeMonitorChoice(const std::vector<MonitorInfo>& monitors,
-                                                const OutputWindow& output) {
+                                                const OutputWindow& output,
+                                                bool previewsOnOnlyScreen) {
     const int current = output.getMonitor();
     if (current >= 0 && static_cast<size_t>(current) < monitors.size()) {
         std::string label = monitors[current].getDisplayString();
@@ -431,6 +534,9 @@ std::string OutputManager::describeMonitorChoice(const std::vector<MonitorInfo>&
     }
     const MonitorIdentity& desired = output.getDesiredMonitor();
     if (!desired.name.empty()) return desired.name + " (not connected)";
+    if (previewsOnOnlyScreen && monitors.size() == 1) {
+        return monitors[0].getDisplayString() + " (automatic: the only display)";
+    }
     return "Not connected";
 }
 
@@ -480,15 +586,30 @@ bool OutputManager::showOnResolvedMonitor(OutputWindow& output) {
     }
     LOG_INFO("Output '{}' {} on monitor {}", output.getName(),
              useBorderlessFullscreen_ ? "borderless fullscreen" : "fullscreen", monitorIndex);
+    // An output whose window was made after the show started has no keys yet: Esc,
+    // F11, blackout and the scene takes must work on it too.
+    if (performMode_) setPerformModeKeyCallback(output);
     return true;
 }
 
 Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
     if (performMode_) {
-        return Ok();  // Already in perform mode
+        // Asked for again (a Gray-code scan, a calibration) while Identify holds perform
+        // mode: it now stays on when Identify ends.
+        identifyLeavesPerform_ = false;
+        return Ok();
+    }
+
+    if (performRefusal_) {
+        const std::string reason = performRefusal_();
+        if (!reason.empty()) {
+            notify(reason);
+            return Err(reason);
+        }
     }
 
     if (outputs_.empty()) {
+        notify("Perform mode needs an output: add one in the Outputs tab");
         return Err("No outputs to display in perform mode");
     }
 
@@ -502,6 +623,8 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
     useBorderlessFullscreen_ = borderless;
     bool anySucceeded = false;
 
+    const OutputWindow* preview = onlyScreenPreview(monitors_, outputs_);
+    bool reasonShown = false;
     for (auto& output : outputs_) {
         if (!output->isEnabled()) {
             continue;
@@ -512,11 +635,13 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
             continue;
         }
 
+        if (output.get() == preview) {
+            output->setMonitor(0);
+        }
         if (output->getMonitor() < 0) {
-            // Never fall back onto the operator's own screen by itself; say how to do it
-            // on purpose (e.g. rehearsing on a laptop with no projector attached).
-            notify("Projector '" + output->getName() + "' not connected; its output is not shown."
-                   " To preview it on this screen, pick this display for it in Outputs.");
+            notify("Projector '" + output->getName() + "' has no display; its output is not shown."
+                   " Choose one for it in the Outputs tab.");
+            reasonShown = true;
             continue;
         }
         if (showOnResolvedMonitor(*output)) {
@@ -525,6 +650,8 @@ Result<void, Error> OutputManager::enterPerformMode(bool borderless) {
     }
 
     if (!anySucceeded) {
+        // The status line holds one message: the one naming the projector stays.
+        if (!reasonShown) notify("Perform mode did not start: no output could be shown on a display");
         return Err("Failed to put any outputs in fullscreen mode");
     }
 
@@ -557,7 +684,6 @@ Result<void, Error> OutputManager::exitPerformMode() {
             continue;
         }
 
-        // Return to windowed mode
         auto result = output->goWindowed();
         if (!result) {
             LOG_WARNING("Failed to return output '{}' to windowed mode: {}",
@@ -570,6 +696,7 @@ Result<void, Error> OutputManager::exitPerformMode() {
 
     performMode_ = false;
     performExitPending_ = false;  // a request made before this exit is spent
+    endIdentify();  // the projectors are gone: nothing left to identify
 
     // No output paces the loop any more; the editor is vsync'd again.
     setEditorSwapInterval(1);
@@ -583,6 +710,42 @@ Result<void, Error> OutputManager::togglePerformMode(bool borderless) {
         return exitPerformMode();
     } else {
         return enterPerformMode(borderless);
+    }
+}
+
+bool OutputManager::identifyOutputs() {
+    if (!performMode_) {
+        if (!enterPerformMode(useBorderlessFullscreen_)) return false;
+        identifyLeavesPerform_ = true;
+    }
+    identifyUntil_ = frameTime_ + IDENTIFY_SECONDS;
+    return true;
+}
+
+void OutputManager::retireIdentify() {
+    if (!isIdentifying() || frameTime_ < identifyUntil_) return;
+    if (identifyLeavesPerform_) {
+        exitPerformMode();  // ends Identify too
+    } else {
+        endIdentify();
+    }
+}
+
+void OutputManager::endIdentify() {
+    identifyUntil_ = 0.0;
+    identifyLeavesPerform_ = false;
+    identifyOverlays_.clear();
+}
+
+void OutputManager::renderIdentifyOverlay(const OutputWindow& output, int number, IVec2 size,
+                                          Renderer& renderer) {
+    IdentifyOverlay& overlay = identifyOverlays_[output.getId()];
+    if (overlay.quads.empty() || overlay.number != number || overlay.size != size) {
+        overlay = IdentifyOverlay{number, size, makeIdentifyOverlay(number, size)};
+    }
+    glDisable(GL_DEPTH_TEST);  // over the scene's 3D objects too
+    for (const Quad& quad : overlay.quads) {
+        renderer.renderQuad(quad, nullptr, /*selected=*/false);
     }
 }
 
@@ -626,6 +789,65 @@ std::vector<Quad> makeBlendTestPattern() {
     // brighter or darker stripe in flat white.
     rect(0.0f, 4.0f / ROWS, 1.0f, 5.0f / ROWS);
     rect(7.0f / COLUMNS, 0.0f, 9.0f / COLUMNS, 1.0f);
+    return quads;
+}
+
+std::vector<Quad> makeIdentifyOverlay(int number, IVec2 frameSize) {
+    const float w = static_cast<float>(std::max(frameSize.x, 1));
+    const float h = static_cast<float>(std::max(frameSize.y, 1));
+    std::vector<Quad> quads;
+    // A rectangle given in pixels of the frame, stored normalized.
+    auto rect = [&](float x0, float y0, float x1, float y1) {
+        Quad quad;
+        quad.setName("Identify");
+        quad.getGeometry().setCorners({Vec2(x0 / w, y0 / h), Vec2(x1 / w, y0 / h),
+                                       Vec2(x1 / w, y1 / h), Vec2(x0 / w, y1 / h)});
+        quads.push_back(std::move(quad));
+    };
+
+    const std::string digits = std::to_string(std::clamp(number, 0, 99));
+    // Digits sized to the frame, centred, on a panel a little larger.
+    const float digitH = std::min(h * 0.4f, w * 0.3f);
+    const float digitW = digitH * 0.5f;
+    const float t = digitH * 0.12f;  // segment thickness
+    const float gap = digitW * 0.3f;
+    const float pad = digitH * 0.15f;
+    const float count = static_cast<float>(digits.size());
+    const float textW = count * digitW + (count - 1.0f) * gap;
+    const float left = (w - textW) * 0.5f;
+    const float top = (h - digitH) * 0.5f;
+    rect(left - pad, top - pad, left + textW + pad, top + digitH + pad);
+
+    // The frame's edge, so the projector's extent shows.
+    const float edge = std::max(4.0f, std::min(w, h) * 0.008f);
+    rect(0.0f, 0.0f, w, edge);
+    rect(0.0f, h - edge, w, h);
+    rect(0.0f, edge, edge, h - edge);
+    rect(w - edge, edge, w, h - edge);
+
+    // Segments a b c d e f g, as bits 0-6.
+    static constexpr std::array<unsigned char, 10> SEGMENTS = {
+        0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
+    for (size_t i = 0; i < digits.size(); ++i) {
+        const unsigned char on = SEGMENTS[static_cast<size_t>(digits[i] - '0')];
+        const float x0 = left + static_cast<float>(i) * (digitW + gap);
+        const float x1 = x0 + digitW;
+        const float y0 = top;
+        const float ym = top + digitH * 0.5f;
+        const float y1 = top + digitH;
+        if (on & 0x01) rect(x0, y0, x1, y0 + t);                    // a: top
+        if (on & 0x02) rect(x1 - t, y0, x1, ym + t * 0.5f);         // b: top right
+        if (on & 0x04) rect(x1 - t, ym - t * 0.5f, x1, y1);         // c: bottom right
+        if (on & 0x08) rect(x0, y1 - t, x1, y1);                    // d: bottom
+        if (on & 0x10) rect(x0, ym - t * 0.5f, x0 + t, y1);         // e: bottom left
+        if (on & 0x20) rect(x0, y0, x0 + t, ym + t * 0.5f);         // f: top left
+        if (on & 0x40) rect(x0, ym - t * 0.5f, x1, ym + t * 0.5f);  // g: middle
+    }
+    // The panel: dark and nearly opaque, so the number reads over any picture.
+    ColorCorrection dark;
+    dark.rgbGain = Vec3(0.0f);
+    quads[0].setColorCorrection(dark);
+    quads[0].setOpacity(0.85f);
     return quads;
 }
 
@@ -820,7 +1042,7 @@ void OutputManager::renderCanvases(const std::vector<std::unique_ptr<Scene>>& sc
             ++it;
         }
     }
-    if (blackout_) {
+    if (blackout_ && !exportRendering_) {
         return;  // every frame is black; the canvases are kept for when it lifts
     }
 
@@ -940,15 +1162,14 @@ void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>
         }
         return nullptr;
     };
-    renderFrames(renderer, [&](const OutputWindow& output, IVec2 effectiveSize) {
+    auto drawScene = [&](const OutputWindow& output, IVec2 effectiveSize) {
         const Scene* scene = sceneForOutput(scenes, output);
         if (!scene) {
             return;
         }
         const SceneFade* fade = sceneFade(output);
         if (!fade) {
-            renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures);
-            renderSceneSlices(output, *scene, effectiveSize, nullptr, renderer);
+            renderSceneFrame(output, *scene, effectiveSize, textures, renderer);
             return;
         }
         Renderer::SliceFade sliceFade;
@@ -971,7 +1192,25 @@ void OutputManager::renderOutputFrames(const std::vector<std::unique_ptr<Scene>>
         sliceFade.from = outgoing(from);
         sliceFade.fromNext = outgoing(fromNext);
         renderSceneSlices(output, *scene, effectiveSize, &sliceFade, renderer);
+    };
+    renderFrames(renderer, [&](const OutputWindow& output, IVec2 effectiveSize) {
+        drawScene(output, effectiveSize);
+        if (!isIdentifying() || exportRendering_) return;
+        for (size_t i = 0; i < outputs_.size(); ++i) {
+            if (outputs_[i].get() == &output) {
+                renderIdentifyOverlay(output, static_cast<int>(i) + 1, effectiveSize, renderer);
+                break;
+            }
+        }
     });
+}
+
+void OutputManager::renderSceneFrame(const OutputWindow& output, const Scene& scene,
+                                     IVec2 effectiveSize,
+                                     const std::unordered_map<UUID, Texture*>& textures,
+                                     Renderer& renderer) {
+    renderer.renderMeshObjects(scene.getObjects(), output.getProjector(), textures);
+    renderSceneSlices(output, scene, effectiveSize, nullptr, renderer);
 }
 
 void OutputManager::renderSceneSlices(const OutputWindow& output, const Scene& scene,
@@ -1027,8 +1266,7 @@ bool OutputManager::renderFadeLayers(const OutputWindow& output, IVec2 effective
         layer->bind();
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        renderer.renderMeshObjects(scene->getObjects(), output.getProjector(), textures);
-        renderSceneSlices(output, *scene, effectiveSize, nullptr, renderer);
+        renderSceneFrame(output, *scene, effectiveSize, textures, renderer);
         textureOf[i] = layer->colorTexture();
     }
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(frameFbo));
@@ -1054,14 +1292,21 @@ bool OutputManager::renderFadeLayers(const OutputWindow& output, IVec2 effective
 }
 
 void OutputManager::renderPatternFrames(const Quad& patternQuad, const Texture* texture,
-                                        Renderer& renderer) {
+                                        Renderer& renderer, const UUID& only) {
     // One fullscreen identity quad carrying the calibration texture.
-    renderFrames(renderer, [&](const OutputWindow&, IVec2) {
+    renderFrames(renderer, [&](const OutputWindow& output, IVec2) {
+        if (!only.isNull() && output.getId() != only) return;  // left black
         renderer.renderQuad(patternQuad, texture, /*selected=*/false);
     });
 }
 
-IVec2 OutputManager::frameSize(const OutputWindow& output) {
+IVec2 OutputManager::exportFrameSize(const OutputWindow& output) {
+    const IVec2 r = output.getResolution();
+    return IVec2(std::max(r.x, 2) & ~1, std::max(r.y, 2) & ~1);
+}
+
+IVec2 OutputManager::frameSize(const OutputWindow& output) const {
+    if (exportRendering_) return exportFrameSize(output);
     if (output.isCreated()) {
         int width = 0, height = 0;
         glfwGetFramebufferSize(output.getGLFWwindow(), &width, &height);
@@ -1097,6 +1342,7 @@ void OutputManager::renderFrames(
     // Drop the frames of outputs that no longer exist.
     for (auto it = frames_.begin(); it != frames_.end();) {
         if (!getOutput(it->first)) {
+            failedFrameSizes_.erase(it->first);
             it = frames_.erase(it);
         } else {
             ++it;
@@ -1111,14 +1357,24 @@ void OutputManager::renderFrames(
         }
         const IVec2 size = frameSize(*output);
         if (!frame->resize(size.x, size.y)) {
+            auto& failed = failedFrameSizes_[output->getId()];
+            if (failed != size) {
+                failed = size;
+                LOG_ERROR("Output '{}': cannot allocate its {}x{} frame; its projector shows black",
+                          output->getName(), size.x, size.y);
+                notify("Projector '" + output->getName() + "': not enough video memory for " +
+                       std::to_string(size.x) + "x" + std::to_string(size.y) +
+                       "; lower its resolution in Outputs");
+            }
             continue;
         }
+        failedFrameSizes_.erase(output->getId());
 
         frame->bind();  // also sets the viewport to the frame size
         glDisable(GL_DEPTH_TEST);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        if (blackout_) {
+        if (blackout_ && !exportRendering_) {
             continue;  // the projector shows black, and so does its preview
         }
         const Rotation rotation = output->getRotation();
@@ -1196,7 +1452,8 @@ void OutputManager::presentOutputs() {
         // Black unless there is a frame to show (in blackout the frame is black).
         const Framebuffer* frame = outputFrame(output->getId());
         bool shown = false;
-        if (frame != nullptr) {
+        // Blackout: black, also over an export's frame (drawn without blackout).
+        if (frame != nullptr && !blackout_) {
             if (framesDrawn_ != nullptr) {
                 glWaitSync(framesDrawn_, 0, GL_TIMEOUT_IGNORED);
             }
@@ -1346,10 +1603,26 @@ void OutputManager::reresolveOutputs(bool refreshMonitorList) {
         }
     }
 
+    std::vector<UUID> waiting;  // Automatic outputs with no display before a hotplug
+    for (const auto& output : outputs_) {
+        if (output->getMonitor() < 0 && output->isMonitorAutomatic()) {
+            waiting.push_back(output->getId());
+        }
+    }
+
     if (refreshMonitorList) {
         refreshMonitors();
     }
     resolveOutputs();
+    if (refreshMonitorList) {
+        for (const UUID& id : waiting) {
+            const OutputWindow* output = getOutput(id);
+            if (output != nullptr && output->getMonitor() >= 0 &&
+                std::find(placedByHotplug_.begin(), placedByHotplug_.end(), id) == placedByHotplug_.end()) {
+                placedByHotplug_.push_back(id);
+            }
+        }
+    }
     if (!performMode_) {
         return;
     }
@@ -1387,7 +1660,7 @@ void OutputManager::handleF11Key() {
     // so a single F11 press immediately sends the scene fullscreen to a projector.
     if (!performMode_ && outputs_.empty()) {
         // No monitor is chosen: enterPerformMode picks the first display that is
-        // not the editor's.
+        // not the editor's, or the editor's when it is the only one.
         OutputWindow* output = createOutput("Projector 1");
         if (output) {
             LOG_INFO("F11 auto-created output '{}'", output->getName());
@@ -1434,10 +1707,14 @@ void OutputManager::setupPerformModeKeyCallbacks() {
         if (!output->isCreated()) {
             continue;
         }
-        output->setKeyCallback([this](int key, int /*scancode*/, int action, int mods) {
-            handleOutputWindowKey(key, action, mods);
-        });
+        setPerformModeKeyCallback(*output);
     }
+}
+
+void OutputManager::setPerformModeKeyCallback(OutputWindow& output) {
+    output.setKeyCallback([this](int key, int /*scancode*/, int action, int mods) {
+        handleOutputWindowKey(key, action, mods);
+    });
 }
 
 int OutputManager::sceneTakeNumber(int key, int action, int mods) {

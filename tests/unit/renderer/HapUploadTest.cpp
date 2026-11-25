@@ -31,8 +31,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -119,6 +122,32 @@ TEST(HapUploadTest, SyntheticCompressedUploadNoGlError) {
     }
 }
 
+// A level of the wrong size is refused with nothing uploaded; the right size still works.
+TEST(HapUploadTest, CompressedUploadOfTheWrongSizeIsRefused) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    auto& caps = GpuCapabilities::get();
+    caps.queryOnce();
+    if (!caps.s3tc) GTEST_SKIP() << "GPU lacks GL_EXT_texture_compression_s3tc";
+    while (glGetError() != GL_NO_ERROR) {}
+
+    const int W = 64, H = 32;
+    const size_t bytes = blockBytes(W, H, /*dxt1=*/false);
+    EXPECT_EQ(Texture::compressedByteSize(GpuCompressedFormat::BC3_YCoCg, W, H), bytes);
+    EXPECT_EQ(Texture::compressedByteSize(GpuCompressedFormat::BC1_RGB, W, H), blockBytes(W, H, /*dxt1=*/true));
+    EXPECT_EQ(Texture::compressedByteSize(GpuCompressedFormat::BC1_RGB, 5, 5), 4u * 8u);
+
+    std::vector<unsigned char> blob(bytes, 0x11);
+    Texture tex;
+    EXPECT_FALSE(tex.createCompressed(W, H, GpuCompressedFormat::BC3_RGBA, blob.data(), bytes - 16));
+    EXPECT_FALSE(tex.isValid());
+    ASSERT_TRUE(tex.createCompressed(W, H, GpuCompressedFormat::BC3_RGBA, blob.data(), bytes));
+    EXPECT_FALSE(tex.updateCompressed(blob.data(), bytes - 16));
+    EXPECT_FALSE(tex.updateCompressed(blob.data(), bytes + 16));
+    EXPECT_TRUE(tex.updateCompressed(blob.data(), bytes));
+    EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+}
+
 // TD-31: frames go up through the source's pixel buffers, copied there off the main
 // thread. Each texture holds exactly the frame uploaded, whether prefetch() staged it
 // (the next frame, as in steady playback) or not (a seek or a dropped frame), and no
@@ -169,6 +198,68 @@ TEST(HapUploadTest, PixelBufferUploadsMatchTheFrameWithAndWithoutPrefetch) {
     EXPECT_EQ(f1.use_count(), 1);
     EXPECT_EQ(f2.use_count(), 1);
     EXPECT_EQ(f4.use_count(), 1);
+}
+
+// TD-35: as YuvUploadState::idle(): never waits; false while the state's copy runs, true
+// once it is done; a copy queued behind another state's is dropped and never runs.
+TEST(HapUploadTest, IdleNeverWaitsForACopyInFlightAndDropsAQueuedOne) {
+    GLContext ctx;
+    if (!ctx.ok) GTEST_SKIP() << "No GL 3.3 context available";
+    auto& caps = GpuCapabilities::get();
+    caps.queryOnce();
+    if (!caps.s3tc) GTEST_SKIP() << "GPU lacks GL_EXT_texture_compression_s3tc";
+    while (glGetError() != GL_NO_ERROR) {}
+
+    const int W = 64, H = 32;
+    const size_t bytes = blockBytes(W, H, /*dxt1=*/false);
+    auto frame = [bytes](int seed) {
+        auto blob = std::make_shared<std::vector<uint8_t>>(bytes);
+        for (size_t i = 0; i < bytes; ++i) (*blob)[i] = static_cast<uint8_t>(i * 7 + seed * 31);
+        return std::shared_ptr<const std::vector<uint8_t>>(blob);
+    };
+    std::atomic<int> copiesStarted{0};
+    std::atomic<bool> release{true};
+    CompressedUploader::setCopyHookForTesting([&] {
+        ++copiesStarted;
+        while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    });
+    {
+        Texture tex;
+        ASSERT_TRUE(tex.createCompressed(W, H, GpuCompressedFormat::BC3_RGBA, nullptr, bytes));
+        CompressedUploader uploader;
+        auto running = std::make_unique<CompressedUploadState>();
+        auto queued = std::make_unique<CompressedUploadState>();
+        const auto f1 = frame(1), f2 = frame(2);
+        ASSERT_TRUE(uploader.upload(f1, tex, *running));
+        ASSERT_TRUE(uploader.upload(f1, tex, *queued));
+        EXPECT_TRUE(running->idle());  // nothing staged
+
+        copiesStarted = 0;
+        release = false;
+        uploader.prefetch(f2, *running);  // starts, and blocks in the hook
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (copiesStarted == 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ASSERT_EQ(copiesStarted, 1);
+        uploader.prefetch(f2, *queued);  // queued behind it
+
+        const auto asked = std::chrono::steady_clock::now();
+        EXPECT_FALSE(running->idle()) << "its copy is running";
+        EXPECT_TRUE(queued->idle()) << "a queued copy is dropped";
+        EXPECT_LT(std::chrono::steady_clock::now() - asked, std::chrono::milliseconds(100)) << "idle() waited";
+        queued.reset();
+
+        release = true;
+        while (!running->idle() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_TRUE(running->idle());
+        running.reset();
+        EXPECT_EQ(copiesStarted, 1) << "the dropped copy ran anyway";
+        EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+    }
+    CompressedUploader::setCopyHookForTesting(nullptr);
 }
 
 TEST(HapUploadTest, CapabilityQueryReportsExtensions) {

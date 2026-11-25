@@ -2,6 +2,7 @@
 
 #include "core/FileSystem.hpp"
 #include "core/Logger.hpp"
+#include "core/MediaLimits.hpp"
 
 #include <algorithm>
 #include <string>
@@ -18,6 +19,7 @@ extern "C" {
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
+#include "LocalMediaInput.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -143,7 +145,7 @@ private:
 
     bool openInput(const fs::path& source, std::string& error) {
         const std::string url = utf8FromPath(source);
-        if (avformat_open_input(&in_, url.c_str(), nullptr, nullptr) < 0) {
+        if (openLocalMediaInput(&in_, url.c_str()) < 0) {
             error = "The file could not be opened.";
             return false;
         }
@@ -173,6 +175,10 @@ private:
         height_ = videoDec_->height;
         if (width_ <= 0 || height_ <= 0) {
             error = "The video has no picture size.";
+            return false;
+        }
+        if (const std::string tooLarge = pictureSizeProblem(width_, height_); !tooLarge.empty()) {
+            error = "The video's picture size, " + tooLarge + ".";
             return false;
         }
 
@@ -407,7 +413,10 @@ private:
         }
         uint8_t* planes[4] = {rgba_.data(), nullptr, nullptr, nullptr};
         int strides[4] = {width_ * 4, 0, 0, 0};
-        sws_scale(sws_, frame->data, frame->linesize, 0, frame->height, planes, strides);
+        if (sws_scale(sws_, frame->data, frame->linesize, 0, frame->height, planes, strides) <= 0) {
+            error = std::string("A ") + av_get_pix_fmt_name(format) + " frame could not be converted.";
+            return false;
+        }
 
         const std::vector<uint8_t> hapFrame = hap::encodeHapFrame(
             rgba_.data(), width_, height_, static_cast<size_t>(width_) * 4, variant_, threads_);

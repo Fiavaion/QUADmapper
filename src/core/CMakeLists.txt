@@ -2,21 +2,16 @@
 
 add_library(quadmapper_core STATIC
     Types.hpp
+    Version.hpp
     Result.hpp
     UUID.hpp
     UUID.cpp
     Logger.hpp
     Logger.cpp
-    Timer.hpp
-    Timer.cpp
     FileSystem.hpp
     FileSystem.cpp
     CommandHistory.hpp
     CommandHistory.cpp
-    PerformanceMonitor.hpp
-    PerformanceMonitor.cpp
-    ErrorNotification.hpp
-    ErrorNotification.cpp
     GlObjectStats.hpp
     GlObjectStats.cpp
 )
@@ -30,6 +25,12 @@ target_include_directories(quadmapper_core
 target_link_libraries(quadmapper_core
     PUBLIC
         glm::glm
+)
+
+# Version.hpp: the version is set once, by project(VERSION) in the root CMakeLists.txt.
+target_compile_definitions(quadmapper_core
+    PUBLIC
+        QUADMAPPER_VERSION="${PROJECT_VERSION}"
 )
 
 set_target_properties(quadmapper_core PROPERTIES

@@ -1,14 +1,76 @@
 #include "FileSystem.hpp"
 #include <fstream>
+#include <new>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shlobj.h>   // SHGetKnownFolderPath
 #endif
 
 namespace quadmapper {
+
+namespace {
+
+// <base>/QUADmapper, created; the temp folder when the base is unknown.
+std::filesystem::path appFolderUnder(std::filesystem::path base) {
+    std::error_code ec;
+    if (base.empty()) base = std::filesystem::temp_directory_path(ec);
+    base /= "QUADmapper";
+    std::filesystem::create_directories(base, ec);
+    return base;
+}
+
+#ifdef _WIN32
+std::filesystem::path knownFolder(REFKNOWNFOLDERID id) {
+    PWSTR raw = nullptr;
+    std::filesystem::path dir;
+    if (SUCCEEDED(SHGetKnownFolderPath(id, 0, nullptr, &raw))) dir = raw;  // wide: no code-page narrowing
+    CoTaskMemFree(raw);  // required even when the call fails; null is a no-op
+    return dir;
+}
+#endif
+
+}  // namespace
+
+std::filesystem::path executableDir() {
+#ifdef _WIN32
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0) break;
+        if (length < buffer.size()) {
+            buffer.resize(length);
+            return std::filesystem::path(buffer).parent_path();
+        }
+        buffer.resize(buffer.size() * 2);  // a long path was cut short: ask again
+    }
+#endif
+    std::error_code ec;
+    return std::filesystem::current_path(ec);
+}
+
+std::filesystem::path resourcePath(const std::string& relative) {
+    return executableDir() / "resources" / pathFromUtf8(relative);
+}
+
+std::filesystem::path userConfigDir() {
+#ifdef _WIN32
+    return appFolderUnder(knownFolder(FOLDERID_RoamingAppData));
+#else
+    return appFolderUnder({});
+#endif
+}
+
+std::filesystem::path userLocalDir() {
+#ifdef _WIN32
+    return appFolderUnder(knownFolder(FOLDERID_LocalAppData));
+#else
+    return appFolderUnder({});
+#endif
+}
 
 std::filesystem::path pathFromUtf8(const std::string& utf8) {
     return std::filesystem::u8path(utf8);
@@ -18,15 +80,24 @@ std::string utf8FromPath(const std::filesystem::path& path) {
     return path.u8string();
 }
 
-Result<std::string, Error> FileSystem::readFile(const std::filesystem::path& path) {
+Result<std::string, Error> FileSystem::readFile(const std::filesystem::path& path, size_t maxBytes) {
     std::ifstream file(path, std::ios::in);
     if (!file) {
         return Err<std::string>("Failed to open file: " + path.u8string());
     }
+    std::error_code ec;
+    const std::uintmax_t size = std::filesystem::file_size(path, ec);
+    if (!ec && size > maxBytes) {
+        return Err<std::string>("File is too large: " + path.u8string());
+    }
 
-    std::string content((std::istreambuf_iterator<char>(file)),
-                        std::istreambuf_iterator<char>());
-    return Ok(std::move(content));
+    try {
+        std::string content((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+        return Ok(std::move(content));
+    } catch (const std::bad_alloc&) {
+        return Err<std::string>("Not enough memory to read file: " + path.u8string());
+    }
 }
 
 Result<void, Error> FileSystem::writeFile(const std::filesystem::path& path, const std::string& content) {
@@ -110,43 +181,47 @@ Result<void, Error> FileSystem::writeFileAtomic(const std::filesystem::path& pat
     return Ok();
 }
 
-Result<std::vector<uint8_t>, Error> FileSystem::readBinaryFile(const std::filesystem::path& path) {
+Result<std::vector<uint8_t>, Error> FileSystem::readBinaryFile(const std::filesystem::path& path,
+                                                               size_t maxBytes) {
     std::ifstream file(path, std::ios::in | std::ios::binary);
     if (!file) {
         return Err<std::vector<uint8_t>>("Failed to open file: " + path.u8string());
     }
 
     file.seekg(0, std::ios::end);
-    auto size = file.tellg();
+    const std::streamoff size = file.tellg();
     file.seekg(0, std::ios::beg);
+    if (size < 0) {
+        return Err<std::vector<uint8_t>>("Failed to read file: " + path.u8string());
+    }
+    if (static_cast<std::uintmax_t>(size) > maxBytes) {
+        return Err<std::vector<uint8_t>>("File is too large: " + path.u8string());
+    }
 
-    std::vector<uint8_t> data(size);
+    std::vector<uint8_t> data;
+    try {
+        data.resize(static_cast<size_t>(size));
+    } catch (const std::bad_alloc&) {
+        return Err<std::vector<uint8_t>>("Not enough memory to read file: " + path.u8string());
+    }
     file.read(reinterpret_cast<char*>(data.data()), size);
+    // A file cut short while it is read (a copy or a cloud sync still running) is an
+    // error, not a zero-padded success.
+    if (file.gcount() != size) {
+        return Err<std::vector<uint8_t>>("Failed to read all of file: " + path.u8string());
+    }
 
     return Ok(std::move(data));
 }
 
-Result<void, Error> FileSystem::writeBinaryFile(const std::filesystem::path& path,
-                                                const std::vector<uint8_t>& data) {
-    std::ofstream file(path, std::ios::out | std::ios::binary | std::ios::trunc);
-    if (!file) {
-        return Err("Failed to open file for writing: " + path.u8string());
-    }
-
-    file.write(reinterpret_cast<const char*>(data.data()), data.size());
-    if (!file) {
-        return Err("Failed to write to file: " + path.u8string());
-    }
-
-    return Ok();
-}
-
 bool FileSystem::exists(const std::filesystem::path& path) {
-    return std::filesystem::exists(path);
+    std::error_code ec;  // a path that cannot be examined does not exist
+    return std::filesystem::exists(path, ec);
 }
 
 bool FileSystem::isDirectory(const std::filesystem::path& path) {
-    return std::filesystem::is_directory(path);
+    std::error_code ec;
+    return std::filesystem::is_directory(path, ec);
 }
 
 Result<void, Error> FileSystem::createDirectory(const std::filesystem::path& path) {
@@ -160,12 +235,14 @@ Result<void, Error> FileSystem::createDirectory(const std::filesystem::path& pat
 
 std::filesystem::path FileSystem::makeRelative(const std::filesystem::path& path,
                                                const std::filesystem::path& base) {
-    return std::filesystem::relative(path, base);
+    std::error_code ec;  // empty on failure
+    return std::filesystem::relative(path, base, ec);
 }
 
 std::filesystem::path FileSystem::resolveRelative(const std::filesystem::path& relativePath,
                                                   const std::filesystem::path& base) {
-    return std::filesystem::absolute(base / relativePath);
+    std::error_code ec;  // empty on failure
+    return std::filesystem::absolute(base / relativePath, ec);
 }
 
 } // namespace quadmapper

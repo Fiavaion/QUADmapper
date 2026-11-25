@@ -17,4 +17,12 @@ skill) so the mistake can't recur — fix the process, not just the instance.
 
 | LESSON-BUILD-007 | BUILD | `ctest` after a PARTIAL build (`cmake --build --target QUADmapper`) runs STALE test binaries: it reported 624/624 green across TD-01/TD-03 while `test_output` had a signature-mismatch compile error and `test_audio` had a real regression (AudioBuffer rounded capacity up to a power of two, breaking the exact-capacity contract). Both only surfaced on the next FULL `cmake --build`. **Always full-build before ctest** so test exes recompile against changed headers. | Adopted full-build-before-ctest in this workflow; both regressions fixed. |
 
+| LESSON-ARCH-008 | ARCH | Putting a running subsystem behind a runtime switch (AI Assist beta): hide its entry points while off, and act only on the on→off *transition* (so test hooks like `QM_AI_SELFTEST` still work), stopping it without destroying it so it can be turned on again. Any watcher that reports "failed to start" must be resynced after a stop you asked for, or the stop shows up as an error. | `AiAssist::disable()` + `Application` `m_aiBetaWasOn` (`31b5e91`). |
+
+| LESSON-BUILD-009 | BUILD | `ctest --preset debug` ran **no tests** and still exited 0: with the Visual Studio generator a test preset must name its configuration. A gate with no test count is not a pass. | `CMakePresets.json` test presets carry `"configuration"` (`e9885c0`); every gate record states its counts. |
+
+| LESSON-BUG-010 | BUG | A reviewer's hardening limit can refuse the app's own files. The suggested grid-line gap (1e-3) and size cap (256 MB) were below what the editor can create and save (lines 1e-4 apart; about 580 fully warped quads). Before adding a load-time limit, check the largest and finest value the editor itself produces. | Batch 5 limits set to 5e-5 and 1 GB (`805cd48`, `cc93719`); QM-127. |
+
+| LESSON-BUG-011 | BUG | A `std::function` hook that nothing sets is a menu item that silently does nothing: "Edit Parameters..." on a pattern had never worked. Dead-code removal found it, no test did. When adding a hook, add its setter in the same change. | `76bbcd7` opens Properties directly; the hook is gone. |
+
 <!-- New entries appended by /lessons from LESSON-* tags in source. -->

@@ -42,6 +42,8 @@ bool decompressSnappy(const uint8_t* src, size_t srcLen, std::vector<uint8_t>& o
     uint32_t uncompressedLen = 0;
     if (!readVarint32(src, srcLen, pos, uncompressedLen)) return false;
     if (uncompressedLen > MAX_SNAPPY_UNCOMPRESSED) return false;
+    // A copy element expands at most ~21x: a larger claim is a corrupt or hostile header.
+    if (uncompressedLen / 64 > srcLen) return false;
 
     out.clear();
     out.resize(uncompressedLen);

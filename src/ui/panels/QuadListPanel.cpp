@@ -1,10 +1,10 @@
 #include "QuadListPanel.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
-#include "app/MediaAssign.hpp"
-#include "app/QuadSelection.hpp"
-#include "app/MeshLoads.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/MediaAssign.hpp"
+#include "editor/QuadSelection.hpp"
+#include "editor/MeshLoads.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
 #include "scene/QuadGroup.hpp"
@@ -15,6 +15,7 @@
 #include "media/MediaItem.hpp"
 #include "core/UUID.hpp"
 #include "project/Project.hpp"
+#include "ui/ConfirmPopup.hpp"
 
 #include <imgui.h>
 #include <unordered_set>
@@ -26,12 +27,8 @@
 
 namespace quadmapper {
 
-void QuadListPanel::render(EditorContext& ctx) {
+void QuadListPanel::drawContent(EditorContext& ctx) {
     EditorState& es = ctx.es;
-
-    if (!es.showQuadList) return;
-
-    ImGui::Begin("Quad List");
 
     ImGuiIO& io = ImGui::GetIO();
 
@@ -40,7 +37,6 @@ void QuadListPanel::render(EditorContext& ctx) {
     auto& quadTexturePaths    = es.quadTexturePaths;
     auto& dragDropQuadId      = es.dragDropQuadId;
 
-    // Add Quad button
     if (ImGui::Button("+ Add Quad")) {
         Quad* newQuad = quadManager.createQuad();
         quadManager.selectQuad(newQuad->getId());
@@ -51,7 +47,6 @@ void QuadListPanel::render(EditorContext& ctx) {
 
     ImGui::SameLine();
 
-    // Delete button
     if (ImGui::Button("Delete") && quadManager.hasSelection()) {
         es.deleteSelectedQuads();
     }
@@ -79,16 +74,22 @@ void QuadListPanel::render(EditorContext& ctx) {
     if (quadManager.getSelectionCount() >= 2) {
         ImGui::SameLine();
         if (ImGui::Button("Group")) {
-            scene.createGroupFromSelection();
+            scene.createGroupFromSelection(scene.generateUniqueGroupName());
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Create group from selected quads (Ctrl+G)");
+            ImGui::SetTooltip("Create group from selected quads");
         }
     }
 
     ImGui::Separator();
     ImGui::Text("Quads: %zu  Groups: %zu (top = front)", quadManager.getQuadCount(), scene.getGroupCount());
     ImGui::Separator();
+
+    // A group-membership change from the context menu waits until the loops are done,
+    // because the loops walk the member list it would edit.
+    UUID toggleGroupId;
+    UUID toggleQuadId;
+    bool toggleRemove = false;
 
     // Helper lambda to render a single quad item
     auto renderQuadItem = [&](const Quad* quad, bool indented = false) {
@@ -132,12 +133,10 @@ void QuadListPanel::render(EditorContext& ctx) {
         ImGui::SameLine();
 
         // Visibility checkbox
-        bool visible = quad->isVisible();
-        if (ImGui::Checkbox("##visible", &visible)) {
-            Quad* mutableQuad = quadManager.getQuad(quad->getId());
-            if (mutableQuad) {
-                mutableQuad->setVisible(visible);
-            }
+        bool quadVisible = quad->isVisible();
+        if (ImGui::Checkbox("##visible", &quadVisible)) {
+            es.commandHistory.execute(
+                std::make_unique<SetQuadVisibilityCommand>(es.quadRef(*quad), quadVisible));
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Visible");
@@ -147,10 +146,8 @@ void QuadListPanel::render(EditorContext& ctx) {
         // Lock checkbox
         bool locked = quad->isLocked();
         if (ImGui::Checkbox("##locked", &locked)) {
-            Quad* mutableQuad = quadManager.getQuad(quad->getId());
-            if (mutableQuad) {
-                mutableQuad->setLocked(locked);
-            }
+            es.commandHistory.execute(
+                std::make_unique<SetQuadLockedCommand>(es.quadRef(*quad), locked));
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Locked");
@@ -164,8 +161,10 @@ void QuadListPanel::render(EditorContext& ctx) {
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (ImGui::InputText("##quadrename", quadNameBuf_, sizeof(quadNameBuf_),
                                  ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
-                es.commandHistory.execute(
-                    std::make_unique<RenameQuadCommand>(es.quadRef(*quad), quadNameBuf_));
+                if (!isBlankName(quadNameBuf_)) {
+                    es.commandHistory.execute(
+                        std::make_unique<RenameQuadCommand>(es.quadRef(*quad), quadNameBuf_));
+                }
                 quadRenaming_ = false;
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape)) quadRenaming_ = false;
@@ -268,11 +267,9 @@ void QuadListPanel::render(EditorContext& ctx) {
                         QuadGroup* grp = groupPtr.get();
                         bool inGroup = grp->hasMember(quad->getId());
                         if (ImGui::MenuItem(grp->getName().c_str(), nullptr, inGroup)) {
-                            if (inGroup) {
-                                scene.removeQuadFromGroup(grp->getId(), quad->getId());
-                            } else {
-                                scene.addQuadToGroup(grp->getId(), quad->getId());
-                            }
+                            toggleGroupId = grp->getId();
+                            toggleQuadId = quad->getId();
+                            toggleRemove = inGroup;
                         }
                     }
                     ImGui::EndMenu();
@@ -291,6 +288,9 @@ void QuadListPanel::render(EditorContext& ctx) {
 
     // Track which quads are shown in groups (to avoid duplicates)
     std::unordered_set<UUID> quadsShownInGroups;
+
+    // Deleting a group frees it, so the delete waits until the loop is done.
+    UUID deleteGroupId;
 
     // Render groups first
     for (const auto& groupPtr : scene.getGroups()) {
@@ -326,7 +326,6 @@ void QuadListPanel::render(EditorContext& ctx) {
         std::string groupLabel = group->getName() + " (" + std::to_string(group->getMemberCount()) + ")";
         bool nodeOpen = ImGui::TreeNodeEx(groupLabel.c_str(), groupFlags);
 
-        // Update collapsed state based on tree node state
         group->setCollapsed(!nodeOpen);
 
         // Context menu for group
@@ -335,14 +334,14 @@ void QuadListPanel::render(EditorContext& ctx) {
             groupNameBuf_[sizeof(groupNameBuf_) - 1] = '\0';
 
             if (ImGui::InputText("Rename", groupNameBuf_, sizeof(groupNameBuf_), ImGuiInputTextFlags_EnterReturnsTrue)) {
-                group->setName(groupNameBuf_);
+                if (!isBlankName(groupNameBuf_)) group->setName(groupNameBuf_);
                 ImGui::CloseCurrentPopup();
             }
 
             ImGui::Separator();
 
             if (ImGui::MenuItem("Delete Group")) {
-                scene.deleteGroup(group->getId());
+                deleteGroupId = group->getId();
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
@@ -361,7 +360,6 @@ void QuadListPanel::render(EditorContext& ctx) {
             ImGui::EndDragDropTarget();
         }
 
-        // Render member quads if node is open
         if (nodeOpen) {
             for (const UUID& quadId : group->getMemberQuadIds()) {
                 const Quad* quad = quadManager.getQuad(quadId);
@@ -381,7 +379,8 @@ void QuadListPanel::render(EditorContext& ctx) {
         ImGui::PopID();
     }
 
-    // Render ungrouped quads
+    if (!deleteGroupId.isNull()) scene.deleteGroup(deleteGroupId);
+
     bool hasUngroupedQuads = false;
     for (const auto& quadPtr : quadManager.getQuads()) {
         if (quadsShownInGroups.find(quadPtr->getId()) == quadsShownInGroups.end()) {
@@ -405,6 +404,14 @@ void QuadListPanel::render(EditorContext& ctx) {
         }
     }
 
+    if (!toggleGroupId.isNull()) {
+        if (toggleRemove) {
+            scene.removeQuadFromGroup(toggleGroupId, toggleQuadId);
+        } else {
+            scene.addQuadToGroup(toggleGroupId, toggleQuadId);
+        }
+    }
+
     // Drop target for removing quads from all groups (drop on empty space)
     if (scene.getGroupCount() > 0) {
         ImGui::Dummy(ImVec2(0, 20));
@@ -420,8 +427,6 @@ void QuadListPanel::render(EditorContext& ctx) {
     }
 
     renderObjects(ctx);
-
-    ImGui::End();
 }
 
 // The active scene's 3D objects (ADR-052): select, rename, show/hide and delete, each
@@ -441,9 +446,9 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
         MeshObject& object = *objectPtr;
         ImGui::PushID(object.getId().toString().c_str());
 
-        bool visible = object.isVisible();
-        if (ImGui::Checkbox("##objVisible", &visible)) {
-            es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(object), visible));
+        bool objectVisible = object.isVisible();
+        if (ImGui::Checkbox("##objVisible", &objectVisible)) {
+            es.commandHistory.execute(makeSetObjectVisibilityCommand(es.objectRef(object), objectVisible));
         }
         ImGui::SetItemTooltip("Visible");
         ImGui::SameLine();
@@ -481,8 +486,8 @@ void QuadListPanel::renderObjects(EditorContext& ctx) {
                 // A quad left selected behind the object's properties would still take
                 // Delete and the arrow keys.
                 scene.getQuadManager().deselectAll();
-                es.mediaBinPanel.clearSelection();
-                es.outputPanel.clearSelection();
+                es.selectedMediaId = UUID();
+                es.selectedOutputId = UUID();
             }
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 beginRename();

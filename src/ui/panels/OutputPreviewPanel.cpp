@@ -1,7 +1,7 @@
 #include "OutputPreviewPanel.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "scene/Scene.hpp"
@@ -10,7 +10,11 @@
 
 namespace quadmapper {
 
-void OutputPreviewPanel::renderContent(EditorContext& ctx) {
+bool OutputPreviewPanel::available(const EditorContext& ctx) const {
+    return ctx.es.uiMode == EditorState::UiMode::Advanced;
+}
+
+void OutputPreviewPanel::drawContent(EditorContext& ctx) {
     OutputManager* om = ctx.outputManager;
     if (!om) {
         ImGui::TextDisabled("No output manager.");

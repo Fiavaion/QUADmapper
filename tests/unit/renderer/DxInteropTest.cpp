@@ -27,15 +27,19 @@
 
 #include "../video/ColourBars.hpp"
 #include "core/GlObjectStats.hpp"
+#include "core/MainThreadTimings.hpp"
 #include "renderer/DxInterop.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/YuvConverter.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace quadmapper;
@@ -526,6 +530,107 @@ TEST(DxInterop, ANewDecoderPoolReleasesTheOldPoolsFrames) {
     ASSERT_TRUE(fillGpuFrame(rig.d3d, *next, samples, false));
     ASSERT_EQ(deliver(interop, target, dest, next->picture), "");
     EXPECT_EQ(DxInterop::liveObjects(), oneFrameOpen) << "only the new pool's one frame is open";
+}
+
+// TD-35: a source's first zero-copy frame is set up over several updates, with at most one
+// costly GL call in each: the device prepared off the main thread is opened for OpenGL by
+// beginFrame(), the shared planes' D3D11 textures are made on a worker, then each plane is
+// registered in an update of its own. Once Ready, the frame is delivered as stage() alone
+// would deliver it, and the shared planes are freed a plane a step.
+TEST(DxInterop, SetUpSpreadsTheFirstFrameOverUpdatesOneGlCallEach) {
+    Rig rig;
+    if (!rig.skip.empty()) GTEST_SKIP() << rig.skip;
+    const long d3dBefore = DxInterop::liveObjects();
+    const auto glBefore = GlObjectStats::Snapshot::capture();
+    MainThreadTimings::markMainThread();
+    MainThreadTimings::reset();
+    auto glCalls = [] {
+        size_t n = 0;
+        for (const auto& s : MainThreadTimings::summarize()) {
+            if (s.op == "zeroCopyDeviceOpen" || s.op == "zeroCopyPlaneRegister") n += s.count;
+        }
+        return n;
+    };
+    {
+        DxInterop interop;
+        if (!interop.available()) GTEST_SKIP() << interop.unavailableReason();
+        interop.prepare(rig.d3d.device);  // as the opener does
+        const auto bars = makeGpuBars(rig.d3d, false, YuvMatrix::BT709, false);
+        ASSERT_NE(bars, nullptr);
+        Texture dest;
+        ASSERT_TRUE(dest.createEmpty(WIDTH, HEIGHT, 4));
+        auto target = std::make_unique<DxInteropTarget>();
+
+        interop.beginFrame();
+        EXPECT_EQ(glCalls(), 1u) << "beginFrame() did not open the prepared device";
+        int updates = 0;
+        DxInterop::SetUp result = DxInterop::SetUp::Later;
+        std::string why;
+        for (; updates < 5000 && result == DxInterop::SetUp::Later; ++updates) {
+            if (updates > 0) interop.beginFrame();
+            const size_t before = glCalls();
+            result = interop.setUp(bars->picture, *target, why);
+            EXPECT_LE(glCalls() - before + (updates == 0 ? 1 : 0), 1u) << "update " << updates;
+            if (result == DxInterop::SetUp::Later) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ASSERT_EQ(result, DxInterop::SetUp::Ready) << why;
+        EXPECT_GE(updates, 3) << "the planes were registered in one update";
+        EXPECT_EQ(glCalls(), 3u);  // the device open and one registration per plane
+
+        YuvConverter converter;
+        converter.begin();
+        ASSERT_TRUE(interop.stage(bars->picture, *target, dest, &dest, why)) << why;
+        why.clear();
+        interop.finish(converter, [&](void*, const YuvPicture&, const std::string& reason) { why = reason; });
+        converter.end();
+        ASSERT_TRUE(why.empty()) << why;
+        EXPECT_LE(worstDifference(readBack(dest), referenceRgba(memoryPicture(
+                                                        barsData(false, YuvMatrix::BT709, false), false,
+                                                        YuvMatrix::BT709, false))),
+                  2);
+
+        // Freed a plane a step: GL names go one at a time.
+        const auto held = GlObjectStats::Snapshot::capture();
+        EXPECT_FALSE(target->releaseStep());
+        EXPECT_EQ(GlObjectStats::Snapshot::capture().textures, held.textures - 1);
+        EXPECT_TRUE(target->releaseStep());
+        EXPECT_EQ(GlObjectStats::Snapshot::capture().textures, held.textures - 2);
+        target.reset();
+        EXPECT_EQ(DxInterop::liveObjects(), d3dBefore);
+    }
+    MainThreadTimings::reset();
+    EXPECT_EQ(DxInterop::liveObjects(), d3dBefore);
+    EXPECT_TRUE(GlObjectStats::Snapshot::capture().isFlat(glBefore))
+        << GlObjectStats::Snapshot::capture().diff(glBefore);
+}
+
+// Each failure setUp() can meet is reported, not left Later forever: a format that
+// cannot be shared (found on the worker) and a registration refused.
+TEST(DxInterop, SetUpReportsEachFailure) {
+    Rig rig;
+    if (!rig.skip.empty()) GTEST_SKIP() << rig.skip;
+    const long d3dBefore = DxInterop::liveObjects();
+    for (const bool rejectFormat : {true, false}) {
+        DxInterop::testHooks() = DxInterop::TestHooks{};
+        DxInterop::testHooks().rejectFormat = rejectFormat;
+        DxInterop::testHooks().failRegistration = !rejectFormat;
+        DxInterop interop;
+        if (!interop.available()) GTEST_SKIP() << interop.unavailableReason();
+        const auto bars = makeGpuBars(rig.d3d, true, YuvMatrix::BT2020, false);
+        ASSERT_NE(bars, nullptr);
+        DxInteropTarget target;
+        DxInterop::SetUp result = DxInterop::SetUp::Later;
+        std::string why;
+        for (int updates = 0; updates < 5000 && result == DxInterop::SetUp::Later; ++updates) {
+            interop.beginFrame();
+            result = interop.setUp(bars->picture, target, why);
+            if (result == DxInterop::SetUp::Later) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_EQ(result, DxInterop::SetUp::Failed);
+        EXPECT_NE(why.find(rejectFormat ? "cannot be shared" : "could not register"), std::string::npos) << why;
+    }
+    DxInterop::testHooks() = DxInterop::TestHooks{};
+    EXPECT_EQ(DxInterop::liveObjects(), d3dBefore);
 }
 
 TEST(DxInterop, ReleasesEveryObjectItMade) {

@@ -23,7 +23,6 @@ public:
             return true;
         }
 
-        // Initialize miniaudio context for device enumeration
         ma_context_config contextConfig = ma_context_config_init();
         const ma_backend nullOnly[] = {ma_backend_null};
         ma_result result = nullBackend
@@ -101,7 +100,6 @@ public:
             info.isDefault = playbackDevices[i].isDefault != 0;
             info.isPlayback = true;
 
-            // Store native ID for later use
             deviceIds_.push_back(playbackDevices[i].id);
 
             // Default capabilities
@@ -223,7 +221,6 @@ public:
         return {};
     }
 
-    // Get the native device ID for a given device index
     const ma_device_id* getNativeDeviceId(const std::string& deviceId) const {
         if (deviceId.empty()) {
             return nullptr;  // Use default
@@ -235,7 +232,7 @@ public:
                 return &deviceIds_[index];
             }
         } catch (...) {
-            // Invalid device ID
+            Logger::warning("AudioDevice: '{}' is not a device id; using the default device", deviceId);
         }
 
         return nullptr;

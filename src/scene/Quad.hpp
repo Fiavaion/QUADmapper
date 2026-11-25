@@ -23,7 +23,7 @@ struct TextureBinding {
     bool flipH = false;
     bool flipV = false;
 
-    // Reset UV transforms to defaults (crop is independent; see resetCrop()).
+    // Reset UV transforms to defaults (crop is independent).
     void resetUV() {
         uvOffset = Vec2(0.0f);
         uvScale = Vec2(1.0f);
@@ -35,7 +35,6 @@ struct TextureBinding {
         return cropRect.x == 0.0f && cropRect.y == 0.0f &&
                cropRect.width == 1.0f && cropRect.height == 1.0f;
     }
-    void resetCrop() { cropRect = NormalizedRect{}; }
 };
 
 // Per-quad color correction (ADR-036 / US-104). Identity defaults render
@@ -100,7 +99,6 @@ public:
     ColorCorrection& getColorCorrection() { return colorCorrection_; }
     const SoftEdge& getSoftEdge() const { return softEdge_; }
     SoftEdge& getSoftEdge() { return softEdge_; }
-    const std::vector<UUID>& getOutputAssignments() const { return outputAssignments_; }
 
     // Setters
     void setName(const std::string& name) { name_ = name; }

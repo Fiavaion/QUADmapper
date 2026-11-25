@@ -1,7 +1,12 @@
 #version 330 core
 
 in vec3 v_TexCoordQ;  // (u*q, v*q, q) from quad.vert
+in vec3 v_ImageCoordQ;  // the image coordinate, same form (Crop mode differs)
 out vec4 FragColor;
+
+// Crop mode (owner, 2026-11-23): 1 when the image coordinate is not the surface's,
+// so a fragment outside the image is transparent instead of a smeared edge.
+uniform int u_ImageCut;
 
 uniform sampler2D u_Texture;
 uniform float u_Opacity;
@@ -37,12 +42,24 @@ uniform float u_EdgeGamma;
 // Reference: ofxHapPlayer (Vidvox / bangnoise) — identical formula.
 uniform int u_ColorSpace;
 
+// The projective term, kept away from zero (its sign kept): a degenerate quad must
+// not divide by zero.
+float projectiveTerm(float q) {
+    return abs(q) < 1e-6 ? (q < 0.0 ? -1e-6 : 1e-6) : q;
+}
+
 void main() {
-    // Quad-local (u,v): undo the projective weighting from quad.vert.
-    vec2 texCoord = v_TexCoordQ.xy / v_TexCoordQ.z;
+    // Quad-local (u,v): undo the projective weighting from quad.vert. The soft edge
+    // follows the surface; the image is sampled at its own coordinate.
+    vec2 texCoord = v_TexCoordQ.xy / projectiveTerm(v_TexCoordQ.z);
+    vec2 imageCoord = v_ImageCoordQ.xy / projectiveTerm(v_ImageCoordQ.z);
+    if (u_ImageCut == 1 && (any(lessThan(imageCoord, vec2(0.0))) ||
+                            any(greaterThan(imageCoord, vec2(1.0))))) {
+        discard;
+    }
 
     // Start with base texture coordinates
-    vec2 baseUV = texCoord;
+    vec2 baseUV = imageCoord;
 
     // Apply flips first (before other transforms)
     if (u_FlipH == 1) {

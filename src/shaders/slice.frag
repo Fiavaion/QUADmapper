@@ -79,7 +79,10 @@ vec4 sampleFrom(sampler2D canvas, int mode, vec2 size, int rotation, vec2 canvas
 }
 
 void main() {
-    vec2 uv = v_TexCoordQ.xy / v_TexCoordQ.z;
+    // The projective term, kept away from zero (its sign kept).
+    float q = v_TexCoordQ.z;
+    q = abs(q) < 1e-6 ? (q < 0.0 ? -1e-6 : 1e-6) : q;
+    vec2 uv = v_TexCoordQ.xy / q;
     vec2 inSlice = uv * u_Input.zw;
     vec2 canvasPx = u_Input.xy + inSlice;
 

@@ -60,10 +60,8 @@ Result<void, Error> OutputWindow::create(GLFWwindow* shareContext) {
         return Err("Failed to create GLFW window");
     }
 
-    // Set initial position
     glfwSetWindowPos(window_, position_.x, position_.y);
 
-    // Store window data
     savedWindowedPos_ = position_;
     savedWindowedSize_ = resolution_;
 
@@ -152,7 +150,6 @@ Result<void, Error> OutputWindow::goFullscreen(int monitorIndex) {
     // Use the specified monitor or the stored one
     int targetMonitor = (monitorIndex >= 0) ? monitorIndex : monitor_;
 
-    // Get available monitors
     int monitorCount = 0;
     GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
 
@@ -246,7 +243,6 @@ Result<void, Error> OutputWindow::goBorderlessFullscreen(int monitorIndex) {
     // Use the specified monitor or the stored one
     int targetMonitor = (monitorIndex >= 0) ? monitorIndex : monitor_;
 
-    // Get available monitors
     int monitorCount = 0;
     GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
 
@@ -266,7 +262,6 @@ Result<void, Error> OutputWindow::goBorderlessFullscreen(int monitorIndex) {
         return Err("Failed to get video mode for monitor");
     }
 
-    // Get monitor position
     int monitorX, monitorY;
     glfwGetMonitorPos(monitor, &monitorX, &monitorY);
 

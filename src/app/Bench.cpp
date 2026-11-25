@@ -7,10 +7,12 @@
 
 #include "Bench.hpp"
 #include "Application.hpp"
-#include "EditorState.hpp"
+#include "../editor/EditorState.hpp"
+#include "ProjectSession.hpp"
 #include "StressHarness.hpp"
 #include "../core/GlObjectStats.hpp"
 #include "../core/Logger.hpp"
+#include "../core/MainThreadTimings.hpp"
 #include "../output/OutputManager.hpp"
 #include "../output/OutputWindow.hpp"
 #include "../renderer/Framebuffer.hpp"
@@ -86,31 +88,31 @@ bool parseBenchArg(const char* arg, std::optional<BenchConfig>& cfg) {
     } else if ((v = value("--bench-out="))) {
         config().outPath = v;
     } else if ((v = value("--bench-seconds="))) {
-        config().seconds = std::atof(v);
+        config().seconds = harnessSeconds(v, 0.1, 3600.0);
     } else if ((v = value("--bench-warmup="))) {
-        config().warmupSeconds = std::atof(v);
+        config().warmupSeconds = harnessSeconds(v, 0.0, 600.0);
     } else if ((v = value("--bench-outputs="))) {
-        config().outputs = std::max(1, std::atoi(v));
+        config().outputs = harnessInt(v, 1, 16);
     } else if ((v = value("--bench-monitor="))) {
-        config().monitor = std::atoi(v);
+        config().monitor = harnessInt(v, 0, 63);
     } else if ((v = value("--bench-vsync="))) {
-        config().vsync = std::atoi(v) != 0;
+        config().vsync = harnessInt(v, 0, 1) != 0;
     } else if ((v = value("--bench-quads="))) {
-        config().quads = std::max(1, std::atoi(v));
+        config().quads = harnessInt(v, 1, 100000);
     } else if ((v = value("--bench-videos="))) {
-        config().videos = std::max(1, std::atoi(v));
+        config().videos = harnessInt(v, 1, 256);
     } else if ((v = value("--bench-media="))) {
         config().media = v;
     } else if ((v = value("--bench-hap-media="))) {
         config().hapMedia = v;
     } else if ((v = value("--bench-scenes="))) {
-        config().scenes = std::clamp(std::atoi(v), 2, 9);  // taken with keys 1-9
+        config().scenes = harnessInt(v, 2, 9);  // taken with keys 1-9
     } else if ((v = value("--bench-switch-every="))) {
-        config().switchEvery = std::max(2, std::atoi(v));
+        config().switchEvery = harnessInt(v, 2, 1000000);
     } else if ((v = value("--bench-latency-samples="))) {
-        config().latencySamples = std::max(1, std::atoi(v));
+        config().latencySamples = harnessInt(v, 1, 100000);
     } else if ((v = value("--bench-drift-seconds="))) {
-        config().driftSeconds = std::atof(v);
+        config().driftSeconds = harnessSeconds(v, 0.1, 3600.0);
     } else {
         return false;
     }
@@ -306,7 +308,7 @@ BenchRunner::Frame BenchRunner::step(const std::function<void()>& afterPoll) {
     f.polled = Clock::now();
     if (afterPoll) afterPoll();  // where OS input / a UI click lands in a real frame
     Application::FrameMarks marks;
-    app_.presentFrame(dt, &marks);
+    app_.presentFrame(&marks);
     f.rendered = marks.rendered;
     f.editorSwapped = marks.editorSwapped;
     f.presented = marks.outputsPresented;
@@ -576,8 +578,6 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
         media.push_back(t.id);
         tracks.push_back(t);
     }
-    for (auto& t : tracks) t.playable->play();  // start together
-
     // One scene per output showing the same video wall (one decode feeds both).
     std::vector<UUID> sceneIds;
     for (int o = 0; o < cfg_.outputs; ++o) {
@@ -588,6 +588,20 @@ json BenchRunner::runVideos(const std::string& path, const char* name) {
         sceneIds.push_back(scene.getId());
     }
     es().setActiveScene(sceneIds.front());
+
+    // Bound to quads (so the frame-boundary release keeps them), every file open (off the
+    // main thread, TD-35) and showing its first frame: the sources start together with
+    // their decoders primed, as when each opened in turn on the main thread. Otherwise 16
+    // cold decoders start at once and lag the clock for seconds.
+    sources().finishBackgroundWork();
+    const Clock::time_point primeDeadline = Clock::now() + std::chrono::seconds(10);
+    auto primed = [this, &tracks]() {
+        return std::all_of(tracks.begin(), tracks.end(), [this](const Track& t) {
+            return t.source->getCurrentFrame() != nullptr && sources().showsCurrentFrame(t.id);
+        });
+    };
+    while (!primed() && Clock::now() < primeDeadline && !aborted_) step();
+    for (auto& t : tracks) t.playable->play();  // start together
 
     step();
     applyVsync();
@@ -880,6 +894,7 @@ json BenchRunner::runDrift() {
     if (!showOutputs(1)) return json{{"name", "drift"}, {"error", "output creation failed"}};
 
     const UUID id = sources().createVideoSource(cfg_.media);
+    sources().finishBackgroundWork();  // open (off the main thread, TD-35), so its duration is known
     TextureSource* source = sources().getSource(id);
     PlayableSource* playable = sources().getSourceAs<PlayableSource>(id);
     if (!playable) {
@@ -1208,8 +1223,8 @@ int BenchRunner::run() {
     // Deterministic and side-effect free: default dock layout (no imgui.ini read or
     // written), no autosave, no recovery prompt, no default quad.
     ImGui::GetIO().IniFilename = nullptr;
-    app_.m_autoSaveEnabled = false;
-    app_.m_haveCleanBaseline = true;
+    app_.m_session->m_autoSaveEnabled = false;
+    app_.m_session->m_haveCleanBaseline = true;
     e.initialized = true;
 
     json report;
@@ -1249,7 +1264,18 @@ int BenchRunner::run() {
     const std::size_t wsBefore = processWorkingSetBytes();
 
     json scenarios = json::array();
+    MainThreadTimings::reset();
     auto record = [&](json result) {
+        // Main-thread time per call of the operations that can stall outputs (TD-35),
+        // over this scenario's setup, warm-up and measurement.
+        json timings = json::object();
+        for (const MainThreadTimings::Summary& s : MainThreadTimings::summarize()) {
+            timings[s.op] = json{{"count", s.count}, {"p50_ms", round3(s.p50Ms)},
+                                 {"p99_ms", round3(s.p99Ms)}, {"max_ms", round3(s.maxMs)}};
+        }
+        MainThreadTimings::dumpSamples();
+        MainThreadTimings::reset();
+        result["main_thread_ms"] = timings;
         Logger::info("[BENCH] {}", result.dump());
         scenarios.push_back(std::move(result));
     };

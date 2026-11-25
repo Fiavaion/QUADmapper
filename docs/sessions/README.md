@@ -6,6 +6,5 @@ Dated development-session logs live here. `/end` writes one per session
 [`../../notes/CURRENT_STATUS.md`](../../notes/CURRENT_STATUS.md)) to reload context.
 
 On conflict, the latest session log is the detailed source of truth; trust it over the
-one-page `CURRENT_STATUS.md` summary. Machine-readable state stays in
-[`../../SESSION_STATE.json`](../../SESSION_STATE.json); the chronological narrative stays in
-[`../../PROJECT_HISTORY.md`](../../PROJECT_HISTORY.md).
+one-page `CURRENT_STATUS.md` summary. The old `SESSION_STATE.json` and `PROJECT_HISTORY.md`
+(through Session 20) are retired and kept read-only in [`../archive/`](../archive/).

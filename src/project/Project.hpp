@@ -104,13 +104,24 @@ public:
 
     struct SourceData {
         UUID id;
-        std::string kind;            // "image" | "video" | "hap" | "procedural" | "camera"
+        std::string kind;            // "image" | "video" | "hap" | "procedural" | "camera" | "composition"
         std::string path;            // image / video / hap
         std::string proceduralType;  // procedural: ProceduralFactory::getTypeName()
-        int width = 1920;            // procedural
-        int height = 1080;           // procedural
+        int width = 1920;            // procedural, composition
+        int height = 1080;           // procedural, composition
         std::string deviceName;      // camera
         std::optional<TransportData> transport;  // video / hap
+        // composition (ADR-061, .qmap 3.7): its cues name other entries of the table.
+        struct CueData {
+            UUID source;               // a "sources" id; null = black
+            double holdSeconds = 5.0;
+        };
+        std::string name;              // composition
+        std::string compositionMode = "timeline";  // "timeline" | "switch"
+        std::vector<CueData> cues;
+        double fadeSeconds = 0.5;
+        bool loop = true;
+        bool restartOnCue = true;
         // Set on load when a file source's file is not there. Its quads and objects
         // keep referencing it and path keeps the original location, so saving before
         // the file is relocated loses nothing (PRD §4.1.8). Never written to disk.
@@ -153,7 +164,6 @@ public:
     std::vector<QuadGroup>& getGroups() { return groups_; }
     const std::vector<QuadGroup>& getGroups() const { return groups_; }
 
-    void addGroup(QuadGroup group) { groups_.push_back(std::move(group)); }
     void clearGroups() { groups_.clear(); }
 
     // Multi-scene + output DTOs (.qmap v3). When non-empty the serializer writes

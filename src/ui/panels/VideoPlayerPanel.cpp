@@ -1,20 +1,25 @@
 #include "VideoPlayerPanel.hpp"
 
-#include "app/EditorContext.hpp"
-#include "app/EditorState.hpp"
-#include "app/MediaAssign.hpp"
-#include "app/SourceAudio.hpp"
+#include "editor/EditorContext.hpp"
+#include "editor/EditorState.hpp"
+#include "editor/MediaAssign.hpp"
+#include "editor/PerformLock.hpp"
+#include "editor/SourceAudio.hpp"
 #include "audio/AudioEngine.hpp"
 #include "output/OutputManager.hpp"
 #include "output/OutputWindow.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
+#include "scene/Scene.hpp"
+#include "scene/MeshObject.hpp"
 #include "source/SourceManager.hpp"
 #include "source/VideoFileSource.hpp"
 #include "core/FileSystem.hpp"
 #include "core/UUID.hpp"
 #include "core/Types.hpp"
 #include "project/Project.hpp"
+#include "ui/ConfirmPopup.hpp"
+#include "ui/panels/MediaBinPanel.hpp"
 
 #include <imgui.h>
 #include <cstring>
@@ -93,8 +98,11 @@ void audioControls(PlayableSource& video, const UUID& id, EditorContext& ctx, fl
     if (const char* reason = audioSilenceReason(video)) {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", reason);
         ImGui::SetItemTooltip("Sound plays only at 1x forward; it resumes in step at 1x");
-    } else if (ctx.outputManager &&
-               !heardSourceGains(ctx.es.scenes, ctx.es.activeSceneId, *ctx.outputManager).count(id)) {
+    } else if (ctx.outputManager && ![&] {
+                   auto gains = heardSourceGains(ctx.es.scenes, ctx.es.activeSceneId, *ctx.outputManager);
+                   if (ctx.sourceManager) addCompositionCueGains(*ctx.sourceManager, gains);  // ADR-061
+                   return gains.count(id) > 0;
+               }()) {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Silent: not in the active or a live scene");
         ImGui::SetItemTooltip("Heard only while a scene using it is the active scene or is assigned "
                               "to an enabled output; it stays in step meanwhile");
@@ -115,6 +123,7 @@ void showLockedNote(const PlayableSource& video) {
 void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
     EditorState& es = ctx.es;
     if (es.videoPath[0] == '\0' || !ctx.sourceManager) return;
+    if (refusedByPerformLock(es, "Load Video")) return;
 
     // Deduped: loading a file that is already a source reuses it (one decode).
     UUID sid = ctx.sourceManager->getOrCreateVideoSource(pathFromUtf8(es.videoPath));
@@ -135,7 +144,14 @@ void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
             video->play();
         }
     }
-    snprintf(es.statusMessage, sizeof(es.statusMessage), "Video loaded: %s", es.videoPath);
+    // A clip opens off the main thread (TD-35); one that cannot be decoded is reported
+    // when its open fails (adoptFailedOpens).
+    const TextureSource* source = ctx.sourceManager->getSource(sid);
+    if (source && source->isReady()) {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Video loaded: %s", es.videoPath);
+    } else {
+        snprintf(es.statusMessage, sizeof(es.statusMessage), "Opening video: %s", es.videoPath);
+    }
     es.statusTimer = 3.0f;
 }
 
@@ -144,7 +160,7 @@ void VideoPlayerPanel::loadVideo(EditorContext& ctx, bool simpleMode) {
 // the PlayableSource interface; "Assign" binds the source to a quad by mediaId — and
 // because mediaId is just a reference, the SAME video can be assigned to many
 // quads (each with its own crop) and decodes/uploads exactly once.
-void VideoPlayerPanel::render(EditorContext& ctx) {
+void VideoPlayerPanel::tick(EditorContext& ctx) {
     EditorState& es = ctx.es;
 
     // Collect a finished "Load Video..." pick even while the window is hidden.
@@ -166,14 +182,38 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
             es.activeVideoSourceId = mediaId;
         }
     }
+}
 
-    if (!es.showVideoPlayer) return;
+// Take the clip off every quad too, so no binding is left pointing at nothing.
+void VideoPlayerPanel::unloadVideo(EditorContext& ctx, const UUID& unloaded) {
+    EditorState& es = ctx.es;
+    for (const auto& scene : es.scenes) {
+        if (!scene) continue;
+        for (const auto& quad : scene->getQuadManager().getQuads()) {
+            if (quad->getTexture().mediaId == unloaded) {
+                quad->getTexture().mediaId = UUID();
+                es.quadTexturePaths.erase(quad->getId());
+            }
+        }
+        for (const auto& object : scene->getObjects()) {
+            if (object && object->getTexture().mediaId == unloaded) object->getTexture().mediaId = UUID();
+        }
+    }
+    ctx.sourceManager->removeSource(unloaded);
+    es.activeVideoSourceId = UUID();
+}
 
-    ImGui::Begin("Video Player");
-
+void VideoPlayerPanel::drawContent(EditorContext& ctx) {
+    EditorState& es = ctx.es;
+    if (unloadConfirm_.draw() && ctx.sourceManager && es.activeVideoSourceId == pendingUnloadId_) {
+        unloadVideo(ctx, pendingUnloadId_);
+    }
     const bool simpleMode = es.uiMode == EditorState::UiMode::Simple;
+    // The perform lock (ADR-051 §4) keeps the transport (play, pause, stop, seek) and
+    // disables the rest: loading, assigning, speed, loop, sound and the timeline lock.
+    const bool locked = es.performLock.isOn();
     auto loadButton = [&](const char* tooltip) {
-        ImGui::BeginDisabled(loadDialog_.isBusy());
+        ImGui::BeginDisabled(loadDialog_.isBusy() || locked);
         if (ImGui::Button("Load Video...") && loadDialog_.open(videoFileRequest(es.videoPath))) {
             loadDialogSimpleMode_ = simpleMode;
         }
@@ -203,6 +243,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
                 if (playing) video->pause(); else video->play();
             }
             ImGui::EndDisabled();
+            ImGui::BeginDisabled(locked);
             loopModeSelector(*video, 180.0f);
             ImGui::BeginDisabled(video->isTimelineLocked());
             float speed = video->getSpeed();
@@ -214,12 +255,11 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
             if (ImGui::Button("1x")) video->setSpeed(1.0f);
             ImGui::EndDisabled();
             audioControls(*video, es.activeVideoSourceId, ctx, 120.0f);
+            ImGui::EndDisabled();
             showPlaybackError(*video);
         } else {
             ImGui::TextDisabled("No video loaded");
         }
-
-        ImGui::End();
         return;
     }
 
@@ -229,6 +269,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
     ImGui::Text("Video File:");
     loadButton("Browse the hard drive for a video file");
     ImGui::SameLine();
+    ImGui::BeginDisabled(locked);
     ImGui::SetNextItemWidth(-70.0f);
     const bool pathEntered = ImGui::InputText("##videopath", es.videoPath, sizeof(es.videoPath),
                                               ImGuiInputTextFlags_EnterReturnsTrue);
@@ -239,6 +280,7 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
             ? ctx.sourceManager->getSourceAs<PlayableSource>(es.activeVideoSourceId)
             : nullptr;
     }
+    ImGui::EndDisabled();
 
     if (video) {
         ImGui::Separator();
@@ -266,16 +308,18 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
         ImGui::Separator();
 
         // Timeline lock: the source follows the master timeline instead of its own clock.
-        bool locked = video->isTimelineLocked();
-        if (ImGui::Checkbox("Lock to master timeline", &locked)) {
-            ctx.sourceManager->setTimelineLocked(es.activeVideoSourceId, locked);
+        bool timelineLocked = video->isTimelineLocked();
+        ImGui::BeginDisabled(locked);
+        if (ImGui::Checkbox("Lock to master timeline", &timelineLocked)) {
+            ctx.sourceManager->setTimelineLocked(es.activeVideoSourceId, timelineLocked);
         }
+        ImGui::EndDisabled();
         ImGui::SetItemTooltip("Follow the master timeline in the menu bar; its time is looped "
                               "over this clip, so locked videos stay in step");
         showLockedNote(*video);
 
-        // Playback controls (the master timeline's, while locked)
-        ImGui::BeginDisabled(locked);
+        // Playback controls (the master timeline's, while locked to it)
+        ImGui::BeginDisabled(timelineLocked);
         bool playing = video->getPlaybackState() == PlaybackState::PLAYING;
         if (playing) {
             if (ImGui::Button("Pause")) video->pause();
@@ -303,8 +347,11 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
 
         ImGui::Separator();
 
-        // Speed
+        // Everything below edits the show: disabled under the perform lock.
         ImGui::BeginDisabled(locked);
+
+        // Speed
+        ImGui::BeginDisabled(timelineLocked);
         float speed = video->getSpeed();
         if (ImGui::SliderFloat("Speed", &speed, 0.1f, 4.0f, "%.1fx")) {
             video->setSpeed(speed);
@@ -350,26 +397,24 @@ void VideoPlayerPanel::render(EditorContext& ctx) {
 
         ImGui::Separator();
         if (ImGui::Button("Unload Video")) {
-            // Take it off every quad too, so no binding is left pointing at nothing.
             const UUID unloaded = es.activeVideoSourceId;
-            for (const auto& scene : es.scenes) {
-                if (!scene) continue;
-                for (const auto& quad : scene->getQuadManager().getQuads()) {
-                    if (quad->getTexture().mediaId == unloaded) {
-                        quad->getTexture().mediaId = UUID();
-                        es.quadTexturePaths.erase(quad->getId());
-                    }
-                }
+            const size_t users = countMediaUsers(es.scenes, unloaded);
+            if (users > 1) {
+                pendingUnloadId_ = unloaded;
+                unloadConfirm_.request(
+                    "Unload Video?",
+                    "This video is used by " + std::to_string(users) +
+                        " quads. Unloading it leaves them without media.",
+                    "Unload");
+            } else {
+                unloadVideo(ctx, unloaded);
             }
-            ctx.sourceManager->removeSource(unloaded);
-            es.activeVideoSourceId = UUID();
         }
+        ImGui::EndDisabled();
     } else {
         ImGui::TextDisabled("No video loaded");
         ImGui::TextDisabled("Click \"Load Video...\" to browse for a file");
     }
-
-    ImGui::End();
 }
 
 }  // namespace quadmapper

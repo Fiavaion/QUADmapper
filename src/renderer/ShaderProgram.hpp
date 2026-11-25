@@ -23,13 +23,10 @@ public:
     ShaderProgram(ShaderProgram&& other) noexcept;
     ShaderProgram& operator=(ShaderProgram&& other) noexcept;
 
-    // Create from source strings
     bool create(const char* vertexSource, const char* fragmentSource);
 
-    // Cleanup
     void destroy();
 
-    // Bind/unbind
     void bind() const;
     static void unbind();
 
