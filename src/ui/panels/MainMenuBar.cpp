@@ -234,7 +234,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             es.requestPanelOpen(EditorState::EXPORT_VIDEO_PANEL_ID);
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Exit", QM_KEY_QUIT)) {
+        if (ImGui::MenuItem(QM_MENU_QUIT, QM_KEY_QUIT)) {
             es.pendingFileAction = FileAction::Exit;
         }
         ImGui::EndMenu();

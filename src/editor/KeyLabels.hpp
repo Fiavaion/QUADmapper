@@ -11,10 +11,12 @@
 #define QM_KEY_SUPER "Ctrl"  // the physical Control key
 #define QM_KEY_PERFORM "Option+P"
 #define QM_KEY_QUIT "Cmd+Q"
+#define QM_MENU_QUIT "Quit QUADmapper"
 #else
 #define QM_KEY_CTRL "Ctrl"
 #define QM_KEY_ALT "Alt"
 #define QM_KEY_SUPER "Super"
 #define QM_KEY_PERFORM "F11"
 #define QM_KEY_QUIT "Alt+F4"
+#define QM_MENU_QUIT "Exit"
 #endif
