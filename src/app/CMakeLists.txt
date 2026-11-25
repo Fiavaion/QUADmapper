@@ -52,6 +52,10 @@ if(WIN32)
     configure_file(QUADmapper.rc.in ${CMAKE_CURRENT_BINARY_DIR}/QUADmapper.rc @ONLY)
     target_sources(QUADmapper PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/QUADmapper.rc)
 
+    # Merged into the linker's own manifest: long paths, since the ".autosave.qmap",
+    # ".tmp" and ".bak" suffixes can take a show's path past 260 characters.
+    target_sources(QUADmapper PRIVATE QUADmapper.manifest)
+
     # H3 stress harness: working-set query via GetProcessMemoryInfo (psapi).
     # Psapi is a Windows system library — no vcpkg dependency.
     target_link_libraries(QUADmapper PRIVATE Psapi)
