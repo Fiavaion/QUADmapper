@@ -151,19 +151,26 @@ add_quadmapper_test(test_render_gl
     renderer/OutputCompositeRenderTest.cpp
     renderer/TextureUploadTest.cpp
     renderer/YuvConverterTest.cpp
-    renderer/DxInteropTest.cpp  # ADR-056 zero-copy colour gate and fallbacks; needs WGL_NV_DX_interop2
 )
+if(WIN32)
+    target_sources(test_render_gl PRIVATE
+        renderer/DxInteropTest.cpp  # ADR-056 zero-copy colour gate and fallbacks; needs WGL_NV_DX_interop2
+    )
+endif()
 target_link_libraries(test_render_gl PRIVATE quadmapper_renderer quadmapper_source quadmapper_core glfw glad)
 
 # AI sidecar tests (QM-056). Live round-trip launches the real Python sidecar;
 # script path passed in so the test can find it. Skip-if-absent keeps it CI-safe.
-add_quadmapper_test(test_ai
-    ai/SidecarClientTest.cpp
-)
-target_link_libraries(test_ai PRIVATE quadmapper_ai quadmapper_core)
-target_compile_definitions(test_ai PRIVATE
-    QM_SIDECAR_SCRIPT="${CMAKE_SOURCE_DIR}/tools/ai-sidecar/sidecar.py"
-)
+# Windows only: macOS has a deliberate stand-in client (src/ai/SidecarClient_mac.cpp).
+if(WIN32)
+    add_quadmapper_test(test_ai
+        ai/SidecarClientTest.cpp
+    )
+    target_link_libraries(test_ai PRIVATE quadmapper_ai quadmapper_core)
+    target_compile_definitions(test_ai PRIVATE
+        QM_SIDECAR_SCRIPT="${CMAKE_SOURCE_DIR}/tools/ai-sidecar/sidecar.py"
+    )
+endif()
 
 # External control tests (ADR-048): OSC parser (with fuzzing), UDP server on loopback,
 # MIDI decode and WinMM device handling (no hardware needed), registry, dispatch, learn;
@@ -181,7 +188,10 @@ add_quadmapper_test(test_control
     control/OscFeedbackLoopbackTest.cpp
     control/Midi14BitTest.cpp
 )
-target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core ws2_32)
+target_link_libraries(test_control PRIVATE quadmapper_control quadmapper_core)
+if(WIN32)
+    target_link_libraries(test_control PRIVATE ws2_32)
+endif()
 
 # The editor library (ADR-051 E4), linked alone: no panel, no app code.
 # The control targets (editor/ControlBindings.hpp) on real scenes, quads and sources, the
