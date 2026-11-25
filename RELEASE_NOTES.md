@@ -191,11 +191,11 @@ QUADmapper v1.0.0 is the first stable release of the professional quad-based pro
 
 ## Dependencies
 
-- GLFW 3.4
-- GLM 1.0.2
+- GLFW 3.5.1
+- GLM 1.0.3
 - Dear ImGui 1.92.6 (docking branch)
-- FFmpeg 7.1.2
-- miniaudio 0.11.23
+- FFmpeg 9.0.2
+- miniaudio 0.11.25
 - nlohmann/json 3.12.0
 - stb_image
 

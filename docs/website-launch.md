@@ -204,7 +204,7 @@ Most keys can be changed in Edit > Preferences > Keyboard. `Tab`, the arrows and
 - **QUADmapper:** MIT, © 2026 Fiavaion. Link `LICENSE`.
 - **FFmpeg** (LGPL 2.1 or later), linked as DLLs beside the exe; built without GPL or non-free parts. The LGPL **requires**:
   - the notices shipped with the download (done: `THIRD-PARTY-NOTICES.txt`);
-  - the FFmpeg source to be available. The notices name https://ffmpeg.org/releases/ (`ffmpeg-7.1.2.tar.xz`) and a written offer for three years. **The offer currently says to ask through GitHub issues, which the public cannot reach (section 1, item 1).** A link on the download page to the FFmpeg 7.1.2 source, plus a contact address for the offer, covers it.
+  - the FFmpeg source to be available. The notices name https://ffmpeg.org/releases/ (`ffmpeg-9.0.2.tar.xz`) and a written offer for three years. **The offer currently says to ask through GitHub issues, which the public cannot reach (section 1, item 1).** A link on the download page to the FFmpeg 9.0.2 source, plus a contact address for the offer, covers it.
 - Other components (all permissive): GLFW, GLM, nlohmann/json, miniaudio, Dear ImGui, GLAD, stb_image and stb_dxt, the Snappy notice, the HAP specification. Fonts: Hanken Grotesk and JetBrains Mono (SIL Open Font License).
 - **AI features (when shipped):** SAM 2.1 small and tiny, and Depth Anything V2 Small, all Apache-2.0, plus the Python packages listed in the notices.
 - A "Licences" or "Open-source credits" page can simply host `THIRD-PARTY-NOTICES.md`.
