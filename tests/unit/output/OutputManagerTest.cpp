@@ -1388,15 +1388,29 @@ TEST_P(RenderOnceReadbackTest, OutputPixelsMatchTheDirectPath) {
     size_t differingOffObjects = 0;
     size_t differingOnObjects = 0;
     int worstOnObjects = 0;
+    // A pixel the object covers can read the same with and without it, where the
+    // object's colour rounds to what lay under it (one such pixel on Apple's driver).
+    // So a pixel is on the object when it, or a pixel next to it, shows the object.
+    auto showsObject = [&](int x, int y) {
+        if (x < 0 || y < 0 || x >= w || y >= h) return false;
+        const size_t at = (static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)) * 4;
+        return quadsOnly[at] != direct[at] || quadsOnly[at + 1] != direct[at + 1] ||
+               quadsOnly[at + 2] != direct[at + 2];
+    };
     for (size_t i = 0; i < direct.size(); i += 4) {
         int delta = 0;
         for (size_t c = 0; c < 3; ++c) {
             delta = std::max(delta, std::abs(int(direct[i + c]) - int(copied[i + c])));
         }
         if (delta == 0) continue;
-        const bool onObject = !quadsOnly.empty() &&
-                              (quadsOnly[i] != direct[i] || quadsOnly[i + 1] != direct[i + 1] ||
-                               quadsOnly[i + 2] != direct[i + 2]);
+        bool onObject = false;
+        if (!quadsOnly.empty()) {
+            const int x = static_cast<int>((i / 4) % static_cast<size_t>(w));
+            const int y = static_cast<int>((i / 4) / static_cast<size_t>(w));
+            for (int dy = -1; dy <= 1 && !onObject; ++dy) {
+                for (int dx = -1; dx <= 1 && !onObject; ++dx) onObject = showsObject(x + dx, y + dy);
+            }
+        }
         if (onObject) {
             ++differingOnObjects;
             worstOnObjects = std::max(worstOnObjects, delta);

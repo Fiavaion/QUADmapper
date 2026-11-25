@@ -447,7 +447,9 @@ TEST_F(AudioMixerTest, ARemovedSourceIsNeverRenderedAgainAndDiesOnTheControlThre
         ++cycles;
     }
     mixer->shutdown();  // before `device`, whose context the device was opened on
-    EXPECT_GT(renders.load(), 50);  // the device thread really was mixing
+    // The device thread really was mixing. macOS sleeps for the time asked, so the 150
+    // cycles take less time there and fewer callbacks land in them (45 in one run).
+    EXPECT_GT(renders.load(), 20);
     EXPECT_EQ(cycles, CYCLES);
     EXPECT_EQ(violations.load(), 0);
     EXPECT_EQ(wrongThread, 0);
