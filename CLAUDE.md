@@ -40,6 +40,10 @@ ctest --preset mac-debug
 ./build/mac-debug/src/app/QUADmapper
 ```
 
+`packaging/build-mac-app.sh` makes the signed `.app` and disk image from `build/mac-release`
+(`--notarize` for a release). The real-media tests read their clips from the folder
+`QM_TEST_MEDIA` names.
+
 Platform code is one file per system behind a shared header (`X_win.cpp`, `X_mac.cpp` or
 `X_mac.mm`), chosen in the module's `CMakeLists.txt`. Windows is built on the owner's PC:
 a change to a shared file made on the Mac is not known to compile there until it has.

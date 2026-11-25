@@ -1,19 +1,28 @@
 # Current Status
 
-**Last updated:** 2026-11-25 (Windows: the owner's hands-on test passed, release steps under way. Mac: port phases A to C done on `feat/macos-port`)
+**Last updated:** 2026-11-25 (Windows: the owner's hands-on test passed, release steps under way. Mac: port and packaging done on `feat/macos-port`; notarisation and the Windows build of that branch are the owner's)
 **Phase / focus:** Release 1.0.0. The owner tested the app on 2026-11-25 and is happy to move forward. Now: merge to `master`, build the installer there, then replace the published 1.0.0 when the owner says publish.
 **Dev:** `494cc40` plus notes commits. 94 code commits since the 2026-11-23 status note (QM-127).
 
-**Mac port (2026-11-25, QM-128):** done through phases A to C on branch `feat/macos-port` (off `dev` at `098c712`, pushed), on the Mac. The app builds, starts and runs the success metric on macOS up to the last step: fullscreen on a *second* display was not tried, because only the built-in display was attached. **Nothing on that branch has been compiled on Windows.** Plan: [ADR-062](../docs/adr/0062-macos-port.md). Record: [docs/sessions/2026-11-25-macos-port.md](../docs/sessions/2026-11-25-macos-port.md). The Windows 1.0.0 release is finished on the work PC and is not touched from the Mac.
+**Mac (2026-11-25, QM-128 and QM-129):** the port and its packaging are done on branch `feat/macos-port` (off `dev` at `098c712`, pushed), on the Mac. There is a signed `QUADmapper.app` and disk image for Apple Silicon, macOS 13 or later; it is **not notarised**, so it opens on the build Mac only. **Nothing on that branch has been compiled on Windows.** Plan and decisions: [ADR-062](../docs/adr/0062-macos-port.md) (section 9 for packaging). Records: [the port](../docs/sessions/2026-11-25-macos-port.md), [packaging](../docs/sessions/2026-11-25-macos-packaging.md). The Windows 1.0.0 release is finished on the work PC and is not touched from the Mac.
 
-## Mac port: where it stands
+## Mac: where it stands
 
-- **Gate (Mac):** `ctest --preset mac-debug | 1cab91e | 1788 passed, 0 failed, 6 disabled`. 69 of the passes are tests that skip themselves (their clips are named by a PC path, or they need Windows hardware). Windows-only tests are not built on macOS (`test_ai`, the D3D11 interop, TIFF and COM cases).
-- **Works, seen in the running app:** quad, Tab and arrow nudge, mouse drag on Retina, H.264 and HAP video, the six patterns, Option+M, Option+P fullscreen over the menu bar, Cmd+B, save and reopen through the macOS panels, MP4 export (VideoToolbox), OSC, MIDI (CoreMIDI).
-- **Owner, on the PC, before any merge:** build `feat/macos-port` and run `ctest`. Shared files edited blind: `OscServer.cpp` (socket shim), `ProjectSession.cpp` and `FileSystem` (folders), `ImageLoader.cpp`, `ThumbnailCache.cpp`, `MediaBinPanel.cpp`, `MainMenuBar.cpp` and the other panels (key names through `editor/KeyLabels.hpp`), `ActionRegistry` (`chordLabel`), `AsyncFileDialog.cpp`, `Mp4Writer.cpp` (pixel format choice), `OutputWindow.cpp`, `Application.cpp`, `ProceduralSource` and the six patterns (now 3.3 fragment shaders: compare by eye with 1.0.0), every `CMakeLists.txt` with an `if(WIN32)` or `if(APPLE)`, and the tests. `main.cpp`, `MidiInput.cpp` and `SidecarClient.cpp` were renamed `*_win.cpp` with no change inside.
-- **Owner, on the Mac:** connect a projector or second display and press Option+P; listen to a clip with sound.
-- **Then:** merge to `dev` by pull request. Next Mac phase: `.app` bundle, signing, notarisation. Deferred items: TD-45.
-- On the Mac: `cmake --preset mac-debug`, build folder `build/mac-debug`, `VCPKG_ROOT` exported.
+- **Gate (Mac):** `QM_TEST_MEDIA=<stand-in clips> ctest --preset mac-debug | 88b87c5 | 1799 passed, 0 failed, 6 disabled`, then two review fixes with targeted checks (`9a3a4df`, `64e6688`). 48 of the passes are tests that skip themselves. Windows-only tests are not built on macOS (`test_ai`, the D3D11 interop and COM cases).
+- **Works, seen in the running app:** everything in the port's record, and from the packaged app started off the disk image: Tab and arrow nudge, Option+P fullscreen, a TIFF on a quad, 4K HEVC and 1080p H.264 with hardware decoding (VideoToolbox).
+- **Not there on the Mac:** AI Assist, camera sources, HAP R. See TD-45.
+
+## What the owner has to do for the Mac release
+
+1. **On the PC: build `feat/macos-port` and run `ctest`.** Shared files edited on the Mac without a Windows build:
+   - From the port: `OscServer.cpp` (socket shim), `ProjectSession.cpp` and `FileSystem` (folders), `ThumbnailCache.cpp`, `MediaBinPanel.cpp`, the panels (key names through `editor/KeyLabels.hpp`), `AsyncFileDialog.cpp`, `Mp4Writer.cpp` (pixel format choice), `OutputWindow.cpp`, `Application.cpp`, `ProceduralSource` and the six patterns (now 3.3 fragment shaders: compare by eye with 1.0.0), every `CMakeLists.txt` with an `if(WIN32)` or `if(APPLE)`, and the tests. `main.cpp`, `MidiInput.cpp` and `SidecarClient.cpp` were renamed `*_win.cpp` with no change inside.
+   - From packaging: `VideoDecoder.cpp` (the decoder is chosen per system, and **the hardware probe at open now seeks to the first packet: run the `HardwareDecode` and `ZeroCopy` tests and play an HEVC clip**), `ImageLoader.cpp` (two `#ifdef` lines moved around `convertRgba`), `FileSystem` (`appFilesDir()`), `MainMenuBar.cpp`, `ActionRegistry` (`RebindResult::SystemKey`), `ObjLoader.cpp`, the root `CMakeLists.txt` and `CMakePresets.json` (Mac-only lines), and the tests that now go through `tests/unit/TestMedia.hpp`.
+2. **On the Mac: notarise.** Once: `xcrun notarytool store-credentials quadmapper-notary` (Apple ID, team, an app-specific password). Then `packaging/build-mac-app.sh --notarize`. The result is `packaging/out/QUADmapper-1.0.0-macOS-arm64.dmg`.
+3. **On the Mac: the checks nobody but the owner can make.** A projector or second display and Option+P; a clip with sound, by ear; a real MIDI controller; OSC from another machine (macOS will ask about the local network); the notarised disk image opened on a different Mac, ideally one on macOS 13 to 15.
+4. **Decide** (ADR-062 section 9): the bundle identifier `com.fiavaion.quadmapper` (cannot change after release); macOS 13 as the oldest; whether the Mac version joins 1.0.0 or a later release (`RELEASE_NOTES.md` has a draft section); whether to draw a 1024-pixel icon.
+5. **Then:** merge `feat/macos-port` into `dev` by pull request, and publish the disk image with the release.
+
+- On the Mac: `cmake --preset mac-debug`, build folder `build/mac-debug`, `VCPKG_ROOT` exported. The presets now build the libraries for macOS 13, so a first configure on another Mac rebuilds them (about ten minutes).
 
 ## Gate records
 

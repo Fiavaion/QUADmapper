@@ -1,5 +1,17 @@
 # QUADmapper Release Notes
 
+## macOS version (in preparation)
+
+Not released yet: the disk image is built and signed but not notarised, and which release it joins is not decided.
+
+- QUADmapper runs on Macs with Apple Silicon, on macOS 13 or later. It comes as a disk image: open it and drag QUADmapper to Applications.
+- Everything in 1.0.0 below is there, except the AI features, webcam sources and HAP R clips.
+- Keys follow the Mac: `Cmd` where Windows has `Ctrl`, `Option` where it has `Alt`. Perform mode is `Option+P` and mesh edit is `Option+M`. The menus and tooltips show the Mac keys.
+- Open, Save and folder choices use the macOS panels. Settings are in `~/Library/Application Support/QUADmapper` and the log in `~/Library/Logs/QUADmapper`.
+- H.264 and HEVC video decode on the graphics chip (VideoToolbox), and MP4 export encodes with it.
+- MIDI uses CoreMIDI, so any controller macOS sees can be used.
+- A projector window covers the menu bar.
+
 ## 1.0.0
 
 The first public release. The date is set when the release is made. It covers everything since the December 2025 development milestone further down.

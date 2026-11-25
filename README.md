@@ -60,9 +60,9 @@ ctest --preset debug
 | `release` | Optimised distribution build |
 | `relwithdebinfo` | Profiling and production debugging |
 
-### Building on macOS (in development)
+### Building on macOS
 
-A macOS version is being ported (Apple Silicon; see [ADR-062](docs/adr/0062-macos-port.md)). There is no macOS download yet. To build it you need the Xcode command line tools, CMake, Ninja, and vcpkg with `VCPKG_ROOT` set.
+The macOS version is for Apple Silicon and macOS 13 or later (see [ADR-062](docs/adr/0062-macos-port.md)). To build it you need Xcode, CMake, Ninja, and vcpkg with `VCPKG_ROOT` set.
 
 ```sh
 cmake --preset mac-debug
@@ -71,7 +71,19 @@ ctest --preset mac-debug
 ./build/mac-debug/src/app/QUADmapper
 ```
 
-Not on macOS yet: the AI features, camera input, TIFF images and GPU video decoding (video decodes in software).
+To make `QUADmapper.app` and a disk image in `packaging/out/`:
+
+```sh
+cmake --preset mac-release
+packaging/build-mac-app.sh              # signed; runs on this Mac
+packaging/build-mac-app.sh --notarize   # signed and notarised; runs on any Mac
+```
+
+The script signs with the first "Developer ID Application" certificate in the keychain (ad hoc without one). `--notarize` needs a notary credential stored once with `xcrun notarytool store-credentials quadmapper-notary`.
+
+The real-media tests look for their clips in the folder the `QM_TEST_MEDIA` environment variable names, and skip without them.
+
+Not on macOS yet: the AI features, camera input and HAP R clips.
 
 ### Project structure
 

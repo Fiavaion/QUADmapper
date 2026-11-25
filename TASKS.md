@@ -1,6 +1,6 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-11-25 (QM-128 macOS port on `feat/macos-port`)
+Last Updated: 2026-11-25 (QM-129 macOS packaging on `feat/macos-port`)
 
 ## Quick Status
 - In Progress: 0
@@ -450,7 +450,22 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Gate:** `ctest --preset mac-debug | 1cab91e | 1788 passed, 0 failed, 6 disabled`. 69 of the passes are tests that skip themselves (their clips are named by a PC path, or they need Windows hardware). Windows-only tests are not built on macOS (`test_ai`, the D3D11 interop, TIFF and COM cases).
 - **Verified by running the app:** see `docs/sessions/2026-11-25-macos-port.md`.
 - **Not verified:** fullscreen on a second display (one display attached); the Windows build of this branch; sound by ear.
-- **Open:** TD-45 (AI, camera, TIFF, GPU decoding, packaging, smaller items). Next: an `.app` bundle with signing and notarisation.
+- **Open:** TD-45. Packaging, TIFF and GPU decoding followed in QM-129.
+
+#### QM-129: macOS packaging, TIFF and GPU decoding (ADR-062 §9)
+- **Status:** DONE on the Mac except notarisation, which needs the owner's credential — **Completed:** 2026-11-25. Same branch, `feat/macos-port` (pushed, not merged).
+- **Effort:** M · **Depends On:** QM-128 · **Why:** the owner asked for the Mac release to be made ready.
+- **Delivered:**
+  - The app and its libraries are built for macOS 13 and later (overlay triplet `cmake/triplets/arm64-osx.cmake`).
+  - `packaging/build-mac-app.sh`: a signed `QUADmapper.app` (Developer ID, hardened runtime), a `.dSYM`, a disk image; `--notarize` for Apple's notarisation.
+  - TIFF images on macOS (ImageIO); GPU video decoding on macOS (VideoToolbox).
+  - A fix on both systems: the hardware probe at open starts at the clip's first packet.
+  - `QM_TEST_MEDIA` names the folder of real test clips.
+  - Rebinding refuses macOS system chords; File > Quit QUADmapper; a Mac note in the user guide; the FFmpeg notice covers the static build.
+- **Gate:** `QM_TEST_MEDIA=<stand-in clips> ctest --preset mac-debug | 88b87c5 | 1799 passed, 0 failed, 6 disabled`, then two review fixes with their own targeted checks.
+- **Verified by running the app:** see `docs/sessions/2026-11-25-macos-packaging.md`.
+- **Not verified:** notarisation; macOS 13 to 15; the Windows build of this branch.
+- **Open:** TD-45.
 
 #### 3D-B2: ChArUco camera calibration, stereo and ICP (FUTURE)
 - **Status:** not planned · Needs its own ADR-053 amendment before any work (ADR-053 §3, "Deferred to 3D-B2").
@@ -1236,6 +1251,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-126 | AI Assist behind a beta switch | DONE | Phase 9 |
 | QM-127 | Code-quality and security review, fix batches 0 to 9 | DONE | Phase 9 |
 | QM-128 | macOS port, phases A to C | DONE (Windows build pending) | ADR-062 |
+| QM-129 | macOS packaging, TIFF and GPU decoding | DONE (notarisation and Windows build pending) | ADR-062 §9 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |

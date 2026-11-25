@@ -152,9 +152,9 @@ Not checked, because it needs the running app or hardware: fullscreen on a secon
 
 - One codebase builds on both systems. The Windows release is unaffected until the port branch merges.
 - The pattern rewrite touches Windows too. It removes the OpenGL 4.3 requirement and a hand-rolled function loader, at the cost of re-verifying six pictures.
-- A Mac build exists that cannot yet be handed to other people. Gatekeeper blocks an unsigned app on another Mac; that waits for the packaging phase and an Apple Developer ID.
+- After the first milestone a Mac build existed that could not be handed to other people. Section 9 adds the signed disk image; Gatekeeper still blocks it on another Mac until it is notarised.
 - Shows are not yet portable between the systems: a `.qmap` holding absolute Windows paths (`D:\...`) will open on a Mac with its media missing. The existing "missing media" search covers it. A proper answer is deferred.
-- FFmpeg is linked statically on the Mac and as DLLs on Windows. For a distributed build the LGPL is easier to satisfy with dynamic libraries; that choice belongs to the packaging phase.
+- FFmpeg is linked statically on the Mac and as DLLs on Windows. Section 9 keeps it static and says why.
 - macOS has marked OpenGL as deprecated since 2018. It still works on macOS 26. If Apple removes it, the renderer needs a Metal path or a translation layer; that is a later ADR.
 
 ## 8. Owner decisions (2026-11-25)
@@ -170,4 +170,29 @@ Not checked, because it needs the running app or hardware: fullscreen on a secon
 | 7 | The Windows build | Built and tested by the owner on the work PC from the pushed branch |
 | 8 | File dialogs | The system panels, through one Objective-C++ file |
 
-The oldest macOS supported is not fixed yet. The development build targets the macOS it is built on; the packaging phase sets the minimum.
+The oldest macOS supported was not fixed in the first milestone; section 9 sets it.
+
+## 9. Packaging and the follow-ups (2026-11-25, second session)
+
+The owner asked for the release to be made ready. These are the choices made then; the first three are the ones worth a second look before the first public Mac release, because they are hard to change afterwards.
+
+| Choice | Decided | Why |
+|---|---|---|
+| Bundle identifier | `com.fiavaion.quadmapper` | macOS keys the app's permissions and settings to it. It follows the publisher name the Windows installer uses. **Not changeable after release without losing those.** |
+| Oldest macOS | 13.0 | Apple Silicon needs 11 at least; 13 is the oldest the build was made for. vcpkg's stock triplet built the libraries for the build machine's macOS only (26), so an overlay triplet (`cmake/triplets/arm64-osx.cmake`) and `CMAKE_OSX_DEPLOYMENT_TARGET` set 13.0 for both. It was run on macOS 26 only. |
+| FFmpeg linking | Static, as vcpkg builds it | QUADmapper's source is public under the MIT licence, so anyone can relink with a changed FFmpeg by building from source; `THIRD-PARTY-NOTICES.md` says so. Dynamic libraries would add an rpath, seven more files to sign and nothing the licence needs. |
+| How the bundle is made | A script, `packaging/build-mac-app.sh`, from the installed Release build | The counterpart of `build-installer.ps1`. The development build stays a plain executable, so the tests and `--stress` runs are unchanged. |
+| Layout | `Contents/MacOS/QUADmapper`; `resources/`, the notices and the licence in `Contents/Resources` | A data file in `Contents/MacOS` breaks the signature. `appFilesDir()` in `core/FileSystem` finds the folder on both systems. |
+| Signing | Developer ID Application, hardened runtime, no entitlements | The app loads no unsigned code and uses no protected device yet. A camera source will need the camera entitlement and a usage text. |
+| Distribution | A disk image, `QUADmapper-<version>-macOS-arm64.dmg`, with an Applications shortcut | The usual way; nothing to install. |
+| Notarisation | `--notarize`: the app is notarised and stapled, then the disk image | Stapling both means a first start works without internet, which a venue may not have. It needs the owner's notary credential, stored once in the keychain. |
+| Debug symbols | Release is built with `-g`; the script splits a `.dSYM` and strips the app | The counterpart of the Windows PDB: a user's crash report can be read. |
+| Icon | Made at packaging time from the Windows `.ico` | Its largest picture is 256 pixels; a 1024-pixel master would look sharper in Finder's large views. |
+
+Three deferred items were done in the same session:
+
+- **TIFF** decodes through ImageIO (`ImageLoaderTiff_mac.cpp`): grey and RGB samples of 8 or 16 bits are copied without colour management, as WIC does; other kinds are drawn by Core Graphics.
+- **GPU decoding** uses VideoToolbox through the same path as D3D11VA; frames are copied to memory (NV12 or P010). Zero-copy stays Windows-only. While testing it, the hardware probe in `VideoDecoder::open()` was found to start after the first packet on both systems (fixed).
+- **`std::from_chars` for `float`** is not in the system C++ library before macOS 26; the OBJ loader uses `strtof_l` on macOS.
+
+Still deferred: AI Assist, camera sources, HAP R, a native menu bar, opening a `.qmap` by double-click, an Intel build. They are in TD-45.
