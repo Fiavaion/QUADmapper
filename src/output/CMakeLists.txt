@@ -21,6 +21,11 @@ target_link_libraries(quadmapper_output
         glfw
 )
 
+if(APPLE)
+    target_sources(quadmapper_output PRIVATE OutputWindowMac.hpp OutputWindow_mac.mm)
+    target_link_libraries(quadmapper_output PRIVATE "-framework AppKit")
+endif()
+
 set_target_properties(quadmapper_output PROPERTIES
     FOLDER "Libraries"
 )

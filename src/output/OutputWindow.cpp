@@ -1,4 +1,7 @@
 #include "OutputWindow.hpp"
+#ifdef __APPLE__
+#include "OutputWindowMac.hpp"
+#endif
 #include "core/Logger.hpp"
 #include "renderer/Framebuffer.hpp"  // glad, before GLFW
 #include <GLFW/glfw3.h>
@@ -221,6 +224,9 @@ Result<void, Error> OutputWindow::goWindowed() {
     // Restore window decorations if we were in borderless mode
     if (borderless_) {
         glfwSetWindowAttrib(window_, GLFW_DECORATED, GLFW_TRUE);
+#ifdef __APPLE__
+        macCoverMenuBar(window_, false);
+#endif
     }
 
     fullscreen_ = false;
@@ -287,6 +293,9 @@ Result<void, Error> OutputWindow::goBorderlessFullscreen(int monitorIndex) {
         mode->width, mode->height,
         GLFW_DONT_CARE
     );
+#ifdef __APPLE__
+    macCoverMenuBar(window_, true);
+#endif
 
     fullscreen_ = false;
     borderless_ = true;
