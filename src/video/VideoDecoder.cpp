@@ -680,6 +680,10 @@ public:
         // Hardware: decode the first frame now, so a stream the GPU refuses (profile,
         // size, too many sessions) is in software before playback starts.
         const bool probeHardware = hwActive_;
+        // The checks above read packets. The probe starts again at the first one: a
+        // stream whose only keyframe is its first (HEVC decodes from nowhere else)
+        // would otherwise look as if the GPU could not decode it.
+        if (probeHardware && (probeEnd || movFamily)) seekExact(0.0);
         if (probeHardware && !decodeNextRaw() && hwActive_ && codecCtx_) {
             resumeInSoftware("the GPU decoded no frame of this stream", startPts_);
         }
