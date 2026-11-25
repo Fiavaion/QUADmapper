@@ -15,6 +15,7 @@
 #include "source/procedural/ProceduralFactory.hpp"
 #include "renderer/Texture.hpp"
 #include "ui/dialogs/HapConvertWindow.hpp"
+#include "ui/panels/InspectorPanel.hpp"
 #include "video/VideoDecoder.hpp"
 #include "ui/ConfirmPopup.hpp"
 #include <imgui.h>
@@ -547,11 +548,10 @@ void MediaBinPanel::renderMediaItem(MediaItem* item, int index) {
         ImGui::EndTooltip();
     }
 
-    // Handle double-click for procedural editing
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-        if (item->getType() == MediaType::PROCEDURAL && proceduralEditCallback_) {
-            proceduralEditCallback_(item->getId());
-        }
+    // A pattern's parameters are edited in Properties; the first click selected it.
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+        item->getType() == MediaType::PROCEDURAL) {
+        es_->requestPanelOpen(InspectorPanel::ID);
     }
 
     // Context menu
@@ -572,11 +572,8 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
 
         // Procedural-specific options
         if (item->getType() == MediaType::PROCEDURAL) {
-            if (ImGui::MenuItem("Edit Parameters...")) {
-                if (proceduralEditCallback_) {
-                    proceduralEditCallback_(item->getId());
-                }
-            }
+            // The right-click that opened this menu selected the item.
+            if (ImGui::MenuItem("Edit Parameters...")) es_->requestPanelOpen(InspectorPanel::ID);
             ImGui::Separator();
         }
 
@@ -767,11 +764,6 @@ void MediaBinPanel::createProcedural(ProceduralType type) {
 
     // Select the newly created item
     es_->selectedMediaId = itemId;
-
-    // Optionally open editor for the new procedural
-    if (proceduralEditCallback_) {
-        proceduralEditCallback_(itemId);
-    }
 }
 
 const char* MediaBinPanel::getMediaTypeIcon(MediaType type) const {

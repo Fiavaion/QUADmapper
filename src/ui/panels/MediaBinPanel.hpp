@@ -9,7 +9,6 @@
 #include <vector>
 #include <unordered_map>
 #include <utility>
-#include <functional>
 #include <memory>
 #include <filesystem>
 
@@ -47,14 +46,6 @@ public:
     void onAttach(EditorContext& ctx) override;
     // Selecting an item shows it in the Properties window.
     void drawContent(EditorContext& ctx) override;
-
-    // Thumbnail size settings
-    float getThumbnailSize() const { return thumbnailSize_; }
-    void setThumbnailSize(float size) { thumbnailSize_ = size; }
-
-    // Callback when a procedural source is selected for editing
-    using ProceduralEditCallback = std::function<void(const UUID&)>;
-    void setProceduralEditCallback(ProceduralEditCallback callback) { proceduralEditCallback_ = std::move(callback); }
 
     // Convert to HAP (QM-082): the progress window for conversions started from the
     // context menu, with "Replace in show" on a finished one. Drawn every frame,
@@ -129,7 +120,6 @@ private:
     static constexpr int MAX_THUMBS_PER_FRAME = 1;
 
     // Procedural edit callback
-    ProceduralEditCallback proceduralEditCallback_;
 
     // Convert to HAP conversions and their window (created on first use)
     std::unique_ptr<HapConvertWindow> hapConvert_;
