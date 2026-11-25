@@ -2,6 +2,9 @@
 #include "core/UUID.hpp"
 
 #include <stdexcept>
+#include <thread>
+#include <unordered_set>
+#include <vector>
 
 namespace quadmapper {
 namespace test {
@@ -11,6 +14,25 @@ TEST(UUIDTest, GenerateCreatesUniqueIds) {
     UUID id2 = UUID::generate();
 
     EXPECT_NE(id1, id2);
+}
+
+// Each thread has its own generator: ids made at the same time on several threads
+// are all different.
+TEST(UUIDTest, IdsMadeOnSeveralThreadsAreAllDifferent) {
+    constexpr int THREADS = 8;
+    constexpr int PER_THREAD = 2000;
+    std::vector<std::vector<UUID>> made(THREADS);
+    std::vector<std::thread> threads;
+    for (int t = 0; t < THREADS; ++t) {
+        threads.emplace_back([&made, t, PER_THREAD] {
+            for (int i = 0; i < PER_THREAD; ++i) made[t].push_back(UUID::generate());
+        });
+    }
+    for (std::thread& thread : threads) thread.join();
+
+    std::unordered_set<UUID> all;
+    for (const auto& ids : made) all.insert(ids.begin(), ids.end());
+    EXPECT_EQ(all.size(), static_cast<size_t>(THREADS * PER_THREAD));
 }
 
 TEST(UUIDTest, DefaultConstructorCreatesNullUUID) {

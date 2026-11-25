@@ -7,9 +7,16 @@
 namespace quadmapper {
 
 namespace {
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
-    std::uniform_int_distribution<uint64_t> dis;
+// One generator per thread, so two threads never share its state, seeded with 256 bits:
+// a single 32-bit seed allows only four billion different id sequences.
+std::mt19937_64& generator() {
+    thread_local std::mt19937_64 gen = [] {
+        std::random_device rd;
+        std::seed_seq seed{rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd()};
+        return std::mt19937_64(seed);
+    }();
+    return gen;
+}
 }
 
 UUID::UUID() : high_(0), low_(0) {}
@@ -17,7 +24,9 @@ UUID::UUID() : high_(0), low_(0) {}
 UUID::UUID(uint64_t high, uint64_t low) : high_(high), low_(low) {}
 
 UUID UUID::generate() {
-    return UUID(dis(gen), dis(gen));
+    std::mt19937_64& gen = generator();
+    const uint64_t high = gen();
+    return UUID(high, gen());
 }
 
 UUID UUID::fromString(const std::string& str) {
