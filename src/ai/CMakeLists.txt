@@ -5,8 +5,14 @@
 
 add_library(quadmapper_ai STATIC
     SidecarClient.hpp
-    SidecarClient.cpp
 )
+# The engine link is WinHTTP and a child process in a Job Object. macOS has a stand-in
+# that reports "not installed" until the link is ported (ADR-062).
+if(WIN32)
+    target_sources(quadmapper_ai PRIVATE SidecarClient_win.cpp)
+else()
+    target_sources(quadmapper_ai PRIVATE SidecarClient_mac.cpp)
+endif()
 
 target_include_directories(quadmapper_ai
     PUBLIC
@@ -19,8 +25,10 @@ target_link_libraries(quadmapper_ai
         quadmapper_core
     PRIVATE
         nlohmann_json::nlohmann_json
-        winhttp        # Windows system lib (HTTP client); no vcpkg dependency
 )
+if(WIN32)
+    target_link_libraries(quadmapper_ai PRIVATE winhttp)  # Windows system lib (HTTP client); no vcpkg dependency
+endif()
 
 set_target_properties(quadmapper_ai PROPERTIES
     FOLDER "Libraries"
