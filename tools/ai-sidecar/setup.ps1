@@ -4,8 +4,9 @@
 
 .DESCRIPTION
   1. Creates tools/ai-sidecar/.venv with Python 3.11 (py -3.11).
-  2. Installs requirements.lock (every package pinned with hashes, --require-hashes)
-     into it, then sam2 from requirements-sam2.lock. The global Python is never touched.
+  2. Installs the pinned pip (requirements-pip.lock), then requirements.lock (every
+     package pinned with hashes, --require-hashes) into it, then sam2 from
+     requirements-sam2.lock. The global Python is never touched.
   3. Downloads the models from their official sources into
      %LOCALAPPDATA%\QUADmapper\models (or $env:QM_MODELS_DIR) and checks each file's
      pinned SHA-256. A mismatch deletes the file and stops the script.
@@ -28,6 +29,9 @@ $VenvPython = Join-Path $Venv 'Scripts\python.exe'
 $Lock = Join-Path $Here 'requirements.lock'
 $Sam2Lock = Join-Path $Here 'requirements-sam2.lock'
 $DevLock = Join-Path $Here 'requirements-dev.lock'
+$PipLock = Join-Path $Here 'requirements-pip.lock'
+# Windows' own curl by its full path, not whichever curl.exe is first on PATH.
+$Curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
 if ($env:QM_MODELS_DIR) {
     $ModelsDir = $env:QM_MODELS_DIR
@@ -87,7 +91,9 @@ if ($version -ne '3.11') { throw "venv Python is $version, expected 3.11. Delete
 # imports the torch installed here, so it is its own step, from the sdist hash in
 # requirements-sam2.lock, built without isolation. SAM2_BUILD_CUDA=0 skips its
 # optional CUDA op (mask hole filling), which would need the CUDA toolkit.
-Invoke-Checked 'pip upgrade' { & $VenvPython -m pip install --disable-pip-version-check -q --upgrade pip==25.2 }
+Invoke-Checked 'pip upgrade' {
+    & $VenvPython -m pip install --disable-pip-version-check -q --require-hashes --no-deps -r $PipLock
+}
 Invoke-Checked 'pip install requirements.lock' {
     & $VenvPython -m pip install --disable-pip-version-check -q --require-hashes --no-deps -r $Lock
 }
@@ -115,7 +121,10 @@ foreach ($m in $Models) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
     $part = "$dest.part"
     Write-Host "  download $($m.Path)"
-    Invoke-Checked "download $($m.Url)" { curl.exe -fsSL --retry 3 -o $part $m.Url }
+    # HTTPS only, also after a redirect.
+    Invoke-Checked "download $($m.Url)" {
+        & $Curl --proto '=https' --proto-redir '=https' -fsSL --retry 3 -o $part $m.Url
+    }
     $actual = Get-Sha256 $part
     if ($actual -ne $m.Sha256) {
         Remove-Item -LiteralPath $part -Force

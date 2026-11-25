@@ -15,7 +15,8 @@ powershell -ExecutionPolicy Bypass -File tools\ai-sidecar\setup.ps1
 `setup.ps1`:
 
 1. creates `tools\ai-sidecar\.venv` with Python 3.11 (`py -3.11`; git-ignored);
-2. installs `requirements.lock` into it with `--require-hashes` (every package,
+2. installs the pinned pip (`requirements-pip.lock`), then `requirements.lock` into
+   it with `--require-hashes` (every package,
    transitive ones too, pinned by hash): torch 2.7.1 + torchvision
    (CUDA 12.6 builds from the PyTorch index), `transformers`,
    `opencv-contrib-python` (not `opencv-python`: both provide `cv2`, and only
