@@ -1,6 +1,6 @@
 # QUADmapper Tasks
 
-Last Updated: 2026-11-25 (QM-127 code review and fix batches)
+Last Updated: 2026-11-25 (QM-128 macOS port on `feat/macos-port`)
 
 ## Quick Status
 - In Progress: 0
@@ -434,6 +434,23 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Gate:** `ctest --preset debug | 828e194 | 1827 passed, 0 failed, 8 disabled`; then `test_core` 55, `test_scene` 392, `test_media` 53 at `494cc40`.
 - **Not verified by hand:** everything; see the hands-on list in `notes/CURRENT_STATUS.md`. Real-media tests skipped on the work PC.
 - **Open:** the owner decisions listed in `notes/CURRENT_STATUS.md`; review items M22 (patterns need OpenGL 4.3), L41, L42, L43 and L49, and batch 10, are not done.
+
+#### QM-128: macOS port, phases A to C (ADR-062)
+- **Status:** DONE on the Mac (code, tests, running-app checks); **Windows build and a second-display check pending** — **Completed:** 2026-11-25. Branch `feat/macos-port` off `dev` at `098c712` (pushed, not merged).
+- **Effort:** L · **Depends On:** none · **Why:** the owner wants a macOS version; the first milestone is the success metric on a Mac, with MIDI, OSC and MP4 export.
+- **Delivered:**
+  - Build: presets `mac-debug` / `mac-release`, FFmpeg frameworks, per-platform files (`*_win.cpp`, `*_mac.cpp`, `*_mac.mm`) behind unchanged headers.
+  - macOS folders, process start (single instance, crash guard), Finder actions.
+  - The macOS Open, Save and folder panels, shown without blocking frames.
+  - The built-in patterns as OpenGL 3.3 fragment shaders on both systems (`ComputeShader` deleted).
+  - Keyboard: Cmd for Ctrl, Option+M mesh edit, Option+P perform mode, Cmd+B on a projector window, Mac key names in the interface.
+  - OSC on BSD sockets, MIDI through CoreMIDI, MP4 export through VideoToolbox.
+  - A projector window above the macOS menu bar; the interface at its real size on Retina.
+  - The test suite builds and runs on macOS.
+- **Gate:** `ctest --preset mac-debug | 1cab91e | 1788 passed, 0 failed, 6 disabled`. 69 of the passes are tests that skip themselves (their clips are named by a PC path, or they need Windows hardware). Windows-only tests are not built on macOS (`test_ai`, the D3D11 interop, TIFF and COM cases).
+- **Verified by running the app:** see `docs/sessions/2026-11-25-macos-port.md`.
+- **Not verified:** fullscreen on a second display (one display attached); the Windows build of this branch; sound by ear.
+- **Open:** TD-45 (AI, camera, TIFF, GPU decoding, packaging, smaller items). Next: an `.app` bundle with signing and notarisation.
 
 #### 3D-B2: ChArUco camera calibration, stereo and ICP (FUTURE)
 - **Status:** not planned · Needs its own ADR-053 amendment before any work (ADR-053 §3, "Deferred to 3D-B2").
@@ -1218,6 +1235,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-125 | Release-readiness audit and fixes | DONE | Phase 9 |
 | QM-126 | AI Assist behind a beta switch | DONE | Phase 9 |
 | QM-127 | Code-quality and security review, fix batches 0 to 9 | DONE | Phase 9 |
+| QM-128 | macOS port, phases A to C | DONE (Windows build pending) | ADR-062 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |

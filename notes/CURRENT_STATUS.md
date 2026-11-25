@@ -1,10 +1,19 @@
 # Current Status
 
-**Last updated:** 2026-11-25 (the owner's hands-on test passed; release steps under way)
+**Last updated:** 2026-11-25 (Windows: the owner's hands-on test passed, release steps under way. Mac: port phases A to C done on `feat/macos-port`)
 **Phase / focus:** Release 1.0.0. The owner tested the app on 2026-11-25 and is happy to move forward. Now: merge to `master`, build the installer there, then replace the published 1.0.0 when the owner says publish.
 **Dev:** `494cc40` plus notes commits. 94 code commits since the 2026-11-23 status note (QM-127).
 
-**Mac port (2026-11-25):** the owner is taking the project to a Mac to build a macOS version. It travels as a zip with a start file (`000_StartMac.md`, not in git). No Mac work exists yet; the port starts with an ADR, on its own branch off `dev`. The Windows 1.0.0 release is finished on the work PC.
+**Mac port (2026-11-25, QM-128):** done through phases A to C on branch `feat/macos-port` (off `dev` at `098c712`, pushed), on the Mac. The app builds, starts and runs the success metric on macOS up to the last step: fullscreen on a *second* display was not tried, because only the built-in display was attached. **Nothing on that branch has been compiled on Windows.** Plan: [ADR-062](../docs/adr/0062-macos-port.md). Record: [docs/sessions/2026-11-25-macos-port.md](../docs/sessions/2026-11-25-macos-port.md). The Windows 1.0.0 release is finished on the work PC and is not touched from the Mac.
+
+## Mac port: where it stands
+
+- **Gate (Mac):** `ctest --preset mac-debug | 1cab91e | 1788 passed, 0 failed, 6 disabled`. 69 of the passes are tests that skip themselves (their clips are named by a PC path, or they need Windows hardware). Windows-only tests are not built on macOS (`test_ai`, the D3D11 interop, TIFF and COM cases).
+- **Works, seen in the running app:** quad, Tab and arrow nudge, mouse drag on Retina, H.264 and HAP video, the six patterns, Option+M, Option+P fullscreen over the menu bar, Cmd+B, save and reopen through the macOS panels, MP4 export (VideoToolbox), OSC, MIDI (CoreMIDI).
+- **Owner, on the PC, before any merge:** build `feat/macos-port` and run `ctest`. Shared files edited blind: `OscServer.cpp` (socket shim), `ProjectSession.cpp` and `FileSystem` (folders), `ImageLoader.cpp`, `ThumbnailCache.cpp`, `MediaBinPanel.cpp`, `MainMenuBar.cpp` and the other panels (key names through `editor/KeyLabels.hpp`), `ActionRegistry` (`chordLabel`), `AsyncFileDialog.cpp`, `Mp4Writer.cpp` (pixel format choice), `OutputWindow.cpp`, `Application.cpp`, `ProceduralSource` and the six patterns (now 3.3 fragment shaders: compare by eye with 1.0.0), every `CMakeLists.txt` with an `if(WIN32)` or `if(APPLE)`, and the tests. `main.cpp`, `MidiInput.cpp` and `SidecarClient.cpp` were renamed `*_win.cpp` with no change inside.
+- **Owner, on the Mac:** connect a projector or second display and press Option+P; listen to a clip with sound.
+- **Then:** merge to `dev` by pull request. Next Mac phase: `.app` bundle, signing, notarisation. Deferred items: TD-45.
+- On the Mac: `cmake --preset mac-debug`, build folder `build/mac-debug`, `VCPKG_ROOT` exported.
 
 ## Gate records
 
@@ -51,7 +60,7 @@ The owner tested the application and is happy to move forward. The note does not
 ## Open owner decisions
 
 1. ~~Old personal notes in git history~~ **Decided 2026-11-25: leave history as it is.** The files themselves are untracked since `15af12a`.
-2. **Procedural patterns need OpenGL 4.3**, the app asks for 3.3 (review item M22). Today a 3.3-only GPU gets a clear error and the README says so. Rewrite the patterns for 3.3, or raise the requirement with an ADR.
+2. ~~Procedural patterns need OpenGL 4.3~~ **Decided 2026-11-25 (ADR-062): rewritten as 3.3 fragment shaders**, on `feat/macos-port`. It reaches Windows when that branch merges.
 3. **A second `.bak` generation** for shows (ADR-046 describes one as intended).
 4. **Engine lock refresh:** `pip-audit` reports 106 advisories in 7 packages of `tools/ai-sidecar/requirements.lock` (Pillow has 76). The engine is not in the installer. It fits with the cu128 move.
 5. **Fonts:** eight variants load at start and one is used; JetBrains Mono ships unused.

@@ -73,8 +73,10 @@ Deferred, each with a stub that compiles and says "not available on macOS yet" w
 - **The patterns move from compute shaders to fragment shaders, on both platforms.** Each of the six `#version 430` compute shaders becomes a `#version 330` fragment shader drawn as one fullscreen triangle into the pattern's own framebuffer. `CompositionSource` already draws this way.
   - `ComputeShader.hpp/.cpp` and the runtime lookup of OpenGL 4.3 functions are deleted. There is one path, not two.
   - This also settles open owner decision 2 from Windows (review item M22): the app then needs only the OpenGL 3.3 it asks for.
-  - The pictures must not change. A readback test compares each pattern against a stored reference before the old path is removed.
+  - The pictures must not change. The old compute path cannot run on a Mac, so no before-and-after comparison was possible there: `ProceduralPatternRenderTest` reads each pattern back and checks known values (the solid colour, the checker cells, the gradient's ends, places in the test patterns, that noise and plasma repeat and animate) and that drawing a pattern leaves the GL state as it found it. On the Windows build the owner compares the patterns by eye against 1.0.0.
 - **Retina.** The editor window's framebuffer is twice its window size on the built-in display. The canvas maths that mixes window and framebuffer sizes (`ViewportEditor.cpp`, `Application.cpp`, `OutputManager.cpp`) is checked by running the app, and fixed where the hit-testing or the viewport is off.
+  - Found by running the app: the fonts were scaled by the display's content scale, which on macOS doubles an interface already sized in points. The scale is 1 on macOS. Canvas hit-testing needed no change.
+- **Projector windows.** macOS draws its menu bar on every display, above an ordinary borderless window. The borderless output is raised above the menu bar and the Dock (`OutputWindow_mac.mm`). GLFW's own fullscreen was tried and rejected: on a display in a scaled mode it changes the display's mode.
 - **Limits.** The Mac's largest texture is 16384 a side. `Texture.cpp` already checks the real limit.
 - `GL_SILENCE_DEPRECATION` is defined on Apple so the build log stays readable.
 

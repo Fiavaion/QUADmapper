@@ -31,6 +31,19 @@ ctest --preset debug
 ./build/debug/QUADmapper.exe
 ```
 
+On macOS (ADR-062) the presets are `mac-debug` and `mac-release`, the build folder is
+`build/mac-debug`, and `VCPKG_ROOT` must be exported in the shell that runs CMake:
+
+```sh
+cmake --preset mac-debug && cmake --build build/mac-debug
+ctest --preset mac-debug
+./build/mac-debug/src/app/QUADmapper
+```
+
+Platform code is one file per system behind a shared header (`X_win.cpp`, `X_mac.cpp` or
+`X_mac.mm`), chosen in the module's `CMakeLists.txt`. Windows is built on the owner's PC:
+a change to a shared file made on the Mac is not known to compile there until it has.
+
 ### Prerequisites
 
 1. Visual Studio 2022 with C++ workload

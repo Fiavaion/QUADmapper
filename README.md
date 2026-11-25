@@ -60,6 +60,19 @@ ctest --preset debug
 | `release` | Optimised distribution build |
 | `relwithdebinfo` | Profiling and production debugging |
 
+### Building on macOS (in development)
+
+A macOS version is being ported (Apple Silicon; see [ADR-062](docs/adr/0062-macos-port.md)). There is no macOS download yet. To build it you need the Xcode command line tools, CMake, Ninja, and vcpkg with `VCPKG_ROOT` set.
+
+```sh
+cmake --preset mac-debug
+cmake --build build/mac-debug
+ctest --preset mac-debug
+./build/mac-debug/src/app/QUADmapper
+```
+
+Not on macOS yet: the AI features, camera input, TIFF images and GPU video decoding (video decodes in software).
+
 ### Project structure
 
 ```
