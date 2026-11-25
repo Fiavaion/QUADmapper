@@ -8,16 +8,10 @@ add_library(quadmapper_core STATIC
     UUID.cpp
     Logger.hpp
     Logger.cpp
-    Timer.hpp
-    Timer.cpp
     FileSystem.hpp
     FileSystem.cpp
     CommandHistory.hpp
     CommandHistory.cpp
-    PerformanceMonitor.hpp
-    PerformanceMonitor.cpp
-    ErrorNotification.hpp
-    ErrorNotification.cpp
     GlObjectStats.hpp
     GlObjectStats.cpp
 )

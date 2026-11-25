@@ -5,10 +5,7 @@ add_quadmapper_test(test_core
     core/UUIDTest.cpp
     core/ResultTest.cpp
     core/LoggerTest.cpp
-    core/TimerTest.cpp
     core/CommandHistoryTest.cpp
-    core/PerformanceMonitorTest.cpp
-    core/ErrorNotificationTest.cpp
     core/FileSystemTest.cpp
 )
 target_link_libraries(test_core PRIVATE quadmapper_core)
