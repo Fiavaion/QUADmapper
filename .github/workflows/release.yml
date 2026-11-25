@@ -4,8 +4,10 @@ name: Release installer
 # (packaging/build-installer.ps1). When SignPath is set up (repository variable
 # SIGNPATH_ORGANIZATION_ID and secret SIGNPATH_API_TOKEN), it signs QUADmapper.exe before
 # Inno Setup packs it, then signs the setup exe. Without them it builds unsigned.
-# Run it from the Actions tab to sign; the result is the "QUADmapper-Setup" workflow artifact.
+# It signs only when run by hand (Actions tab) on master, so no other branch can get a
+# signature. The result is the "QUADmapper-Setup" workflow artifact.
 # A push to dev that touches the packaging builds the installer without signing it.
+# Actions are pinned to a commit; the comment beside each names the release it is.
 
 on:
   workflow_dispatch:
@@ -27,14 +29,14 @@ jobs:
     timeout-minutes: 240
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.vcpkg-cache
-      SIGNPATH: ${{ github.event_name == 'workflow_dispatch' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+      SIGNPATH: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
       SIGNPATH_PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG || 'QUADmapper' }}
       SIGNPATH_POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
     defaults:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Read the version
         id: version
@@ -58,7 +60,7 @@ jobs:
 
       - name: Restore the vcpkg binary cache
         id: vcpkg-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -71,7 +73,7 @@ jobs:
       # Saved here, not at the end, so a later failure does not lose a long FFmpeg build.
       - name: Save the vcpkg binary cache
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -79,7 +81,7 @@ jobs:
       - name: Install Inno Setup if missing
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
-            choco install innosetup --no-progress -y
+            choco install innosetup --version=6.7.1 --no-progress -y
             if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
           }
 
@@ -89,17 +91,18 @@ jobs:
       - name: Upload the unsigned app exe
         if: env.SIGNPATH == 'true'
         id: upload-app
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: unsigned-app
           path: .scratch/installer/stage/QUADmapper.exe
           include-hidden-files: true
           if-no-files-found: error
+          retention-days: 1
 
       # Each signing request waits for a manual approval in SignPath, hence the long timeout.
       - name: Sign the app exe
         if: env.SIGNPATH == 'true'
-        uses: signpath/github-action-submit-signing-request@v3
+        uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b  # v3.2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -123,15 +126,16 @@ jobs:
       - name: Upload the unsigned installer
         if: env.SIGNPATH == 'true'
         id: upload-setup
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: unsigned-setup
           path: packaging/out/QUADmapper-Setup-${{ steps.version.outputs.version }}.exe
           if-no-files-found: error
+          retention-days: 1
 
       - name: Sign the installer
         if: env.SIGNPATH == 'true'
-        uses: signpath/github-action-submit-signing-request@v3
+        uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b  # v3.2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -146,8 +150,9 @@ jobs:
             version: "${{ steps.version.outputs.version }}"
 
       - name: Upload the installer
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: QUADmapper-Setup
           path: ${{ env.SIGNPATH == 'true' && 'packaging/signed' || 'packaging/out' }}/QUADmapper-Setup-${{ steps.version.outputs.version }}.exe
           if-no-files-found: error
+          retention-days: 30
