@@ -216,6 +216,9 @@ TEST_P(HardwareLoopSeam, NextPassIsQueuedBeforeTheSeamWithoutARestart) {
     VideoDecoder decoder;
     DecodeOptions options = hardwareOptions();
     options.zeroCopy = GetParam();
+#ifndef _WIN32
+    if (GetParam()) GTEST_SKIP() << "zero-copy video needs Windows (ADR-056)";
+#endif
     if (!std::filesystem::exists(clip) || !decoder.open(clip, options)) GTEST_SKIP() << "test clip not present";
     if (!decoder.isHardwareDecoding()) GTEST_SKIP() << "no GPU decoding here: " << decoder.getDecodeNote();
     const double fps = decoder.getInfo().frameRate;

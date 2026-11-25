@@ -456,6 +456,7 @@ namespace {
 
 // A decoder asked to leave frames on the GPU, or empty with the reason to skip.
 std::string openZeroCopy(VideoDecoder& decoder, DecodeOptions options) {
+#ifdef _WIN32
     if (!std::filesystem::exists(H264_CLIP)) return "test clip not present";
     options.hardware = true;
     options.yuvOutput = true;
@@ -463,6 +464,11 @@ std::string openZeroCopy(VideoDecoder& decoder, DecodeOptions options) {
     if (!decoder.open(H264_CLIP, options)) return "the clip did not open";
     if (!decoder.isHardwareDecoding()) return "no GPU decoding here: " + decoder.getDecodeNote();
     return {};
+#else
+    (void)decoder;
+    (void)options;
+    return "zero-copy video needs Windows (ADR-056)";
+#endif
 }
 
 }  // namespace

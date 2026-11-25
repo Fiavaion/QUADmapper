@@ -89,6 +89,16 @@ std::string reverseAdvice(size_t cacheBytes) {
 
 // --- Hardware decoding (ADR-055) ---
 
+// Each system's GPU decoder: D3D11VA on Windows, VideoToolbox on macOS (ADR-062).
+// VideoToolbox frames are always copied to memory; zero-copy is the D3D11 path only.
+#ifdef __APPLE__
+constexpr AVHWDeviceType HW_DEVICE_TYPE = AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
+constexpr AVPixelFormat HW_PIXEL_FORMAT = AV_PIX_FMT_VIDEOTOOLBOX;
+#else
+constexpr AVHWDeviceType HW_DEVICE_TYPE = AV_HWDEVICE_TYPE_D3D11VA;
+constexpr AVPixelFormat HW_PIXEL_FORMAT = AV_PIX_FMT_D3D11;
+#endif
+
 // The D3D11 device every hardware decoder shares, one per app. Created by the first
 // decoder that asks and then kept until the process ends: creating and destroying a
 // D3D11 device per clip costs ~1.5 MB of driver memory each time that is never given
@@ -107,7 +117,7 @@ SharedHardwareDevice& sharedHardwareDevice() {
     return shared;
 }
 
-std::string adapterName(AVBufferRef* device) {
+[[maybe_unused]] std::string adapterName(AVBufferRef* device) {
 #ifdef _WIN32
     const auto* hw = reinterpret_cast<const AVHWDeviceContext*>(device->data);
     const auto* d3d = static_cast<const AVD3D11VADeviceContext*>(hw->hwctx);
@@ -141,16 +151,25 @@ AVBufferRef* acquireHardwareDevice() {
     if (shared.unavailable) return nullptr;
     if (!shared.device) {
         AVBufferRef* device = nullptr;
-        const int rc = av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
+        const int rc = av_hwdevice_ctx_create(&device, HW_DEVICE_TYPE, nullptr, nullptr, 0);
         if (rc < 0) {
             char err[AV_ERROR_MAX_STRING_SIZE] = {0};
             av_strerror(rc, err, sizeof(err));
+#ifdef __APPLE__
+            LOG_WARNING("Hardware video decoding unavailable (VideoToolbox: {}); "
+                        "videos decode in software", err);
+#else
             LOG_WARNING("Hardware video decoding unavailable (no D3D11 video device: {}); "
                         "videos decode in software", err);
+#endif
             shared.unavailable = true;
             return nullptr;
         }
+#ifdef __APPLE__
+        LOG_INFO("Hardware video decoding: VideoToolbox");
+#else
         LOG_INFO("Hardware video decoding: D3D11VA on {}", adapterName(device));
+#endif
         shared.device = device;
         ++shared.created;
     }
@@ -163,14 +182,14 @@ bool hardwareCodec(AVCodecID id) {
            id == AV_CODEC_ID_AV1;
 }
 
-// The decoder for `id` that can use D3D11VA (for AV1 the native one, not libdav1d), or null.
+// The decoder for `id` that can use the GPU (for AV1 the native one, not libdav1d), or null.
 const AVCodec* hardwareDecoder(AVCodecID id) {
     const AVCodec* codec = id == AV_CODEC_ID_AV1 ? avcodec_find_decoder_by_name("av1")
                                                   : avcodec_find_decoder(id);
     for (int i = 0; codec; ++i) {
         const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
         if (!config) break;
-        if (config->device_type == AV_HWDEVICE_TYPE_D3D11VA && config->pix_fmt == AV_PIX_FMT_D3D11 &&
+        if (config->device_type == HW_DEVICE_TYPE && config->pix_fmt == HW_PIXEL_FORMAT &&
             (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
             return codec;
         }
@@ -178,12 +197,12 @@ const AVCodec* hardwareDecoder(AVCodecID id) {
     return nullptr;
 }
 
-// get_format: take the D3D11 surfaces when offered; otherwise (the GPU refused this
+// get_format: take the GPU surfaces when offered; otherwise (the GPU refused this
 // stream's profile or size) the first software format. The decoder notices the
 // software frames and restarts the stream in proper, multi-threaded software decoding.
 AVPixelFormat chooseHardwareFormat(AVCodecContext*, const AVPixelFormat* formats) {
     for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; ++f) {
-        if (*f == AV_PIX_FMT_D3D11) return *f;
+        if (*f == HW_PIXEL_FORMAT) return *f;
     }
     for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; ++f) {
         const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(*f);
@@ -712,7 +731,7 @@ public:
             if (codec) hwDevice_ = acquireHardwareDevice();
             if (!codec || !hwDevice_) {
                 setDecodeNote(codec ? "no GPU video decoder on this machine"
-                                    : "this FFmpeg build has no D3D11 decoder for the codec");
+                                    : "this FFmpeg build has no GPU decoder for the codec");
                 codec = nullptr;  // the software decoder for the codec, found below
                 hardware = false;
             }
@@ -814,7 +833,7 @@ public:
         if (!hwActive_) return true;
         const int64_t pts = frame_->pts != AV_NOPTS_VALUE
             ? frame_->pts : startPts_ + std::llround(currentTime_.load() / timeBase_);
-        if (frame_->format != AV_PIX_FMT_D3D11) {
+        if (frame_->format != HW_PIXEL_FORMAT) {
             resumeInSoftware("the GPU decoder refused this stream", pts);
             return false;
         }
