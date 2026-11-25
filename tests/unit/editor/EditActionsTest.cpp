@@ -325,6 +325,11 @@ TEST(EditActionsTest, LockedQuadsRefuseMeshKeysAndDelete) {
 TEST(EditActionsTest, EditActionsKeepTheirChords) {
     Rig rig;
     struct Expect { const char* id; int key; uint8_t mods; };
+#ifdef __APPLE__
+    const uint8_t meshEditMods = MOD_ALT;  // Option+M: Cmd+M is the system's Minimise
+#else
+    const uint8_t meshEditMods = MOD_CTRL;
+#endif
     const Expect expected[] = {
         {action_id::UNDO, ImGuiKey_Z, MOD_CTRL},
         {action_id::REDO, ImGuiKey_Y, MOD_CTRL},
@@ -334,7 +339,7 @@ TEST(EditActionsTest, EditActionsKeepTheirChords) {
         {action_id::SEND_BACKWARD, ImGuiKey_LeftBracket, MOD_CTRL},
         {action_id::BRING_TO_FRONT, ImGuiKey_RightBracket, MOD_CTRL | MOD_SHIFT},
         {action_id::SEND_TO_BACK, ImGuiKey_LeftBracket, MOD_CTRL | MOD_SHIFT},
-        {action_id::TOGGLE_MESH_EDIT, ImGuiKey_M, MOD_CTRL},
+        {action_id::TOGGLE_MESH_EDIT, ImGuiKey_M, meshEditMods},
         {action_id::MESH_FINER, ImGuiKey_Equal, MOD_ALT},
         {action_id::MESH_COARSER, ImGuiKey_Minus, MOD_ALT},
         {action_id::RESET_MESH, ImGuiKey_R, MOD_ALT},

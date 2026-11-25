@@ -5,6 +5,7 @@
 #include "editor/EditActions.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/KeyLabels.hpp"
 
 #include <imgui.h>
 
@@ -332,7 +333,7 @@ TEST(ActionRegistryTest, RebindingRefusesReservedClashingBareAndFixed) {
     RebindCheck check = refusal(action_id::PERFORM_LOCK, {Chord{ImGuiKey_S, MOD_CTRL}});
     EXPECT_EQ(check.result, RebindResult::ChordClash);
     EXPECT_EQ(check.clashWith, "Save Project");
-    EXPECT_EQ(rebindRefusal(check), "Ctrl+S is already used by Save Project.");
+    EXPECT_EQ(rebindRefusal(check), QM_KEY_CTRL "+S is already used by Save Project.");
     check = refusal(action_id::PERFORM_LOCK,
                     {Chord{ImGuiKey_L, MOD_CTRL | MOD_SHIFT}, Chord{ImGuiKey_B, MOD_CTRL}});
     EXPECT_EQ(check.result, RebindResult::ChordClash);
@@ -346,7 +347,7 @@ TEST(ActionRegistryTest, RebindingRefusesReservedClashingBareAndFixed) {
         check = refusal(action_id::PERFORM_LOCK, {Chord{key, MOD_NONE}});
         EXPECT_EQ(check.result, RebindResult::NeedsModifier) << key;
     }
-    EXPECT_NE(rebindRefusal(check).find("needs Ctrl"), std::string::npos) << rebindRefusal(check);
+    EXPECT_NE(rebindRefusal(check).find("needs " QM_KEY_CTRL), std::string::npos) << rebindRefusal(check);
     EXPECT_EQ(refusal(action_id::PERFORM_LOCK, {Chord{ImGuiKey_1, MOD_SHIFT}}).result,
               RebindResult::Changed)
         << "a modifier makes a digit a chord (the takes are bare 1-9)";

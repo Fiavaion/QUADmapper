@@ -11,6 +11,7 @@
 #include "editor/EditActions.hpp"
 #include "editor/EditorContext.hpp"
 #include "editor/EditorState.hpp"
+#include "editor/KeyLabels.hpp"
 #include "output/OutputManager.hpp"
 #include "scene/MeshObject.hpp"
 #include "ui/dialogs/PreferencesDialog.hpp"
@@ -279,7 +280,7 @@ TEST_F(EditorUiFrameTest, MenuSelectAllAndTheKeyHoldOffWhileCalibrating) {
     EXPECT_EQ(es.quadManager().getSelectionCount(), 2u);
     es.quadManager().deselectAll();
     MenuRig menu{[&] { actionMenuItem(ctx, action_id::SELECT_ALL); }};
-    EXPECT_NE(menu.render().find("Ctrl+A"), std::string::npos);
+    EXPECT_NE(menu.render().find(QM_KEY_CTRL "+A"), std::string::npos);
     menu.click();
     EXPECT_EQ(es.quadManager().getSelectionCount(), 2u);
 
