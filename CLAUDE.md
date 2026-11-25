@@ -245,7 +245,7 @@ Spawn-rule configuration (`.claude/agent-state/spawn-rules.json`) is not present
 
 1. Extend `MediaItem` type enum in `src/media/MediaItem.hpp`
 2. Add loader in `MediaLibrary`
-3. Add thumbnail generation in `ThumbnailGenerator`
+3. Add thumbnail generation in `ThumbnailCache::generateThumbnail`
 4. Update UI to display new type
 
 ## Debugging
