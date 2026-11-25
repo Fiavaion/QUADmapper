@@ -5,6 +5,7 @@
 #include <xlocale.h>  // strtof_l
 #endif
 
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -71,7 +72,9 @@ bool parseFloat(std::string_view s, float& out) {
     if (s.find_first_of("xX") != std::string_view::npos) return false;
     const std::string text(s);
     char* end = nullptr;
+    errno = 0;
     out = strtof_l(text.c_str(), &end, LC_C_LOCALE);
+    if (errno == ERANGE && out == 0.0f) return false;  // too small for a float: from_chars refuses it
     return end == text.c_str() + text.size() && std::isfinite(out);
 #else
     const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), out);

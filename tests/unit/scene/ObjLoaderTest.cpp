@@ -193,6 +193,19 @@ TEST_F(ObjLoaderTest, ACoordinateTooLargeForAFloatToPlaceFailsTheImport) {
     EXPECT_TRUE(loadObj(write("v 0 0 0\nv -9e8 0 0\nv 0 1 0\nf 1 2 3\n")).isSuccess());
 }
 
+#ifdef __APPLE__
+// macOS reads numbers with strtof_l, not std::from_chars: the forms from_chars refuses
+// are refused there too.
+TEST_F(ObjLoaderTest, NumbersOnlyStrtofWouldTakeAreRefused) {
+    for (const char* number : {"+1", "0x10", "inf", "nan", "1e-50", "-1e-50"}) {
+        const std::string text = std::string("v 0 0 0\nv ") + number + " 0 0\nv 0 1 0\nf 1 2 3\n";
+        EXPECT_TRUE(loadObj(write(text)).isError()) << number;
+    }
+    // A number a float holds only as a subnormal still loads.
+    EXPECT_TRUE(loadObj(write("v 0 0 0\nv 1e-40 0 0\nv 0 1 0\nf 1 2 3\n")).isSuccess());
+}
+#endif
+
 TEST_F(ObjLoaderTest, EmptyOrFacelessFileReturnsErr) {
     EXPECT_TRUE(loadObj(write("")).isError());
     EXPECT_TRUE(loadObj(write("# only a comment\nv 0 0 0\n")).isError());
