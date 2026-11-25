@@ -19,6 +19,7 @@ extern "C" {
 #include "video/VideoDecoder.hpp"
 
 #include "../TestPlatform.hpp"
+#include "../TestMedia.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -475,7 +476,7 @@ TEST_F(HapExport, BackgroundConversionTakesTheNextFreeName) {
 // time. Run with
 //   test_video_decoder --gtest_also_run_disabled_tests --gtest_filter=*RealFile*
 TEST(HapExportRealMedia, DISABLED_RealFile) {
-    const fs::path src = "D:\\testing Videos\\5sec.mp4";
+    const fs::path src = testMediaFile("5sec.mp4");
     std::error_code ec;
     if (!fs::exists(src, ec)) GTEST_SKIP() << "test media not present";
     const fs::path folder = fs::temp_directory_path() / "qm_hapexport_real";

@@ -28,6 +28,7 @@
 #include "source/FrameData.hpp"
 #include "source/HapFileSource.hpp"
 #include "video/PngWriter.hpp"    // writeRgbPng
+#include "../TestMedia.hpp"
 
 #include <algorithm>
 #include <array>
@@ -280,7 +281,7 @@ TEST(HapUploadTest, CapabilityQueryReportsExtensions) {
 // --- 3: end-to-end via the real Hap Q clip ----------------------------------
 
 TEST(HapUploadTest, RealHapClipUploadsCompressedTexture) {
-    const std::filesystem::path clip = R"(D:\testing Videos\Hap\5sec_hap.mov)";
+    const std::filesystem::path clip = testMediaFile("Hap/5sec_hap.mov");
     if (!std::filesystem::exists(clip)) {
         GTEST_SKIP() << "Hap test clip not present: " << clip.string();
     }
@@ -441,7 +442,7 @@ void setIdentityUniforms(ShaderProgram& prog) {
 }  // namespace
 
 TEST(HapUploadTest, A5VisualCaptureThroughRealPipeline) {
-    const std::filesystem::path clip = R"(D:\testing Videos\Hap\5sec_hap.mov)";
+    const std::filesystem::path clip = testMediaFile("Hap/5sec_hap.mov");
     if (!std::filesystem::exists(clip)) {
         GTEST_SKIP() << "Hap test clip not present: " << clip.string();
     }

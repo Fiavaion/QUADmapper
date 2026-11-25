@@ -11,6 +11,7 @@
 #include "video/VideoPlayer.hpp"
 #include "video/PlaybackClock.hpp"
 #include "source/HapFileSource.hpp"
+#include "../TestMedia.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -155,7 +156,7 @@ Report playHap(const fs::path& path, LoopMode mode, double fps) {
     return r;
 }
 
-const fs::path MEDIA = "D:/testing Videos";
+const fs::path MEDIA = testMediaDir();
 
 }  // namespace
 

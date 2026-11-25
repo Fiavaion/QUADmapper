@@ -19,6 +19,7 @@
 #include "source/VideoFileSource.hpp"
 #include "video/VideoDecoder.hpp"
 #include "../video/TestClips.hpp"
+#include "../TestMedia.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -378,7 +379,7 @@ TEST_F(AsyncSourceLifecycle, RemovedSourcesGlStateIsFreedByTheFramesThatFollow) 
 // or registered again. (ZeroCopyPlayback.AReopenedClipShowsItsOwnFramesThroughTheKeptPlanes
 // checks the frames it then shows.)
 TEST_F(AsyncSourceLifecycle, AReopenedZeroCopyClipTakesOverTheKeptSharedPlanes) {
-    const fs::path h264 = "D:/testing Videos/greenCrystals_15Sec.mp4";
+    const fs::path h264 = testMediaFile("greenCrystals_15Sec.mp4");
     if (!fs::exists(h264)) GTEST_SKIP() << "test media not present";
     MainThreadTimings::markMainThread();
     MainThreadTimings::reset();
@@ -422,7 +423,7 @@ TEST_F(AsyncSourceLifecycle, AReopenedZeroCopyClipTakesOverTheKeptSharedPlanes) 
 // go once no source has taken them for DxInterop::SPARE_LIFETIME (shortened here), and at
 // once when the project is replaced (clear()), freed by the updates that follow.
 TEST_F(AsyncSourceLifecycle, KeptSharedPlanesAreReleasedWhenUnusedAndOnClear) {
-    const fs::path h264 = "D:/testing Videos/greenCrystals_15Sec.mp4";
+    const fs::path h264 = testMediaFile("greenCrystals_15Sec.mp4");
     if (!fs::exists(h264)) GTEST_SKIP() << "test media not present";
     constexpr auto LIFETIME = std::chrono::milliseconds(300);
     DxInterop::testHooks().spareLifetimeMs = static_cast<int>(LIFETIME.count());
@@ -470,7 +471,7 @@ TEST_F(AsyncSourceLifecycle, KeptSharedPlanesAreReleasedWhenUnusedAndOnClear) {
 // source without a stand-in keeps a texture with no storage, which buildQuadTextureMap
 // draws black, never as the renderer's white default.
 TEST_F(AsyncSourceLifecycle, AZeroCopySourceWaitingForItsSetUpShowsItsStandInOrBlack) {
-    const fs::path h264 = "D:/testing Videos/greenCrystals_15Sec.mp4";
+    const fs::path h264 = testMediaFile("greenCrystals_15Sec.mp4");
     if (!fs::exists(h264)) GTEST_SKIP() << "test media not present";
     SourceManager sm;
     const UUID original = sm.createVideoSource(clip_);
@@ -698,7 +699,7 @@ TEST_F(AsyncSourceLifecycle, AHapOpenThatFailsLeavesAnEmptySourceThatKeepsItsTra
 // update, each shared plane registered in another (their D3D11 textures made on a
 // worker); never the whole set-up in the frame that first shows the source.
 TEST_F(AsyncSourceLifecycle, AZeroCopySourcesFirstFrameIsSetUpOneGlCallAnUpdate) {
-    const fs::path h264 = "D:/testing Videos/greenCrystals_15Sec.mp4";
+    const fs::path h264 = testMediaFile("greenCrystals_15Sec.mp4");
     if (!fs::exists(h264)) GTEST_SKIP() << "test media not present";
     MainThreadTimings::markMainThread();
     MainThreadTimings::reset();
@@ -741,7 +742,7 @@ TEST_F(AsyncSourceLifecycle, AZeroCopySourcesFirstFrameIsSetUpOneGlCallAnUpdate)
 // Zero-copy (ADR-056): the opener prepares the interop device, so the first frame only
 // opens it for OpenGL; removing the source mid-decode frees every D3D11 object.
 TEST_F(AsyncSourceLifecycle, ZeroCopySourceRemovedMidDecodeFreesEveryD3dObject) {
-    const fs::path h264 = "D:/testing Videos/greenCrystals_15Sec.mp4";
+    const fs::path h264 = testMediaFile("greenCrystals_15Sec.mp4");
     if (!fs::exists(h264)) GTEST_SKIP() << "test media not present";
     {
         SourceManager sm;

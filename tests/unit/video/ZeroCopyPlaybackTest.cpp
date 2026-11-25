@@ -24,6 +24,7 @@
 #include "source/SourceManager.hpp"
 #include "source/VideoFileSource.hpp"
 #include "video/VideoDecoder.hpp"
+#include "../TestMedia.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -64,9 +65,9 @@ struct GLContext {
     GLContext& operator=(const GLContext&) = delete;
 };
 
-const std::filesystem::path HEVC8_CLIP = "D:/testing Videos/qa_video/hevc_1080p.mp4";
-const std::filesystem::path HEVC10_CLIP = "D:/testing Videos/qa_video/hevc10_1080p.mp4";
-const std::filesystem::path H264_CLIP = "D:/testing Videos/greenCrystals_15Sec.mp4";
+const std::filesystem::path HEVC8_CLIP = testMediaFile("qa_video/hevc_1080p.mp4");
+const std::filesystem::path HEVC10_CLIP = testMediaFile("qa_video/hevc10_1080p.mp4");
+const std::filesystem::path H264_CLIP = testMediaFile("greenCrystals_15Sec.mp4");
 
 std::vector<uint8_t> readBack(const Texture& texture) {
     std::vector<uint8_t> rgba(static_cast<size_t>(texture.getWidth()) * texture.getHeight() * 4);

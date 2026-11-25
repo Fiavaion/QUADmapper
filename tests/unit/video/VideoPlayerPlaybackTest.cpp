@@ -13,6 +13,7 @@
 #include "video/FrameSelection.hpp"
 #include "video/PlaybackClock.hpp"
 #include "TestClips.hpp"
+#include "../TestMedia.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -761,7 +762,7 @@ TEST(VideoDecoderReposition, ARepositionDuringTheZeroCopyFallbackDropsTheOldPlan
 // The media bin lists .mp4/.mov files as videos and asks each for a thumbnail; one that
 // holds only sound is not an error (it used to log "[ERROR] No video stream found").
 TEST(VideoDecoderOpen, AudioOnlyFileIsNotAnError) {
-    const fs::path clip = "D:/testing Videos/7.1auditionOutLeader_v2_rtb.mp4";  // AAC 7.1, no video
+    const fs::path clip = testMediaFile("7.1auditionOutLeader_v2_rtb.mp4");  // AAC 7.1, no video
     if (!fs::exists(clip)) GTEST_SKIP() << clip.string() << " not present";
     const fs::path log = fs::temp_directory_path() / "qm_audio_only_open.log";
     std::error_code ec;

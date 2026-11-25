@@ -13,6 +13,7 @@
 #include "source/FrameData.hpp"
 #include "renderer/Texture.hpp"
 #include "core/UUID.hpp"
+#include "../TestMedia.hpp"
 
 #include <filesystem>
 #include <thread>
@@ -48,7 +49,7 @@ struct GLContext {
 
 TEST(VideoSourcePipeline, LoadsAdvancesAndUploads) {
     namespace fs = std::filesystem;
-    const fs::path video = "D:/testing Videos/greenCrystals_15Sec_4x3.mp4";
+    const fs::path video = testMediaFile("greenCrystals_15Sec_4x3.mp4");
     if (!fs::exists(video)) GTEST_SKIP() << "test video not present";
 
     GLContext ctx;
@@ -89,7 +90,7 @@ TEST(VideoSourcePipeline, LoadsAdvancesAndUploads) {
 // ahead of it; a saved ping-pong is real Ping-Pong again.
 TEST(VideoSourcePipeline, RestoredTransportPlaysAtClockPace) {
     namespace fs = std::filesystem;
-    const fs::path video = "D:/testing Videos/greenCrystals_15Sec_4x3.mp4";
+    const fs::path video = testMediaFile("greenCrystals_15Sec_4x3.mp4");
     if (!fs::exists(video)) GTEST_SKIP() << "test video not present";
     GLContext ctx;
     if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";
@@ -132,7 +133,7 @@ TEST(VideoSourcePipeline, RestoredTransportPlaysAtClockPace) {
 // updateAll(), and the Reset Playheads action restarts it.
 TEST(VideoSourcePipeline, LockedSourceFollowsTheMasterTimeline) {
     namespace fs = std::filesystem;
-    const fs::path video = "D:/testing Videos/greenCrystals_15Sec_4x3.mp4";
+    const fs::path video = testMediaFile("greenCrystals_15Sec_4x3.mp4");
     if (!fs::exists(video)) GTEST_SKIP() << "test video not present";
     GLContext ctx;
     if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";
@@ -181,7 +182,7 @@ TEST(VideoSourcePipeline, LockedSourceFollowsTheMasterTimeline) {
 // A video restored paused must show its first frame, not a black quad.
 TEST(VideoSourcePipeline, PausedSourceShowsFirstFrame) {
     namespace fs = std::filesystem;
-    const fs::path video = "D:/testing Videos/greenCrystals_15Sec_4x3.mp4";
+    const fs::path video = testMediaFile("greenCrystals_15Sec_4x3.mp4");
     if (!fs::exists(video)) GTEST_SKIP() << "test video not present";
     GLContext ctx;
     if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";
@@ -224,7 +225,7 @@ TEST(VideoSourcePipeline, PausedSourceShowsFirstFrame) {
 // for one decode feeding many quads). GL-free, so always runs.
 TEST(VideoSourcePipeline, ImageSourceDedupedByPath) {
     namespace fs = std::filesystem;
-    const fs::path img = "D:/testing Videos/knowledge-graph.png";
+    const fs::path img = testMediaFile("knowledge-graph.png");
     if (!fs::exists(img)) GTEST_SKIP() << "test image not present";
     GLContext ctx;
     if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";
@@ -241,7 +242,7 @@ TEST(VideoSourcePipeline, ImageSourceDedupedByPath) {
 // as one shared decode.
 TEST(VideoSourcePipeline, VideoSourceDedupedByPath) {
     namespace fs = std::filesystem;
-    const fs::path video = "D:/testing Videos/greenCrystals_15Sec_4x3.mp4";
+    const fs::path video = testMediaFile("greenCrystals_15Sec_4x3.mp4");
     if (!fs::exists(video)) GTEST_SKIP() << "test video not present";
     GLContext ctx;
     if (!ctx.ok) GTEST_SKIP() << "no GL 3.3 context";

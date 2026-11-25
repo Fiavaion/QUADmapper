@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include "video/VideoDecoder.hpp"
+#include "../TestMedia.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -22,8 +23,8 @@ using namespace quadmapper;
 
 namespace {
 
-const std::filesystem::path H264_CLIP = "D:/testing Videos/greenCrystals_15Sec.mp4";          // 1080p25
-const std::filesystem::path H264_SHORT_GOP = "D:/testing Videos/greenCrystals_15Sec_4x3.mp4";  // Ping-Pong-able
+const std::filesystem::path H264_CLIP = testMediaFile("greenCrystals_15Sec.mp4");          // 1080p25
+const std::filesystem::path H264_SHORT_GOP = testMediaFile("greenCrystals_15Sec_4x3.mp4");  // Ping-Pong-able
 
 DecodeOptions hardwareOptions(int failAfter = -1) {
     DecodeOptions options;
@@ -211,7 +212,7 @@ TEST(HardwareDecode, PlannedPlaybackFallsBackWithoutAGap) {
 class HardwareLoopSeam : public testing::TestWithParam<bool> {};
 
 TEST_P(HardwareLoopSeam, NextPassIsQueuedBeforeTheSeamWithoutARestart) {
-    const std::filesystem::path clip = "D:/testing Videos/5sec.mp4";  // 1080p30 H.264, 5 s
+    const std::filesystem::path clip = testMediaFile("5sec.mp4");  // 1080p30 H.264, 5 s
     VideoDecoder decoder;
     DecodeOptions options = hardwareOptions();
     options.zeroCopy = GetParam();
