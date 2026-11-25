@@ -29,6 +29,11 @@ target_link_libraries(quadmapper_media
 if(WIN32)
     # Windows Imaging Component for TIFF decoding (OS libraries, no new dependency)
     target_link_libraries(quadmapper_media PRIVATE windowscodecs ole32)
+elseif(APPLE)
+    # ImageIO for TIFF decoding (system frameworks, no new dependency)
+    target_sources(quadmapper_media PRIVATE ImageLoaderTiffMac.hpp ImageLoaderTiff_mac.cpp)
+    target_link_libraries(quadmapper_media PRIVATE
+        "-framework ImageIO" "-framework CoreGraphics" "-framework CoreFoundation")
 endif()
 
 set_target_properties(quadmapper_media PROPERTIES

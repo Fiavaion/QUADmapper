@@ -12,6 +12,9 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 #endif
+#ifdef __APPLE__
+#include "ImageLoaderTiffMac.hpp"
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -90,6 +93,8 @@ private:
     HRESULT hr_;
 };
 
+#endif  // _WIN32
+
 // Converts tightly packed RGBA to 1-3 channels with stb_image's luminance weights, so
 // both decode paths agree on what a forced channel count means.
 std::vector<uint8_t> convertRgba(const std::vector<uint8_t>& rgba, size_t pixelCount,
@@ -108,6 +113,7 @@ std::vector<uint8_t> convertRgba(const std::vector<uint8_t>& rgba, size_t pixelC
     return out;
 }
 
+#ifdef _WIN32
 // Decodes the first frame of a TIFF through the Windows Imaging Component (stb_image
 // has no TIFF reader). Every source format (8/16-bit gray, RGB, RGBA, CMYK...) is
 // converted to straight-alpha RGBA, top row first like the stb path. desiredChannels 0
@@ -177,10 +183,23 @@ Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desired
     return Ok(std::move(result));
 }
 #else
-// stb_image has no TIFF reader, and the Windows reader above is WIC (ADR-062: deferred).
-Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int /*desiredChannels*/) {
-    return Err<ImageData>("Cannot open '" + utf8FromPath(path.filename()) +
-                          "': TIFF images are not supported on macOS yet");
+// macOS: ImageIO decodes the first frame to RGBA (ImageLoaderTiff_mac.cpp, ADR-062); the
+// channel rule is the one above.
+Result<ImageData, Error> loadTiff(const std::filesystem::path& path, int desiredChannels) {
+    const std::string name = utf8FromPath(path.filename());
+    auto decoded = macDecodeTiff(path);
+    if (decoded.isError()) {
+        return Err<ImageData>("Failed to decode TIFF '" + name + "': " + decoded.error().message);
+    }
+    ImageData result = std::move(decoded.value());
+    if (desiredChannels != 0 && desiredChannels != 4) {
+        result.pixels = convertRgba(result.pixels, static_cast<size_t>(result.width) * result.height,
+                                    desiredChannels);
+        result.channels = desiredChannels;
+    }
+    Logger::debug("Image loaded: {} ({}x{}, {} channels, ImageIO)", name, result.width, result.height,
+                  result.channels);
+    return Ok(std::move(result));
 }
 #endif
 
@@ -300,7 +319,7 @@ Result<ImageData, Error> ImageLoader::loadWithChannels(
 bool ImageLoader::isSupported(const std::filesystem::path& path) {
     const std::string ext = lowercaseExtension(path);
 
-    // Supported formats (.tif/.tiff decode through WIC, the rest through stb_image)
+    // Supported formats (.tif/.tiff decode through the system, the rest through stb_image)
     static const std::vector<std::string> supportedExtensions = {
         ".png", ".jpg", ".jpeg", ".bmp", ".gif",
         ".tga", ".psd", ".hdr", ".pic", ".ppm", ".pgm", ".tif", ".tiff"

@@ -30,7 +30,7 @@ struct ImageData {
  *
  * Uses stb_image internally to support common image formats:
  * PNG, JPEG, BMP, GIF, TGA, PSD, HDR, PIC, PPM, PGM.
- * TIF/TIFF decode through the Windows Imaging Component instead: first frame
+ * TIF/TIFF decode through the system instead (WIC on Windows, ImageIO on macOS): first frame
  * only, always converted to RGBA (4 channels unless others are requested).
  *
  * Pixels are returned top row first (both decode paths), the same order as

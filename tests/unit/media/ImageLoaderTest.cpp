@@ -25,7 +25,6 @@ namespace test {
 
 namespace {
 
-#ifdef _WIN32  // the TIFF fixtures: TIFF decoding is Windows only for now (ADR-062)
 // One page of a baseline (uncompressed, chunky, single-strip) little-endian TIFF.
 // Rows are given top row first, as TIFF stores them by default.
 struct TiffPage {
@@ -102,8 +101,6 @@ std::vector<uint8_t> buildTiff(const std::vector<TiffPage>& pages) {
     return out;
 }
 
-#endif  // _WIN32
-
 using Rgb = std::array<uint8_t, 3>;
 
 // 3x2 (non-square, so a transpose would show) with a distinct colour per pixel.
@@ -153,7 +150,6 @@ protected:
     std::filesystem::path dir_;
 };
 
-#ifdef _WIN32
 TiffPage rgb8Page() {
     TiffPage page;
     page.width = 3;
@@ -166,11 +162,9 @@ TiffPage rgb8Page() {
 const uint8_t* at(const ImageData& img, int x, int memoryRow) {
     return &img.pixels[(static_cast<size_t>(memoryRow) * img.width + x) * img.channels];
 }
-#endif
 
 } // namespace
 
-#ifdef _WIN32
 TEST_F(ImageLoaderTiffTest, Rgb8MatchesStbOrientationAndChannelOrder) {
     const auto tiffPath = write("rgb8.tif", buildTiff({rgb8Page()}));
     const auto ppmPath = writePpm("rgb8.ppm", 3, 2, flatten(SOURCE_3X2));
@@ -331,6 +325,31 @@ TEST_F(ImageLoaderTiffTest, Rgb16ConvertsTo8BitRgba) {
     EXPECT_EQ(bottom[2], 0);
 }
 
+#ifdef __APPLE__
+// A kind the sample copy does not take (CMYK inks): Core Graphics draws it to RGB.
+TEST_F(ImageLoaderTiffTest, CmykIsDrawnAsOpaqueRgb) {
+    TiffPage page;
+    page.width = 2;
+    page.height = 1;
+    page.samplesPerPixel = 4;
+    page.photometric = 5;  // separated: cyan, magenta, yellow, black
+    page.data = {0, 0, 0, 0,   0, 0, 0, 255};  // no ink, then full black
+    auto result = ImageLoader::load(write("cmyk.tif", buildTiff({page})));
+    ASSERT_TRUE(result.isSuccess()) << result.error().message;
+    const ImageData& img = result.value();
+    ASSERT_EQ(img.width, 2);
+    ASSERT_EQ(img.channels, 4);
+    const uint8_t* paper = at(img, 0, 0);
+    const uint8_t* black = at(img, 1, 0);
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_GE(paper[c], 230) << "channel " << c;
+        EXPECT_LE(black[c], 70) << "channel " << c;
+    }
+    EXPECT_EQ(paper[3], 255);
+    EXPECT_EQ(black[3], 255);
+}
+#endif
+
 TEST_F(ImageLoaderTiffTest, MultiPageLoadsFirstFrame) {
     TiffPage second;
     second.width = 5;
@@ -382,16 +401,6 @@ TEST_F(ImageLoaderTiffTest, TruncatedPixelDataReturnsError) {
     auto result = ImageLoader::load(write("truncated.tif", bytes));
     EXPECT_TRUE(result.isError());
 }
-#else
-// TIFF is not decoded on macOS yet (ADR-062): the loader says so instead of failing silently.
-TEST_F(ImageLoaderTiffTest, TiffReturnsAClearErrorOnMacOs) {
-    const auto path = write("any.tif", {'I', 'I', 42, 0});
-    auto result = ImageLoader::load(path);
-    ASSERT_TRUE(result.isError());
-    EXPECT_NE(result.error().message.find("not supported on macOS"), std::string::npos)
-        << result.error().message;
-}
-#endif
 
 TEST_F(ImageLoaderTiffTest, EmptyFileReturnsError) {
     auto result = ImageLoader::load(write("empty.tiff", {}));
@@ -429,11 +438,9 @@ TEST_F(ImageLoaderTiffTest, LoadsFromNonAsciiFolder) {
     ppmBytes.insert(ppmBytes.end(), rgb.begin(), rgb.end());
     const std::filesystem::path ppm = folder / pathFromUtf8(u8"b\u00fchne \u0416.ppm");
     std::vector<std::filesystem::path> paths = {ppm};
-#ifdef _WIN32
     const std::filesystem::path tiff = folder / pathFromUtf8(u8"\u65e5\u672c.tif");
     put(tiff, buildTiff({rgb8Page()}));
     paths.push_back(tiff);
-#endif
     put(ppm, ppmBytes);
 
     for (const auto& path : paths) {
@@ -447,7 +454,6 @@ TEST_F(ImageLoaderTiffTest, LoadsFromNonAsciiFolder) {
     }
 }
 
-#ifdef _WIN32
 TEST_F(ImageLoaderTiffTest, DecodesOnFreshWorkerThread) {
     const auto path = write("rgb8.tif", buildTiff({rgb8Page()}));
     bool ok = false;
@@ -456,6 +462,7 @@ TEST_F(ImageLoaderTiffTest, DecodesOnFreshWorkerThread) {
     EXPECT_TRUE(ok);
 }
 
+#ifdef _WIN32
 TEST_F(ImageLoaderTiffTest, DecodesOnSingleThreadedApartmentAndLeavesItInitialised) {
     // A thread already in an STA makes our MTA init fail with RPC_E_CHANGED_MODE: the
     // decode must still work, and must not tear down the caller's COM.
