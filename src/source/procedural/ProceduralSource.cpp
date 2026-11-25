@@ -51,15 +51,15 @@ bool ProceduralSource::initialize() {
         return false;
     }
 
-    // The output texture is the framebuffer's only attachment. Leave the caller's
-    // framebuffer binding as it was.
+    // The output texture is the framebuffer's only attachment. Only the draw binding is
+    // used, and it is left as it was: the caller's read binding is never touched.
     GLint previousFbo = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFbo);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previousFbo);
     glGenFramebuffers(1, &fbo_);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outputTexture_, 0);
-    const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
-    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFbo));
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo_);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outputTexture_, 0);
+    const bool complete = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(previousFbo));
     if (!complete) {
         Logger::error("ProceduralSource '{}': Output framebuffer is incomplete", name_);
         shutdown();
