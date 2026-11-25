@@ -27,10 +27,16 @@ with these features only: avcodec, avdevice, avformat, swresample and swscale. I
 not configured with `--enable-gpl` or
 `--enable-nonfree`, and it does not include x264, x265 or fdk-aac.
 
-QUADmapper links FFmpeg dynamically. The libraries are the `av*.dll` and `sw*.dll`
-files that sit beside `QUADmapper.exe`. You may replace them with your own build of
-the same FFmpeg major versions (avcodec-63, avdevice-63, avformat-63, avutil-61,
-swresample-7, swscale-10).
+On Windows QUADmapper links FFmpeg dynamically. The libraries are the `av*.dll` and
+`sw*.dll` files that sit beside `QUADmapper.exe`. You may replace them with your own
+build of the same FFmpeg major versions (avcodec-63, avdevice-63, avformat-63,
+avutil-61, swresample-7, swscale-10).
+
+On macOS the same FFmpeg, built with the same features plus Apple's own VideoToolbox,
+AudioToolbox and AVFoundation, is linked into the program statically. To use a modified
+FFmpeg there, relink QUADmapper from its source, which is public under the MIT licence
+at https://github.com/Fiavaion/QUADmapper: "Building on macOS" in its README gives the
+steps, and vcpkg builds FFmpeg from whatever source its port is pointed at.
 
 **Corresponding source:** the FFmpeg 9.0.2 source is at https://ffmpeg.org/releases/
 (`ffmpeg-9.0.2.tar.xz`). The vcpkg port and patches that built it are in the vcpkg
