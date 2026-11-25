@@ -4,6 +4,8 @@
 **Phase / focus:** Release 1.0.0. The owner tested the app on 2026-11-25 and is happy to move forward. Now: merge to `master`, build the installer there, then replace the published 1.0.0 when the owner says publish.
 **Dev:** `494cc40` plus notes commits. 94 code commits since the 2026-11-23 status note (QM-127).
 
+**Mac port (2026-11-25):** the owner is taking the project to a Mac to build a macOS version. It travels as a zip with a start file (`000_StartMac.md`, not in git). No Mac work exists yet; the port starts with an ADR, on its own branch off `dev`. The Windows 1.0.0 release is finished on the work PC.
+
 ## Gate records
 
 - **Full suite (release gate):** `cmake --build build/debug --config Debug`, then `ctest --preset debug | b4dc6f1 (tree 2bf8d00; code as at 494cc40) | 1831 passed, 0 failed, 8 disabled`. 59 of the passes are tests that skip themselves (their test clips are not on this PC). `master` has no commit that `dev` lacks, so the merge gives this same code.
