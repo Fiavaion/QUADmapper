@@ -12,7 +12,8 @@
 
 namespace quadmapper::control {
 
-// OSC 1.0 input over a Winsock UDP socket on its own thread (ADR-048 §1). Every
+// OSC 1.0 input over a UDP socket on its own thread (ADR-048 §1): Winsock on Windows,
+// BSD sockets on macOS. Every
 // datagram is parsed by parseOscPacket; its messages are pushed to the queue as
 // ControlEvents, malformed datagrams are dropped and counted. Off until start().
 // The same socket sends OSC feedback (sendTo), so a controller sees one peer.

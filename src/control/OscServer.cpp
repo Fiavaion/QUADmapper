@@ -3,6 +3,7 @@
 #include "OscParser.hpp"
 #include "core/Logger.hpp"
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -15,6 +16,16 @@
 #ifndef SIO_UDP_CONNRESET  // mstcpip.h defines it only for some _WIN32_WINNT targets
 #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
+#endif
 
 #include <chrono>
 #include <vector>
@@ -23,7 +34,14 @@ namespace quadmapper::control {
 
 namespace {
 
-std::string winsockErrorText(int code) {
+#ifdef _WIN32
+using SocketLength = int;
+constexpr int kErrorDatagramTooLong = WSAEMSGSIZE;
+constexpr int kErrorPortUnreachable = WSAECONNRESET;
+
+int lastSocketError() { return WSAGetLastError(); }
+
+std::string socketErrorText(int code) {
     switch (code) {
         case WSAEADDRINUSE:     return "the port is already in use by another program";
         case WSAEACCES:         return "access to the port was denied (another program may hold it exclusively)";
@@ -32,6 +50,27 @@ std::string winsockErrorText(int code) {
         default:                return "Winsock error " + std::to_string(code);
     }
 }
+#else
+// The BSD socket calls under the names the Winsock code below uses.
+using SOCKET = int;
+using SocketLength = socklen_t;
+constexpr SOCKET INVALID_SOCKET = -1;
+constexpr int SOCKET_ERROR = -1;
+constexpr int kErrorDatagramTooLong = EMSGSIZE;
+constexpr int kErrorPortUnreachable = ECONNREFUSED;
+
+int lastSocketError() { return errno; }
+int closesocket(SOCKET s) { return ::close(s); }
+
+std::string socketErrorText(int code) {
+    switch (code) {
+        case EADDRINUSE:    return "the port is already in use by another program";
+        case EACCES:        return "access to the port was denied (ports below 1024 need administrator rights)";
+        case EADDRNOTAVAIL: return "the bind address is not an address of this computer";
+        default:            return std::string(std::strerror(code)) + " (error " + std::to_string(code) + ")";
+    }
+}
+#endif
 
 }  // namespace
 
@@ -54,43 +93,50 @@ Result<void, Error> OscServer::start(const std::string& bindAddress, int port) {
 
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_port = htons(static_cast<u_short>(port));
+    address.sin_port = htons(static_cast<uint16_t>(port));
     const std::string host = bindAddress.empty() ? std::string("0.0.0.0") : bindAddress;
     if (inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
         return fail("'" + host + "' is not a valid IPv4 address");
     }
 
+#ifdef _WIN32
     WSADATA wsaData;
     const int startup = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (startup != 0) return fail("could not start networking (" + winsockErrorText(startup) + ")");
+    if (startup != 0) return fail("could not start networking (" + socketErrorText(startup) + ")");
     winsockStarted_ = true;
+#endif
 
     SOCKET s = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s == INVALID_SOCKET) return fail("could not create a UDP socket (" + winsockErrorText(WSAGetLastError()) + ")");
+    if (s == INVALID_SOCKET) return fail("could not create a UDP socket (" + socketErrorText(lastSocketError()) + ")");
     socket_ = static_cast<uintptr_t>(s);
 
+#ifdef _WIN32
     // Exclusive: another program cannot bind the same port behind our back, and a
-    // port someone else holds is reported instead of silently shared.
+    // port someone else holds is reported instead of silently shared. (A BSD socket
+    // is exclusive unless it asks to share with SO_REUSEADDR or SO_REUSEPORT.)
     BOOL exclusive = TRUE;
     setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive),
                sizeof(exclusive));
+#endif
     int receiveBuffer = 1 << 20;  // absorb fader bursts while the main thread renders
     setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&receiveBuffer),
                sizeof(receiveBuffer));
+#ifdef _WIN32
     // Feedback sent to a port nobody listens on comes back as ICMP "port unreachable",
     // which Windows reports on the next recvfrom as WSAECONNRESET; switch that off.
     BOOL reportReset = FALSE;
     DWORD returned = 0;
     WSAIoctl(s, SIO_UDP_CONNRESET, &reportReset, sizeof(reportReset), nullptr, 0, &returned,
              nullptr, nullptr);
+#endif
 
     if (::bind(s, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
         return fail("cannot listen on UDP " + host + ":" + std::to_string(port) + ": " +
-                    winsockErrorText(WSAGetLastError()));
+                    socketErrorText(lastSocketError()));
     }
 
     sockaddr_in bound{};
-    int boundLength = sizeof(bound);
+    SocketLength boundLength = sizeof(bound);
     if (getsockname(s, reinterpret_cast<sockaddr*>(&bound), &boundLength) == 0) {
         boundPort_ = ntohs(bound.sin_port);
     } else {
@@ -125,10 +171,12 @@ void OscServer::closeSocket() {
         closesocket(static_cast<SOCKET>(socket_));
         socket_ = static_cast<uintptr_t>(INVALID_SOCKET);
     }
+#ifdef _WIN32
     if (winsockStarted_) {
         WSACleanup();
         winsockStarted_ = false;
     }
+#endif
     boundPort_ = 0;
 }
 
@@ -145,13 +193,14 @@ bool OscServer::sendTo(const Endpoint& to, const std::vector<uint8_t>& datagram)
     address.sin_family = AF_INET;
     address.sin_port = htons(to.port);
     address.sin_addr.s_addr = htonl(to.ip);
-    const int sent = sendto(static_cast<SOCKET>(socket_), reinterpret_cast<const char*>(datagram.data()),
-                            static_cast<int>(datagram.size()), 0,
-                            reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+    const int sent = static_cast<int>(
+        sendto(static_cast<SOCKET>(socket_), reinterpret_cast<const char*>(datagram.data()),
+               static_cast<int>(datagram.size()), 0, reinterpret_cast<const sockaddr*>(&address),
+               sizeof(address)));
     if (sent != static_cast<int>(datagram.size())) {
         ++sendErrors_;
         const std::string reason = "cannot send to " + toString(to) + ": " +
-                                   winsockErrorText(sent == SOCKET_ERROR ? WSAGetLastError() : 0);
+                                   socketErrorText(sent == SOCKET_ERROR ? lastSocketError() : 0);
         if (reason != lastSendError_) Logger::warning("OSC: {}", reason);  // once per distinct error
         lastSendError_ = reason;
         return false;
@@ -182,7 +231,8 @@ void OscServer::receiveLoop() {
         FD_ZERO(&readable);
         FD_SET(s, &readable);
         timeval timeout{0, kPollMs * 1000};
-        const int ready = select(0, &readable, nullptr, nullptr, &timeout);
+        // The first argument is ignored by Winsock and required by BSD sockets.
+        const int ready = select(static_cast<int>(s) + 1, &readable, nullptr, nullptr, &timeout);
         if (ready == 0) continue;
         if (ready == SOCKET_ERROR) {
             std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
@@ -190,16 +240,16 @@ void OscServer::receiveLoop() {
         }
 
         sockaddr_in from{};
-        int fromLength = sizeof(from);
-        const int received = recvfrom(s, reinterpret_cast<char*>(buffer.data()),
-                                      static_cast<int>(buffer.size()), 0,
-                                      reinterpret_cast<sockaddr*>(&from), &fromLength);
+        SocketLength fromLength = sizeof(from);
+        const int received = static_cast<int>(
+            recvfrom(s, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0,
+                     reinterpret_cast<sockaddr*>(&from), &fromLength));
         if (received == SOCKET_ERROR) {
-            const int error = WSAGetLastError();
-            if (error == WSAEMSGSIZE) {  // truncated oversize datagram
+            const int error = lastSocketError();
+            if (error == kErrorDatagramTooLong) {  // truncated oversize datagram
                 packets_.fetch_add(1, std::memory_order_relaxed);
                 malformed_.fetch_add(1, std::memory_order_relaxed);
-            } else if (error != WSAECONNRESET) {
+            } else if (error != kErrorPortUnreachable) {
                 // Unexpected: back off rather than spin on a failing socket.
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
@@ -214,7 +264,7 @@ void OscServer::receiveLoop() {
         }
         const uint32_t senderIp = ntohl(from.sin_addr.s_addr);
         const uint16_t senderPort = ntohs(from.sin_port);
-        if (fromLength >= static_cast<int>(sizeof(from)) && from.sin_family == AF_INET) {
+        if (static_cast<size_t>(fromLength) >= sizeof(from) && from.sin_family == AF_INET) {
             lastSender_.store((static_cast<uint64_t>(senderIp) << 16) | senderPort | kHaveSender,
                               std::memory_order_relaxed);
         }

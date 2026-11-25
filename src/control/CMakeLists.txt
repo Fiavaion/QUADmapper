@@ -18,7 +18,6 @@ add_library(quadmapper_control STATIC
     MidiDecode.hpp
     MidiDecode.cpp
     MidiInput.hpp
-    MidiInput.cpp
     MidiMapping.hpp
     ControlRegistry.hpp
     ControlRegistry.cpp
@@ -37,10 +36,19 @@ target_include_directories(quadmapper_control
 target_link_libraries(quadmapper_control
     PUBLIC
         quadmapper_core
-    PRIVATE
+)
+# MIDI input is WinMM on Windows and CoreMIDI on macOS: one source file each. The OSC
+# socket code is shared (Winsock and BSD sockets differ in a few names).
+if(WIN32)
+    target_sources(quadmapper_control PRIVATE MidiInput_win.cpp)
+    target_link_libraries(quadmapper_control PRIVATE
         winmm      # Windows system lib (MIDI input); no vcpkg dependency
         ws2_32     # Windows system lib (Winsock UDP); no vcpkg dependency
-)
+    )
+elseif(APPLE)
+    target_sources(quadmapper_control PRIVATE MidiInput_mac.cpp)
+    target_link_libraries(quadmapper_control PRIVATE "-framework CoreMIDI" "-framework CoreFoundation")
+endif()
 
 set_target_properties(quadmapper_control PROPERTIES
     FOLDER "Libraries"
