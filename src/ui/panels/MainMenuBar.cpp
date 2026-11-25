@@ -12,6 +12,7 @@
 #include "editor/StatusLine.hpp"
 #include "editor/UndoRouting.hpp"
 #include "core/FileSystem.hpp"
+#include "core/MacShell.hpp"
 #include "core/Version.hpp"
 #include "scene/Quad.hpp"
 #include "scene/QuadManager.hpp"
@@ -41,10 +42,12 @@
 #endif
 
 namespace {
-// Open a URL in the user's default browser (Win32; no-op elsewhere).
+// Open a URL in the user's default browser.
 void openUrl(const char* url) {
-#ifdef _WIN32
+#if defined(_WIN32)
     ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
+#elif defined(__APPLE__)
+    quadmapper::macOpen(url);
 #else
     (void)url;
 #endif
@@ -73,8 +76,10 @@ void openPath(EditorState& es, const std::filesystem::path& path) {
         postStatus(es, "Not found: " + utf8FromPath(path));
         return;
     }
-#ifdef _WIN32
+#if defined(_WIN32)
     ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#elif defined(__APPLE__)
+    macOpen(utf8FromPath(path));
 #endif
 }
 
@@ -399,7 +404,7 @@ void MainMenuBar::render(EditorContext& ctx, PanelHost& panels) {
             es.requestPanelOpen(PreferencesDialog::ID);
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Open Log Folder")) openPath(es, userLocalDir() / "logs");
+        if (ImGui::MenuItem("Open Log Folder")) openPath(es, userLogDir());
         if (ImGui::MenuItem("Report a Bug...")) {
             openUrl("https://github.com/Fiavaion/Quadmapper/issues/new?template=bug_report.md");
         }

@@ -15,6 +15,9 @@ add_library(quadmapper_core STATIC
     GlObjectStats.hpp
     GlObjectStats.cpp
 )
+if(APPLE)
+    target_sources(quadmapper_core PRIVATE MacShell.hpp MacShell.cpp)
+endif()
 
 target_include_directories(quadmapper_core
     PUBLIC

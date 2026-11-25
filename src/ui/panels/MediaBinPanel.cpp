@@ -4,6 +4,7 @@
 #include "editor/PerformLock.hpp"
 #include "editor/ReplaceMedia.hpp"
 #include "core/FileSystem.hpp"
+#include "core/MacShell.hpp"
 #include "media/MediaLibrary.hpp"
 #include "media/MediaItem.hpp"
 #include "media/ThumbnailCache.hpp"
@@ -253,7 +254,11 @@ void MediaBinPanel::renderThumbnailGrid() {
     if (items.empty()) {
         ImGui::TextDisabled("No media imported.");
         ImGui::TextDisabled("Click 'Load Files...' or 'Load Folder...' to add media.");
+#ifdef __APPLE__
+        ImGui::TextDisabled("Or drag files here from Finder.");
+#else
         ImGui::TextDisabled("Or drag files here from Explorer.");
+#endif
         return;
     }
 
@@ -601,9 +606,9 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
             }
         }
 
-#ifdef _WIN32
         // Only show file-related options for non-procedural items
         if (item->getType() != MediaType::PROCEDURAL) {
+#if defined(_WIN32)
             if (ImGui::MenuItem("Reveal in Explorer")) {
                 std::wstring path = item->getPath().wstring();
                 // No file name holds a quote; one from a project file would end the
@@ -613,12 +618,16 @@ void MediaBinPanel::renderItemContextMenu(MediaItem* item) {
                     ShellExecuteW(NULL, L"open", L"explorer.exe", param.c_str(), NULL, SW_SHOWNORMAL);
                 }
             }
+#elif defined(__APPLE__)
+            if (ImGui::MenuItem("Reveal in Finder")) {
+                macOpen(utf8FromPath(item->getPath()), true);
+            }
+#endif
 
             if (ImGui::MenuItem("Copy Path")) {
                 ImGui::SetClipboardText(utf8FromPath(item->getPath()).c_str());
             }
         }
-#endif
 
         ImGui::EndPopup();
     }

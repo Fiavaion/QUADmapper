@@ -91,6 +91,8 @@ std::filesystem::path AppPreferences::getDefaultConfigPath() {
     }
     CoTaskMemFree(appDataPath);  // required even when the call fails; null is a no-op
     configDir /= "QUADmapper";
+#elif defined(__APPLE__)
+    configDir = userConfigDir();  // ~/Library/Application Support/QUADmapper
 #else
     if (const char* xdgConfig = std::getenv("XDG_CONFIG_HOME")) {
         configDir = xdgConfig;

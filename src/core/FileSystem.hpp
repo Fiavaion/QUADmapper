@@ -20,8 +20,16 @@ std::string utf8FromPath(const std::filesystem::path& path);
 // Program Files each start it somewhere else, and Program Files cannot be written to.
 std::filesystem::path executableDir();                              // folder of the .exe
 std::filesystem::path resourcePath(const std::string& relative);    // <exe folder>/resources/<relative>
-std::filesystem::path userConfigDir();   // %APPDATA%\QUADmapper: settings that follow the user
-std::filesystem::path userLocalDir();    // %LOCALAPPDATA%\QUADmapper: logs, crash dumps, caches
+//
+//                     Windows                           macOS
+// userConfigDir()     %APPDATA%\QUADmapper              ~/Library/Application Support/QUADmapper
+// userLocalDir()      %LOCALAPPDATA%\QUADmapper         ~/Library/Caches/QUADmapper
+// userLogDir()        %LOCALAPPDATA%\QUADmapper\logs    ~/Library/Logs/QUADmapper
+// userRecoveryDir()   %LOCALAPPDATA%\QUADmapper\recovery  ~/Library/Application Support/QUADmapper/recovery
+std::filesystem::path userConfigDir();    // settings that follow the user
+std::filesystem::path userLocalDir();     // this machine only: crash dumps, caches (macOS may empty it)
+std::filesystem::path userLogDir();       // the log file
+std::filesystem::path userRecoveryDir();  // autosave and crash copies of untitled shows
 
 class FileSystem {
 public:

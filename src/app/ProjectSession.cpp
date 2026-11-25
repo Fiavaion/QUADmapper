@@ -23,12 +23,6 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
-// NOMINMAX prevents windows.h from defining min/max macros that clash with std::max.
-#ifndef NOMINMAX
-#  define NOMINMAX
-#endif
-#include <windows.h>
-#include <shlobj.h>   // SHGetKnownFolderPath: recovery folder (ADR-046)
 
 namespace quadmapper {
 
@@ -36,20 +30,9 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// %LOCALAPPDATA%\QUADmapper\recovery: autosave / crash files of untitled projects.
+// Autosave / crash files of untitled projects (ADR-046).
 fs::path recoveryDir() {
-    PWSTR base = nullptr;
-    fs::path dir;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &base))) {
-        dir = fs::path(base) / "QUADmapper" / "recovery";
-    }
-    CoTaskMemFree(base);
-    std::error_code ec;
-    if (dir.empty()) {
-        const fs::path temp = fs::temp_directory_path(ec);
-        if (!ec) dir = temp / "QUADmapper" / "recovery";
-    }
-    return dir;
+    return userRecoveryDir();
 }
 
 // <project>.autosave.qmap / <project>.crash.qmap beside the project, or

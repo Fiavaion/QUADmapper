@@ -61,7 +61,7 @@ public:
 
     /**
      * @brief Get the disk cache directory path.
-     * @return Path to %APPDATA%\QUADmapper\thumbnails
+     * @return Path to %APPDATA%\QUADmapper\thumbnails (macOS: ~/Library/Caches/QUADmapper/thumbnails)
      */
     static std::filesystem::path getCacheDir();
 

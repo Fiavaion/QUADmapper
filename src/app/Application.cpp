@@ -99,13 +99,13 @@ static bool isProjectFile(const std::filesystem::path& path) {
     return ext == ".qmap";
 }
 
-// The log of a normal run: quadmapper.log in the logs folder under userLocalDir(). Once
+// The log of a normal run: quadmapper.log in userLogDir(). Once
 // it is large, the next start keeps it as quadmapper.previous.log and begins a new one.
 static void startLogFile() {
     namespace fs = std::filesystem;
     constexpr std::uintmax_t ROTATE_BYTES = 2 * 1024 * 1024;
     std::error_code ec;
-    const fs::path dir = userLocalDir() / "logs";
+    const fs::path dir = userLogDir();
     fs::create_directories(dir, ec);
     const fs::path file = dir / "quadmapper.log";
     const std::uintmax_t size = fs::file_size(file, ec);

@@ -9,6 +9,10 @@
 #include <windows.h>
 #include <shlobj.h>   // SHGetKnownFolderPath
 #endif
+#ifdef __APPLE__
+#include <mach-o/dyld.h>  // _NSGetExecutablePath
+#include <cstdlib>
+#endif
 
 namespace quadmapper {
 
@@ -33,6 +37,15 @@ std::filesystem::path knownFolder(REFKNOWNFOLDERID id) {
 }
 #endif
 
+#ifdef __APPLE__
+// ~/Library/<folder>; empty when HOME is not set (then the callers use the temp folder).
+std::filesystem::path libraryFolder(const char* folder) {
+    const char* home = std::getenv("HOME");
+    if (!home || !*home) return {};
+    return std::filesystem::path(home) / "Library" / folder;
+}
+#endif
+
 }  // namespace
 
 std::filesystem::path executableDir() {
@@ -48,6 +61,17 @@ std::filesystem::path executableDir() {
         buffer.resize(buffer.size() * 2);  // a long path was cut short: ask again
     }
 #endif
+#ifdef __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);  // fails by design and reports the size needed
+    std::string buffer(size, '\0');
+    if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
+        std::error_code resolveError;
+        const std::filesystem::path resolved =
+            std::filesystem::canonical(std::filesystem::path(buffer.c_str()), resolveError);
+        if (!resolveError) return resolved.parent_path();
+    }
+#endif
     std::error_code ec;
     return std::filesystem::current_path(ec);
 }
@@ -57,18 +81,38 @@ std::filesystem::path resourcePath(const std::string& relative) {
 }
 
 std::filesystem::path userConfigDir() {
-#ifdef _WIN32
+#if defined(_WIN32)
     return appFolderUnder(knownFolder(FOLDERID_RoamingAppData));
+#elif defined(__APPLE__)
+    return appFolderUnder(libraryFolder("Application Support"));
 #else
     return appFolderUnder({});
 #endif
 }
 
 std::filesystem::path userLocalDir() {
-#ifdef _WIN32
+#if defined(_WIN32)
     return appFolderUnder(knownFolder(FOLDERID_LocalAppData));
+#elif defined(__APPLE__)
+    return appFolderUnder(libraryFolder("Caches"));
 #else
     return appFolderUnder({});
+#endif
+}
+
+std::filesystem::path userLogDir() {
+#ifdef __APPLE__
+    return appFolderUnder(libraryFolder("Logs"));
+#else
+    return userLocalDir() / "logs";
+#endif
+}
+
+std::filesystem::path userRecoveryDir() {
+#ifdef __APPLE__
+    return userConfigDir() / "recovery";  // the Caches folder may be emptied by macOS
+#else
+    return userLocalDir() / "recovery";
 #endif
 }
 

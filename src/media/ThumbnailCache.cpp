@@ -39,6 +39,9 @@ ThumbnailCache::~ThumbnailCache() {
 }
 
 std::filesystem::path ThumbnailCache::getCacheDir() {
+#ifdef __APPLE__
+    return userLocalDir() / "thumbnails";  // ~/Library/Caches/QUADmapper/thumbnails
+#else
     // Wide: a narrow getenv narrows a non-ASCII user folder to the ANSI code page.
     wchar_t* appData = nullptr;
     size_t length = 0;
@@ -50,6 +53,7 @@ std::filesystem::path ThumbnailCache::getCacheDir() {
     free(appData);
     std::error_code ec;
     return std::filesystem::temp_directory_path(ec) / "QUADmapper" / "thumbnails";
+#endif
 }
 
 std::filesystem::path ThumbnailCache::getCachePath(const std::filesystem::path& filePath) const {
