@@ -93,6 +93,7 @@ cp -R "$stage/resources" "$app/Contents/Resources/resources"
 cp "$stage/THIRD-PARTY-NOTICES.txt" "$stage/LICENSE.txt" "$app/Contents/Resources/"
 
 min_macos="$(vtool -show-build "$app/Contents/MacOS/QUADmapper" | awk '$1 == "minos" { print $2; exit }')"
+[ -n "$min_macos" ] || { echo "Cannot read the minimum macOS version from the built program" >&2; exit 1; }
 sed -e "s/@VERSION@/$version/g" -e "s/@MIN_MACOS@/$min_macos/g" \
     "$repo/packaging/macos/Info.plist.in" > "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" > /dev/null
