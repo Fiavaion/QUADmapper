@@ -54,7 +54,7 @@ AsyncFileDialog::~AsyncFileDialog() {
     }
 #elif defined(__APPLE__)
     // The panel belongs to the main thread, which is the one destroying this object.
-    while (!done_.load(std::memory_order_acquire)) macCancelFileDialog();
+    while (!done_.load(std::memory_order_acquire)) macCancelFileDialog(this);
 #endif
     worker_.join();
 }
@@ -153,7 +153,7 @@ void AsyncFileDialog::run(const Request& request) {
     result_ = std::move(chosen);
     done_.store(true, std::memory_order_release);
 #elif defined(__APPLE__)
-    result_ = macRunFileDialog(request);
+    result_ = macRunFileDialog(request, this);
     done_.store(true, std::memory_order_release);
 #else
     (void)request;

@@ -9,7 +9,12 @@ namespace quadmapper {
 
 namespace {
 
-NSSavePanel* g_panel = nil;  // the one panel on screen; touched on the main thread only
+// The panels on screen, by the dialog that asked for each: several AsyncFileDialog
+// objects can have one open at once. Touched on the main thread only.
+NSMutableDictionary<NSValue*, NSSavePanel*>* openPanels() {
+    static NSMutableDictionary<NSValue*, NSSavePanel*>* panels = [NSMutableDictionary dictionary];
+    return panels;
+}
 
 NSString* toNSString(const std::string& utf8) {
     return [[NSString alloc] initWithBytes:utf8.data() length:utf8.size() encoding:NSUTF8StringEncoding];
@@ -85,7 +90,7 @@ NSSavePanel* makePanel(const AsyncFileDialog::Request& request) {
 
 }  // namespace
 
-std::vector<std::string> macRunFileDialog(const AsyncFileDialog::Request& request) {
+std::vector<std::string> macRunFileDialog(const AsyncFileDialog::Request& request, const void* owner) {
     __block std::vector<std::string> chosen;
     dispatch_semaphore_t answered = dispatch_semaphore_create(0);
     const AsyncFileDialog::Request* asked = &request;  // valid until the wait below returns
@@ -93,7 +98,8 @@ std::vector<std::string> macRunFileDialog(const AsyncFileDialog::Request& reques
     dispatch_async(dispatch_get_main_queue(), ^{
         NSSavePanel* panel = makePanel(*asked);
         const bool isOpenPanel = asked->kind != AsyncFileDialog::Kind::SaveFile;
-        g_panel = panel;
+        NSValue* key = [NSValue valueWithPointer:owner];
+        openPanels()[key] = panel;
         [panel beginWithCompletionHandler:^(NSModalResponse response) {
             if (response == NSModalResponseOK) {
                 NSArray<NSURL*>* urls = isOpenPanel ? ((NSOpenPanel*)panel).URLs
@@ -102,7 +108,7 @@ std::vector<std::string> macRunFileDialog(const AsyncFileDialog::Request& reques
                     if (const char* path = url.fileSystemRepresentation) chosen.emplace_back(path);
                 }
             }
-            g_panel = nil;
+            [openPanels() removeObjectForKey:key];
             dispatch_semaphore_signal(answered);
         }];
     });
@@ -111,8 +117,8 @@ std::vector<std::string> macRunFileDialog(const AsyncFileDialog::Request& reques
     return chosen;
 }
 
-void macCancelFileDialog() {
-    if (g_panel) [g_panel cancel:nil];
+void macCancelFileDialog(const void* owner) {
+    if (NSSavePanel* panel = openPanels()[[NSValue valueWithPointer:owner]]) [panel cancel:nil];
     // Runs a panel request that is still queued, and delivers the cancelled answer.
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, true);
 }
