@@ -47,6 +47,11 @@ struct StressConfig {
     std::string exportCheck = "";
 };
 
+// A harness number from the command line, held to [lo, hi]. Text that is not a number
+// gives lo.
+int harnessInt(const char* text, int lo, int hi);
+double harnessSeconds(const char* text, double lo, double hi);
+
 // Consume one command-line argument if it is a --stress flag (the first one seen
 // creates `cfg`). Returns false for arguments that are not stress flags.
 bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg);

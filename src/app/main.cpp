@@ -201,10 +201,16 @@ int main(int /*argc*/, char* /*argv*/[]) {
     std::vector<std::string> args = utf8Arguments();
     std::vector<char*> argv;
     bool opensAShow = false;
+    std::optional<quadmapper::StressConfig> stressFlags;
+    std::optional<quadmapper::BenchConfig> benchFlags;
     for (std::string& arg : args) {
         argv.push_back(arg.data());
         // The headless harnesses (StressHarness, Bench) run unattended: no message boxes.
-        if (arg.rfind("--stress", 0) == 0 || arg.rfind("--bench", 0) == 0) g_showMessages = false;
+        // Asked of the same parsers Application uses, so only a real harness flag counts.
+        if (quadmapper::parseStressArg(arg.c_str(), stressFlags) ||
+            quadmapper::parseBenchArg(arg.c_str(), benchFlags)) {
+            g_showMessages = false;
+        }
         if (arg.size() > 5 && _stricmp(arg.c_str() + arg.size() - 5, ".qmap") == 0) opensAShow = true;
     }
 

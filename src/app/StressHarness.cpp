@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -76,6 +77,18 @@ void logZeroCopyDeviceOpen() {
 
 }  // namespace
 
+int harnessInt(const char* text, int lo, int hi) {
+    char* end = nullptr;
+    const long value = std::strtol(text, &end, 10);  // saturates when out of range
+    if (end == text) return lo;
+    return static_cast<int>(std::clamp(value, static_cast<long>(lo), static_cast<long>(hi)));
+}
+
+double harnessSeconds(const char* text, double lo, double hi) {
+    const double value = std::strtod(text, nullptr);
+    return std::isfinite(value) ? std::clamp(value, lo, hi) : lo;
+}
+
 bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
     // Intentionally minimal: no getopt dependency, no env-var fallback.
     auto config = [&cfg]() -> StressConfig& {
@@ -85,11 +98,11 @@ bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
     if (std::strcmp(arg, "--stress") == 0) {
         config();
     } else if (std::strncmp(arg, "--cycles=", 9) == 0) {
-        config().cycles = std::atoi(arg + 9);
+        config().cycles = harnessInt(arg + 9, 1, 1000000);
     } else if (std::strncmp(arg, "--outputs=", 10) == 0) {
-        config().outputs = std::atoi(arg + 10);
+        config().outputs = harnessInt(arg + 10, 1, 16);
     } else if (std::strncmp(arg, "--frames-per-cycle=", 19) == 0) {
-        config().framesPerCycle = std::atoi(arg + 19);
+        config().framesPerCycle = harnessInt(arg + 19, 1, 1000000);
     } else if (std::strcmp(arg, "--fullscreen") == 0) {
         config().fullscreen = true;
     } else if (std::strncmp(arg, "--source=", 9) == 0) {
@@ -97,11 +110,11 @@ bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
     } else if (std::strcmp(arg, "--hidden") == 0) {
         config().hidden = true;
     } else if (std::strncmp(arg, "--ws-bound-mb=", 14) == 0) {
-        config().workingSetBoundMB = std::atol(arg + 14);
+        config().workingSetBoundMB = harnessInt(arg + 14, 1, 1000000);
     } else if (std::strncmp(arg, "--cycle-timeout-ms=", 19) == 0) {
-        config().cycleTimeoutMs = std::atoi(arg + 19);
+        config().cycleTimeoutMs = harnessInt(arg + 19, 100, 3600000);
     } else if (std::strncmp(arg, "--pause-after=", 14) == 0) {
-        config().pauseAfter = std::atoi(arg + 14);
+        config().pauseAfter = harnessInt(arg + 14, 0, 1000000);
     } else if (std::strncmp(arg, "--capture=", 10) == 0) {
         config().capture = arg + 10;
     } else if (std::strncmp(arg, "--media=", 8) == 0) {
@@ -109,7 +122,7 @@ bool parseStressArg(const char* arg, std::optional<StressConfig>& cfg) {
     } else if (std::strcmp(arg, "--audio-churn") == 0) {
         config().audioChurn = true;
     } else if (std::strncmp(arg, "--open-delay-ms=", 16) == 0) {
-        config().openDelayMs = std::atoi(arg + 16);
+        config().openDelayMs = harnessInt(arg + 16, 0, 60000);
     } else if (std::strncmp(arg, "--export-check=", 15) == 0) {
         config().exportCheck = arg + 15;
     } else {

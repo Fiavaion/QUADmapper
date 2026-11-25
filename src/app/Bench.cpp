@@ -88,31 +88,31 @@ bool parseBenchArg(const char* arg, std::optional<BenchConfig>& cfg) {
     } else if ((v = value("--bench-out="))) {
         config().outPath = v;
     } else if ((v = value("--bench-seconds="))) {
-        config().seconds = std::atof(v);
+        config().seconds = harnessSeconds(v, 0.1, 3600.0);
     } else if ((v = value("--bench-warmup="))) {
-        config().warmupSeconds = std::atof(v);
+        config().warmupSeconds = harnessSeconds(v, 0.0, 600.0);
     } else if ((v = value("--bench-outputs="))) {
-        config().outputs = std::max(1, std::atoi(v));
+        config().outputs = harnessInt(v, 1, 16);
     } else if ((v = value("--bench-monitor="))) {
-        config().monitor = std::atoi(v);
+        config().monitor = harnessInt(v, 0, 63);
     } else if ((v = value("--bench-vsync="))) {
-        config().vsync = std::atoi(v) != 0;
+        config().vsync = harnessInt(v, 0, 1) != 0;
     } else if ((v = value("--bench-quads="))) {
-        config().quads = std::max(1, std::atoi(v));
+        config().quads = harnessInt(v, 1, 100000);
     } else if ((v = value("--bench-videos="))) {
-        config().videos = std::max(1, std::atoi(v));
+        config().videos = harnessInt(v, 1, 256);
     } else if ((v = value("--bench-media="))) {
         config().media = v;
     } else if ((v = value("--bench-hap-media="))) {
         config().hapMedia = v;
     } else if ((v = value("--bench-scenes="))) {
-        config().scenes = std::clamp(std::atoi(v), 2, 9);  // taken with keys 1-9
+        config().scenes = harnessInt(v, 2, 9);  // taken with keys 1-9
     } else if ((v = value("--bench-switch-every="))) {
-        config().switchEvery = std::max(2, std::atoi(v));
+        config().switchEvery = harnessInt(v, 2, 1000000);
     } else if ((v = value("--bench-latency-samples="))) {
-        config().latencySamples = std::max(1, std::atoi(v));
+        config().latencySamples = harnessInt(v, 1, 100000);
     } else if ((v = value("--bench-drift-seconds="))) {
-        config().driftSeconds = std::atof(v);
+        config().driftSeconds = harnessSeconds(v, 0.1, 3600.0);
     } else {
         return false;
     }
