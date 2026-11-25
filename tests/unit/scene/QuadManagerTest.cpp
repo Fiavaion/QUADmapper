@@ -287,6 +287,21 @@ TEST_F(QuadManagerTest, DeleteSelectedUpdatesPrimarySelection) {
     EXPECT_TRUE(manager.isSelected(quad1->getId()));
 }
 
+// The new primary is the first selected quad in list order, the same on every run.
+TEST_F(QuadManagerTest, LosingThePrimaryPicksTheFirstSelectedInListOrder) {
+    std::vector<Quad*> quads;
+    for (int i = 0; i < 8; ++i) quads.push_back(manager.createQuad());
+    for (int i = 6; i >= 0; --i) manager.addToSelection(quads[i]->getId());
+    manager.addToSelection(quads[7]->getId());
+    ASSERT_EQ(manager.getPrimarySelectedId().value(), quads[7]->getId());
+
+    manager.deselectQuad(quads[7]->getId());
+    EXPECT_EQ(manager.getPrimarySelectedId().value(), quads[0]->getId());
+
+    manager.deleteQuad(quads[0]->getId());
+    EXPECT_EQ(manager.getPrimarySelectedId().value(), quads[1]->getId());
+}
+
 // ============ Ordering Tests ============
 
 TEST_F(QuadManagerTest, MoveQuadUpChangesOrder) {
