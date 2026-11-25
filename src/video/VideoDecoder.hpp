@@ -43,8 +43,9 @@ struct VideoFrame {
  * turns both options on.
  */
 struct DecodeOptions {
-    // Decode H.264, HEVC, VP9 and AV1 on the GPU (D3D11VA, one device shared by the
-    // app). A stream the GPU refuses, or that fails later, carries on in software.
+    // Decode H.264, HEVC, VP9 and AV1 on the GPU (D3D11VA on Windows, VideoToolbox on
+    // macOS; one device shared by the app). A stream the GPU refuses, or that fails
+    // later, carries on in software.
     bool hardware = false;
     // Hand frames on as YUV planes (VideoFrame::yuv) for the GPU conversion pass
     // instead of converting them to RGB24 on the CPU. Pixel formats the pass does not
