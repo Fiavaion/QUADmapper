@@ -6,10 +6,14 @@
 #include <fstream>
 #include <sstream>
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 namespace quadmapper {
 namespace test {
@@ -75,6 +79,8 @@ TEST_F(FileSystemAtomicTest, BakRollsToThePreviousSave) {
     EXPECT_EQ(slurp(dir_ / "show.qmap.bak"), "two");
 }
 
+#ifdef _WIN32
+// Windows only: a share-mode lock has no POSIX counterpart (rename over an open file works).
 TEST_F(FileSystemAtomicTest, FailedReplaceLeavesOriginalByteIdentical) {
     const fs::path target = dir_ / "show.qmap";
     const std::string original = "calibrated mapping\r\n\x01\x02 bytes";
@@ -92,9 +98,11 @@ TEST_F(FileSystemAtomicTest, FailedReplaceLeavesOriginalByteIdentical) {
     EXPECT_EQ(slurp(target), original);
     EXPECT_FALSE(fs::exists(dir_ / "show.qmap.tmp"));
 }
+#endif
 
-// NTFS file identity: the same for a file rewritten in place, new for a file that
+// File identity: the same for a file rewritten in place, new for a file that
 // replaced it by rename.
+#ifdef _WIN32
 static ULONGLONG fileIndex(const fs::path& p) {
     HANDLE h = CreateFileW(p.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -104,6 +112,13 @@ static ULONGLONG fileIndex(const fs::path& p) {
     CloseHandle(h);
     return (static_cast<ULONGLONG>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
 }
+#else
+static unsigned long long fileIndex(const fs::path& p) {
+    struct stat info{};
+    if (stat(p.c_str(), &info) != 0) return 0;
+    return static_cast<unsigned long long>(info.st_ino);
+}
+#endif
 
 TEST_F(FileSystemAtomicTest, ReplacesTargetByRenameNeverInPlace) {
     // A writer that truncates the target and rewrites it (even after copying a .bak)
@@ -111,7 +126,7 @@ TEST_F(FileSystemAtomicTest, ReplacesTargetByRenameNeverInPlace) {
     // swap a fully written file in, which gives the target a new file identity.
     const fs::path target = dir_ / "show.qmap";
     spit(target, "previous save");
-    const ULONGLONG before = fileIndex(target);
+    const auto before = fileIndex(target);
     ASSERT_NE(before, 0u);
 
     ASSERT_FALSE(FileSystem::writeFileAtomic(target, "new save").isError());
@@ -125,7 +140,9 @@ TEST_F(FileSystemAtomicTest, ReplacesTargetByRenameNeverInPlace) {
 TEST(Utf8PathTest, ConvertsNonAsciiNamesExactlyBothWays) {
     const std::string utf8 = u8"C:/Show/\u00fc/\u65e5\u672c/\u0416.mp4";
     const fs::path path = pathFromUtf8(utf8);
+#ifdef _WIN32
     EXPECT_EQ(path.wstring(), L"C:/Show/\u00fc/\u65e5\u672c/\u0416.mp4");
+#endif
     EXPECT_EQ(utf8FromPath(path), utf8);
     EXPECT_EQ(utf8FromPath(path.filename()), u8"\u0416.mp4");
     EXPECT_EQ(utf8FromPath(path.extension()), ".mp4");
@@ -170,7 +187,11 @@ TEST(AppFoldersTest, ExecutableDirHoldsTheRunningProgramWhateverTheCurrentFolder
     fs::current_path(cwd);
 
     EXPECT_EQ(before, after);
+#ifdef _WIN32
     EXPECT_TRUE(fs::exists(before / "test_core.exe"));
+#else
+    EXPECT_TRUE(fs::exists(before / "test_core"));
+#endif
     EXPECT_EQ(resourcePath("fonts/a.ttf"), before / "resources" / "fonts" / "a.ttf");
 }
 
@@ -192,14 +213,21 @@ TEST_F(FileSystemAtomicTest, ReadBinaryFileReturnsExactBytesAndErrOnMissingFile)
     EXPECT_TRUE(FileSystem::readBinaryFile(dir_ / "absent.bin").isError());
 }
 
-// Windows reports a name this long as an error, not as "not found".
+// Windows reports a name this long as an error, not as "not found"; so does macOS
+// (ENAMETOOLONG).
 TEST(FileSystemPathTest, APathThatCannotBeExaminedDoesNotExist) {
+#ifdef _WIN32
     const fs::path tooLong = fs::path("C:\\") / std::wstring(40000, L'a');
+    const fs::path root = "C:\\";
+#else
+    const fs::path tooLong = fs::path("/") / std::string(40000, 'a');
+    const fs::path root = "/";
+#endif
 
     EXPECT_FALSE(FileSystem::exists(tooLong));
     EXPECT_FALSE(FileSystem::isDirectory(tooLong));
-    EXPECT_NO_THROW(FileSystem::makeRelative(tooLong, "C:\\"));
-    EXPECT_NO_THROW(FileSystem::resolveRelative(tooLong, "C:\\"));
+    EXPECT_NO_THROW(FileSystem::makeRelative(tooLong, root));
+    EXPECT_NO_THROW(FileSystem::resolveRelative(tooLong, root));
 }
 
 TEST_F(FileSystemAtomicTest, AFileOverTheLimitIsNotRead) {

@@ -11,7 +11,7 @@ extern "C" {
 #include "core/FileSystem.hpp"
 #include "video/Mp4Writer.hpp"
 
-#include <process.h>
+#include "../TestPlatform.hpp"
 
 #include <cmath>
 #include <filesystem>
@@ -138,7 +138,7 @@ bool isAcceptedVideoCodec(AVCodecID id) { return id == AV_CODEC_ID_H264 || id ==
 class Mp4WriterTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        folder_ = fs::temp_directory_path() / ("qm_mp4writer_" + std::to_string(_getpid()));
+        folder_ = fs::temp_directory_path() / ("qm_mp4writer_" + std::to_string(testProcessId()));
         fs::create_directories(folder_);
     }
     void TearDown() override {

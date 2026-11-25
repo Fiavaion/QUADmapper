@@ -18,7 +18,7 @@ extern "C" {
 #include "video/HapExport.hpp"
 #include "video/VideoDecoder.hpp"
 
-#include <process.h>
+#include "../TestPlatform.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -306,7 +306,7 @@ protected:
     void SetUp() override {
         folder_ = fs::temp_directory_path() /
                   ("qm_hapexport_" + std::string(testing::UnitTest::GetInstance()->current_test_info()->name()) +
-                   "_" + std::to_string(_getpid()));
+                   "_" + std::to_string(testProcessId()));
         std::error_code ec;
         fs::remove_all(folder_, ec);
         fs::create_directories(folder_, ec);

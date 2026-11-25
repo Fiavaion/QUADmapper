@@ -48,8 +48,9 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
-#include <process.h>  // _getpid
 #endif
+
+#include "../TestPlatform.hpp"
 
 namespace quadmapper {
 namespace test {
@@ -1583,7 +1584,7 @@ struct Tone {
 
 std::filesystem::path writeToneWav(const Tone& tone, const char* name) {
     const auto path = std::filesystem::temp_directory_path() /
-                      (std::string("qm_loopseam_") + std::to_string(_getpid()) + "_" + name + ".wav");
+                      (std::string("qm_loopseam_") + std::to_string(testProcessId()) + "_" + name + ".wav");
     const uint32_t frames = static_cast<uint32_t>(std::llround(tone.seconds * RATE));
     const uint32_t dataBytes = frames * 4;
     std::ofstream f(path, std::ios::binary);

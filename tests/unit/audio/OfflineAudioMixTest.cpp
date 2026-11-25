@@ -8,7 +8,7 @@
 #include "audio/OfflineAudioMix.hpp"
 #include "video/Mp4Writer.hpp"
 
-#include <process.h>
+#include "../TestPlatform.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -77,7 +77,7 @@ bool writeFixture(const fs::path& path, bool audio, std::string& error) {
 class OfflineAudioMixTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
-        folder_ = fs::temp_directory_path() / ("qm_offlinemix_" + std::to_string(_getpid()));
+        folder_ = fs::temp_directory_path() / ("qm_offlinemix_" + std::to_string(testProcessId()));
         fs::create_directories(folder_);
         std::string error;
         ready_ = writeFixture(clipPath(), true, error) && writeFixture(silentPath(), false, error);

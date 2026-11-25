@@ -442,7 +442,11 @@ TEST(AiAssistLocateTest, TheCurrentFolderIsNeverSearched) {
 
 // No interpreter found: Enable launches nothing and says the AI features are missing.
 TEST(AiAssistLocateTest, EnableWithoutTheAiFeaturesSaysTheyAreNotInstalled) {
+#ifdef _WIN32
     _putenv_s(ai::SIDECAR_TOKEN_ENV, "");
+#else
+    setenv(ai::SIDECAR_TOKEN_ENV, "", 1);
+#endif
     EditorState es;
     AiAssist ai(es, std::make_unique<ai::SidecarClient>(ai::SidecarConfig{}));
     ai.enable();

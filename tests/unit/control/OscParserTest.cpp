@@ -4,10 +4,15 @@
 
 #include <gtest/gtest.h>
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #include <cstring>
 #include <random>
@@ -26,6 +31,7 @@ bool parse(const std::vector<uint8_t>& bytes, std::vector<OscMessage>& out) {
 // page: any read past the end is an access violation, not a silent overrun.
 class GuardedBuffer {
 public:
+#ifdef _WIN32
     GuardedBuffer() {
         SYSTEM_INFO info;
         GetSystemInfo(&info);
@@ -36,6 +42,15 @@ public:
         VirtualProtect(base_ + page_, page_, PAGE_NOACCESS, &old);
     }
     ~GuardedBuffer() { VirtualFree(base_, 0, MEM_RELEASE); }
+#else
+    GuardedBuffer() {
+        page_ = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+        void* mapped = mmap(nullptr, page_ * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        base_ = mapped == MAP_FAILED ? nullptr : static_cast<uint8_t*>(mapped);
+        if (base_) mprotect(base_ + page_, page_, PROT_NONE);
+    }
+    ~GuardedBuffer() { if (base_) munmap(base_, page_ * 2); }
+#endif
     GuardedBuffer(const GuardedBuffer&) = delete;
     GuardedBuffer& operator=(const GuardedBuffer&) = delete;
 

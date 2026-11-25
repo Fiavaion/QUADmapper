@@ -3,11 +3,13 @@
 #include "media/MediaLibrary.hpp"
 #include "core/FileSystem.hpp"
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 #include <objbase.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -23,6 +25,7 @@ namespace test {
 
 namespace {
 
+#ifdef _WIN32  // the TIFF fixtures: TIFF decoding is Windows only for now (ADR-062)
 // One page of a baseline (uncompressed, chunky, single-strip) little-endian TIFF.
 // Rows are given top row first, as TIFF stores them by default.
 struct TiffPage {
@@ -99,6 +102,8 @@ std::vector<uint8_t> buildTiff(const std::vector<TiffPage>& pages) {
     return out;
 }
 
+#endif  // _WIN32
+
 using Rgb = std::array<uint8_t, 3>;
 
 // 3x2 (non-square, so a transpose would show) with a distinct colour per pixel.
@@ -148,6 +153,7 @@ protected:
     std::filesystem::path dir_;
 };
 
+#ifdef _WIN32
 TiffPage rgb8Page() {
     TiffPage page;
     page.width = 3;
@@ -160,9 +166,11 @@ TiffPage rgb8Page() {
 const uint8_t* at(const ImageData& img, int x, int memoryRow) {
     return &img.pixels[(static_cast<size_t>(memoryRow) * img.width + x) * img.channels];
 }
+#endif
 
 } // namespace
 
+#ifdef _WIN32
 TEST_F(ImageLoaderTiffTest, Rgb8MatchesStbOrientationAndChannelOrder) {
     const auto tiffPath = write("rgb8.tif", buildTiff({rgb8Page()}));
     const auto ppmPath = writePpm("rgb8.ppm", 3, 2, flatten(SOURCE_3X2));
@@ -374,6 +382,16 @@ TEST_F(ImageLoaderTiffTest, TruncatedPixelDataReturnsError) {
     auto result = ImageLoader::load(write("truncated.tif", bytes));
     EXPECT_TRUE(result.isError());
 }
+#else
+// TIFF is not decoded on macOS yet (ADR-062): the loader says so instead of failing silently.
+TEST_F(ImageLoaderTiffTest, TiffReturnsAClearErrorOnMacOs) {
+    const auto path = write("any.tif", {'I', 'I', 42, 0});
+    auto result = ImageLoader::load(path);
+    ASSERT_TRUE(result.isError());
+    EXPECT_NE(result.error().message.find("not supported on macOS"), std::string::npos)
+        << result.error().message;
+}
+#endif
 
 TEST_F(ImageLoaderTiffTest, EmptyFileReturnsError) {
     auto result = ImageLoader::load(write("empty.tiff", {}));
@@ -410,11 +428,15 @@ TEST_F(ImageLoaderTiffTest, LoadsFromNonAsciiFolder) {
     const std::vector<uint8_t> rgb = flatten(SOURCE_3X2);
     ppmBytes.insert(ppmBytes.end(), rgb.begin(), rgb.end());
     const std::filesystem::path ppm = folder / pathFromUtf8(u8"b\u00fchne \u0416.ppm");
+    std::vector<std::filesystem::path> paths = {ppm};
+#ifdef _WIN32
     const std::filesystem::path tiff = folder / pathFromUtf8(u8"\u65e5\u672c.tif");
-    put(ppm, ppmBytes);
     put(tiff, buildTiff({rgb8Page()}));
+    paths.push_back(tiff);
+#endif
+    put(ppm, ppmBytes);
 
-    for (const auto& path : {ppm, tiff}) {
+    for (const auto& path : paths) {
         auto result = ImageLoader::load(path);
         ASSERT_TRUE(result.isSuccess()) << result.error().message;
         EXPECT_EQ(result.value().width, 3);
@@ -425,6 +447,7 @@ TEST_F(ImageLoaderTiffTest, LoadsFromNonAsciiFolder) {
     }
 }
 
+#ifdef _WIN32
 TEST_F(ImageLoaderTiffTest, DecodesOnFreshWorkerThread) {
     const auto path = write("rgb8.tif", buildTiff({rgb8Page()}));
     bool ok = false;
@@ -467,6 +490,7 @@ TEST_F(ImageLoaderTiffTest, RepeatedLoadsOnOneThreadBalanceComInit) {
     EXPECT_TRUE(ok);
     EXPECT_EQ(afterHr, S_OK);
 }
+#endif
 
 TEST(ImageLoaderExtensionTest, TiffExtensionsAreSupportedEverywhere) {
     for (const char* ext : {".tif", ".tiff", ".TIF", ".Tiff"}) {

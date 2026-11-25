@@ -8,14 +8,7 @@
 
 #include <gtest/gtest.h>
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "UdpTestSocket.hpp"
 
 #include <chrono>
 #include <map>
@@ -42,7 +35,7 @@ public:
         address.sin_port = 0;
         inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
         bind(socket_, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
-        int length = sizeof(address);
+        SocketLength length = sizeof(address);
         getsockname(socket_, reinterpret_cast<sockaddr*>(&address), &length);
         port_ = ntohs(address.sin_port);
     }
@@ -74,7 +67,7 @@ public:
             FD_ZERO(&readable);
             FD_SET(socket_, &readable);
             timeval timeout{0, quietMs * 1000};
-            if (select(0, &readable, nullptr, nullptr, &timeout) <= 0) break;
+            if (select(selectRange(socket_), &readable, nullptr, nullptr, &timeout) <= 0) break;
             const int n = recvfrom(socket_, reinterpret_cast<char*>(buffer.data()),
                                    static_cast<int>(buffer.size()), 0, nullptr, nullptr);
             if (n <= 0) break;
