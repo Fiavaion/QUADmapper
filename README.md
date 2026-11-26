@@ -79,7 +79,7 @@ packaging/build-mac-app.sh              # signed; runs on this Mac
 packaging/build-mac-app.sh --notarize   # signed and notarised; runs on any Mac
 ```
 
-The script signs with the first "Developer ID Application" certificate in the keychain (ad hoc without one). `--notarize` needs a notary credential stored once with `xcrun notarytool store-credentials quadmapper-notary`.
+The script signs with the first "Developer ID Application" certificate in the keychain (ad hoc without one). `--notarize` needs a notary credential stored once with `xcrun notarytool store-credentials QM-notary`.
 
 The real-media tests look for their clips in the folder the `QM_TEST_MEDIA` environment variable names, and skip without them.
 

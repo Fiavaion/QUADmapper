@@ -16,7 +16,7 @@
 # 5. Make and sign the disk image.
 # 6. --notarize: send the app, then the disk image, to Apple and staple both tickets, so
 #    a first start needs no internet. It needs a notarytool keychain profile, made once:
-#      xcrun notarytool store-credentials quadmapper-notary
+#      xcrun notarytool store-credentials QM-notary
 #    QM_NOTARY_PROFILE names a different profile.
 # The version is the one in the top-level CMakeLists.txt project(VERSION).
 set -euo pipefail
@@ -34,7 +34,7 @@ build="$repo/build/mac-release"
 stage="$repo/.scratch/mac-app/stage"
 out="$repo/packaging/out"
 app="$out/QUADmapper.app"
-profile="${QM_NOTARY_PROFILE:-quadmapper-notary}"
+profile="${QM_NOTARY_PROFILE:-QM-notary}"
 
 version="$(sed -n 's/^ *VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$repo/CMakeLists.txt" | head -1)"
 [ -n "$version" ] || { echo "No project(QUADmapper VERSION x.y.z) in CMakeLists.txt" >&2; exit 1; }
