@@ -27,7 +27,7 @@ One fresh-context review of the whole diff (`7f1cf31..88b87c5`), read-only, fixe
 
 ## Not verified
 
-- **Notarisation.** Not run: it needs the owner's notary credential. Until then Gatekeeper refuses the app on any other Mac (`spctl` says "Unnotarized Developer ID", as expected).
+- **The notarised disk image on another Mac.** Notarisation itself was done the next morning, see the end of this note.
 - **The app on macOS 13 to 15.** Built for 13; run on 26 only.
 - **The Windows build**, as before, now with more shared files edited: see `notes/CURRENT_STATUS.md`.
 - **Fullscreen on a second display**, sound by ear, a real MIDI controller, OSC from another machine: unchanged from the first session.
@@ -42,3 +42,7 @@ One fresh-context review of the whole diff (`7f1cf31..88b87c5`), read-only, fixe
 ## Next steps
 
 See the owner's list in `notes/CURRENT_STATUS.md`.
+
+## Addendum, 2026-11-26: notarised
+
+The owner stored the notary credential (keychain profile `QM-notary`; Apple first answered 403 until the Apple Developer Program License Agreement was signed again). `packaging/build-mac-app.sh --notarize` then ran end to end: Apple accepted the app and the disk image, both tickets were stapled, `spctl` reports "Notarized Developer ID" for the disk image and for the app inside it, and the app started from the mounted image. Still to do: open it on a different Mac.

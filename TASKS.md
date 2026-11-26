@@ -453,7 +453,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 - **Open:** TD-45. Packaging, TIFF and GPU decoding followed in QM-129.
 
 #### QM-129: macOS packaging, TIFF and GPU decoding (ADR-062 §9)
-- **Status:** DONE on the Mac except notarisation, which needs the owner's credential — **Completed:** 2026-11-25. Same branch, `feat/macos-port` (pushed, not merged).
+- **Status:** DONE on the Mac, notarised on 2026-11-26 — **Completed:** 2026-11-26. Same branch, `feat/macos-port` (pushed, not merged).
 - **Effort:** M · **Depends On:** QM-128 · **Why:** the owner asked for the Mac release to be made ready.
 - **Delivered:**
   - The app and its libraries are built for macOS 13 and later (overlay triplet `cmake/triplets/arm64-osx.cmake`).
@@ -464,7 +464,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
   - Rebinding refuses macOS system chords; File > Quit QUADmapper; a Mac note in the user guide; the FFmpeg notice covers the static build.
 - **Gate:** `QM_TEST_MEDIA=<stand-in clips> ctest --preset mac-debug | 88b87c5 | 1799 passed, 0 failed, 6 disabled`, then two review fixes with their own targeted checks.
 - **Verified by running the app:** see `docs/sessions/2026-11-25-macos-packaging.md`.
-- **Not verified:** notarisation; macOS 13 to 15; the Windows build of this branch.
+- **Not verified:** the disk image on another Mac; macOS 13 to 15; the Windows build of this branch.
 - **Open:** TD-45.
 
 #### 3D-B2: ChArUco camera calibration, stereo and ICP (FUTURE)
@@ -1251,7 +1251,7 @@ novelty is a hypothesis until **🚩 QM-061** (real-device test) passes.
 | QM-126 | AI Assist behind a beta switch | DONE | Phase 9 |
 | QM-127 | Code-quality and security review, fix batches 0 to 9 | DONE | Phase 9 |
 | QM-128 | macOS port, phases A to C | DONE (Windows build pending) | ADR-062 |
-| QM-129 | macOS packaging, TIFF and GPU decoding | DONE (notarisation and Windows build pending) | ADR-062 §9 |
+| QM-129 | macOS packaging, TIFF and GPU decoding | DONE, notarised (Windows build pending) | ADR-062 §9 |
 | QM-063 | Multi-scene runtime foundation (ADR-039 P1) | DONE | ADR-039 |
 | QM-064 | Per-output scene routing + default→2nd monitor (P2) | DONE | ADR-039 |
 | QM-065 | Scenes UI: create/switch/assign output (P3) | DONE | ADR-039 |

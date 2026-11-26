@@ -2,7 +2,7 @@
 
 ## macOS version (in preparation)
 
-Not released yet: the disk image is built and signed but not notarised, and which release it joins is not decided.
+Not released yet: the disk image is built, signed and notarised by Apple, but which release it joins is not decided.
 
 - QUADmapper runs on Macs with Apple Silicon, on macOS 13 or later. It comes as a disk image: open it and drag QUADmapper to Applications.
 - Everything in 1.0.0 below is there, except the AI features, webcam sources and HAP R clips.
